@@ -1,0 +1,16 @@
+{
+  "name": "buildd",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:server": "pnpm --filter @buildd/server dev",
+    "dev:web": "pnpm --filter @buildd/web dev",
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter @buildd/server db:generate",
+    "db:migrate": "pnpm --filter @buildd/server db:migrate",
+    "db:studio": "pnpm --filter @buildd/server db:studio"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
