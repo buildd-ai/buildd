@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "pending_instructions" text;

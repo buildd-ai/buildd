@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray, ne } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
 async function authenticateApiKey(apiKey: string | null) {
@@ -59,7 +59,8 @@ export async function POST(
       return NextResponse.json({ error: 'Cannot reassign completed task' }, { status: 400 });
     }
 
-    // Mark any active workers for this task as abandoned
+    // Mark all non-terminal workers for this task as failed
+    // This includes: idle, starting, running, waiting_input
     await db
       .update(workers)
       .set({
@@ -71,38 +72,7 @@ export async function POST(
       .where(
         and(
           eq(workers.taskId, id),
-          eq(workers.status, 'running')
-        )
-      );
-
-    // Also mark idle/starting workers
-    await db
-      .update(workers)
-      .set({
-        status: 'failed',
-        error: 'Task reassigned by admin',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(workers.taskId, id),
-          eq(workers.status, 'idle')
-        )
-      );
-
-    await db
-      .update(workers)
-      .set({
-        status: 'failed',
-        error: 'Task reassigned by admin',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(workers.taskId, id),
-          eq(workers.status, 'starting')
+          inArray(workers.status, ['idle', 'starting', 'running', 'waiting_input'])
         )
       );
 
