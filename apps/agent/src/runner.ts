@@ -1,5 +1,4 @@
 import type { Task } from '@buildd/shared';
-import { $ } from 'bun';
 
 interface WorkerInfo {
   id: string;
@@ -75,36 +74,28 @@ export class WorkerRunner {
   }
 
   private async executeViaOAuth(prompt: string) {
-    // Write prompt to temp file
-    const tmpFile = `/tmp/buildd-prompt-${this.worker.id}.txt`;
-    await Bun.write(tmpFile, prompt);
+    await this.reportProgress(0, 'Starting Claude (OAuth)...');
 
-    try {
-      await this.reportProgress(0, 'Starting Claude (OAuth)...');
+    // Execute claude CLI with OAuth token in print mode
+    // Use -p for non-interactive, pass prompt as argument
+    const proc = Bun.spawn(['claude', '--dangerously-skip-permissions', '-p', prompt], {
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN!,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
 
-      // Execute claude CLI with OAuth token
-      const proc = Bun.spawn(['claude', '--dangerously-skip-permissions', '-f', tmpFile], {
-        env: {
-          ...process.env,
-          CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN!,
-        },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
 
-      const output = await new Response(proc.stdout).text();
-      const exitCode = await proc.exited;
-
-      if (exitCode !== 0) {
-        const error = await new Response(proc.stderr).text();
-        throw new Error(`Claude execution failed: ${error}`);
-      }
-
-      console.log(`[${this.worker.id}] Claude output:\n${output}`);
-    } finally {
-      // Clean up temp file
-      await $`rm -f ${tmpFile}`.quiet();
+    if (exitCode !== 0) {
+      const error = await new Response(proc.stderr).text();
+      throw new Error(`Claude execution failed: ${error}`);
     }
+
+    console.log(`[${this.worker.id}] Claude output:\n${output}`);
   }
 
   private async executeViaAPI(prompt: string) {
