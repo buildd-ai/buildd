@@ -25,6 +25,23 @@ export const TaskStatus = {
 
 export type TaskStatusType = typeof TaskStatus[keyof typeof TaskStatus];
 
+export const AccountType = {
+  USER: 'user',
+  SERVICE: 'service',
+  ACTION: 'action',
+} as const;
+
+export type AccountTypeValue = typeof AccountType[keyof typeof AccountType];
+
+export const RunnerPreference = {
+  ANY: 'any',
+  USER: 'user',
+  SERVICE: 'service',
+  ACTION: 'action',
+} as const;
+
+export type RunnerPreferenceValue = typeof RunnerPreference[keyof typeof RunnerPreference];
+
 export const ArtifactType = {
   TASK_PLAN: 'task_plan',
   IMPL_PLAN: 'impl_plan',
@@ -49,6 +66,26 @@ export type SourceTypeValue = typeof SourceType[keyof typeof SourceType];
 // ============================================================================
 // ENTITIES
 // ============================================================================
+
+export interface Account {
+  id: string;
+  type: AccountTypeValue;
+  name: string;
+  apiKey: string;
+  githubId: string | null;
+  maxConcurrentWorkers: number;
+  maxCostPerDay: number;
+  totalCost: number;
+  totalTasks: number;
+  createdAt: Date;
+}
+
+export interface AccountWorkspace {
+  accountId: string;
+  workspaceId: string;
+  canClaim: boolean;
+  canCreate: boolean;
+}
 
 export interface Workspace {
   id: string;
@@ -82,17 +119,24 @@ export interface Task {
   context: Record<string, unknown>;
   status: TaskStatusType;
   priority: number;
+  runnerPreference: RunnerPreferenceValue;
+  requiredCapabilities: string[];
+  claimedBy: string | null;
+  claimedAt: Date | null;
+  expiresAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
   source?: Source;
   worker?: Worker;
+  account?: Account;
 }
 
 export interface Worker {
   id: string;
   taskId: string | null;
   workspaceId: string;
+  accountId: string | null;
   name: string;
   branch: string;
   worktreePath: string | null;
@@ -109,6 +153,7 @@ export interface Worker {
   updatedAt: Date;
   task?: Task;
   workspace?: Workspace;
+  account?: Account;
   artifacts?: Artifact[];
 }
 
@@ -206,6 +251,29 @@ export interface StartWorkerInput {
 export interface SendMessageInput {
   content: string;
   attachments?: string[];
+}
+
+export interface CreateAccountInput {
+  type: AccountTypeValue;
+  name: string;
+  githubId?: string;
+  maxConcurrentWorkers?: number;
+  maxCostPerDay?: number;
+}
+
+export interface ClaimTasksInput {
+  workspaceId?: string;
+  capabilities?: string[];
+  maxTasks?: number;
+}
+
+export interface ClaimTasksResponse {
+  workers: Array<{
+    id: string;
+    taskId: string;
+    branch: string;
+    task: Task;
+  }>;
 }
 
 // ============================================================================

@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { config } from './config.js';
+import { accountsRoutes } from './routes/accounts.js';
 import { workspaceRoutes } from './routes/workspaces.js';
 import { taskRoutes } from './routes/tasks.js';
 import { workerRoutes } from './routes/workers.js';
@@ -14,6 +15,7 @@ async function main() {
   await fastify.register(cors, { origin: true });
   await fastify.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
+  await fastify.register(accountsRoutes);
   await fastify.register(workspaceRoutes);
   await fastify.register(taskRoutes);
   await fastify.register(workerRoutes);

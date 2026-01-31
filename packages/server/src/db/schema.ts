@@ -1,7 +1,32 @@
-import { 
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex
+import {
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+export const accounts = pgTable('accounts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
+  name: text('name').notNull(),
+  apiKey: text('api_key').notNull().unique(),
+  githubId: text('github_id'),
+  maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }).default('50.00').notNull(),
+  totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
+  totalTasks: integer('total_tasks').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  apiKeyIdx: uniqueIndex('accounts_api_key_idx').on(t.apiKey),
+  githubIdIdx: index('accounts_github_id_idx').on(t.githubId),
+}));
+
+export const accountWorkspaces = pgTable('account_workspaces', {
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  canClaim: boolean('can_claim').default(true).notNull(),
+  canCreate: boolean('can_create').default(false).notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
+}));
 
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -35,11 +60,18 @@ export const tasks = pgTable('tasks', {
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
   status: text('status').default('pending').notNull(),
   priority: integer('priority').default(0).notNull(),
+  runnerPreference: text('runner_preference').default('any').notNull().$type<'any' | 'user' | 'service' | 'action'>(),
+  requiredCapabilities: jsonb('required_capabilities').default([]).$type<string[]>(),
+  claimedBy: uuid('claimed_by').references(() => accounts.id, { onDelete: 'set null' }),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceIdx: index('tasks_workspace_idx').on(t.workspaceId),
   statusIdx: index('tasks_status_idx').on(t.status),
+  claimedByIdx: index('tasks_claimed_by_idx').on(t.claimedBy),
+  runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   sourceExternalIdx: uniqueIndex('tasks_source_external_idx').on(t.sourceId, t.externalId),
 }));
 
@@ -47,6 +79,7 @@ export const workers = pgTable('workers', {
   id: uuid('id').primaryKey().defaultRandom(),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
   name: text('name').notNull(),
   branch: text('branch').notNull(),
   worktreePath: text('worktree_path'),
@@ -64,6 +97,7 @@ export const workers = pgTable('workers', {
 }, (t) => ({
   taskIdx: index('workers_task_idx').on(t.taskId),
   workspaceIdx: index('workers_workspace_idx').on(t.workspaceId),
+  accountIdx: index('workers_account_idx').on(t.accountId),
   statusIdx: index('workers_status_idx').on(t.status),
 }));
 
@@ -118,10 +152,22 @@ export const attachments = pgTable('attachments', {
 }));
 
 // Relations
+export const accountsRelations = relations(accounts, ({ many }) => ({
+  accountWorkspaces: many(accountWorkspaces),
+  tasks: many(tasks),
+  workers: many(workers),
+}));
+
+export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one }) => ({
+  account: one(accounts, { fields: [accountWorkspaces.accountId], references: [accounts.id] }),
+  workspace: one(workspaces, { fields: [accountWorkspaces.workspaceId], references: [workspaces.id] }),
+}));
+
 export const workspacesRelations = relations(workspaces, ({ many }) => ({
   sources: many(sources),
   tasks: many(tasks),
   workers: many(workers),
+  accountWorkspaces: many(accountWorkspaces),
 }));
 
 export const sourcesRelations = relations(sources, ({ one, many }) => ({
@@ -132,12 +178,14 @@ export const sourcesRelations = relations(sources, ({ one, many }) => ({
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
   source: one(sources, { fields: [tasks.sourceId], references: [sources.id] }),
+  account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
   workers: many(workers),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
   task: one(tasks, { fields: [workers.taskId], references: [tasks.id] }),
   workspace: one(workspaces, { fields: [workers.workspaceId], references: [workspaces.id] }),
+  account: one(accounts, { fields: [workers.accountId], references: [accounts.id] }),
   artifacts: many(artifacts),
   comments: many(comments),
   messages: many(messages),
