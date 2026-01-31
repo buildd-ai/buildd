@@ -50,53 +50,66 @@ export async function GET(req: NextRequest) {
   }
 
   const installation = await installationResponse.json();
-
-  // Check if installation already exists
-  const existing = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, parseInt(installationId)),
-  });
+  console.log('[GitHub Callback] Installation data:', JSON.stringify(installation.account));
 
   let installationDbId: string;
 
-  if (existing) {
-    // Update existing installation
-    await db
-      .update(githubInstallations)
-      .set({
-        accountLogin: installation.account.login,
-        accountAvatarUrl: installation.account.avatar_url,
-        permissions: installation.permissions,
-        repositorySelection: installation.repository_selection,
-        suspendedAt: installation.suspended_at ? new Date(installation.suspended_at) : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(githubInstallations.installationId, parseInt(installationId)));
-    installationDbId = existing.id;
-  } else {
-    // Create new installation record
-    const [newInstallation] = await db
-      .insert(githubInstallations)
-      .values({
-        installationId: parseInt(installationId),
-        accountType: installation.account.type,
-        accountLogin: installation.account.login,
-        accountId: installation.account.id,
-        accountAvatarUrl: installation.account.avatar_url,
-        permissions: installation.permissions,
-        repositorySelection: installation.repository_selection,
-      })
-      .returning();
-    installationDbId = newInstallation.id;
+  try {
+    // Check if installation already exists
+    const existing = await db.query.githubInstallations.findFirst({
+      where: eq(githubInstallations.installationId, parseInt(installationId)),
+    });
+    console.log('[GitHub Callback] Existing installation:', existing?.id || 'none');
+
+    if (existing) {
+      // Update existing installation
+      await db
+        .update(githubInstallations)
+        .set({
+          accountLogin: installation.account.login,
+          accountAvatarUrl: installation.account.avatar_url,
+          permissions: installation.permissions,
+          repositorySelection: installation.repository_selection,
+          suspendedAt: installation.suspended_at ? new Date(installation.suspended_at) : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(githubInstallations.installationId, parseInt(installationId)));
+      installationDbId = existing.id;
+      console.log('[GitHub Callback] Updated installation:', installationDbId);
+    } else {
+      // Create new installation record
+      const [newInstallation] = await db
+        .insert(githubInstallations)
+        .values({
+          installationId: parseInt(installationId),
+          accountType: installation.account.type,
+          accountLogin: installation.account.login,
+          accountId: installation.account.id,
+          accountAvatarUrl: installation.account.avatar_url,
+          permissions: installation.permissions,
+          repositorySelection: installation.repository_selection,
+        })
+        .returning();
+      installationDbId = newInstallation.id;
+      console.log('[GitHub Callback] Created installation:', installationDbId);
+    }
+  } catch (dbError) {
+    console.error('[GitHub Callback] DB error:', dbError);
+    return NextResponse.redirect(
+      new URL(`${returnUrl}?error=db_error&message=${encodeURIComponent(String(dbError))}`, req.url)
+    );
   }
 
   // Sync repositories
   try {
     await syncInstallationRepos(installationDbId, parseInt(installationId));
+    console.log('[GitHub Callback] Repos synced');
   } catch (error) {
-    console.error('Failed to sync repos:', error);
+    console.error('[GitHub Callback] Failed to sync repos:', error);
     // Don't fail the whole flow, repos can be synced later
   }
 
+  console.log('[GitHub Callback] Success, redirecting to:', returnUrl);
   return NextResponse.redirect(
     new URL(`${returnUrl}?github_connected=true&org=${installation.account.login}`, req.url)
   );
