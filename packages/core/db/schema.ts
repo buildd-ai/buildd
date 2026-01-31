@@ -135,6 +135,9 @@ export const workers = pgTable('workers', {
   progress: integer('progress').default(0).notNull(),
   sdkSessionId: text('sdk_session_id'),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
+  // Token usage (for seat-based accounts where cost isn't meaningful)
+  inputTokens: integer('input_tokens').default(0).notNull(),
+  outputTokens: integer('output_tokens').default(0).notNull(),
   turns: integer('turns').default(0).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
@@ -148,6 +151,14 @@ export const workers = pgTable('workers', {
   // PR tracking
   prUrl: text('pr_url'),
   prNumber: integer('pr_number'),
+  // Git stats - updated by agent on progress reports
+  lastCommitSha: text('last_commit_sha'),
+  commitCount: integer('commit_count').default(0),
+  filesChanged: integer('files_changed').default(0),
+  linesAdded: integer('lines_added').default(0),
+  linesRemoved: integer('lines_removed').default(0),
+  // Admin instructions - delivered on next progress update
+  pendingInstructions: text('pending_instructions'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
