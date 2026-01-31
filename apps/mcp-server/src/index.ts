@@ -458,11 +458,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
         ).join("\n\n---\n\n");
 
+        // Generate env export commands for hooks integration
+        const firstWorker = workers[0];
+        const envExports = `# For Claude Code hooks integration (optional - enables automatic activity tracking):
+export BUILDD_WORKER_ID=${firstWorker.id}
+export BUILDD_SERVER=${SERVER_URL}`;
+
         return {
           content: [
             {
               type: "text",
-              text: `Claimed ${workers.length} task(s):\n\n${claimed}\n\nUse the worker ID to report progress and completion.`,
+              text: `Claimed ${workers.length} task(s):\n\n${claimed}\n\nUse the worker ID to report progress and completion.\n\n---\n${envExports}`,
             },
           ],
         };
