@@ -8,3 +8,4 @@ dist/
 coverage/
 .next/
 .vercel
+.agent/
