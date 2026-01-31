@@ -1,18 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
+import { accounts, tasks } from '@buildd/core/db/schema';
+import { desc, eq } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
-export async function GET() {
+async function authenticateApiKey(apiKey: string | null) {
+  if (!apiKey) return null;
+  const account = await db.query.accounts.findFirst({
+    where: eq(accounts.apiKey, apiKey),
+  });
+  return account || null;
+}
+
+export async function GET(req: NextRequest) {
   // Dev mode returns empty
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ tasks: [] });
   }
 
+  // Check API key auth first
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const account = await authenticateApiKey(apiKey);
+
+  // Fall back to session auth
   const session = await auth();
-  if (!session?.user) {
+
+  if (!account && !session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -35,17 +50,39 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: 'dev-task', title: 'Dev Task' });
   }
 
+  // Check API key auth first
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const account = await authenticateApiKey(apiKey);
+
+  // Fall back to session auth
   const session = await auth();
-  if (!session?.user) {
+
+  if (!account && !session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
     const body = await req.json();
-    const { workspaceId, title, description, priority } = body;
+    const { workspaceId, title, description, priority, runnerPreference, requiredCapabilities, attachments } = body;
 
     if (!workspaceId || !title) {
       return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
+    }
+
+    // Process attachments - store as base64 in context
+    const processedAttachments: Array<{ filename: string; mimeType: string; data: string }> = [];
+    if (attachments && Array.isArray(attachments)) {
+      for (const att of attachments) {
+        if (att.data && att.mimeType && att.filename) {
+          // data is already base64 data URL from client
+          processedAttachments.push({
+            filename: att.filename,
+            mimeType: att.mimeType,
+            data: att.data, // data:image/png;base64,...
+          });
+        }
+      }
     }
 
     const [task] = await db
@@ -56,6 +93,9 @@ export async function POST(req: NextRequest) {
         description: description || null,
         priority: priority || 0,
         status: 'pending',
+        runnerPreference: runnerPreference || 'any',
+        requiredCapabilities: requiredCapabilities || [],
+        context: processedAttachments.length > 0 ? { attachments: processedAttachments } : {},
       })
       .returning();
 
