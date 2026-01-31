@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -97,13 +96,67 @@ func (r *WorkerRunner) buildPrompt() string {
 }
 
 func (r *WorkerRunner) executeClaude(prompt string) error {
+	// Check which auth method to use
+	if oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); oauthToken != "" {
+		log.Printf("[%s] Using OAuth authentication (seat-based)", r.workerID)
+		return r.executeViaOAuth(prompt)
+	}
+
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		log.Printf("[%s] Using API authentication (pay-per-token)", r.workerID)
+		return r.executeViaAPI(prompt)
+	}
+
+	return fmt.Errorf("no authentication configured - set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
+}
+
+func (r *WorkerRunner) executeViaOAuth(prompt string) error {
+	// Use claude CLI with OAuth token
+	// This uses the user's Claude Pro/Team seat - no per-token cost
+	log.Printf("[%s] Executing via OAuth (seat-based, no cost tracking)", r.workerID)
+
+	// Save prompt to temp file
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("buildd-prompt-%s.txt", r.workerID))
+	if err := os.WriteFile(tmpFile, []byte(prompt), 0644); err != nil {
+		return fmt.Errorf("failed to write prompt: %w", err)
+	}
+	defer os.Remove(tmpFile)
+
+	// Report progress
+	r.reportProgress(0, "Starting Claude (OAuth)...")
+
+	// Execute claude CLI
+	// NOTE: In production, this would stream output and parse for progress
+	cmd := exec.Command("claude", "--dangerously-skip-permissions", "-f", tmpFile)
+	cmd.Env = append(os.Environ(),
+		"CLAUDE_CODE_OAUTH_TOKEN="+os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"))
+
+	r.mu.Lock()
+	r.cmd = cmd
+	r.mu.Unlock()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[%s] Claude execution failed: %v\n%s", r.workerID, err, string(output))
+		return fmt.Errorf("claude execution failed: %w", err)
+	}
+
+	log.Printf("[%s] Claude output:\n%s", r.workerID, string(output))
+
+	// Mark as complete (no cost to report for OAuth)
+	r.reportComplete("Task completed successfully (OAuth)")
+	return nil
+}
+
+func (r *WorkerRunner) executeViaAPI(prompt string) error {
+	// Use Anthropic API with API key
+	// This is pay-per-token - costs are tracked
+	log.Printf("[%s] Executing via API (pay-per-token, cost tracking enabled)", r.workerID)
+
 	// For now, we'll simulate work
-	// In production, this would use the Claude Agent SDK or call a Node.js script
+	// In production, this would use the Claude Agent SDK
 
-	log.Printf("[%s] Executing: %s", r.workerID, prompt)
-
-	// Report progress to server
-	r.reportProgress(0, "Starting task...")
+	r.reportProgress(0, "Starting task (API)...")
 	time.Sleep(2 * time.Second)
 
 	r.reportProgress(30, "Analyzing requirements...")
@@ -116,7 +169,7 @@ func (r *WorkerRunner) executeClaude(prompt string) error {
 	time.Sleep(1 * time.Second)
 
 	// Mark as complete
-	r.reportComplete("Task completed successfully")
+	r.reportComplete("Task completed successfully (API)")
 
 	return nil
 }

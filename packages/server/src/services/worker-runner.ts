@@ -109,7 +109,7 @@ export class WorkerRunner extends EventEmitter {
     if (msg.type === 'result') {
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
-      
+
       await db.update(workers).set({
         status: resultMsg.is_error ? 'error' : 'completed',
         costUsd: this.costUsd.toString(),
@@ -118,12 +118,40 @@ export class WorkerRunner extends EventEmitter {
         error: resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
       }).where(eq(workers.id, this.workerId));
 
-      const worker = await db.query.workers.findFirst({ where: eq(workers.id, this.workerId) });
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.id, this.workerId),
+        with: { account: true }
+      });
+
       if (worker?.taskId) {
         await db.update(tasks).set({
           status: resultMsg.is_error ? 'failed' : 'completed',
           updatedAt: new Date(),
         }).where(eq(tasks.id, worker.taskId));
+      }
+
+      // Update account stats based on auth type
+      if (worker?.account) {
+        const { accounts } = await import('../db/schema.js');
+        const { sql } = await import('drizzle-orm');
+
+        if (worker.account.authType === 'api') {
+          // For API accounts: track costs
+          await db.update(accounts)
+            .set({
+              totalCost: sql`${accounts.totalCost} + ${this.costUsd}`,
+              totalTasks: sql`${accounts.totalTasks} + 1`
+            })
+            .where(eq(accounts.id, worker.account.id));
+        } else if (worker.account.authType === 'oauth') {
+          // For OAuth accounts: decrement active sessions, no cost tracking
+          await db.update(accounts)
+            .set({
+              activeSessions: sql`GREATEST(0, ${accounts.activeSessions} - 1)`,
+              totalTasks: sql`${accounts.totalTasks} + 1`
+            })
+            .where(eq(accounts.id, worker.account.id));
+        }
       }
 
       this.emitEvent('worker:completed', {

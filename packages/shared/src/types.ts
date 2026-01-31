@@ -33,6 +33,13 @@ export const AccountType = {
 
 export type AccountTypeValue = typeof AccountType[keyof typeof AccountType];
 
+export const AuthType = {
+  API: 'api',
+  OAUTH: 'oauth',
+} as const;
+
+export type AuthTypeValue = typeof AuthType[keyof typeof AuthType];
+
 export const RunnerPreference = {
   ANY: 'any',
   USER: 'user',
@@ -73,9 +80,23 @@ export interface Account {
   name: string;
   apiKey: string;
   githubId: string | null;
-  maxConcurrentWorkers: number;
-  maxCostPerDay: number;
+
+  // Authentication type
+  authType: AuthTypeValue;
+
+  // For API-based auth (pay-per-token)
+  anthropicApiKey: string | null;
+  maxCostPerDay: number | null;
   totalCost: number;
+
+  // For OAuth-based auth (seat-based)
+  oauthToken: string | null;
+  seatId: string | null;
+  maxConcurrentSessions: number | null;
+  activeSessions: number;
+
+  // Common
+  maxConcurrentWorkers: number;
   totalTasks: number;
   createdAt: Date;
 }
@@ -258,7 +279,18 @@ export interface CreateAccountInput {
   name: string;
   githubId?: string;
   maxConcurrentWorkers?: number;
+
+  // Auth type selection
+  authType?: AuthTypeValue;
+
+  // For API auth
+  anthropicApiKey?: string;
   maxCostPerDay?: number;
+
+  // For OAuth auth
+  oauthToken?: string;
+  seatId?: string;
+  maxConcurrentSessions?: number;
 }
 
 export interface ClaimTasksInput {

@@ -9,14 +9,30 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   githubId: text('github_id'),
-  maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
-  maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }).default('50.00').notNull(),
+
+  // Authentication type
+  authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
+
+  // For API-based auth (pay-per-token)
+  anthropicApiKey: text('anthropic_api_key'),
+  maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }),
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
+
+  // For OAuth-based auth (seat-based)
+  oauthToken: text('oauth_token'),
+  seatId: text('seat_id'),
+  maxConcurrentSessions: integer('max_concurrent_sessions'),
+  activeSessions: integer('active_sessions').default(0).notNull(),
+
+  // Common
+  maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   apiKeyIdx: uniqueIndex('accounts_api_key_idx').on(t.apiKey),
   githubIdIdx: index('accounts_github_id_idx').on(t.githubId),
+  authTypeIdx: index('accounts_auth_type_idx').on(t.authType),
+  seatIdIdx: index('accounts_seat_id_idx').on(t.seatId),
 }));
 
 export const accountWorkspaces = pgTable('account_workspaces', {

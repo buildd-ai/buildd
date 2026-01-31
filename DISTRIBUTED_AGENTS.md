@@ -11,6 +11,26 @@ buildd has been enhanced to support **distributed agent execution** - allowing t
 
 The buildd server acts as a **task broker**, coordinating work across this heterogeneous fleet of agents.
 
+## Authentication Models
+
+buildd supports **two authentication methods** for Claude execution:
+
+### OAuth (Seat-Based)
+- Uses `CLAUDE_CODE_OAUTH_TOKEN` from `claude auth`
+- **Cost**: Included in Claude Pro ($20/mo) or Team ($30/mo per seat)
+- **Limits**: Concurrent sessions (typically 1-3 per seat)
+- **Best for**: User accounts, team members, personal development
+- **Tracking**: Session count only, no cost tracking
+
+### API (Pay-Per-Token)
+- Uses `ANTHROPIC_API_KEY` from console.anthropic.com
+- **Cost**: Variable per token (~$3/$15 per million for Sonnet)
+- **Limits**: Daily cost cap + concurrent workers
+- **Best for**: Service accounts, GitHub Actions, production workloads
+- **Tracking**: Full cost attribution per task
+
+**See [AUTH_MODELS.md](./AUTH_MODELS.md) for detailed comparison.**
+
 ## What Changed
 
 ### 1. Database Schema
@@ -19,15 +39,30 @@ The buildd server acts as a **task broker**, coordinating work across this heter
 
 ```sql
 -- Account types: user, service, action
+-- Auth types: api, oauth
 CREATE TABLE accounts (
   id UUID PRIMARY KEY,
   type TEXT NOT NULL,
   name TEXT NOT NULL,
   api_key TEXT UNIQUE NOT NULL,
   github_id TEXT,
-  max_concurrent_workers INT DEFAULT 3,
-  max_cost_per_day DECIMAL(10,2) DEFAULT 50.00,
+
+  -- Authentication type
+  auth_type TEXT DEFAULT 'api' NOT NULL,
+
+  -- For API auth (pay-per-token)
+  anthropic_api_key TEXT,
+  max_cost_per_day DECIMAL(10,2),
   total_cost DECIMAL(10,2) DEFAULT 0,
+
+  -- For OAuth auth (seat-based)
+  oauth_token TEXT,
+  seat_id TEXT,
+  max_concurrent_sessions INT,
+  active_sessions INT DEFAULT 0,
+
+  -- Common
+  max_concurrent_workers INT DEFAULT 3,
   total_tasks INT DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -285,20 +320,44 @@ jobs:
 ### 1. Create Accounts
 
 ```bash
-# Personal account
+# User account (OAuth - uses Claude Pro seat)
+claude auth  # Authenticate first
 curl -X POST http://localhost:3000/api/accounts \
-  -d '{"type":"user","name":"Max Laptop"}'
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "user",
+    "name": "Max Laptop",
+    "authType": "oauth",
+    "oauthToken": "'$(cat ~/.config/claude/auth.json | jq -r .token)'",
+    "maxConcurrentSessions": 1
+  }'
 # → api_key: buildd_user_xxxxx
 
-# Service account
+# Service account (API - pay per token)
 curl -X POST http://localhost:3000/api/accounts \
-  -d '{"type":"service","name":"Prod Worker","maxConcurrentWorkers":10}'
-# → api_key: buildd_svc_xxxxx
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "service",
+    "name": "Prod Worker",
+    "authType": "api",
+    "anthropicApiKey": "sk-ant-xxxxx",
+    "maxConcurrentWorkers": 10,
+    "maxCostPerDay": 500
+  }'
+# → api_key: buildd_service_xxxxx
 
-# GitHub Action
+# GitHub Action (API - ephemeral)
 curl -X POST http://localhost:3000/api/accounts \
-  -d '{"type":"action","name":"CI Bot","githubId":"org/repo"}'
-# → api_key: buildd_act_xxxxx
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "action",
+    "name": "CI Bot",
+    "authType": "api",
+    "anthropicApiKey": "sk-ant-xxxxx",
+    "githubId": "org/repo",
+    "maxCostPerDay": 50
+  }'
+# → api_key: buildd_action_xxxxx
 ```
 
 ### 2. Grant Permissions
@@ -334,16 +393,25 @@ curl -X POST http://localhost:3000/api/tasks \
 ### 4. Run Agents
 
 ```bash
-# On Max's laptop
+# On Max's laptop (OAuth - uses Claude Pro seat)
 export BUILDD_API_KEY=buildd_user_xxxxx
+export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
 buildd-agent --workspace=ws-123 --max-tasks=2
 
-# On dedicated VM
-export BUILDD_API_KEY=buildd_svc_xxxxx
+# On dedicated VM (API - pay per token)
+export BUILDD_API_KEY=buildd_service_xxxxx
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
 buildd-agent --max-tasks=10
 
-# GitHub Action runs automatically when dispatched
+# GitHub Action (API - ephemeral)
+export BUILDD_API_KEY=buildd_action_xxxxx
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
+buildd-agent --max-tasks=1
 ```
+
+**Note:** Agent auto-detects authentication method based on env vars:
+- `CLAUDE_CODE_OAUTH_TOKEN` present → OAuth (seat-based, no cost tracking)
+- `ANTHROPIC_API_KEY` present → API (pay-per-token, cost tracked)
 
 ## Migration Path
 
