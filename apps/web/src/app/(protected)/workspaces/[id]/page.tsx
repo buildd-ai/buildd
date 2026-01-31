@@ -4,6 +4,7 @@ import { eq, desc, and, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
+import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -71,12 +72,15 @@ export default async function WorkspaceDetailPage({
               <p className="text-gray-500 mt-1">{workspace.repo}</p>
             )}
           </div>
-          <Link
-            href={`/tasks/new?workspaceId=${workspace.id}`}
-            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
-          >
-            + New Task
-          </Link>
+          <div className="flex gap-2">
+            <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
+            <Link
+              href={`/tasks/new?workspaceId=${workspace.id}`}
+              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            >
+              + New Task
+            </Link>
+          </div>
         </div>
 
         {/* Task Stats */}
