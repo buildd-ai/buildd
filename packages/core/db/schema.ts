@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
@@ -50,9 +50,15 @@ export const workspaces = pgTable('workspaces', {
   repo: text('repo'),
   localPath: text('local_path'),
   memory: jsonb('memory').default({}).$type<Record<string, unknown>>(),
+  // GitHub integration
+  githubRepoId: uuid('github_repo_id'),  // Will add FK after githubRepos is defined
+  githubInstallationId: uuid('github_installation_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => ({
+  githubRepoIdx: index('workspaces_github_repo_idx').on(t.githubRepoId),
+  githubInstallationIdx: index('workspaces_github_installation_idx').on(t.githubInstallationId),
+}));
 
 export const sources = pgTable('sources', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -108,6 +114,15 @@ export const workers = pgTable('workers', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
   error: text('error'),
+  // Local-UI direct access URL (e.g., https://local-ui--workspace.coder.dev or http://100.x.x.x:8766)
+  localUiUrl: text('local_ui_url'),
+  // Current action/status line from local-ui
+  currentAction: text('current_action'),
+  // Milestones stored as JSON array
+  milestones: jsonb('milestones').default([]).$type<Array<{ label: string; timestamp: number }>>(),
+  // PR tracking
+  prUrl: text('pr_url'),
+  prNumber: integer('pr_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -167,6 +182,45 @@ export const attachments = pgTable('attachments', {
   messageIdx: index('attachments_message_idx').on(t.messageId),
 }));
 
+// GitHub App Integration
+export const githubInstallations = pgTable('github_installations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  installationId: bigint('installation_id', { mode: 'number' }).notNull().unique(),
+  accountType: text('account_type').notNull().$type<'Organization' | 'User'>(),
+  accountLogin: text('account_login').notNull(),
+  accountId: bigint('account_id', { mode: 'number' }).notNull(),
+  accountAvatarUrl: text('account_avatar_url'),
+  accessToken: text('access_token'),
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  permissions: jsonb('permissions').default({}).$type<Record<string, string>>(),
+  repositorySelection: text('repository_selection').$type<'all' | 'selected'>(),
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  installationIdIdx: uniqueIndex('github_installations_installation_id_idx').on(t.installationId),
+  accountLoginIdx: index('github_installations_account_login_idx').on(t.accountLogin),
+}));
+
+export const githubRepos = pgTable('github_repos', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  installationId: uuid('installation_id').references(() => githubInstallations.id, { onDelete: 'cascade' }).notNull(),
+  repoId: bigint('repo_id', { mode: 'number' }).notNull(),
+  fullName: text('full_name').notNull(),
+  name: text('name').notNull(),
+  owner: text('owner').notNull(),
+  private: boolean('private').default(false).notNull(),
+  defaultBranch: text('default_branch').default('main'),
+  htmlUrl: text('html_url'),
+  description: text('description'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  installationIdx: index('github_repos_installation_idx').on(t.installationId),
+  repoIdIdx: uniqueIndex('github_repos_repo_id_idx').on(t.repoId),
+  fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
+}));
+
 // Relations
 export const accountsRelations = relations(accounts, ({ many }) => ({
   accountWorkspaces: many(accountWorkspaces),
@@ -179,11 +233,13 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
   workspace: one(workspaces, { fields: [accountWorkspaces.workspaceId], references: [workspaces.id] }),
 }));
 
-export const workspacesRelations = relations(workspaces, ({ many }) => ({
+export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   sources: many(sources),
   tasks: many(tasks),
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
+  githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
+  githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
 
 export const sourcesRelations = relations(sources, ({ one, many }) => ({
@@ -224,4 +280,14 @@ export const messagesRelations = relations(messages, ({ one, many }) => ({
 
 export const attachmentsRelations = relations(attachments, ({ one }) => ({
   message: one(messages, { fields: [attachments.messageId], references: [messages.id] }),
+}));
+
+export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({
+  repos: many(githubRepos),
+  workspaces: many(workspaces),
+}));
+
+export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
+  installation: one(githubInstallations, { fields: [githubRepos.installationId], references: [githubInstallations.id] }),
+  workspaces: many(workspaces),
 }));

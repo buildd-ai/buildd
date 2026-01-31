@@ -1,8 +1,9 @@
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { workspaces, tasks, workers, githubInstallations } from '@buildd/core/db/schema';
+import { desc, inArray } from 'drizzle-orm';
 import Link from 'next/link';
+import { isGitHubAppConfigured } from '@/lib/github';
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -13,9 +14,13 @@ export default async function DashboardPage() {
   let userWorkspaces: typeof workspaces.$inferSelect[] = [];
   let recentTasks: (typeof tasks.$inferSelect & { workspace: typeof workspaces.$inferSelect })[] = [];
   let activeWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect })[] = [];
+  let githubOrgs: { accountLogin: string; repoCount: number }[] = [];
+  let githubConfigured = false;
 
   if (!isDev) {
     try {
+      githubConfigured = isGitHubAppConfigured();
+
       // Get user's workspaces
       userWorkspaces = await db.query.workspaces.findMany({
         orderBy: desc(workspaces.createdAt),
@@ -40,6 +45,17 @@ export default async function DashboardPage() {
           limit: 10,
           with: { task: true },
         }) as any;
+      }
+
+      // Get GitHub installations
+      if (githubConfigured) {
+        const installations = await db.query.githubInstallations.findMany({
+          with: { repos: true },
+        });
+        githubOrgs = installations.map(i => ({
+          accountLogin: i.accountLogin,
+          repoCount: i.repos?.length || 0,
+        }));
       }
     } catch (error) {
       console.error('Dashboard query error:', error);
@@ -72,7 +88,48 @@ export default async function DashboardPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          {/* GitHub Card */}
+          {githubConfigured ? (
+            githubOrgs.length > 0 ? (
+              <div className="p-6 border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded-lg">
+                <div className="flex justify-between items-start mb-4">
+                  <h2 className="text-xl font-semibold">GitHub</h2>
+                  <span className="text-green-600">Connected</span>
+                </div>
+                <p className="text-gray-600 dark:text-gray-400 text-sm">
+                  {githubOrgs.map(o => o.accountLogin).join(', ')}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {githubOrgs.reduce((sum, o) => sum + o.repoCount, 0)} repos
+                </p>
+              </div>
+            ) : (
+              <a
+                href="/api/github/install"
+                className="block p-6 border border-dashed border-gray-300 dark:border-gray-700 rounded-lg hover:border-blue-400 dark:hover:border-blue-600 transition-colors"
+              >
+                <div className="flex justify-between items-start mb-4">
+                  <h2 className="text-xl font-semibold">GitHub</h2>
+                  <span className="text-blue-600">+ Connect</span>
+                </div>
+                <p className="text-gray-600 dark:text-gray-400 text-sm">
+                  Connect your org to auto-discover repos
+                </p>
+              </a>
+            )
+          ) : (
+            <div className="p-6 border border-gray-200 dark:border-gray-800 rounded-lg opacity-50">
+              <div className="flex justify-between items-start mb-4">
+                <h2 className="text-xl font-semibold">GitHub</h2>
+                <span className="text-gray-400">Not configured</span>
+              </div>
+              <p className="text-gray-500 text-sm">
+                GitHub App not set up
+              </p>
+            </div>
+          )}
+
           {/* Workspaces Card */}
           <Link
             href="/workspaces"
@@ -173,19 +230,73 @@ export default async function DashboardPage() {
           ) : (
             <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
               {activeWorkers.map((worker) => (
-                <Link
+                <div
                   key={worker.id}
-                  href={`/workers/${worker.id}`}
-                  className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  className="p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
                 >
                   <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-medium">{worker.name}</h3>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-medium">{worker.name}</h3>
+                        <StatusBadge status={worker.status} />
+                      </div>
                       <p className="text-sm text-gray-500">{worker.task?.title}</p>
+                      {worker.currentAction && (
+                        <p className="text-xs text-gray-400 mt-1">{worker.currentAction}</p>
+                      )}
+                      {/* Milestone progress */}
+                      {worker.milestones && (worker.milestones as any[]).length > 0 && (
+                        <div className="flex items-center gap-1 mt-2">
+                          {Array.from({ length: Math.min((worker.milestones as any[]).length, 10) }).map((_, i) => (
+                            <div
+                              key={i}
+                              className="w-6 h-2 bg-blue-500 rounded-sm"
+                            />
+                          ))}
+                          {Array.from({ length: Math.max(0, 10 - (worker.milestones as any[]).length) }).map((_, i) => (
+                            <div
+                              key={i}
+                              className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm"
+                            />
+                          ))}
+                          <span className="text-xs text-gray-500 ml-2">
+                            {(worker.milestones as any[]).length}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    <StatusBadge status={worker.status} />
+                    <div className="flex items-center gap-2">
+                      {/* PR link */}
+                      {worker.prUrl && (
+                        <a
+                          href={worker.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1 text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-800"
+                        >
+                          PR #{worker.prNumber}
+                        </a>
+                      )}
+                      {/* Jump to local-ui link */}
+                      {worker.localUiUrl && (
+                        <a
+                          href={`${worker.localUiUrl}/worker/${worker.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
+                        >
+                          Open Terminal
+                        </a>
+                      )}
+                      <Link
+                        href={`/workers/${worker.id}`}
+                        className="px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+                      >
+                        Details
+                      </Link>
+                    </div>
                   </div>
-                </Link>
+                </div>
               ))}
             </div>
           )}
