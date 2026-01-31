@@ -74,6 +74,12 @@ export default async function DashboardPage() {
           </div>
           <div className="flex items-center gap-4">
             <Link
+              href="/settings"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              Settings
+            </Link>
+            <Link
               href="/accounts"
               className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
             >

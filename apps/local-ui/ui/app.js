@@ -1,0 +1,513 @@
+// State
+let workers = [];
+let tasks = [];
+let workspaces = [];
+let config = {};
+let currentWorkerId = null;
+let attachments = [];
+
+// Elements
+const workersEl = document.getElementById('workers');
+const tasksEl = document.getElementById('tasks');
+const workerModal = document.getElementById('workerModal');
+const taskModal = document.getElementById('taskModal');
+const settingsModal = document.getElementById('settingsModal');
+
+// SSE connection
+let eventSource = null;
+
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close();
+  }
+
+  eventSource = new EventSource('/api/events');
+
+  eventSource.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    handleEvent(event);
+  };
+
+  eventSource.onerror = () => {
+    console.error('SSE connection error, reconnecting...');
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+function handleEvent(event) {
+  switch (event.type) {
+    case 'init':
+      workers = event.workers || [];
+      config = event.config || {};
+      renderWorkers();
+      updateSettings();
+      break;
+
+    case 'worker_update':
+      const idx = workers.findIndex(w => w.id === event.worker.id);
+      if (idx >= 0) {
+        workers[idx] = event.worker;
+      } else {
+        workers.push(event.worker);
+      }
+      renderWorkers();
+      if (currentWorkerId === event.worker.id) {
+        renderWorkerDetail(event.worker);
+      }
+      break;
+
+    case 'workers':
+      workers = event.workers;
+      renderWorkers();
+      break;
+
+    case 'tasks':
+      tasks = event.tasks;
+      renderTasks();
+      break;
+
+    case 'output':
+      if (currentWorkerId === event.workerId) {
+        appendOutput(event.line);
+      }
+      break;
+  }
+}
+
+// Render functions
+function renderWorkers() {
+  if (workers.length === 0) {
+    workersEl.innerHTML = '<div class="empty">No active workers</div>';
+    return;
+  }
+
+  workersEl.innerHTML = workers.map(w => `
+    <div class="worker-card" data-id="${w.id}">
+      <div class="card-header">
+        <div class="status-dot ${getStatusClass(w)}"></div>
+        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
+        <div class="card-badge">${w.status}</div>
+      </div>
+      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
+      <div class="milestones">
+        ${renderMilestoneBoxes(w.milestones)}
+        <span class="milestone-count">${w.milestones.length}</span>
+      </div>
+      <div class="card-action">${escapeHtml(w.currentAction)}</div>
+    </div>
+  `).join('');
+
+  // Add click handlers
+  workersEl.querySelectorAll('.worker-card').forEach(card => {
+    card.onclick = () => openWorkerModal(card.dataset.id);
+  });
+}
+
+function getStatusClass(worker) {
+  if (worker.hasNewActivity) return 'new';
+  return worker.status;
+}
+
+function renderMilestoneBoxes(milestones) {
+  const max = 10;
+  const completed = Math.min(milestones.length, max);
+  let html = '';
+  for (let i = 0; i < max; i++) {
+    html += `<div class="milestone-box ${i < completed ? 'completed' : ''}"></div>`;
+  }
+  return html;
+}
+
+function renderTasks() {
+  const pending = tasks.filter(t => t.status === 'pending');
+
+  if (pending.length === 0) {
+    tasksEl.innerHTML = '<div class="empty">No pending tasks</div>';
+    return;
+  }
+
+  tasksEl.innerHTML = pending.map(t => `
+    <div class="task-card" data-id="${t.id}">
+      <div class="card-header">
+        <div class="status-dot pending"></div>
+        <div class="card-title">${escapeHtml(t.title)}</div>
+      </div>
+      <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
+    </div>
+  `).join('');
+
+  // Add click handlers
+  tasksEl.querySelectorAll('.task-card').forEach(card => {
+    card.onclick = () => claimTask(card.dataset.id);
+  });
+}
+
+function renderWorkerDetail(worker) {
+  document.getElementById('modalTitle').textContent = worker.taskTitle;
+
+  document.getElementById('modalMeta').innerHTML = `
+    <span class="meta-tag">${worker.workspaceName}</span>
+    <span class="meta-tag">${worker.branch}</span>
+    <span class="meta-tag">${worker.status}</span>
+  `;
+
+  document.getElementById('modalMilestones').innerHTML = `
+    <h3>Milestones</h3>
+    <div class="milestone-list">
+      ${worker.milestones.slice(-10).map(m => `
+        <div class="milestone-item">
+          <span class="check">&#10003;</span>
+          <span>${escapeHtml(m.label)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  document.getElementById('modalOutput').innerHTML = `
+    <h3>Output</h3>
+    <div class="output-box" id="outputBox">${escapeHtml(worker.output.slice(-50).join('\n'))}</div>
+  `;
+
+  document.getElementById('modalCommits').innerHTML = worker.commits.length > 0 ? `
+    <h3>Commits</h3>
+    <div class="commit-list">
+      ${worker.commits.map(c => `
+        <div class="commit-item">
+          <span class="commit-sha">${c.sha.slice(0, 7)}</span>
+          <span>${escapeHtml(c.message)}</span>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
+}
+
+function appendOutput(line) {
+  const box = document.getElementById('outputBox');
+  if (box) {
+    box.textContent += '\n' + line;
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+// Modals
+function openWorkerModal(workerId) {
+  currentWorkerId = workerId;
+  const worker = workers.find(w => w.id === workerId);
+  if (!worker) return;
+
+  // Mark as read
+  fetch('/api/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workerId })
+  });
+
+  renderWorkerDetail(worker);
+  workerModal.classList.remove('hidden');
+}
+
+function closeWorkerModal() {
+  currentWorkerId = null;
+  workerModal.classList.add('hidden');
+}
+
+function openTaskModal() {
+  loadWorkspaces();
+  taskModal.classList.remove('hidden');
+}
+
+function closeTaskModal() {
+  taskModal.classList.add('hidden');
+  clearTaskForm();
+}
+
+function openSettingsModal() {
+  settingsModal.classList.remove('hidden');
+}
+
+function closeSettingsModal() {
+  settingsModal.classList.add('hidden');
+}
+
+function updateSettings() {
+  document.getElementById('settingsRoot').value = config.projectsRoot || '';
+  document.getElementById('settingsServer').value = config.builddServer || '';
+
+  const maxEl = document.getElementById('settingsMax');
+  maxEl.innerHTML = [1, 2, 3, 4].map(n => `
+    <button class="btn ${n === config.maxConcurrent ? 'btn-primary' : 'btn-secondary'}">${n}</button>
+  `).join('');
+}
+
+// API calls
+async function loadTasks() {
+  try {
+    const res = await fetch('/api/tasks');
+    const data = await res.json();
+    tasks = data.tasks || [];
+    renderTasks();
+  } catch (err) {
+    console.error('Failed to load tasks:', err);
+  }
+}
+
+async function loadWorkspaces() {
+  try {
+    const res = await fetch('/api/workspaces');
+    const data = await res.json();
+    workspaces = data.workspaces || [];
+    const select = document.getElementById('taskWorkspace');
+    select.innerHTML = workspaces.map(w =>
+      `<option value="${w.id}">${escapeHtml(w.name)}</option>`
+    ).join('');
+  } catch (err) {
+    console.error('Failed to load workspaces:', err);
+  }
+}
+
+async function claimTask(taskId) {
+  try {
+    const res = await fetch('/api/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId })
+    });
+    const data = await res.json();
+    if (data.worker) {
+      loadTasks();
+    } else {
+      alert(data.error || 'Failed to claim task');
+    }
+  } catch (err) {
+    console.error('Failed to claim task:', err);
+    alert('Failed to claim task');
+  }
+}
+
+async function abortWorker() {
+  if (!currentWorkerId) return;
+  try {
+    await fetch('/api/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: currentWorkerId })
+    });
+    closeWorkerModal();
+  } catch (err) {
+    console.error('Failed to abort:', err);
+  }
+}
+
+async function markDone() {
+  if (!currentWorkerId) return;
+  try {
+    await fetch('/api/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: currentWorkerId })
+    });
+    closeWorkerModal();
+  } catch (err) {
+    console.error('Failed to mark done:', err);
+  }
+}
+
+async function sendMessage() {
+  if (!currentWorkerId) return;
+  const input = document.getElementById('messageInput');
+  const message = input.value.trim();
+  if (!message) return;
+
+  try {
+    await fetch(`/api/workers/${currentWorkerId}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message })
+    });
+    input.value = '';
+  } catch (err) {
+    console.error('Failed to send message:', err);
+  }
+}
+
+async function createTask() {
+  const workspaceId = document.getElementById('taskWorkspace').value;
+  const title = document.getElementById('taskTitle').value.trim();
+  const description = document.getElementById('taskDescription').value.trim();
+
+  if (!workspaceId || !title) {
+    alert('Please fill in workspace and title');
+    return;
+  }
+
+  try {
+    const payload = {
+      workspaceId,
+      title,
+      description,
+      attachments: attachments.map(a => ({
+        data: a.data,
+        mimeType: a.mimeType,
+        filename: a.filename
+      }))
+    };
+
+    await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    closeTaskModal();
+    loadTasks();
+  } catch (err) {
+    console.error('Failed to create task:', err);
+    alert('Failed to create task');
+  }
+}
+
+// Attachments
+function handleFileSelect(e) {
+  const files = Array.from(e.target.files);
+  files.forEach(file => {
+    if (!file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      attachments.push({
+        data: e.target.result,
+        mimeType: file.type,
+        filename: file.name
+      });
+      renderAttachments();
+    };
+    reader.readAsDataURL(file);
+  });
+  e.target.value = '';
+}
+
+function renderAttachments() {
+  const container = document.getElementById('attachments');
+  container.innerHTML = attachments.map((a, i) => `
+    <div class="attachment-preview">
+      <img src="${a.data}" alt="${a.filename}">
+      <div class="remove" data-index="${i}">&times;</div>
+    </div>
+  `).join('') + `
+    <label class="attachment-add">
+      <input type="file" id="fileInput" accept="image/*" multiple hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 5v14M5 12h14"/>
+      </svg>
+    </label>
+  `;
+
+  // Re-attach handlers
+  container.querySelector('#fileInput').onchange = handleFileSelect;
+  container.querySelectorAll('.remove').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      attachments.splice(parseInt(btn.dataset.index), 1);
+      renderAttachments();
+    };
+  });
+}
+
+function clearTaskForm() {
+  document.getElementById('taskTitle').value = '';
+  document.getElementById('taskDescription').value = '';
+  attachments = [];
+  renderAttachments();
+}
+
+// Utils
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Event listeners
+document.getElementById('refreshBtn').onclick = loadTasks;
+document.getElementById('addBtn').onclick = openTaskModal;
+document.getElementById('settingsBtn').onclick = openSettingsModal;
+
+document.getElementById('modalBack').onclick = closeWorkerModal;
+document.getElementById('modalAbort').onclick = abortWorker;
+document.getElementById('modalAbortBtn').onclick = abortWorker;
+document.getElementById('modalDoneBtn').onclick = markDone;
+
+document.getElementById('taskModalBack').onclick = closeTaskModal;
+document.getElementById('taskModalCancel').onclick = closeTaskModal;
+document.getElementById('taskModalCreate').onclick = createTask;
+
+document.getElementById('settingsModalBack').onclick = closeSettingsModal;
+
+document.getElementById('fileInput').onchange = handleFileSelect;
+
+document.getElementById('sendMessageBtn').onclick = sendMessage;
+document.getElementById('messageInput').onkeydown = (e) => {
+  if (e.key === 'Enter') sendMessage();
+};
+
+// Client-side routing
+function handleRoute() {
+  const path = window.location.pathname;
+
+  // /worker/:id - open worker modal directly
+  const workerMatch = path.match(/^\/worker\/([^/]+)$/);
+  if (workerMatch) {
+    const workerId = workerMatch[1];
+    // Wait for workers to load, then open modal
+    const checkAndOpen = () => {
+      const worker = workers.find(w => w.id === workerId);
+      if (worker) {
+        openWorkerModal(workerId);
+      } else {
+        // Worker not loaded yet, retry
+        setTimeout(checkAndOpen, 500);
+      }
+    };
+    checkAndOpen();
+  }
+}
+
+// Update URL when opening/closing worker modal
+function updateUrl(path) {
+  if (window.location.pathname !== path) {
+    history.pushState({}, '', path);
+  }
+}
+
+// Override openWorkerModal to update URL
+const originalOpenWorkerModal = openWorkerModal;
+openWorkerModal = function(workerId) {
+  updateUrl(`/worker/${workerId}`);
+  return originalOpenWorkerModal(workerId);
+};
+
+// Override closeWorkerModal to update URL
+const originalCloseWorkerModal = closeWorkerModal;
+closeWorkerModal = function() {
+  updateUrl('/');
+  return originalCloseWorkerModal();
+};
+
+// Handle browser back/forward
+window.onpopstate = () => {
+  const path = window.location.pathname;
+  if (path === '/' || path === '/index.html') {
+    if (currentWorkerId) {
+      originalCloseWorkerModal();
+    }
+  } else {
+    handleRoute();
+  }
+};
+
+// Initialize
+connectSSE();
+loadTasks();
+handleRoute();
