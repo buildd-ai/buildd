@@ -6,7 +6,7 @@ Connect Claude Code directly to buildd for task management.
 
 1. **Get an API key** from the buildd dashboard: https://buildd-three.vercel.app/accounts
 
-2. **Add to Claude Code config** (`~/.claude/settings.json`):
+2. **Add to your project's `.mcp.json`**:
 
 ```json
 {
@@ -23,7 +23,15 @@ Connect Claude Code directly to buildd for task management.
 }
 ```
 
-3. **Restart Claude Code** to load the MCP server
+3. **Enable MCP servers** in `~/.claude/settings.json`:
+
+```json
+{
+  "enableAllProjectMcpServers": true
+}
+```
+
+4. **Restart Claude Code** to load the MCP server
 
 ## Available Tools
 
