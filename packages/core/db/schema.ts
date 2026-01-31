@@ -159,6 +159,12 @@ export const workers = pgTable('workers', {
   linesRemoved: integer('lines_removed').default(0),
   // Admin instructions - delivered on next progress update
   pendingInstructions: text('pending_instructions'),
+  // Instruction history - log of sent instructions and worker responses
+  instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
+    type: 'instruction' | 'response';
+    message: string;
+    timestamp: number;
+  }>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -43,6 +43,13 @@
       "when": 1769901957021,
       "tag": "0005_broad_frightful_four",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1769903010236,
+      "tag": "0006_light_omega_sentinel",
+      "breakpoints": true
     }
   ]
 }
