@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import RepoPicker from './RepoPicker';
 
 interface Installation {
   id: string;
@@ -144,58 +145,44 @@ export default function NewWorkspacePage() {
           {/* GitHub Repo Selection */}
           {hasGitHub && !useManual && (
             <>
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  GitHub Organization
-                </label>
-                <select
-                  value={selectedInstallation}
-                  onChange={(e) => {
-                    setSelectedInstallation(e.target.value);
-                    setSelectedRepo(null);
-                  }}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                >
-                  {installations.map((inst) => (
-                    <option key={inst.id} value={inst.id}>
-                      {inst.accountLogin} ({inst.repoCount} repos)
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {installations.length > 1 && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    GitHub Account
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {installations.map((inst) => (
+                      <button
+                        key={inst.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedInstallation(inst.id);
+                          setSelectedRepo(null);
+                        }}
+                        className={`px-3 py-2 rounded-lg border text-sm transition-all ${
+                          selectedInstallation === inst.id
+                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
+                            : 'border-gray-300 dark:border-gray-700 hover:border-gray-400'
+                        }`}
+                      >
+                        {inst.accountLogin}
+                        <span className="text-xs text-gray-500 ml-1">({inst.repoCount})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium mb-2">
                   Repository
                 </label>
-                {loadingRepos ? (
-                  <div className="text-sm text-gray-500">Loading repositories...</div>
-                ) : repos.length === 0 ? (
-                  <div className="text-sm text-gray-500">No repositories found</div>
-                ) : (
-                  <select
-                    value={selectedRepo?.id || ''}
-                    onChange={(e) => {
-                      const repo = repos.find((r) => r.id === e.target.value);
-                      setSelectedRepo(repo || null);
-                    }}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                  >
-                    <option value="">Select a repository...</option>
-                    {repos.map((repo) => (
-                      <option
-                        key={repo.id}
-                        value={repo.id}
-                        disabled={repo.hasWorkspace}
-                      >
-                        {repo.fullName} {repo.private ? '(private)' : ''} {repo.hasWorkspace ? '- already linked' : ''}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {selectedRepo && selectedRepo.description && (
-                  <p className="text-xs text-gray-500 mt-1">{selectedRepo.description}</p>
-                )}
+                <RepoPicker
+                  repos={repos}
+                  selectedRepo={selectedRepo}
+                  onSelect={setSelectedRepo}
+                  loading={loadingRepos}
+                />
               </div>
 
               <button

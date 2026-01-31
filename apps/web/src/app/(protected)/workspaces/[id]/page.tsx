@@ -2,9 +2,10 @@ import { db } from '@buildd/core/db';
 import { workspaces, tasks, accountWorkspaces } from '@buildd/core/db/schema';
 import { eq, desc, and, count } from 'drizzle-orm';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -13,6 +14,7 @@ export default async function WorkspaceDetailPage({
 }) {
   const { id } = await params;
   const isDev = process.env.NODE_ENV === 'development';
+  const user = await getCurrentUser();
 
   if (isDev) {
     return (
@@ -24,8 +26,12 @@ export default async function WorkspaceDetailPage({
     );
   }
 
+  if (!user) {
+    redirect('/auth/signin');
+  }
+
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
     with: {
       accountWorkspaces: {
         with: {
