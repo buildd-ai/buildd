@@ -9,3 +9,5 @@ coverage/
 .next/
 .vercel
 .agent/
+.claude/
+*.tsbuildinfo
