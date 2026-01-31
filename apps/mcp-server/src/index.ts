@@ -149,6 +149,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["workerId", "error"],
       },
     },
+    {
+      name: "buildd_create_pr",
+      description: "Create a GitHub pull request for a worker's branch. Requires workspace to be linked to a GitHub repo.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workerId: {
+            type: "string",
+            description: "The worker ID from claim_task",
+          },
+          title: {
+            type: "string",
+            description: "PR title",
+          },
+          body: {
+            type: "string",
+            description: "PR description/body",
+          },
+          head: {
+            type: "string",
+            description: "The branch containing the changes (usually the worker's branch)",
+          },
+          base: {
+            type: "string",
+            description: "The branch to merge into (default: main)",
+          },
+          draft: {
+            type: "boolean",
+            description: "Create as draft PR (default: false)",
+          },
+        },
+        required: ["workerId", "title", "head"],
+      },
+    },
   ],
 }));
 
@@ -282,6 +316,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: `Task marked as failed: ${args.error}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_create_pr": {
+        if (!args?.workerId || !args?.title || !args?.head) {
+          throw new Error("workerId, title, and head branch are required");
+        }
+
+        const data = await apiCall("/api/github/pr", {
+          method: "POST",
+          body: JSON.stringify({
+            workerId: args.workerId,
+            title: args.title,
+            body: args.body,
+            head: args.head,
+            base: args.base,
+            draft: args.draft,
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`,
             },
           ],
         };

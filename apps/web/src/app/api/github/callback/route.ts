@@ -118,7 +118,12 @@ export async function GET(req: NextRequest) {
 // Helper function to generate JWT (duplicated from github.ts to avoid circular imports in Edge)
 async function generateAppJWT(): Promise<string> {
   const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
-  const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+  // Support both base64-encoded key (preferred for Vercel) and raw key with \n
+  const base64Key = process.env.GITHUB_APP_PRIVATE_KEY_BASE64;
+  const GITHUB_APP_PRIVATE_KEY = base64Key
+    ? Buffer.from(base64Key, 'base64').toString('utf-8')
+    : process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
   if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
     throw new Error('GitHub App not configured');

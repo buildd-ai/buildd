@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>buildd</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">B</span>
+        <span>buildd</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-icon" id="refreshBtn" title="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+        </button>
+        <button class="btn-icon" id="addBtn" title="New Task">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+        <button class="btn-icon" id="settingsBtn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main content -->
+    <main class="main">
+      <!-- Workers section -->
+      <section class="section">
+        <h2 class="section-title">Active</h2>
+        <div id="workers" class="worker-list"></div>
+      </section>
+
+      <!-- Tasks section -->
+      <section class="section">
+        <h2 class="section-title">Pending Tasks</h2>
+        <div id="tasks" class="task-list"></div>
+      </section>
+    </main>
+
+    <!-- Worker detail modal -->
+    <div id="workerModal" class="modal hidden">
+      <div class="modal-content">
+        <header class="modal-header">
+          <button class="btn-icon" id="modalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <h2 id="modalTitle">Worker</h2>
+          <button class="btn-icon btn-danger" id="modalAbort">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+            </svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <div class="worker-meta" id="modalMeta"></div>
+          <div class="worker-milestones" id="modalMilestones"></div>
+          <div class="worker-output" id="modalOutput"></div>
+          <div class="worker-commits" id="modalCommits"></div>
+        </div>
+        <div class="modal-input">
+          <input type="text" id="messageInput" class="input" placeholder="Send a message to the agent...">
+          <button class="btn btn-primary" id="sendMessageBtn">Send</button>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-secondary" id="modalAbortBtn">Abort</button>
+          <button class="btn btn-primary" id="modalDoneBtn">Mark Done</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- New task modal -->
+    <div id="taskModal" class="modal hidden">
+      <div class="modal-content">
+        <header class="modal-header">
+          <button class="btn-icon" id="taskModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <h2>New Task</h2>
+          <div></div>
+        </header>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Workspace</label>
+            <select id="taskWorkspace" class="input"></select>
+          </div>
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="taskTitle" class="input" placeholder="Fix the bug...">
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <textarea id="taskDescription" class="input textarea" placeholder="Describe the task..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>Attachments</label>
+            <div class="attachments" id="attachments">
+              <label class="attachment-add">
+                <input type="file" id="fileInput" accept="image/*" multiple hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+              </label>
+            </div>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-secondary" id="taskModalCancel">Cancel</button>
+          <button class="btn btn-primary" id="taskModalCreate">Create Task</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-content">
+        <header class="modal-header">
+          <button class="btn-icon" id="settingsModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <h2>Settings</h2>
+          <div></div>
+        </header>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Projects Root</label>
+            <input type="text" id="settingsRoot" class="input" readonly>
+          </div>
+          <div class="form-group">
+            <label>buildd Server</label>
+            <input type="text" id="settingsServer" class="input" readonly>
+          </div>
+          <div class="form-group">
+            <label>Max Concurrent</label>
+            <div class="btn-group" id="settingsMax"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
