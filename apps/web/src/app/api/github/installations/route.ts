@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
         accountAvatarUrl: inst.accountAvatarUrl,
         repositorySelection: inst.repositorySelection,
         repoCount: inst.repos?.length || 0,
-        suspended: !!inst.suspendedAt,
+        suspendedAt: inst.suspendedAt,
         createdAt: inst.createdAt,
       })),
       configured: true,

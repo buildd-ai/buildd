@@ -4,8 +4,17 @@ import { eq } from 'drizzle-orm';
 
 // GitHub App configuration
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
-const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const GITHUB_APP_CLIENT_ID = process.env.GITHUB_APP_CLIENT_ID;
+
+// Support both base64-encoded key (preferred for Vercel) and raw key with \n
+function getPrivateKey(): string | undefined {
+  const base64Key = process.env.GITHUB_APP_PRIVATE_KEY_BASE64;
+  if (base64Key) {
+    return Buffer.from(base64Key, 'base64').toString('utf-8');
+  }
+  return process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
+}
+const GITHUB_APP_PRIVATE_KEY = getPrivateKey();
 const GITHUB_APP_CLIENT_SECRET = process.env.GITHUB_APP_CLIENT_SECRET;
 const GITHUB_APP_WEBHOOK_SECRET = process.env.GITHUB_APP_WEBHOOK_SECRET;
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd-three.vercel.app';

@@ -61,4 +61,6 @@ export const events = {
   WORKER_PROGRESS: 'worker:progress',
   WORKER_COMPLETED: 'worker:completed',
   WORKER_FAILED: 'worker:failed',
+  // Commands sent to local-ui
+  WORKER_COMMAND: 'worker:command',
 } as const;

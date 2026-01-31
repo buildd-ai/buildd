@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
-    "db:push": "drizzle-kit push",
+    "db:push": "drizzle-kit push:pg",
     "db:migrate": "bun run db/migrate.ts",
     "db:studio": "drizzle-kit studio"
   },
