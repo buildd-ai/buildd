@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
 
@@ -80,15 +80,31 @@ export async function POST(req: NextRequest) {
   }
 
   // Get workspaces this account can claim from
-  const allowedWorkspaces = await db.query.accountWorkspaces.findMany({
+  // 1. Open workspaces (any account can claim)
+  // 2. Restricted workspaces where account has canClaim permission
+  const openWorkspaces = await db.query.workspaces.findMany({
+    where: and(
+      eq(workspaces.accessMode, 'open'),
+      workspaceId ? eq(workspaces.id, workspaceId) : undefined
+    ),
+  });
+
+  const restrictedPermissions = await db.query.accountWorkspaces.findMany({
     where: and(
       eq(accountWorkspaces.accountId, account.id),
       eq(accountWorkspaces.canClaim, true),
       workspaceId ? eq(accountWorkspaces.workspaceId, workspaceId) : undefined
     ),
+    with: { workspace: true },
   });
 
-  const workspaceIds = allowedWorkspaces.map((aw) => aw.workspaceId);
+  // Combine: open workspace IDs + restricted workspaces with permission
+  const openIds = openWorkspaces.map((ws) => ws.id);
+  const restrictedIds = restrictedPermissions
+    .filter((p) => p.workspace?.accessMode === 'restricted')
+    .map((p) => p.workspaceId);
+
+  const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
   if (workspaceIds.length === 0) {
     return NextResponse.json({ workers: [] });
   }

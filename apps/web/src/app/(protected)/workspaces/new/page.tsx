@@ -36,6 +36,9 @@ export default function NewWorkspacePage() {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [useManual, setUseManual] = useState(false);
 
+  // Access control
+  const [accessMode, setAccessMode] = useState<'open' | 'restricted'>('open');
+
   // Load GitHub installations on mount
   useEffect(() => {
     async function loadInstallations() {
@@ -89,6 +92,7 @@ export default function NewWorkspacePage() {
 
     const data: Record<string, unknown> = {
       name: formData.get('name') as string,
+      accessMode,
     };
 
     if (selectedRepo && !useManual) {
@@ -258,6 +262,38 @@ export default function NewWorkspacePage() {
               key={selectedRepo?.id || 'manual'}
               className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Token Access
+            </label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="accessMode"
+                  value="open"
+                  checked={accessMode === 'open'}
+                  onChange={() => setAccessMode('open')}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm">Open</span>
+                <span className="text-xs text-gray-500">Any token can claim tasks</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="accessMode"
+                  value="restricted"
+                  checked={accessMode === 'restricted'}
+                  onChange={() => setAccessMode('restricted')}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm">Restricted</span>
+                <span className="text-xs text-gray-500">Only linked tokens</span>
+              </label>
+            </div>
           </div>
 
           <div className="flex gap-4">
