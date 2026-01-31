@@ -45,23 +45,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
 
   return (
     <div className="mt-4 pt-4 border-t border-green-200 dark:border-green-800">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          Send Instruction
-        </span>
-        <span className="text-xs text-gray-500">
-          (delivered on next progress update)
-        </span>
-      </div>
-
-      {pendingInstructions && (
-        <div className="mb-3 p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded text-sm">
-          <span className="font-medium text-yellow-800 dark:text-yellow-200">Pending: </span>
-          <span className="text-yellow-700 dark:text-yellow-300">{pendingInstructions}</span>
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="flex gap-2">
+      <form onSubmit={handleSubmit} className="flex gap-2 mt-3">
         <input
           type="text"
           value={message}
