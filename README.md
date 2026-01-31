@@ -1,337 +1,290 @@
 # buildd
 
-**Distributed AI dev team orchestration.** Task broker that coordinates agents across laptops, Coder workspaces, GitHub Actions, and dedicated VMs.
+**Distributed AI dev team orchestration.** Task broker that coordinates Claude agents across laptops, Coder workspaces, GitHub Actions, and dedicated VMs.
+
+**Live:** https://buildd-three.vercel.app
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                buildd Server (Next.js on Vercel)            │
-│                - UI, DB, task management                    │
-│                - Bun runtime for speed                      │
+│                - Dashboard, Auth, Task Management           │
+│                - REST API for agents                        │
 └─────────────────────────────────────────────────────────────┘
                               ▲
-                              │ REST API + SSE
+                              │ REST API
           ┌───────────────────┼───────────────────┐
           │                   │                   │
-   ┌──────┴─────┐      ┌──────┴─────┐      ┌──────┴─────┐
-   │ buildd-agent│     │ buildd-agent│     │ buildd-agent│
-   │ (Bun binary)│     │ (Bun binary)│     │ (Bun binary)│
+   ┌──────┴──────┐     ┌──────┴──────┐     ┌──────┴──────┐
+   │ Claude Code │     │ Agent Binary│     │ GitHub      │
+   │ + MCP       │     │ (Bun)       │     │ Actions     │
    │             │     │             │     │             │
-   │ Your laptop │     │ Coder WS    │     │ GH Action   │
+   │ Your laptop │     │ Coder/VM    │     │ CI runner   │
    └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
-**Stack:**
-- **Server**: Next.js + Bun runtime on Vercel
-- **Agent**: Bun CLI (compiles to standalone binary)
-- **Database**: Neon (PostgreSQL)
-- **Shared**: TypeScript monorepo
+## Quick Start
+
+### 1. Get an API Key
+
+1. Go to https://buildd-three.vercel.app
+2. Sign in with Google
+3. Go to **Accounts** → **New Account**
+4. Copy your API key (`bld_xxx...`)
+
+### 2. Connect Claude Code (Recommended)
+
+Add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "buildd": {
+      "command": "bun",
+      "args": ["run", "/path/to/buildd/apps/mcp-server/src/index.ts"],
+      "env": {
+        "BUILDD_SERVER": "https://buildd-three.vercel.app",
+        "BUILDD_API_KEY": "bld_your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+Then tell Claude Code:
+- *"Check buildd for tasks"*
+- *"Claim a task from buildd and work on it"*
+- *"Mark the buildd task complete"*
+
+### 3. Or Run the Agent Binary
+
+```bash
+cd apps/agent
+export BUILDD_API_KEY=bld_xxx
+export BUILDD_SERVER=https://buildd-three.vercel.app
+export CLAUDE_CODE_OAUTH_TOKEN=xxx  # or ANTHROPIC_API_KEY
+
+bun run start --max-tasks=1
+```
 
 ## Project Structure
 
 ```
-buildd/ (Bun monorepo)
+buildd/
 ├── apps/
-│   ├── web/              # Next.js app (Vercel deployment)
-│   │   ├── app/          # App Router
-│   │   │   ├── api/      # API routes for agents
-│   │   │   ├── actions/  # Server Actions for UI
-│   │   │   └── page.tsx  # Dashboard
-│   │   └── vercel.json   # Bun runtime config
+│   ├── web/                 # Next.js dashboard (Vercel)
+│   │   └── src/
+│   │       ├── app/         # App Router
+│   │       │   ├── (protected)/  # Auth-required pages
+│   │       │   │   ├── dashboard/
+│   │       │   │   ├── workspaces/
+│   │       │   │   ├── tasks/
+│   │       │   │   ├── workers/
+│   │       │   │   └── accounts/
+│   │       │   ├── api/     # REST API
+│   │       │   │   ├── auth/[...nextauth]/
+│   │       │   │   ├── workspaces/
+│   │       │   │   ├── tasks/
+│   │       │   │   ├── workers/
+│   │       │   │   │   ├── claim/
+│   │       │   │   │   └── [id]/
+│   │       │   │   └── accounts/
+│   │       │   └── auth/    # Sign in/error pages
+│   │       ├── auth.ts      # NextAuth config
+│   │       └── lib/         # Pusher, auth helpers
 │   │
-│   └── agent/            # Bun CLI agent
-│       ├── src/
-│       │   ├── index.ts  # CLI entry
-│       │   ├── agent.ts  # Task claiming
-│       │   └── runner.ts # Claude execution
-│       └── package.json  # bun build --compile
+│   ├── agent/               # Standalone agent binary
+│   │   └── src/
+│   │       ├── index.ts     # CLI entry
+│   │       ├── agent.ts     # Task polling
+│   │       └── runner.ts    # Claude execution
+│   │
+│   └── mcp-server/          # MCP server for Claude Code
+│       └── src/
+│           └── index.ts     # MCP tools
 │
-├── packages/
-│   ├── shared/           # Shared types
-│   └── core/             # Shared business logic
-│       ├── db/           # Drizzle schema + client
-│       ├── worker-runner.ts
-│       └── config.ts
-│
-└── bun.workspaces        # Monorepo config
+└── packages/
+    ├── shared/              # Shared TypeScript types
+    └── core/                # Database, config
+        ├── db/
+        │   ├── schema.ts    # Drizzle schema
+        │   └── client.ts    # DB connection
+        └── drizzle.config.ts
 ```
 
-**Key Benefits:**
-- ✅ One runtime (Bun) for everything
-- ✅ One lockfile (`bun.lockb`)
-- ✅ Shared types & logic (`@buildd/shared`, `@buildd/core`)
-- ✅ Fast development (Bun is 10x faster than Node)
-- ✅ Agent compiles to binary (`bun build --compile`)
-- ✅ Vercel deployment with Bun runtime
+## API Endpoints
 
-**buildd = Task broker** that doesn't care what's executing:
-- **User agents**: Run on your laptop when you're AFK
-- **Service accounts**: Always-on VMs for background work
-- **GitHub Actions**: Ephemeral runners for deterministic tasks
-- **Coder workspaces**: Team members in their dev environments
+### Authentication
+All agent endpoints require `Authorization: Bearer <API_KEY>` header.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/workers/claim` | Claim available tasks |
+| GET | `/api/workers/:id` | Get worker details |
+| PATCH | `/api/workers/:id` | Update worker status |
+| GET | `/api/workspaces` | List workspaces |
+| POST | `/api/workspaces` | Create workspace |
+| GET | `/api/tasks` | List tasks |
+| POST | `/api/tasks` | Create task |
+| GET | `/api/accounts` | List accounts |
+| POST | `/api/accounts` | Create account |
+
+### Claim Tasks
+
+```bash
+curl -X POST https://buildd-three.vercel.app/api/workers/claim \
+  -H "Authorization: Bearer bld_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"maxTasks": 1}'
+```
+
+Response:
+```json
+{
+  "workers": [{
+    "id": "worker-uuid",
+    "taskId": "task-uuid",
+    "branch": "buildd/abc123-fix-bug",
+    "task": {
+      "title": "Fix login bug",
+      "description": "..."
+    }
+  }]
+}
+```
+
+### Update Worker Status
+
+```bash
+# Report progress
+curl -X PATCH https://buildd-three.vercel.app/api/workers/:id \
+  -H "Authorization: Bearer bld_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "running", "progress": 50}'
+
+# Mark complete
+curl -X PATCH https://buildd-three.vercel.app/api/workers/:id \
+  -d '{"status": "completed"}'
+
+# Mark failed
+curl -X PATCH https://buildd-three.vercel.app/api/workers/:id \
+  -d '{"status": "failed", "error": "Build failed"}'
+```
+
+## MCP Tools
+
+When using the MCP server with Claude Code:
+
+| Tool | Description |
+|------|-------------|
+| `buildd_list_tasks` | List available tasks |
+| `buildd_claim_task` | Claim a task to work on |
+| `buildd_update_progress` | Report progress (0-100%) |
+| `buildd_complete_task` | Mark task as done |
+| `buildd_fail_task` | Mark task as failed |
 
 ## Account Types
 
-buildd supports **two authentication models** for Claude:
+| Type | Description | Auth Method |
+|------|-------------|-------------|
+| `user` | Personal laptop/workstation | OAuth (seat-based) |
+| `service` | Always-on server/VM | API (pay-per-token) |
+| `action` | GitHub Actions runner | API (pay-per-token) |
 
-- **OAuth (Seat-Based)**: Uses Claude Pro/Team subscription. Fixed monthly cost, session-limited.
-- **API (Pay-Per-Token)**: Uses Anthropic API. Variable cost per token, scalable.
+## Authentication Methods
 
-See [AUTH_MODELS.md](./AUTH_MODELS.md) for detailed comparison.
+### OAuth (CLAUDE_CODE_OAUTH_TOKEN)
+- Uses Claude Pro/Team subscription
+- Seat-based billing (fixed monthly cost)
+- Best for: User accounts, personal use
 
-### User Accounts (OAuth Recommended)
-Personal accounts for developers. Run agents on your local machine using your Claude Pro seat.
-- **Auth**: OAuth (included in subscription)
-- **Limits**: 1-3 concurrent sessions
-- **Cost**: $0 marginal (included in $20/mo Pro)
-- **Example**: Max's laptop claiming weekend tasks
+### API (ANTHROPIC_API_KEY)
+- Pay-per-token billing
+- Scalable, no session limits
+- Best for: Service accounts, CI/CD
 
-### Service Accounts (API Recommended)
-Dedicated always-on agents for production workloads.
-- **Auth**: API (pay-per-token)
-- **Limits**: Configurable (e.g., 10 workers, $500/day)
-- **Cost**: Variable based on usage
-- **Example**: `prod-worker` VM running 24/7
+## Environment Variables
 
-### GitHub Action Accounts (API Required)
-Ephemeral agents triggered by CI/CD.
-- **Auth**: API (ephemeral runners can't use OAuth)
-- **Limits**: Per-run cost caps
-- **Cost**: Pay per CI run
-- **Example**: `gh-ci` bot handling PR tasks
+### Vercel (Required)
 
-## Quick Start
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | Neon PostgreSQL connection |
+| `AUTH_SECRET` | NextAuth secret (`openssl rand -base64 32`) |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth secret |
 
-### 1. Install Bun
+### Vercel (Optional)
+
+| Variable | Description |
+|----------|-------------|
+| `ALLOWED_EMAILS` | Comma-separated email whitelist |
+| `PUSHER_APP_ID` | Pusher app ID (for realtime) |
+| `PUSHER_KEY` | Pusher key |
+| `PUSHER_SECRET` | Pusher secret |
+| `PUSHER_CLUSTER` | Pusher cluster (e.g., us2) |
+| `NEXT_PUBLIC_PUSHER_KEY` | Same as PUSHER_KEY |
+| `NEXT_PUBLIC_PUSHER_CLUSTER` | Same as PUSHER_CLUSTER |
+
+### Agent
+
+| Variable | Description |
+|----------|-------------|
+| `BUILDD_SERVER` | Server URL |
+| `BUILDD_API_KEY` | Your API key |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (seat-based) |
+| `ANTHROPIC_API_KEY` | API key (pay-per-token) |
+
+## Development
 
 ```bash
+# Install Bun
 curl -fsSL https://bun.sh/install | bash
-```
 
-### 2. Start the Server
-
-```bash
-# Install dependencies (all workspaces)
+# Install dependencies
 bun install
 
 # Set up environment
-cp .env.example .env
-# Edit .env with your Neon + Anthropic keys
+cp .env.example .env.local
+# Edit with your Neon DATABASE_URL
 
-# Generate and run migrations
+# Push database schema
 cd packages/core
-bun run drizzle-kit generate
-bun run drizzle-kit migrate
-cd ../..
+bun run db:push
 
-# Start Next.js dev server (with Bun runtime)
+# Run dev server
+cd ../..
 bun dev
 ```
 
-Server runs at `http://localhost:3000`
+## Database
 
-### 2. Create an Account
-
-**Option A: User Account (OAuth - Seat-Based)**
+Uses Drizzle ORM with Neon PostgreSQL.
 
 ```bash
-# First authenticate with Claude
-claude auth
+# Push schema changes
+cd packages/core
+bun run db:push
 
-# Create OAuth account
-curl -X POST http://localhost:3000/api/accounts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "user",
-    "name": "Max Local Agent",
-    "authType": "oauth",
-    "oauthToken": "'$(cat ~/.config/claude/auth.json | jq -r .token)'",
-    "maxConcurrentSessions": 1,
-    "maxConcurrentWorkers": 3
-  }'
+# Generate migrations
+bun run db:generate
 
-# Response: { "id": "acc-123", "apiKey": "buildd_user_xxxxx", ... }
-```
-
-**Option B: Service Account (API - Pay-Per-Token)**
-
-```bash
-# Create API account
-curl -X POST http://localhost:3000/api/accounts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "service",
-    "name": "Prod Worker",
-    "authType": "api",
-    "anthropicApiKey": "sk-ant-xxxxx",
-    "maxCostPerDay": 500,
-    "maxConcurrentWorkers": 10
-  }'
-
-# Response: { "id": "acc-456", "apiKey": "buildd_service_xxxxx", ... }
-```
-
-### 3. Grant Workspace Access
-
-```bash
-curl -X POST http://localhost:3000/api/accounts/acc-123/workspaces \
-  -H "Content-Type: application/json" \
-  -d '{
-    "workspaceId": "ws-456",
-    "canClaim": true,
-    "canCreate": false
-  }'
-```
-
-### 4. Run an Agent
-
-**Option A: User Agent (OAuth)**
-
-```bash
-# Authenticate with Claude
-claude auth
-
-# Run agent with Bun
-cd apps/agent
-export BUILDD_API_KEY=buildd_user_xxxxx
-export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
-
-bun run start --server=http://localhost:3000 --max-tasks=3
-```
-
-**Option B: Service Agent (API)**
-
-```bash
-cd apps/agent
-export BUILDD_API_KEY=buildd_service_xxxxx
-export ANTHROPIC_API_KEY=sk-ant-xxxxx
-
-bun run start --server=http://localhost:3000 --max-tasks=10
-```
-
-**Build Binary (Production):**
-
-```bash
-cd apps/agent
-bun run build
-# → Outputs to dist/buildd-agent (standalone binary)
-
-./dist/buildd-agent --server=https://api.buildd.dev --api-key=xxx
-```
-
-Agent automatically detects authentication method (OAuth vs API) based on environment variables.
-
-## Task Routing
-
-Tasks are automatically routed based on `runnerPreference`:
-
-| Preference | Routes To | Example Use Case |
-|------------|-----------|------------------|
-| `any` | First available agent | General development tasks |
-| `user` | User accounts only | Creative/design decisions |
-| `service` | Service accounts only | Critical prod work |
-| `action` | GitHub Actions only | Tests, deployments, migrations |
-
-## GitHub Actions Integration
-
-### 1. Create Action Account
-
-```bash
-curl -X POST http://localhost:3000/api/accounts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "action",
-    "name": "GitHub CI Bot",
-    "githubId": "my-org/my-repo"
-  }'
-```
-
-### 2. Add Workflow
-
-```yaml
-# .github/workflows/buildd.yml
-name: buildd worker
-
-on:
-  repository_dispatch:
-    types: [buildd-task]
-  workflow_dispatch:
-
-jobs:
-  work:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Claude
-        run: curl -fsSL https://claude.ai/install.sh | bash
-
-      - name: Install buildd-agent
-        run: curl -fsSL https://buildd.dev/install-agent.sh | bash
-
-      - name: Run agent
-        env:
-          BUILDD_SERVER: ${{ secrets.BUILDD_SERVER }}
-          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: buildd-agent --max-tasks=1
-```
-
-### 3. Trigger from Server
-
-When a task with `runnerPreference: "action"` is created, server can trigger the workflow:
-
-```typescript
-// Server automatically dispatches
-await octokit.repos.createDispatchEvent({
-  owner: 'org',
-  repo: 'repo',
-  event_type: 'buildd-task',
-  client_payload: { task_id: task.id }
-});
-```
-
-## Data Model
-
-```
-accounts → account_workspaces → workspaces
-accounts → tasks (claimed_by)
-accounts → workers
-
-workspaces → sources → tasks → workers
-workers → artifacts → comments
-workers → messages → attachments
+# Open Drizzle Studio
+bun run db:studio
 ```
 
 ## Stack
 
-- **Backend**: Fastify + TypeScript + Drizzle
-- **Database**: Neon (Postgres)
-- **Agent**: Claude Agent SDK
-- **Frontend**: React + Vite (coming soon)
-
-## API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /api/workspaces | List workspaces |
-| POST | /api/workspaces | Create workspace |
-| GET | /api/tasks | List tasks |
-| POST | /api/tasks | Create task |
-| GET | /api/workers | List workers |
-| POST | /api/workers | Create worker |
-| POST | /api/workers/:id/start | Start worker |
-| POST | /api/workers/:id/pause | Pause worker |
-| GET | /api/events | SSE event stream |
-
-## Worker States
-
-```
-idle → starting → running ⟷ waiting_input
-                    ↓
-         completed | error | paused
-```
+- **Runtime**: Bun
+- **Framework**: Next.js 15 (App Router)
+- **Database**: Neon PostgreSQL + Drizzle ORM
+- **Auth**: NextAuth v5 + Google OAuth
+- **Deployment**: Vercel
+- **Realtime**: Pusher (optional)
+- **Agent**: Claude Code SDK / Claude CLI
 
 ## License
 
