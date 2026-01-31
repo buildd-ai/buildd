@@ -4,6 +4,7 @@ import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { syncInstallationRepos } from '@/lib/github';
+import { createSign, createPrivateKey } from 'crypto';
 
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Fetch installation details from GitHub
-  const appJwt = await generateAppJWT();
+  const appJwt = generateAppJWT();
   const installationResponse = await fetch(
     `https://api.github.com/app/installations/${installationId}`,
     {
@@ -115,8 +116,8 @@ export async function GET(req: NextRequest) {
   );
 }
 
-// Helper function to generate JWT (duplicated from github.ts to avoid circular imports in Edge)
-async function generateAppJWT(): Promise<string> {
+// Helper function to generate JWT using Node's crypto (handles both PKCS#1 and PKCS#8 keys)
+function generateAppJWT(): string {
   const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
 
   // Support both base64-encoded key (preferred for Vercel) and raw key with \n
@@ -130,53 +131,32 @@ async function generateAppJWT(): Promise<string> {
   }
 
   const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
     iat: now - 60,
     exp: now + 600,
     iss: GITHUB_APP_ID,
   };
 
-  const header = { alg: 'RS256', typ: 'JWT' };
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const signatureInput = `${encodedHeader}.${encodedPayload}`;
 
-  const privateKey = await crypto.subtle.importKey(
-    'pkcs8',
-    pemToArrayBuffer(GITHUB_APP_PRIVATE_KEY),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
+  // Use Node's crypto - handles both PKCS#1 and PKCS#8 key formats
+  const privateKey = createPrivateKey(GITHUB_APP_PRIVATE_KEY);
+  const sign = createSign('RSA-SHA256');
+  sign.update(signatureInput);
+  const signature = sign.sign(privateKey);
 
-  const signature = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
-    privateKey,
-    new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`)
-  );
-
-  return `${encodedHeader}.${encodedPayload}.${base64UrlEncode(signature)}`;
+  return `${signatureInput}.${base64UrlEncode(signature)}`;
 }
 
-function base64UrlEncode(data: string | ArrayBuffer): string {
+function base64UrlEncode(data: string | Buffer): string {
   let base64: string;
   if (typeof data === 'string') {
-    base64 = btoa(data);
+    base64 = Buffer.from(data).toString('base64');
   } else {
-    base64 = btoa(String.fromCharCode(...new Uint8Array(data)));
+    base64 = data.toString('base64');
   }
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const base64 = pem
-    .replace(/-----BEGIN.*-----/, '')
-    .replace(/-----END.*-----/, '')
-    .replace(/\s/g, '');
-  const binary = atob(base64);
-  const buffer = new ArrayBuffer(binary.length);
-  const view = new Uint8Array(buffer);
-  for (let i = 0; i < binary.length; i++) {
-    view[i] = binary.charCodeAt(i);
-  }
-  return buffer;
 }
