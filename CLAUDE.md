@@ -33,9 +33,24 @@ Check `authType` field to know which limits apply.
 
 ## Database
 
-Postgres via Neon + Drizzle. Run migrations: `cd apps/web && bun db:push`
+Postgres via Neon + Drizzle ORM.
 
-Key tables: `accounts`, `workspaces`, `tasks`, `workers`, `accountWorkspaces`
+**Key tables**: `accounts`, `workspaces`, `tasks`, `workers`, `accountWorkspaces`
+
+### Schema Changes (Important!)
+
+When modifying `packages/core/db/schema.ts`:
+
+1. **Generate migration**: `cd packages/core && bun db:generate`
+2. **Commit the migration files** in `packages/core/drizzle/`
+3. **Push to dev** - CI verifies migrations are up to date
+4. **Migrations auto-run on Vercel deploy**
+
+**Manual migration** (if needed): `cd packages/core && bun db:migrate`
+
+CI will **fail** if you change schema.ts without generating/committing migrations.
+
+**Do NOT use `db:push`** in production - it bypasses migration tracking.
 
 ## Git Workflow
 
@@ -50,9 +65,10 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ## When Modifying
 
-- API changes → update types in `packages/shared`
-- Worker status changes → trigger Pusher events (check `lib/pusher.ts`)
-- Account limits differ by `authType` - see claim route
+- **Schema changes** → run `bun db:generate` and commit migration files (see Database section)
+- **API changes** → update types in `packages/shared`
+- **Worker status changes** → trigger Pusher events (check `lib/pusher.ts`)
+- **Account limits** differ by `authType` - see claim route
 - Use transactions for multi-step DB operations (currently missing in places)
 
 ## Local Docs

@@ -1,12 +1,13 @@
-import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { workspaces, tasks, workers, githubInstallations } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import { desc, inArray, eq, and } from 'drizzle-orm';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { isGitHubAppConfigured } from '@/lib/github';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export default async function DashboardPage() {
-  const session = await auth();
+  const user = await getCurrentUser();
 
   // In dev mode, show empty state
   const isDev = process.env.NODE_ENV === 'development';
@@ -18,11 +19,16 @@ export default async function DashboardPage() {
   let githubConfigured = false;
 
   if (!isDev) {
+    if (!user) {
+      redirect('/auth/signin');
+    }
+
     try {
       githubConfigured = isGitHubAppConfigured();
 
-      // Get user's workspaces
+      // Get user's workspaces (filtered by owner)
       userWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user.id),
         orderBy: desc(workspaces.createdAt),
         limit: 10,
       });
@@ -30,7 +36,7 @@ export default async function DashboardPage() {
       const workspaceIds = userWorkspaces.map(w => w.id);
 
       if (workspaceIds.length > 0) {
-        // Get recent tasks
+        // Get recent tasks (from user's workspaces)
         recentTasks = await db.query.tasks.findMany({
           where: inArray(tasks.workspaceId, workspaceIds),
           orderBy: desc(tasks.createdAt),
@@ -38,9 +44,12 @@ export default async function DashboardPage() {
           with: { workspace: true },
         }) as any;
 
-        // Get active workers
+        // Get active workers (from user's workspaces)
         activeWorkers = await db.query.workers.findMany({
-          where: inArray(workers.status, ['running', 'starting', 'waiting_input']),
+          where: and(
+            inArray(workers.workspaceId, workspaceIds),
+            inArray(workers.status, ['running', 'starting', 'waiting_input'])
+          ),
           orderBy: desc(workers.createdAt),
           limit: 10,
           with: { task: true },
@@ -69,7 +78,7 @@ export default async function DashboardPage() {
           <div>
             <h1 className="text-3xl font-bold">buildd</h1>
             <p className="text-gray-600 dark:text-gray-400">
-              {session?.user?.email || 'Development Mode'}
+              {user?.email || 'Development Mode'}
             </p>
           </div>
           <div className="flex items-center gap-4">
