@@ -32,43 +32,33 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    let allTasks;
+    // Get workspace IDs based on auth type
+    let workspaceIds: string[] = [];
 
     if (apiAccount) {
-      // For API key auth, get tasks from workspaces linked to the account
+      // For API key auth, get workspaces linked to the account
       const linkedWorkspaces = await db.query.accountWorkspaces.findMany({
         where: eq(accountWorkspaces.accountId, apiAccount.id),
         columns: { workspaceId: true },
       });
-      const workspaceIds = linkedWorkspaces.map(aw => aw.workspaceId);
-
-      if (workspaceIds.length > 0) {
-        allTasks = await db.query.tasks.findMany({
-          where: inArray(tasks.workspaceId, workspaceIds),
-          orderBy: desc(tasks.createdAt),
-          with: { workspace: true },
-        });
-      } else {
-        allTasks = [];
-      }
+      workspaceIds = linkedWorkspaces.map(aw => aw.workspaceId);
     } else {
-      // For session auth, get tasks from user's workspaces
+      // For session auth, get user's workspaces
       const userWorkspaces = await db.query.workspaces.findMany({
         where: eq(workspaces.ownerId, user!.id),
         columns: { id: true },
       });
-      const workspaceIds = userWorkspaces.map(w => w.id);
+      workspaceIds = userWorkspaces.map(w => w.id);
+    }
 
-      if (workspaceIds.length > 0) {
-        allTasks = await db.query.tasks.findMany({
+    // Get tasks from the resolved workspace IDs
+    const allTasks = workspaceIds.length > 0
+      ? await db.query.tasks.findMany({
           where: inArray(tasks.workspaceId, workspaceIds),
           orderBy: desc(tasks.createdAt),
           with: { workspace: true },
-        });
-      } else {
-        allTasks = [];
-      }
-    }
+        })
+      : [];
 
     return NextResponse.json({ tasks: allTasks });
   } catch (error) {
