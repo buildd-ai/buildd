@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, githubRepoId, githubInstallationId } = body;
+    const { name, repoUrl, defaultBranch, githubRepoId, githubInstallationId, accessMode } = body;
 
     if (!name) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
         localPath: defaultBranch || null,
         githubRepoId: githubRepoId || null,
         githubInstallationId: githubInstallationId || null,
+        accessMode: accessMode || 'open',
       })
       .returning();
 

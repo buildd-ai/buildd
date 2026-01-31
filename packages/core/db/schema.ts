@@ -53,6 +53,8 @@ export const workspaces = pgTable('workspaces', {
   // GitHub integration
   githubRepoId: uuid('github_repo_id'),  // Will add FK after githubRepos is defined
   githubInstallationId: uuid('github_installation_id'),
+  // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
+  accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
