@@ -71,7 +71,7 @@ export async function PATCH(
   }
 
   const body = await req.json();
-  const { status, progress, error, costUsd, turns } = body;
+  const { status, progress, error, costUsd, turns, localUiUrl, currentAction, milestones } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
@@ -82,6 +82,9 @@ export async function PATCH(
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
   if (typeof turns === 'number') updates.turns = turns;
+  if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
+  if (currentAction !== undefined) updates.currentAction = currentAction;
+  if (milestones !== undefined) updates.milestones = milestones;
 
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {
