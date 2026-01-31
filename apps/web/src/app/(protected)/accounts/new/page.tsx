@@ -20,6 +20,7 @@ export default function NewAccountPage() {
       name: formData.get('name') as string,
       type: formData.get('type') as string,
       authType: formData.get('authType') as string,
+      level: formData.get('level') as string,
       maxConcurrentWorkers: parseInt(formData.get('maxConcurrentWorkers') as string) || 3,
     };
 
@@ -145,6 +146,24 @@ export default function NewAccountPage() {
               <option value="oauth">OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)</option>
               <option value="api">API - Uses ANTHROPIC_API_KEY (pay-per-token)</option>
             </select>
+          </div>
+
+          <div>
+            <label htmlFor="level" className="block text-sm font-medium mb-2">
+              Token Level
+            </label>
+            <select
+              id="level"
+              name="level"
+              required
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+            >
+              <option value="worker">Worker - Can claim and execute tasks</option>
+              <option value="admin">Admin - Can also reassign and manage tasks</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Admin tokens can reassign stuck tasks via MCP
+            </p>
           </div>
 
           <div>
