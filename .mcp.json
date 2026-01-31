@@ -5,7 +5,7 @@
       "args": ["run", "/home/coder/project/buildd/apps/mcp-server/src/index.ts"],
       "env": {
         "BUILDD_SERVER": "https://buildd-three.vercel.app",
-        "BUILDD_API_KEY": "YOUR_API_KEY_HERE"
+        "BUILDD_API_KEY": "buildd_user_coder_abc123"
       }
     }
   }
