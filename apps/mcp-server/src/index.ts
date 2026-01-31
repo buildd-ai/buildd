@@ -194,7 +194,7 @@ const baseTools = [
   },
   {
     name: "buildd_update_progress",
-    description: "Report progress on a claimed task",
+    description: "Report progress on a claimed task. Include git stats when available for better tracking.",
     inputSchema: {
       type: "object",
       properties: {
@@ -209,6 +209,34 @@ const baseTools = [
         message: {
           type: "string",
           description: "Status message",
+        },
+        inputTokens: {
+          type: "number",
+          description: "Total input tokens used so far",
+        },
+        outputTokens: {
+          type: "number",
+          description: "Total output tokens used so far",
+        },
+        lastCommitSha: {
+          type: "string",
+          description: "Latest commit SHA on the branch (from git rev-parse HEAD)",
+        },
+        commitCount: {
+          type: "number",
+          description: "Number of commits on branch (from git rev-list --count HEAD ^main)",
+        },
+        filesChanged: {
+          type: "number",
+          description: "Number of files changed (from git diff --stat main)",
+        },
+        linesAdded: {
+          type: "number",
+          description: "Lines added (green) from git diff --numstat",
+        },
+        linesRemoved: {
+          type: "number",
+          description: "Lines removed (red) from git diff --numstat",
         },
       },
       required: ["workerId", "progress"],
@@ -302,6 +330,24 @@ const adminTools = [
       required: ["taskId"],
     },
   },
+  {
+    name: "buildd_send_instruction",
+    description: "Send an instruction to a worker. The worker will receive it on their next progress update.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID to send instructions to",
+        },
+        message: {
+          type: "string",
+          description: "The instruction message for the worker",
+        },
+      },
+      required: ["workerId", "message"],
+    },
+  },
 ];
 
 // List available tools (dynamically based on account level)
@@ -318,13 +364,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "buildd_list_tasks": {
-        const workspaceId = await getWorkspaceId();
         const data = await apiCall("/api/tasks");
         const tasks = data.tasks || [];
 
-        // Filter by workspace if detected
-        let filtered = workspaceId
-          ? tasks.filter((t: Task) => t.workspaceId === workspaceId)
+        // Only filter by workspace if explicitly set via env var
+        // (auto-detection from git caused confusion when workspace wasn't linked to repo)
+        const explicitWorkspaceId = process.env.BUILDD_WORKSPACE_ID;
+        let filtered = explicitWorkspaceId
+          ? tasks.filter((t: Task) => t.workspaceId === explicitWorkspaceId)
           : tasks;
 
         // Filter by status if provided
@@ -333,12 +380,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const summary = filtered.map((t: Task) =>
-          `- [${t.status}] ${t.title} (${t.workspace?.name || 'no workspace'})\n  ${t.description?.slice(0, 100) || 'No description'}...`
+          `- [${t.status}] ${t.title} (id: ${t.id})\n  Workspace: ${t.workspace?.name || 'unknown'}\n  ${t.description?.slice(0, 100) || 'No description'}...`
         ).join("\n\n");
 
-        const workspaceNote = workspaceId
-          ? `\n\n(Filtered to current workspace)`
-          : "";
+        // Show debug info
+        let workspaceNote = "";
+        if (explicitWorkspaceId && tasks.length > filtered.length) {
+          workspaceNote = `\n\n(Filtered to workspace ${explicitWorkspaceId} - ${tasks.length - filtered.length} tasks hidden)`;
+        } else if (explicitWorkspaceId) {
+          workspaceNote = `\n\n(Filtered to BUILDD_WORKSPACE_ID)`;
+        }
 
         return {
           content: [
@@ -346,7 +397,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               type: "text",
               text: filtered.length > 0
                 ? `Found ${filtered.length} tasks:\n\n${summary}${workspaceNote}`
-                : `No tasks found${workspaceNote}`,
+                : `No tasks found.\n\nAPI returned ${tasks.length} tasks total. If you expect tasks, check that the API account is linked to workspaces via accountWorkspaces table.`,
             },
           ],
         };
@@ -395,19 +446,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error("workerId is required");
         }
 
-        await apiCall(`/api/workers/${args.workerId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            status: "running",
-            progress: args.progress || 0,
-          }),
-        });
+        let response;
+        try {
+          response = await apiCall(`/api/workers/${args.workerId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              status: "running",
+              progress: args.progress || 0,
+              // Token usage (optional)
+              ...(typeof args.inputTokens === 'number' && { inputTokens: args.inputTokens }),
+              ...(typeof args.outputTokens === 'number' && { outputTokens: args.outputTokens }),
+              // Git stats (optional)
+              ...(args.lastCommitSha && { lastCommitSha: args.lastCommitSha }),
+              ...(typeof args.commitCount === 'number' && { commitCount: args.commitCount }),
+              ...(typeof args.filesChanged === 'number' && { filesChanged: args.filesChanged }),
+              ...(typeof args.linesAdded === 'number' && { linesAdded: args.linesAdded }),
+              ...(typeof args.linesRemoved === 'number' && { linesRemoved: args.linesRemoved }),
+            }),
+          });
+        } catch (err: any) {
+          // Check if this is an abort signal (409 Conflict)
+          if (err.message?.includes("409")) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `**ABORT: Your worker has been terminated.** The task may have been reassigned by an admin. STOP working on this task immediately - do not push, commit, or create PRs. Use buildd_fail_task or simply stop.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          throw err;
+        }
+
+        // Check for admin instructions in response
+        const instructions = response.instructions;
+        let resultText = `Progress updated: ${args.progress}%${args.message ? ` - ${args.message}` : ""}`;
+
+        if (instructions) {
+          resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
+        }
 
         return {
           content: [
             {
               type: "text",
-              text: `Progress updated: ${args.progress}%${args.message ? ` - ${args.message}` : ""}`,
+              text: resultText,
             },
           ],
         };
@@ -418,12 +503,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error("workerId is required");
         }
 
-        await apiCall(`/api/workers/${args.workerId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            status: "completed",
-          }),
-        });
+        try {
+          await apiCall(`/api/workers/${args.workerId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              status: "completed",
+            }),
+          });
+        } catch (err: any) {
+          // Check if this is an abort signal (409 Conflict)
+          if (err.message?.includes("409")) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `**WARNING: Worker was already terminated.** The task may have been reassigned. Your work may have been superseded by another worker.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          throw err;
+        }
 
         return {
           content: [
@@ -505,6 +606,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: `Task ${args.taskId} has been reassigned. Any active workers have been marked as failed and the task is now available for claiming.`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_send_instruction": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.workerId || !args?.message) {
+          throw new Error("workerId and message are required");
+        }
+
+        await apiCall(`/api/workers/${args.workerId}/instruct`, {
+          method: "POST",
+          body: JSON.stringify({
+            message: args.message,
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Instruction queued for worker ${args.workerId}. They will receive it on their next progress update.`,
             },
           ],
         };
