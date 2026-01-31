@@ -6,6 +6,8 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import ReassignButton from './ReassignButton';
 import InstructWorkerForm from './InstructWorkerForm';
+import WorkerActivityTimeline from './WorkerActivityTimeline';
+import InstructionHistory from './InstructionHistory';
 
 export default async function TaskDetailPage({
   params,
@@ -205,7 +207,8 @@ export default async function TaskDetailPage({
                 </div>
               </div>
 
-              {activeWorker.currentAction && (
+              {/* Current action (only for MCP workers - local-ui shows in timeline) */}
+              {!activeWorker.localUiUrl && activeWorker.currentAction && (
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                   {activeWorker.currentAction}
                 </p>
@@ -223,19 +226,27 @@ export default async function TaskDetailPage({
                 </div>
               )}
 
-              {/* Milestones */}
-              {activeWorker.milestones && (activeWorker.milestones as any[]).length > 0 && (
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: Math.min((activeWorker.milestones as any[]).length, 10) }).map((_, i) => (
-                    <div key={i} className="w-6 h-2 bg-blue-500 rounded-sm" />
-                  ))}
-                  {Array.from({ length: Math.max(0, 10 - (activeWorker.milestones as any[]).length) }).map((_, i) => (
-                    <div key={i} className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm" />
-                  ))}
-                  <span className="text-xs text-gray-500 ml-2">
-                    {(activeWorker.milestones as any[]).length} milestones
-                  </span>
-                </div>
+              {/* Activity Timeline (rich view for local-ui workers) */}
+              {activeWorker.localUiUrl ? (
+                <WorkerActivityTimeline
+                  milestones={(activeWorker.milestones as any[]) || []}
+                  currentAction={activeWorker.currentAction}
+                />
+              ) : (
+                /* Simple milestone boxes for MCP workers */
+                activeWorker.milestones && (activeWorker.milestones as any[]).length > 0 && (
+                  <div className="flex items-center gap-1 mt-2">
+                    {Array.from({ length: Math.min((activeWorker.milestones as any[]).length, 10) }).map((_, i) => (
+                      <div key={i} className="w-6 h-2 bg-blue-500 rounded-sm" />
+                    ))}
+                    {Array.from({ length: Math.max(0, 10 - (activeWorker.milestones as any[]).length) }).map((_, i) => (
+                      <div key={i} className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm" />
+                    ))}
+                    <span className="text-xs text-gray-500 ml-2">
+                      {(activeWorker.milestones as any[]).length} milestones
+                    </span>
+                  </div>
+                )
               )}
 
               <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">
@@ -294,10 +305,14 @@ export default async function TaskDetailPage({
                 </div>
               )}
 
-              {/* Instruction input */}
+              {/* Instruction history and input */}
+              <InstructionHistory
+                history={(activeWorker.instructionHistory as any[]) || []}
+                pendingInstruction={activeWorker.pendingInstructions}
+              />
               <InstructWorkerForm
                 workerId={activeWorker.id}
-                pendingInstructions={activeWorker.pendingInstructions}
+                pendingInstructions={null} // History component handles pending display
               />
             </div>
           </div>
