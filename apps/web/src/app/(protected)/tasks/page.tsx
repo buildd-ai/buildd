@@ -1,19 +1,36 @@
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export default async function TasksPage() {
   const isDev = process.env.NODE_ENV === 'development';
+  const user = await getCurrentUser();
 
   let allTasks: (typeof tasks.$inferSelect & { workspace: typeof workspaces.$inferSelect })[] = [];
 
   if (!isDev) {
+    if (!user) {
+      redirect('/auth/signin');
+    }
+
     try {
-      allTasks = await db.query.tasks.findMany({
-        orderBy: desc(tasks.createdAt),
-        with: { workspace: true },
-      }) as any;
+      // Get user's workspace IDs first
+      const userWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user.id),
+        columns: { id: true },
+      });
+      const workspaceIds = userWorkspaces.map(w => w.id);
+
+      if (workspaceIds.length > 0) {
+        allTasks = await db.query.tasks.findMany({
+          where: inArray(tasks.workspaceId, workspaceIds),
+          orderBy: desc(tasks.createdAt),
+          with: { workspace: true },
+        }) as any;
+      }
     } catch (error) {
       console.error('Tasks query error:', error);
     }

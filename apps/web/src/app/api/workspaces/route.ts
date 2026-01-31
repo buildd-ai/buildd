@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
@@ -21,26 +21,50 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey);
 
   // Fall back to session auth
-  const session = await auth();
+  const user = await getCurrentUser();
 
-  if (!account && !session?.user) {
+  if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const allWorkspaces = await db.query.workspaces.findMany({
-      orderBy: desc(workspaces.createdAt),
-      with: {
-        accountWorkspaces: {
-          with: {
-            account: true,
+    // If API key auth, return workspaces linked to that account
+    // If session auth, return workspaces owned by the user
+    let allWorkspaces;
+    if (apiAccount) {
+      // For API key auth, get workspaces linked via accountWorkspaces
+      const linkedWorkspaces = await db.query.accountWorkspaces.findMany({
+        where: eq(accountWorkspaces.accountId, apiAccount.id),
+        with: {
+          workspace: {
+            with: {
+              accountWorkspaces: {
+                with: {
+                  account: true,
+                },
+              },
+            },
           },
         },
-      },
-    });
+      });
+      allWorkspaces = linkedWorkspaces.map(aw => aw.workspace);
+    } else {
+      // For session auth, get workspaces owned by user
+      allWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user!.id),
+        orderBy: desc(workspaces.createdAt),
+        with: {
+          accountWorkspaces: {
+            with: {
+              account: true,
+            },
+          },
+        },
+      });
+    }
 
     // Transform to include runner status
     const workspacesWithRunners = allWorkspaces.map((ws) => {
@@ -85,8 +109,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: 'dev-workspace', name: 'Dev Workspace' });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -107,6 +131,7 @@ export async function POST(req: NextRequest) {
         githubRepoId: githubRepoId || null,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
+        ownerId: user.id,
       })
       .returning();
 

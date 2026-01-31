@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { eq, and } from 'drizzle-orm';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export async function GET(
   req: NextRequest,
@@ -14,14 +14,14 @@ export async function GET(
     return NextResponse.json({ workspace: null });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
       with: {
         tasks: true,
         workers: true,
@@ -50,12 +50,21 @@ export async function PATCH(
     return NextResponse.json({ success: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
+    // Verify ownership
+    const workspace = await db.query.workspaces.findFirst({
+      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
+    });
+
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
     const body = await req.json();
     const { name, accessMode } = body;
 
@@ -85,15 +94,15 @@ export async function DELETE(
     return NextResponse.json({ success: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // Check if workspace exists
+    // Check if workspace exists and belongs to user
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
     });
 
     if (!workspace) {

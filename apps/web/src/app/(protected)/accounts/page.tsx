@@ -1,17 +1,25 @@
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import DeleteAccountButton from './DeleteAccountButton';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export default async function AccountsPage() {
   const isDev = process.env.NODE_ENV === 'development';
+  const user = await getCurrentUser();
 
   let allAccounts: typeof accounts.$inferSelect[] = [];
 
   if (!isDev) {
+    if (!user) {
+      redirect('/auth/signin');
+    }
+
     try {
       allAccounts = await db.query.accounts.findMany({
+        where: eq(accounts.ownerId, user.id),
         orderBy: desc(accounts.createdAt),
       });
     } catch (error) {

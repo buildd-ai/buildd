@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { desc, eq } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -14,13 +14,14 @@ export async function GET() {
     return NextResponse.json({ accounts: [] });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
     const allAccounts = await db.query.accounts.findMany({
+      where: eq(accounts.ownerId, user.id),
       orderBy: desc(accounts.createdAt),
     });
 
@@ -40,8 +41,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
         authType: authType as 'api' | 'oauth' || 'oauth',
         apiKey,
         maxConcurrentWorkers: maxConcurrentWorkers || 3,
+        ownerId: user.id,
       })
       .returning();
 

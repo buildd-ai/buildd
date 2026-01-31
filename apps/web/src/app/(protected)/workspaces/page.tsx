@@ -1,7 +1,9 @@
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 interface WorkspaceWithRunners {
   id: string;
@@ -34,12 +36,18 @@ function XIcon({ className }: { className?: string }) {
 
 export default async function WorkspacesPage() {
   const isDev = process.env.NODE_ENV === 'development';
+  const user = await getCurrentUser();
 
   let allWorkspaces: WorkspaceWithRunners[] = [];
 
   if (!isDev) {
+    if (!user) {
+      redirect('/auth/signin');
+    }
+
     try {
       const rawWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user.id),
         orderBy: desc(workspaces.createdAt),
         with: {
           accountWorkspaces: {

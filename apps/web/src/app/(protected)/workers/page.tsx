@@ -1,19 +1,36 @@
 import { db } from '@buildd/core/db';
-import { workers, tasks } from '@buildd/core/db/schema';
-import { desc } from 'drizzle-orm';
+import { workers, tasks, workspaces } from '@buildd/core/db/schema';
+import { desc, eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export default async function WorkersPage() {
   const isDev = process.env.NODE_ENV === 'development';
+  const user = await getCurrentUser();
 
   let allWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect | null })[] = [];
 
   if (!isDev) {
+    if (!user) {
+      redirect('/auth/signin');
+    }
+
     try {
-      allWorkers = await db.query.workers.findMany({
-        orderBy: desc(workers.createdAt),
-        with: { task: true },
-      }) as any;
+      // Get user's workspace IDs first
+      const userWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user.id),
+        columns: { id: true },
+      });
+      const workspaceIds = userWorkspaces.map(w => w.id);
+
+      if (workspaceIds.length > 0) {
+        allWorkers = await db.query.workers.findMany({
+          where: inArray(workers.workspaceId, workspaceIds),
+          orderBy: desc(workers.createdAt),
+          with: { task: true },
+        }) as any;
+      }
     } catch (error) {
       console.error('Workers query error:', error);
     }

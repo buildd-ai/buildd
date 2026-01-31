@@ -3,6 +3,20 @@ import {
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
+// Users table for multi-tenancy
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  googleId: text('google_id').notNull().unique(),  // from token.sub / account.providerAccountId
+  email: text('email').notNull(),
+  name: text('name'),
+  image: text('image'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  googleIdIdx: uniqueIndex('users_google_id_idx').on(t.googleId),
+  emailIdx: index('users_email_idx').on(t.email),
+}));
+
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
@@ -28,11 +42,15 @@ export const accounts = pgTable('accounts', {
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+
+  // Multi-tenancy: owner of this account
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
 }, (t) => ({
   apiKeyIdx: uniqueIndex('accounts_api_key_idx').on(t.apiKey),
   githubIdIdx: index('accounts_github_id_idx').on(t.githubId),
   authTypeIdx: index('accounts_auth_type_idx').on(t.authType),
   seatIdIdx: index('accounts_seat_id_idx').on(t.seatId),
+  ownerIdx: index('accounts_owner_idx').on(t.ownerId),
 }));
 
 export const accountWorkspaces = pgTable('account_workspaces', {
@@ -57,9 +75,13 @@ export const workspaces = pgTable('workspaces', {
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+
+  // Multi-tenancy: owner of this workspace
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
 }, (t) => ({
   githubRepoIdx: index('workspaces_github_repo_idx').on(t.githubRepoId),
   githubInstallationIdx: index('workspaces_github_installation_idx').on(t.githubInstallationId),
+  ownerIdx: index('workspaces_owner_idx').on(t.ownerId),
 }));
 
 export const sources = pgTable('sources', {
@@ -224,7 +246,13 @@ export const githubRepos = pgTable('github_repos', {
 }));
 
 // Relations
-export const accountsRelations = relations(accounts, ({ many }) => ({
+export const usersRelations = relations(users, ({ many }) => ({
+  accounts: many(accounts),
+  workspaces: many(workspaces),
+}));
+
+export const accountsRelations = relations(accounts, ({ one, many }) => ({
+  owner: one(users, { fields: [accounts.ownerId], references: [users.id] }),
   accountWorkspaces: many(accountWorkspaces),
   tasks: many(tasks),
   workers: many(workers),
@@ -236,6 +264,7 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
+  owner: one(users, { fields: [workspaces.ownerId], references: [users.id] }),
   sources: many(sources),
   tasks: many(tasks),
   workers: many(workers),
