@@ -22,6 +22,27 @@
       "when": 1769891575679,
       "tag": "0002_cold_black_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1769892320127,
+      "tag": "0003_spicy_vindicator",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1769901803684,
+      "tag": "0004_kind_tenebrous",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1769901957021,
+      "tag": "0005_broad_frightful_four",
+      "breakpoints": true
     }
   ]
 }

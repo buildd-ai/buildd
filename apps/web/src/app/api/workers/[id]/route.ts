@@ -70,8 +70,25 @@ export async function PATCH(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  // Check if worker was already terminated (reassigned/failed)
+  if (worker.status === 'failed' || worker.status === 'completed') {
+    return NextResponse.json({
+      error: worker.status === 'failed'
+        ? 'Worker was terminated - task may have been reassigned'
+        : 'Worker already completed',
+      abort: true,
+      reason: worker.error || worker.status,
+    }, { status: 409 });
+  }
+
   const body = await req.json();
-  const { status, progress, error, costUsd, turns, localUiUrl, currentAction, milestones } = body;
+  const {
+    status, progress, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    // Token usage
+    inputTokens, outputTokens,
+    // Git stats
+    lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
+  } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
@@ -81,10 +98,18 @@ export async function PATCH(
   if (typeof progress === 'number') updates.progress = progress;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
+  if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
+  if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   if (currentAction !== undefined) updates.currentAction = currentAction;
   if (milestones !== undefined) updates.milestones = milestones;
+  // Git stats
+  if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
+  if (typeof commitCount === 'number') updates.commitCount = commitCount;
+  if (typeof filesChanged === 'number') updates.filesChanged = filesChanged;
+  if (typeof linesAdded === 'number') updates.linesAdded = linesAdded;
+  if (typeof linesRemoved === 'number') updates.linesRemoved = linesRemoved;
 
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {
@@ -103,6 +128,14 @@ export async function PATCH(
         })
         .where(eq(tasks.id, worker.taskId));
     }
+  }
+
+  // Capture pending instructions before clearing
+  const pendingInstructions = worker.pendingInstructions;
+
+  // Clear pending instructions on update (they'll be delivered in response)
+  if (pendingInstructions) {
+    updates.pendingInstructions = null;
   }
 
   const [updated] = await db
@@ -130,5 +163,9 @@ export async function PATCH(
     );
   }
 
-  return NextResponse.json(updated);
+  // Return worker with any pending instructions
+  return NextResponse.json({
+    ...updated,
+    instructions: pendingInstructions || undefined,
+  });
 }

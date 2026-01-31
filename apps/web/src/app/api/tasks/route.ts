@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, eq, inArray, or } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
@@ -36,12 +36,22 @@ export async function GET(req: NextRequest) {
     let workspaceIds: string[] = [];
 
     if (apiAccount) {
-      // For API key auth, get workspaces linked to the account
-      const linkedWorkspaces = await db.query.accountWorkspaces.findMany({
-        where: eq(accountWorkspaces.accountId, apiAccount.id),
-        columns: { workspaceId: true },
-      });
-      workspaceIds = linkedWorkspaces.map(aw => aw.workspaceId);
+      // For API key auth, get:
+      // 1. Workspaces explicitly linked to the account
+      // 2. Open workspaces (accessMode = 'open')
+      const [linkedWorkspaces, openWorkspaces] = await Promise.all([
+        db.query.accountWorkspaces.findMany({
+          where: eq(accountWorkspaces.accountId, apiAccount.id),
+          columns: { workspaceId: true },
+        }),
+        db.query.workspaces.findMany({
+          where: eq(workspaces.accessMode, 'open'),
+          columns: { id: true },
+        }),
+      ]);
+      const linkedIds = linkedWorkspaces.map(aw => aw.workspaceId);
+      const openIds = openWorkspaces.map(w => w.id);
+      workspaceIds = [...new Set([...linkedIds, ...openIds])];
     } else {
       // For session auth, get user's workspaces
       const userWorkspaces = await db.query.workspaces.findMany({

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import ReassignButton from './ReassignButton';
+import InstructWorkerForm from './InstructWorkerForm';
 
 export default async function TaskDetailPage({
   params,
@@ -239,7 +240,20 @@ export default async function TaskDetailPage({
 
               <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">
                 <span>Turns: {activeWorker.turns}</span>
-                <span>Cost: ${parseFloat(activeWorker.costUsd?.toString() || '0').toFixed(4)}</span>
+                {activeWorker.account?.authType === 'oauth' ? (
+                  // Seat-based: show tokens instead of cost
+                  <span>
+                    {((activeWorker.inputTokens || 0) + (activeWorker.outputTokens || 0)).toLocaleString()} tokens
+                  </span>
+                ) : (
+                  // API-based: show cost
+                  <span>Cost: ${parseFloat(activeWorker.costUsd?.toString() || '0').toFixed(4)}</span>
+                )}
+                {activeWorker.startedAt && (
+                  <span>
+                    {Math.round((Date.now() - new Date(activeWorker.startedAt).getTime()) / 60000)}m elapsed
+                  </span>
+                )}
                 {activeWorker.prUrl && (
                   <a
                     href={activeWorker.prUrl}
@@ -251,6 +265,40 @@ export default async function TaskDetailPage({
                   </a>
                 )}
               </div>
+
+              {/* Git stats */}
+              {((activeWorker.commitCount ?? 0) > 0 || (activeWorker.filesChanged ?? 0) > 0) && (
+                <div className="flex items-center gap-4 mt-2 text-xs">
+                  {(activeWorker.commitCount ?? 0) > 0 && (
+                    <span className="text-gray-500">
+                      {activeWorker.commitCount} commit{activeWorker.commitCount !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {(activeWorker.filesChanged ?? 0) > 0 && (
+                    <span className="text-gray-500">
+                      {activeWorker.filesChanged} file{activeWorker.filesChanged !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {((activeWorker.linesAdded ?? 0) > 0 || (activeWorker.linesRemoved ?? 0) > 0) && (
+                    <span>
+                      <span className="text-green-600">+{activeWorker.linesAdded ?? 0}</span>
+                      {' / '}
+                      <span className="text-red-500">-{activeWorker.linesRemoved ?? 0}</span>
+                    </span>
+                  )}
+                  {activeWorker.lastCommitSha && (
+                    <span className="text-gray-400 font-mono">
+                      {activeWorker.lastCommitSha.slice(0, 7)}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Instruction input */}
+              <InstructWorkerForm
+                workerId={activeWorker.id}
+                pendingInstructions={activeWorker.pendingInstructions}
+              />
             </div>
           </div>
         )}
