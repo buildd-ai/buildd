@@ -20,6 +20,7 @@ export const users = pgTable('users', {
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
+  level: text('level').default('worker').notNull().$type<'worker' | 'admin'>(),
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   githubId: text('github_id'),
