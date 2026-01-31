@@ -91,17 +91,56 @@ export default async function AccountsPage() {
           </div>
         )}
 
-        <div className="mt-8 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
-          <h3 className="font-medium mb-2">Agent Connection</h3>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-            Use the API key with your agent to claim tasks:
-          </p>
-          <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+        <div className="mt-8 space-y-6">
+          {/* MCP Setup */}
+          <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
+            <h3 className="font-medium mb-2">Claude Code MCP Setup</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+              Connect Claude Code directly to buildd with one command:
+            </p>
+            <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
+{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd-three.vercel.app"}}'`}
+            </pre>
+            <p className="text-xs text-gray-500 mt-2">
+              Or add <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">--scope user</code> to use across all projects
+            </p>
+          </div>
+
+          {/* Alternative: Manual .mcp.json */}
+          <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
+            <h3 className="font-medium mb-2">Alternative: .mcp.json</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+              Add to your project's <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">.mcp.json</code>:
+            </p>
+            <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+{`{
+  "mcpServers": {
+    "buildd": {
+      "command": "bun",
+      "args": ["run", "~/path/to/buildd/apps/mcp-server/src/index.ts"],
+      "env": {
+        "BUILDD_SERVER": "https://buildd-three.vercel.app",
+        "BUILDD_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}`}
+            </pre>
+          </div>
+
+          {/* REST API */}
+          <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
+            <h3 className="font-medium mb-2">REST API</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+              Or use the API directly to claim tasks:
+            </p>
+            <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
 {`curl -X POST https://buildd-three.vercel.app/api/workers/claim \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"maxTasks": 1}'`}
-          </pre>
+            </pre>
+          </div>
         </div>
       </div>
     </main>
