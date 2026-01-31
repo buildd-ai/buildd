@@ -11,8 +11,9 @@ const SERVER_URL = process.env.BUILDD_SERVER || "https://buildd-three.vercel.app
 const API_KEY = process.env.BUILDD_API_KEY || "";
 const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || "";
 
-// Cache for workspace lookup
+// Cache for workspace lookup and account info
 let cachedWorkspaceId: string | null = null;
+let cachedAccountLevel: 'worker' | 'admin' | null = null;
 
 /**
  * Extract repo full name (owner/repo) from git remote URL
@@ -83,6 +84,32 @@ async function getWorkspaceId(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Get the account level from API
+ */
+async function getAccountLevel(): Promise<'worker' | 'admin'> {
+  if (cachedAccountLevel !== null) return cachedAccountLevel;
+
+  try {
+    const response = await fetch(`${SERVER_URL}/api/accounts/me`, {
+      headers: {
+        Authorization: `Bearer ${API_KEY}`,
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      cachedAccountLevel = data.level || 'worker';
+      return cachedAccountLevel;
+    }
+  } catch {
+    // Default to worker level if fetch fails
+  }
+
+  cachedAccountLevel = 'worker';
+  return cachedAccountLevel;
+}
+
 interface Task {
   id: string;
   title: string;
@@ -131,135 +158,158 @@ const server = new Server(
   }
 );
 
-// List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "buildd_list_tasks",
-      description: "List available tasks from buildd that can be claimed",
-      inputSchema: {
-        type: "object",
-        properties: {
-          status: {
-            type: "string",
-            description: "Filter by status (pending, assigned, completed, failed)",
-            enum: ["pending", "assigned", "completed", "failed"],
-          },
+// Base tools available to all levels
+const baseTools = [
+  {
+    name: "buildd_list_tasks",
+    description: "List available tasks from buildd that can be claimed",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          description: "Filter by status (pending, assigned, completed, failed)",
+          enum: ["pending", "assigned", "completed", "failed"],
         },
       },
     },
-    {
-      name: "buildd_claim_task",
-      description: "Claim a task from buildd to work on. Returns worker info with task details.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          maxTasks: {
-            type: "number",
-            description: "Maximum number of tasks to claim (default: 1)",
-            default: 1,
-          },
-          workspaceId: {
-            type: "string",
-            description: "Optional: only claim from specific workspace",
-          },
+  },
+  {
+    name: "buildd_claim_task",
+    description: "Claim a task from buildd to work on. Returns worker info with task details.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        maxTasks: {
+          type: "number",
+          description: "Maximum number of tasks to claim (default: 1)",
+          default: 1,
+        },
+        workspaceId: {
+          type: "string",
+          description: "Optional: only claim from specific workspace",
         },
       },
     },
-    {
-      name: "buildd_update_progress",
-      description: "Report progress on a claimed task",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workerId: {
-            type: "string",
-            description: "The worker ID from claim_task",
-          },
-          progress: {
-            type: "number",
-            description: "Progress percentage (0-100)",
-          },
-          message: {
-            type: "string",
-            description: "Status message",
-          },
+  },
+  {
+    name: "buildd_update_progress",
+    description: "Report progress on a claimed task",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID from claim_task",
         },
-        required: ["workerId", "progress"],
-      },
-    },
-    {
-      name: "buildd_complete_task",
-      description: "Mark a task as completed",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workerId: {
-            type: "string",
-            description: "The worker ID from claim_task",
-          },
-          summary: {
-            type: "string",
-            description: "Summary of what was done",
-          },
+        progress: {
+          type: "number",
+          description: "Progress percentage (0-100)",
         },
-        required: ["workerId"],
-      },
-    },
-    {
-      name: "buildd_fail_task",
-      description: "Mark a task as failed",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workerId: {
-            type: "string",
-            description: "The worker ID from claim_task",
-          },
-          error: {
-            type: "string",
-            description: "Error message explaining what went wrong",
-          },
+        message: {
+          type: "string",
+          description: "Status message",
         },
-        required: ["workerId", "error"],
       },
+      required: ["workerId", "progress"],
     },
-    {
-      name: "buildd_create_pr",
-      description: "Create a GitHub pull request for a worker's branch. Requires workspace to be linked to a GitHub repo.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          workerId: {
-            type: "string",
-            description: "The worker ID from claim_task",
-          },
-          title: {
-            type: "string",
-            description: "PR title",
-          },
-          body: {
-            type: "string",
-            description: "PR description/body",
-          },
-          head: {
-            type: "string",
-            description: "The branch containing the changes (usually the worker's branch)",
-          },
-          base: {
-            type: "string",
-            description: "The branch to merge into (default: main)",
-          },
-          draft: {
-            type: "boolean",
-            description: "Create as draft PR (default: false)",
-          },
+  },
+  {
+    name: "buildd_complete_task",
+    description: "Mark a task as completed",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID from claim_task",
         },
-        required: ["workerId", "title", "head"],
+        summary: {
+          type: "string",
+          description: "Summary of what was done",
+        },
       },
+      required: ["workerId"],
     },
-  ],
-}));
+  },
+  {
+    name: "buildd_fail_task",
+    description: "Mark a task as failed",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID from claim_task",
+        },
+        error: {
+          type: "string",
+          description: "Error message explaining what went wrong",
+        },
+      },
+      required: ["workerId", "error"],
+    },
+  },
+  {
+    name: "buildd_create_pr",
+    description: "Create a GitHub pull request for a worker's branch. Requires workspace to be linked to a GitHub repo.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID from claim_task",
+        },
+        title: {
+          type: "string",
+          description: "PR title",
+        },
+        body: {
+          type: "string",
+          description: "PR description/body",
+        },
+        head: {
+          type: "string",
+          description: "The branch containing the changes (usually the worker's branch)",
+        },
+        base: {
+          type: "string",
+          description: "The branch to merge into (default: main)",
+        },
+        draft: {
+          type: "boolean",
+          description: "Create as draft PR (default: false)",
+        },
+      },
+      required: ["workerId", "title", "head"],
+    },
+  },
+];
+
+// Admin-only tools
+const adminTools = [
+  {
+    name: "buildd_reassign_task",
+    description: "Force-reassign a stuck task. Marks current workers as failed and resets task to pending.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: {
+          type: "string",
+          description: "The task ID to reassign",
+        },
+      },
+      required: ["taskId"],
+    },
+  },
+];
+
+// List available tools (dynamically based on account level)
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const level = await getAccountLevel();
+  const tools = level === 'admin' ? [...baseTools, ...adminTools] : baseTools;
+  return { tools };
+});
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -430,6 +480,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_reassign_task": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.taskId) {
+          throw new Error("taskId is required");
+        }
+
+        await apiCall(`/api/tasks/${args.taskId}/reassign`, {
+          method: "POST",
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Task ${args.taskId} has been reassigned. Any active workers have been marked as failed and the task is now available for claiming.`,
             },
           ],
         };

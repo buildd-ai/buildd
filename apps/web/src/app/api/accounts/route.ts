@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers } = body;
+    const { name, type, authType, maxConcurrentWorkers, level } = body;
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
       .values({
         name,
         type: type as 'user' | 'service' | 'action',
+        level: level as 'worker' | 'admin' || 'worker',
         authType: authType as 'api' | 'oauth' || 'oauth',
         apiKey,
         maxConcurrentWorkers: maxConcurrentWorkers || 3,
