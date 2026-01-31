@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks } from '@buildd/core/db/schema';
-import { desc, eq, and, inArray } from 'drizzle-orm';
+import { accounts, tasks } from '@buildd/core/db/schema';
+import { desc, eq } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
@@ -32,31 +32,6 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // For API key auth, only show tasks from workspaces the account can claim from
-    if (account) {
-      const allowedWorkspaces = await db.query.accountWorkspaces.findMany({
-        where: and(
-          eq(accountWorkspaces.accountId, account.id),
-          eq(accountWorkspaces.canClaim, true)
-        ),
-      });
-
-      const workspaceIds = allowedWorkspaces.map((aw) => aw.workspaceId);
-
-      if (workspaceIds.length === 0) {
-        return NextResponse.json({ tasks: [] });
-      }
-
-      const allTasks = await db.query.tasks.findMany({
-        where: inArray(tasks.workspaceId, workspaceIds),
-        orderBy: desc(tasks.createdAt),
-        with: { workspace: true },
-      });
-
-      return NextResponse.json({ tasks: allTasks });
-    }
-
-    // For session auth (dashboard), show all tasks
     const allTasks = await db.query.tasks.findMany({
       orderBy: desc(tasks.createdAt),
       with: { workspace: true },
