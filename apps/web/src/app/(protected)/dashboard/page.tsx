@@ -56,15 +56,23 @@ export default async function DashboardPage() {
               {session?.user?.email || 'Development Mode'}
             </p>
           </div>
-          <Link
-            href="/api/auth/signout"
-            className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
-          >
-            Sign Out
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/accounts"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              Accounts
+            </Link>
+            <Link
+              href="/api/auth/signout"
+              className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Sign Out
+            </Link>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           {/* Workspaces Card */}
           <Link
             href="/workspaces"
@@ -104,20 +112,6 @@ export default async function DashboardPage() {
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
               Active agents working on tasks
-            </p>
-          </Link>
-
-          {/* Accounts Card */}
-          <Link
-            href="/accounts"
-            className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
-          >
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-xl font-semibold">Accounts</h2>
-              <span className="text-2xl font-bold text-purple-600">→</span>
-            </div>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
-              API keys for agents to connect
             </p>
           </Link>
         </div>
