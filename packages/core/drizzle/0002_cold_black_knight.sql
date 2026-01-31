@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "level" text DEFAULT 'worker' NOT NULL;

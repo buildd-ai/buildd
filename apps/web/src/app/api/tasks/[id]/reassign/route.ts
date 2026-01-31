@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
+
+async function authenticateApiKey(apiKey: string | null) {
+  if (!apiKey) return null;
+
+  const account = await db.query.accounts.findFirst({
+    where: eq(accounts.apiKey, apiKey),
+  });
+
+  return account || null;
+}
 
 // POST /api/tasks/[id]/reassign - Admin force-reassign a stuck task
 export async function POST(
@@ -11,19 +21,38 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  // Admin only - session auth required
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // Check for admin access via session OR admin-level API token
+  const user = await getCurrentUser();
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const apiAccount = await authenticateApiKey(apiKey);
+
+  // Must have session auth OR admin-level API token
+  const hasSessionAuth = !!user;
+  const hasAdminToken = apiAccount?.level === 'admin';
+
+  if (!hasSessionAuth && !hasAdminToken) {
+    return NextResponse.json(
+      { error: 'Unauthorized - requires session auth or admin-level API token' },
+      { status: 401 }
+    );
   }
 
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),
+      with: { workspace: true },
     });
 
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
+
+    // Verify ownership if using session auth
+    if (hasSessionAuth && !hasAdminToken) {
+      if (task.workspace?.ownerId !== user!.id) {
+        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+      }
     }
 
     if (task.status === 'completed') {
