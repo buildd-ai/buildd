@@ -64,7 +64,7 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           {/* Workspaces Card */}
           <Link
             href="/workspaces"
@@ -104,6 +104,20 @@ export default async function DashboardPage() {
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
               Active agents working on tasks
+            </p>
+          </Link>
+
+          {/* Accounts Card */}
+          <Link
+            href="/accounts"
+            className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
+          >
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-xl font-semibold">Accounts</h2>
+              <span className="text-2xl font-bold text-purple-600">→</span>
+            </div>
+            <p className="text-gray-600 dark:text-gray-400 text-sm">
+              API keys for agents to connect
             </p>
           </Link>
         </div>
