@@ -9,14 +9,70 @@ cd packages/agent
 go build -o buildd-agent
 ```
 
-## Usage
+## Authentication Methods
 
-### Local Development
+buildd-agent supports **two authentication methods** for Claude:
+
+### 1. OAuth Token (Seat-Based) - Recommended for Users
+
+Uses your Claude Pro/Team subscription seat. **No per-token costs** - included in your plan.
 
 ```bash
+# Authenticate with Claude
+claude auth
+
+# Run agent with OAuth
 export BUILDD_SERVER=http://localhost:3000
-export BUILDD_API_KEY=buildd_xxxxx
+export BUILDD_API_KEY=buildd_user_xxxxx
+export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
+
+./buildd-agent --workspace=ws-123 --max-tasks=1
+```
+
+**Best for:**
+- Personal laptops (user accounts)
+- Team member workspaces
+- Development/testing
+
+**Limits:**
+- Concurrent sessions (typically 1-3 per seat)
+- Fair use policy
+
+### 2. API Key (Pay-Per-Token) - Recommended for Production
+
+Uses Anthropic API with per-token billing. Costs tracked and enforced.
+
+```bash
+# Run agent with API key
+export BUILDD_SERVER=http://localhost:3000
+export BUILDD_API_KEY=buildd_svc_xxxxx
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
+
+./buildd-agent --workspace=ws-123 --max-tasks=10
+```
+
+**Best for:**
+- Service accounts (dedicated VMs)
+- GitHub Actions (CI/CD)
+- Production workloads
+- High concurrency needs
+
+**Limits:**
+- Cost per day (e.g., $500/day)
+- Concurrent workers
+
+## Usage
+
+### Local Development (OAuth)
+
+```bash
+# First time: authenticate with Claude
+claude auth
+
+# Run agent
+export BUILDD_SERVER=http://localhost:3000
+export BUILDD_API_KEY=buildd_user_xxxxx
+export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
 
 ./buildd-agent --workspace=ws-123 --max-tasks=3
 ```
@@ -35,7 +91,9 @@ curl -fsSL https://buildd.dev/install-agent.sh | bash
 buildd-agent --server=$BUILDD_SERVER --api-key=$BUILDD_API_KEY &
 ```
 
-### GitHub Action
+### GitHub Action (API Authentication)
+
+GitHub Actions should use **API authentication** (pay-per-token) since they're ephemeral runners.
 
 ```yaml
 name: buildd worker
@@ -51,9 +109,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Claude
-        run: curl -fsSL https://claude.ai/install.sh | bash
-
       - name: Install buildd-agent
         run: |
           curl -fsSL https://buildd.dev/install-agent.sh | bash
@@ -67,14 +122,32 @@ jobs:
           buildd-agent --max-tasks=1
 ```
 
+**Note:** No `claude auth` needed - uses ANTHROPIC_API_KEY directly.
+
 ## Configuration
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--server` | `BUILDD_SERVER` | `http://localhost:3000` | buildd server URL |
-| `--api-key` | `BUILDD_API_KEY` | - | Account API key (required) |
-| `--workspace` | - | - | Workspace ID to claim from |
-| `--max-tasks` | - | `3` | Max concurrent tasks |
+### Required
+
+| Flag | Environment Variable | Description |
+|------|---------------------|-------------|
+| `--server` | `BUILDD_SERVER` | buildd server URL (default: `http://localhost:3000`) |
+| `--api-key` | `BUILDD_API_KEY` | buildd account API key (required) |
+
+### Claude Authentication (Choose One)
+
+| Environment Variable | Auth Type | Cost Model | Best For |
+|---------------------|-----------|------------|----------|
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth | Seat-based (included in plan) | Users, team members |
+| `ANTHROPIC_API_KEY` | API | Pay-per-token | Service accounts, CI/CD |
+
+**The agent will automatically detect which is set and use the appropriate authentication method.**
+
+### Optional
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace` | - | Workspace ID to claim tasks from (optional filter) |
+| `--max-tasks` | `3` | Maximum concurrent tasks |
 
 ## How It Works
 

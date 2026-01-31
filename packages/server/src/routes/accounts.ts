@@ -14,17 +14,50 @@ import type {
 export async function accountsRoutes(fastify: FastifyInstance) {
   // Create account
   fastify.post<{ Body: CreateAccountInput }>('/api/accounts', async (request, reply) => {
-    const { type, name, githubId, maxConcurrentWorkers = 3, maxCostPerDay = 50 } = request.body;
+    const {
+      type,
+      name,
+      githubId,
+      maxConcurrentWorkers = 3,
+      authType = 'api',
+      anthropicApiKey,
+      maxCostPerDay,
+      oauthToken,
+      seatId,
+      maxConcurrentSessions = 1
+    } = request.body;
 
-    const apiKey = `buildd_${randomBytes(32).toString('hex')}`;
+    const apiKey = `buildd_${type}_${randomBytes(32).toString('hex')}`;
+
+    // Validate auth-specific fields
+    if (authType === 'api' && !anthropicApiKey && !maxCostPerDay) {
+      return reply.status(400).send({
+        error: 'API auth requires anthropicApiKey or maxCostPerDay'
+      });
+    }
+
+    if (authType === 'oauth' && !oauthToken) {
+      return reply.status(400).send({
+        error: 'OAuth auth requires oauthToken'
+      });
+    }
 
     const [account] = await db.insert(accounts).values({
       type,
       name,
       apiKey,
       githubId: githubId || null,
+      authType,
       maxConcurrentWorkers,
-      maxCostPerDay: maxCostPerDay.toString(),
+
+      // API auth fields
+      anthropicApiKey: authType === 'api' ? anthropicApiKey || null : null,
+      maxCostPerDay: authType === 'api' && maxCostPerDay ? maxCostPerDay.toString() : null,
+
+      // OAuth auth fields
+      oauthToken: authType === 'oauth' ? oauthToken || null : null,
+      seatId: authType === 'oauth' ? seatId || null : null,
+      maxConcurrentSessions: authType === 'oauth' ? maxConcurrentSessions : null,
     }).returning();
 
     return account;
@@ -111,6 +144,27 @@ export async function accountsRoutes(fastify: FastifyInstance) {
           limit: account.maxConcurrentWorkers,
           current: activeWorkers.length,
         });
+      }
+
+      // Auth-type specific checks
+      if (account.authType === 'api') {
+        // Check cost limits for API-based accounts
+        if (account.maxCostPerDay && parseFloat(account.totalCost.toString()) >= parseFloat(account.maxCostPerDay.toString())) {
+          return reply.status(429).send({
+            error: 'Daily cost limit exceeded',
+            limit: account.maxCostPerDay,
+            current: account.totalCost,
+          });
+        }
+      } else if (account.authType === 'oauth') {
+        // Check session limits for OAuth-based accounts
+        if (account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
+          return reply.status(429).send({
+            error: 'Max concurrent sessions limit reached',
+            limit: account.maxConcurrentSessions,
+            current: account.activeSessions,
+          });
+        }
       }
 
       const availableSlots = Math.min(
@@ -205,6 +259,15 @@ export async function accountsRoutes(fastify: FastifyInstance) {
           branch,
           task,
         });
+      }
+
+      // Increment active sessions for OAuth accounts
+      if (account.authType === 'oauth' && claimedWorkers.length > 0) {
+        await db.update(accounts)
+          .set({
+            activeSessions: sql`${accounts.activeSessions} + ${claimedWorkers.length}`
+          })
+          .where(eq(accounts.id, account.id));
       }
 
       return { workers: claimedWorkers };

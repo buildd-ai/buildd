@@ -30,22 +30,32 @@
 
 ## Account Types
 
-### User Accounts
-Personal accounts for developers. Run agents on your local machine.
-- **Use case**: Pick up tasks while you're away
-- **Limits**: 3 concurrent workers, $50/day
+buildd supports **two authentication models** for Claude:
+
+- **OAuth (Seat-Based)**: Uses Claude Pro/Team subscription. Fixed monthly cost, session-limited.
+- **API (Pay-Per-Token)**: Uses Anthropic API. Variable cost per token, scalable.
+
+See [AUTH_MODELS.md](./AUTH_MODELS.md) for detailed comparison.
+
+### User Accounts (OAuth Recommended)
+Personal accounts for developers. Run agents on your local machine using your Claude Pro seat.
+- **Auth**: OAuth (included in subscription)
+- **Limits**: 1-3 concurrent sessions
+- **Cost**: $0 marginal (included in $20/mo Pro)
 - **Example**: Max's laptop claiming weekend tasks
 
-### Service Accounts
+### Service Accounts (API Recommended)
 Dedicated always-on agents for production workloads.
-- **Use case**: Background work, high-priority tasks
+- **Auth**: API (pay-per-token)
 - **Limits**: Configurable (e.g., 10 workers, $500/day)
+- **Cost**: Variable based on usage
 - **Example**: `prod-worker` VM running 24/7
 
-### GitHub Action Accounts
+### GitHub Action Accounts (API Required)
 Ephemeral agents triggered by CI/CD.
-- **Use case**: Deterministic work (tests, deploys, migrations)
-- **Limits**: Per-run limits
+- **Auth**: API (ephemeral runners can't use OAuth)
+- **Limits**: Per-run cost caps
+- **Cost**: Pay per CI run
 - **Example**: `gh-ci` bot handling PR tasks
 
 ## Quick Start
@@ -72,19 +82,43 @@ Server runs at `http://localhost:3000`
 
 ### 2. Create an Account
 
+**Option A: User Account (OAuth - Seat-Based)**
+
 ```bash
-# Create a user account
+# First authenticate with Claude
+claude auth
+
+# Create OAuth account
 curl -X POST http://localhost:3000/api/accounts \
   -H "Content-Type: application/json" \
   -d '{
     "type": "user",
     "name": "Max Local Agent",
-    "maxConcurrentWorkers": 3,
-    "maxCostPerDay": 50
+    "authType": "oauth",
+    "oauthToken": "'$(cat ~/.config/claude/auth.json | jq -r .token)'",
+    "maxConcurrentSessions": 1,
+    "maxConcurrentWorkers": 3
   }'
 
-# Response includes your API key:
-# { "id": "acc-123", "apiKey": "buildd_xxxxx", ... }
+# Response: { "id": "acc-123", "apiKey": "buildd_user_xxxxx", ... }
+```
+
+**Option B: Service Account (API - Pay-Per-Token)**
+
+```bash
+# Create API account
+curl -X POST http://localhost:3000/api/accounts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "service",
+    "name": "Prod Worker",
+    "authType": "api",
+    "anthropicApiKey": "sk-ant-xxxxx",
+    "maxCostPerDay": 500,
+    "maxConcurrentWorkers": 10
+  }'
+
+# Response: { "id": "acc-456", "apiKey": "buildd_service_xxxxx", ... }
 ```
 
 ### 3. Grant Workspace Access
@@ -101,18 +135,33 @@ curl -X POST http://localhost:3000/api/accounts/acc-123/workspaces \
 
 ### 4. Run an Agent
 
+**Option A: User Agent (OAuth)**
+
 ```bash
 cd packages/agent
 go build -o buildd-agent
 
 export BUILDD_SERVER=http://localhost:3000
-export BUILDD_API_KEY=buildd_xxxxx
-export ANTHROPIC_API_KEY=sk-ant-xxxxx
+export BUILDD_API_KEY=buildd_user_xxxxx
+export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
 
 ./buildd-agent --workspace=ws-456 --max-tasks=3
 ```
 
-Agent will poll for tasks and execute them locally.
+**Option B: Service Agent (API)**
+
+```bash
+cd packages/agent
+go build -o buildd-agent
+
+export BUILDD_SERVER=http://localhost:3000
+export BUILDD_API_KEY=buildd_service_xxxxx
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
+
+./buildd-agent --workspace=ws-456 --max-tasks=10
+```
+
+Agent will automatically detect which authentication method to use based on environment variables and poll for tasks.
 
 ## Task Routing
 
