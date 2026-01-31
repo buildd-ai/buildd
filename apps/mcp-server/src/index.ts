@@ -5,9 +5,83 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { execSync } from "child_process";
 
 const SERVER_URL = process.env.BUILDD_SERVER || "https://buildd-three.vercel.app";
 const API_KEY = process.env.BUILDD_API_KEY || "";
+const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || "";
+
+// Cache for workspace lookup
+let cachedWorkspaceId: string | null = null;
+
+/**
+ * Extract repo full name (owner/repo) from git remote URL
+ */
+function getRepoFullNameFromGit(): string | null {
+  try {
+    const remoteUrl = execSync("git remote get-url origin", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+
+    // Handle SSH URLs: git@github.com:owner/repo.git
+    const sshMatch = remoteUrl.match(/git@github\.com:([^/]+\/[^.]+)(?:\.git)?$/);
+    if (sshMatch) return sshMatch[1];
+
+    // Handle HTTPS URLs: https://github.com/owner/repo.git
+    const httpsMatch = remoteUrl.match(/github\.com\/([^/]+\/[^.]+)(?:\.git)?$/);
+    if (httpsMatch) return httpsMatch[1];
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get workspace ID from repo full name via API
+ */
+async function getWorkspaceIdFromRepo(repoFullName: string): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `${SERVER_URL}/api/workspaces/by-repo?repo=${encodeURIComponent(repoFullName)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+        },
+      }
+    );
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    return data.workspace?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the workspace ID to use for filtering
+ * Priority: BUILDD_WORKSPACE_ID env > git remote lookup > null (no filter)
+ */
+async function getWorkspaceId(): Promise<string | null> {
+  // Use explicit env var if set
+  if (EXPLICIT_WORKSPACE_ID) return EXPLICIT_WORKSPACE_ID;
+
+  // Use cached value if available
+  if (cachedWorkspaceId !== null) return cachedWorkspaceId || null;
+
+  // Try to detect from git remote
+  const repoFullName = getRepoFullNameFromGit();
+  if (repoFullName) {
+    cachedWorkspaceId = await getWorkspaceIdFromRepo(repoFullName);
+    return cachedWorkspaceId;
+  }
+
+  cachedWorkspaceId = "";
+  return null;
+}
 
 interface Task {
   id: string;
@@ -15,6 +89,7 @@ interface Task {
   description: string;
   status: string;
   priority: number;
+  workspaceId?: string;
   workspace?: { name: string };
 }
 
@@ -193,36 +268,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "buildd_list_tasks": {
+        const workspaceId = await getWorkspaceId();
         const data = await apiCall("/api/tasks");
         const tasks = data.tasks || [];
 
-        // Filter by status if provided
-        const filtered = args?.status
-          ? tasks.filter((t: Task) => t.status === args.status)
+        // Filter by workspace if detected
+        let filtered = workspaceId
+          ? tasks.filter((t: Task) => t.workspaceId === workspaceId)
           : tasks;
+
+        // Filter by status if provided
+        if (args?.status) {
+          filtered = filtered.filter((t: Task) => t.status === args.status);
+        }
 
         const summary = filtered.map((t: Task) =>
           `- [${t.status}] ${t.title} (${t.workspace?.name || 'no workspace'})\n  ${t.description?.slice(0, 100) || 'No description'}...`
         ).join("\n\n");
+
+        const workspaceNote = workspaceId
+          ? `\n\n(Filtered to current workspace)`
+          : "";
 
         return {
           content: [
             {
               type: "text",
               text: filtered.length > 0
-                ? `Found ${filtered.length} tasks:\n\n${summary}`
-                : "No tasks found",
+                ? `Found ${filtered.length} tasks:\n\n${summary}${workspaceNote}`
+                : `No tasks found${workspaceNote}`,
             },
           ],
         };
       }
 
       case "buildd_claim_task": {
+        // Use explicit arg, or fall back to auto-detected workspace
+        const workspaceId = args?.workspaceId || await getWorkspaceId();
         const data = await apiCall("/api/workers/claim", {
           method: "POST",
           body: JSON.stringify({
             maxTasks: args?.maxTasks || 1,
-            workspaceId: args?.workspaceId,
+            workspaceId,
           }),
         });
 
