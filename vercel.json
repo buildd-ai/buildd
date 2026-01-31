@@ -1,0 +1,7 @@
+{
+  "bunVersion": "1.x",
+  "buildCommand": "bun run --filter @buildd/web build",
+  "installCommand": "bun install",
+  "framework": "nextjs",
+  "outputDirectory": "apps/web/.next"
+}
