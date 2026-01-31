@@ -24,6 +24,19 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Check migrations are up to date
+        run: |
+          cd packages/core
+          bun db:generate
+          if [ -n "$(git status --porcelain drizzle/)" ]; then
+            echo "::error::Schema changes detected but migrations not committed!"
+            echo "Run 'cd packages/core && bun db:generate' and commit the generated files."
+            git status drizzle/
+            git diff drizzle/
+            exit 1
+          fi
+          echo "Migrations are up to date"
+
       - name: Type check
         run: cd apps/web && bunx tsc --noEmit
 
