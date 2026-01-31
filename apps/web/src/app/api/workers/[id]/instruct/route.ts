@@ -73,11 +73,21 @@ export async function POST(
     );
   }
 
-  // Store instructions - will be delivered on next progress update
+  // Get current instruction history
+  const currentHistory = (worker.instructionHistory as any[]) || [];
+
+  // Add to history and set as pending
+  const newHistoryEntry = {
+    type: 'instruction' as const,
+    message,
+    timestamp: Date.now(),
+  };
+
   const [updated] = await db
     .update(workers)
     .set({
       pendingInstructions: message,
+      instructionHistory: [...currentHistory, newHistoryEntry],
       updatedAt: new Date(),
     })
     .where(eq(workers.id, id))
