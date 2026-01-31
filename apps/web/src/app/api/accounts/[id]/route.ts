@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { eq, and } from 'drizzle-orm';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 export async function GET(
   req: NextRequest,
@@ -14,14 +14,14 @@ export async function GET(
     return NextResponse.json({ account: null });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
     const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, id),
+      where: and(eq(accounts.id, id), eq(accounts.ownerId, user.id)),
     });
 
     if (!account) {
@@ -45,15 +45,15 @@ export async function DELETE(
     return NextResponse.json({ success: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // Check if account exists
+    // Check if account exists and belongs to user
     const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, id),
+      where: and(eq(accounts.id, id), eq(accounts.ownerId, user.id)),
     });
 
     if (!account) {

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { accounts, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
@@ -22,20 +22,53 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey);
 
   // Fall back to session auth
-  const session = await auth();
+  const user = await getCurrentUser();
 
-  if (!account && !session?.user) {
+  if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const allTasks = await db.query.tasks.findMany({
-      orderBy: desc(tasks.createdAt),
-      with: { workspace: true },
-    });
+    let allTasks;
+
+    if (apiAccount) {
+      // For API key auth, get tasks from workspaces linked to the account
+      const linkedWorkspaces = await db.query.accountWorkspaces.findMany({
+        where: eq(accountWorkspaces.accountId, apiAccount.id),
+        columns: { workspaceId: true },
+      });
+      const workspaceIds = linkedWorkspaces.map(aw => aw.workspaceId);
+
+      if (workspaceIds.length > 0) {
+        allTasks = await db.query.tasks.findMany({
+          where: inArray(tasks.workspaceId, workspaceIds),
+          orderBy: desc(tasks.createdAt),
+          with: { workspace: true },
+        });
+      } else {
+        allTasks = [];
+      }
+    } else {
+      // For session auth, get tasks from user's workspaces
+      const userWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.ownerId, user!.id),
+        columns: { id: true },
+      });
+      const workspaceIds = userWorkspaces.map(w => w.id);
+
+      if (workspaceIds.length > 0) {
+        allTasks = await db.query.tasks.findMany({
+          where: inArray(tasks.workspaceId, workspaceIds),
+          orderBy: desc(tasks.createdAt),
+          with: { workspace: true },
+        });
+      } else {
+        allTasks = [];
+      }
+    }
 
     return NextResponse.json({ tasks: allTasks });
   } catch (error) {
@@ -53,12 +86,12 @@ export async function POST(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey);
 
   // Fall back to session auth
-  const session = await auth();
+  const user = await getCurrentUser();
 
-  if (!account && !session?.user) {
+  if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
