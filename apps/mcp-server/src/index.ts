@@ -258,20 +258,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["workerId", "title", "head"],
       },
     },
-    {
-      name: "buildd_reassign_task",
-      description: "Force-reassign a stuck task. Marks current worker as failed and resets task to pending.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          taskId: {
-            type: "string",
-            description: "The task ID to reassign",
-          },
-        },
-        required: ["taskId"],
-      },
-    },
   ],
 }));
 
@@ -444,25 +430,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`,
-            },
-          ],
-        };
-      }
-
-      case "buildd_reassign_task": {
-        if (!args?.taskId) {
-          throw new Error("taskId is required");
-        }
-
-        await apiCall(`/api/tasks/${args.taskId}/reassign`, {
-          method: "POST",
-        });
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Task ${args.taskId} has been reset to pending and is available for claiming.`,
             },
           ],
         };
