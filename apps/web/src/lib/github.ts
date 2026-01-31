@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { createSign, createPrivateKey } from 'crypto';
 
 // GitHub App configuration
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
@@ -34,38 +35,30 @@ export function getGitHubAppConfig() {
 }
 
 // Generate JWT for GitHub App authentication
-async function generateAppJWT(): Promise<string> {
+function generateAppJWT(): string {
   if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
     throw new Error('GitHub App not configured');
   }
 
   const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
     iat: now - 60,  // Issued 60 seconds ago to account for clock drift
     exp: now + 600, // Expires in 10 minutes
     iss: GITHUB_APP_ID,
   };
 
-  // Use Web Crypto API for JWT signing (works in Edge runtime)
-  const header = { alg: 'RS256', typ: 'JWT' };
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const signatureInput = `${encodedHeader}.${encodedPayload}`;
 
-  const privateKey = await crypto.subtle.importKey(
-    'pkcs8',
-    pemToArrayBuffer(GITHUB_APP_PRIVATE_KEY),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
+  // Use Node's crypto - handles both PKCS#1 and PKCS#8 key formats
+  const privateKey = createPrivateKey(GITHUB_APP_PRIVATE_KEY);
+  const sign = createSign('RSA-SHA256');
+  sign.update(signatureInput);
+  const signature = sign.sign(privateKey);
 
-  const signature = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
-    privateKey,
-    new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`)
-  );
-
-  return `${encodedHeader}.${encodedPayload}.${base64UrlEncode(signature)}`;
+  return `${signatureInput}.${base64UrlEncode(signature)}`;
 }
 
 // Get installation access token
@@ -84,7 +77,7 @@ export async function getInstallationToken(installationId: number): Promise<stri
   }
 
   // Generate new token
-  const appJwt = await generateAppJWT();
+  const appJwt = generateAppJWT();
   const response = await fetch(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
@@ -206,28 +199,14 @@ export async function verifyWebhookSignature(payload: string, signature: string)
 }
 
 // Helper functions for JWT encoding
-function base64UrlEncode(data: string | ArrayBuffer): string {
+function base64UrlEncode(data: string | Buffer): string {
   let base64: string;
   if (typeof data === 'string') {
-    base64 = btoa(data);
+    base64 = Buffer.from(data).toString('base64');
   } else {
-    base64 = btoa(String.fromCharCode(...new Uint8Array(data)));
+    base64 = data.toString('base64');
   }
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const base64 = pem
-    .replace(/-----BEGIN.*-----/, '')
-    .replace(/-----END.*-----/, '')
-    .replace(/\s/g, '');
-  const binary = atob(base64);
-  const buffer = new ArrayBuffer(binary.length);
-  const view = new Uint8Array(buffer);
-  for (let i = 0; i < binary.length; i++) {
-    view[i] = binary.charCodeAt(i);
-  }
-  return buffer;
 }
 
 function arrayBufferToHex(buffer: ArrayBuffer): string {
