@@ -6,9 +6,9 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    buildd Server (hosted)                   │
-│                    - UI, DB, task management                │
-│                    - SSE aggregation                        │
+│                buildd Server (Next.js on Vercel)            │
+│                - UI, DB, task management                    │
+│                - Bun runtime for speed                      │
 └─────────────────────────────────────────────────────────────┘
                               ▲
                               │ REST API + SSE
@@ -16,11 +16,54 @@
           │                   │                   │
    ┌──────┴─────┐      ┌──────┴─────┐      ┌──────┴─────┐
    │ buildd-agent│     │ buildd-agent│     │ buildd-agent│
-   │  (Go binary)│     │  (Go binary)│     │  (Go binary)│
+   │ (Bun binary)│     │ (Bun binary)│     │ (Bun binary)│
    │             │     │             │     │             │
    │ Your laptop │     │ Coder WS    │     │ GH Action   │
    └─────────────┘     └─────────────┘     └─────────────┘
 ```
+
+**Stack:**
+- **Server**: Next.js + Bun runtime on Vercel
+- **Agent**: Bun CLI (compiles to standalone binary)
+- **Database**: Neon (PostgreSQL)
+- **Shared**: TypeScript monorepo
+
+## Project Structure
+
+```
+buildd/ (Bun monorepo)
+├── apps/
+│   ├── web/              # Next.js app (Vercel deployment)
+│   │   ├── app/          # App Router
+│   │   │   ├── api/      # API routes for agents
+│   │   │   ├── actions/  # Server Actions for UI
+│   │   │   └── page.tsx  # Dashboard
+│   │   └── vercel.json   # Bun runtime config
+│   │
+│   └── agent/            # Bun CLI agent
+│       ├── src/
+│       │   ├── index.ts  # CLI entry
+│       │   ├── agent.ts  # Task claiming
+│       │   └── runner.ts # Claude execution
+│       └── package.json  # bun build --compile
+│
+├── packages/
+│   ├── shared/           # Shared types
+│   └── core/             # Shared business logic
+│       ├── db/           # Drizzle schema + client
+│       ├── worker-runner.ts
+│       └── config.ts
+│
+└── bun.workspaces        # Monorepo config
+```
+
+**Key Benefits:**
+- ✅ One runtime (Bun) for everything
+- ✅ One lockfile (`bun.lockb`)
+- ✅ Shared types & logic (`@buildd/shared`, `@buildd/core`)
+- ✅ Fast development (Bun is 10x faster than Node)
+- ✅ Agent compiles to binary (`bun build --compile`)
+- ✅ Vercel deployment with Bun runtime
 
 **buildd = Task broker** that doesn't care what's executing:
 - **User agents**: Run on your laptop when you're AFK
@@ -60,22 +103,30 @@ Ephemeral agents triggered by CI/CD.
 
 ## Quick Start
 
-### 1. Start the Server
+### 1. Install Bun
 
 ```bash
-# Install dependencies
-pnpm install
+curl -fsSL https://bun.sh/install | bash
+```
+
+### 2. Start the Server
+
+```bash
+# Install dependencies (all workspaces)
+bun install
 
 # Set up environment
 cp .env.example .env
 # Edit .env with your Neon + Anthropic keys
 
 # Generate and run migrations
-pnpm db:generate
-pnpm db:migrate
+cd packages/core
+bun run drizzle-kit generate
+bun run drizzle-kit migrate
+cd ../..
 
-# Start server + web UI
-pnpm dev
+# Start Next.js dev server (with Bun runtime)
+bun dev
 ```
 
 Server runs at `http://localhost:3000`
@@ -138,30 +189,38 @@ curl -X POST http://localhost:3000/api/accounts/acc-123/workspaces \
 **Option A: User Agent (OAuth)**
 
 ```bash
-cd packages/agent
-go build -o buildd-agent
+# Authenticate with Claude
+claude auth
 
-export BUILDD_SERVER=http://localhost:3000
+# Run agent with Bun
+cd apps/agent
 export BUILDD_API_KEY=buildd_user_xxxxx
 export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
 
-./buildd-agent --workspace=ws-456 --max-tasks=3
+bun run start --server=http://localhost:3000 --max-tasks=3
 ```
 
 **Option B: Service Agent (API)**
 
 ```bash
-cd packages/agent
-go build -o buildd-agent
-
-export BUILDD_SERVER=http://localhost:3000
+cd apps/agent
 export BUILDD_API_KEY=buildd_service_xxxxx
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
 
-./buildd-agent --workspace=ws-456 --max-tasks=10
+bun run start --server=http://localhost:3000 --max-tasks=10
 ```
 
-Agent will automatically detect which authentication method to use based on environment variables and poll for tasks.
+**Build Binary (Production):**
+
+```bash
+cd apps/agent
+bun run build
+# → Outputs to dist/buildd-agent (standalone binary)
+
+./dist/buildd-agent --server=https://api.buildd.dev --api-key=xxx
+```
+
+Agent automatically detects authentication method (OAuth vs API) based on environment variables.
 
 ## Task Routing
 
