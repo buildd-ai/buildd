@@ -317,6 +317,33 @@ const baseTools = [
 // Admin-only tools
 const adminTools = [
   {
+    name: "buildd_create_task",
+    description: "Create a new task in buildd",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Task title",
+        },
+        description: {
+          type: "string",
+          description: "Task description with details of what needs to be done",
+        },
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+        priority: {
+          type: "number",
+          description: "Priority (0-10, higher = more urgent)",
+          default: 5,
+        },
+      },
+      required: ["title", "description"],
+    },
+  },
+  {
     name: "buildd_reassign_task",
     description: "Force-reassign a stuck task. Marks current workers as failed and resets task to pending.",
     inputSchema: {
@@ -581,6 +608,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_create_task": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.title || !args?.description) {
+          throw new Error("title and description are required");
+        }
+
+        // Use provided workspace or detect from git
+        const workspaceId = args.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const task = await apiCall("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify({
+            workspaceId,
+            title: args.title,
+            description: args.description,
+            priority: args.priority || 5,
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}`,
             },
           ],
         };
