@@ -2,6 +2,12 @@
   "name": "@buildd/core",
   "version": "0.1.0",
   "type": "module",
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:migrate": "bun run db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
   "exports": {
     "./db": "./db/index.ts",
     "./db/*": "./db/*.ts",
