@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { desc } from 'drizzle-orm';
 import Link from 'next/link';
+import DeleteAccountButton from './DeleteAccountButton';
 
 export default async function AccountsPage() {
   const isDev = process.env.NODE_ENV === 'development';
@@ -81,10 +82,13 @@ export default async function AccountsPage() {
                   <code>{account.apiKey}</code>
                 </div>
 
-                <div className="mt-3 text-xs text-gray-500">
-                  Auth: {account.authType} |
-                  {account.authType === 'api' && ` Cost: $${account.totalCost}`}
-                  {account.authType === 'oauth' && ` Sessions: ${account.activeSessions}/${account.maxConcurrentSessions || '∞'}`}
+                <div className="mt-3 flex justify-between items-center">
+                  <span className="text-xs text-gray-500">
+                    Auth: {account.authType} |
+                    {account.authType === 'api' && ` Cost: $${account.totalCost}`}
+                    {account.authType === 'oauth' && ` Sessions: ${account.activeSessions}/${account.maxConcurrentSessions || '∞'}`}
+                  </span>
+                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
                 </div>
               </div>
             ))}
