@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/neon-http';
 import { neon } from '@neondatabase/serverless';
 import { migrate } from 'drizzle-orm/neon-http/migrator';
-import { config } from '../config.js';
+import { config } from '../config';
 
 async function main() {
   const sql = neon(config.databaseUrl);

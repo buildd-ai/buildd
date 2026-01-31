@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, Account } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
 
-async function authenticateApiKey(apiKey: string | null): Promise<Account | null> {
+async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
 
   const account = await db.query.accounts.findFirst({
@@ -117,8 +117,9 @@ export async function POST(req: NextRequest) {
   // Filter by capabilities
   const filteredTasks = claimableTasks.filter((task) => {
     if (capabilities.length === 0) return true;
-    if (task.requiredCapabilities.length === 0) return true;
-    return task.requiredCapabilities.every((cap) => capabilities.includes(cap));
+    const reqCaps = task.requiredCapabilities || [];
+    if (reqCaps.length === 0) return true;
+    return reqCaps.every((cap) => capabilities.includes(cap));
   });
 
   // Claim tasks and create workers
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest) {
       id: worker.id,
       taskId: task.id,
       branch,
-      task,
+      task: task as any,
     });
   }
 

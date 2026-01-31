@@ -2,12 +2,9 @@ import { config as dotenvConfig } from 'dotenv';
 
 dotenvConfig();
 
+// Don't throw during build - Vercel sets env vars at runtime
 function required(key: string): string {
-  const value = process.env[key];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-  return value;
+  return process.env[key] || '';
 }
 
 function optional(key: string, defaultValue: string): string {
@@ -18,9 +15,9 @@ export const config = {
   port: parseInt(optional('PORT', '3001')),
   host: optional('HOST', '0.0.0.0'),
   nodeEnv: optional('NODE_ENV', 'development'),
-  
+
   databaseUrl: required('DATABASE_URL'),
-  
+
   anthropicApiKey: required('ANTHROPIC_API_KEY'),
   anthropicModel: optional('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929'),
   

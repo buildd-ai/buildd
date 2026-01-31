@@ -1,9 +1,9 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
-import { db } from '../db/client.js';
-import { workers, messages, tasks } from '../db/schema.js';
+import { db } from '../db/client';
+import { workers, messages, tasks } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { config } from '../config.js';
+import { config } from '../config';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
 
 export class WorkerRunner extends EventEmitter {
@@ -132,7 +132,7 @@ export class WorkerRunner extends EventEmitter {
 
       // Update account stats based on auth type
       if (worker?.account) {
-        const { accounts } = await import('../db/schema.js');
+        const { accounts } = await import('../db/schema');
         const { sql } = await import('drizzle-orm');
 
         if (worker.account.authType === 'api') {
