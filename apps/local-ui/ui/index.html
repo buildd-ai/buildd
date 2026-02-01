@@ -146,7 +146,17 @@
         <div class="modal-body">
           <div class="form-group">
             <label>Workspace</label>
-            <select id="taskWorkspace" class="input"></select>
+            <div class="workspace-select-row">
+              <select id="taskWorkspace" class="input flex-1"></select>
+              <button type="button" class="btn btn-secondary btn-icon-text" id="manageWorkspacesBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+                </svg>
+                Manage
+              </button>
+            </div>
+            <p id="workspaceHint" class="form-hint hidden"></p>
           </div>
           <div class="form-group">
             <label>Title</label>
