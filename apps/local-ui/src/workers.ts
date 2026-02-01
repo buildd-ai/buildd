@@ -2,7 +2,7 @@ import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import Pusher from 'pusher-js';
@@ -10,43 +10,21 @@ import Pusher from 'pusher-js';
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
-// Read Claude settings
-function getClaudeSettings(): { authToken?: string; baseUrl?: string } | null {
-  const settingsPath = join(homedir(), '.claude', 'settings.json');
-  if (existsSync(settingsPath)) {
-    try {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      return {
-        authToken: settings.env?.ANTHROPIC_AUTH_TOKEN || settings.env?.ANTHROPIC_API_KEY,
-        baseUrl: settings.env?.ANTHROPIC_BASE_URL,
-      };
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-// Check if Claude Code is authenticated
-async function checkClaudeAuth(overrideApiKey?: string): Promise<{ ok: boolean; error?: string; source?: string }> {
-  // Check override first (from local-ui config)
-  if (overrideApiKey) {
-    return { ok: true, source: 'local-ui config' };
+// Check if Claude Code credentials exist (OAuth or API key)
+// We don't validate - just check if credentials file exists
+function hasClaudeCredentials(): boolean {
+  // Check for OAuth credentials from `claude login`
+  const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+  if (existsSync(credentialsPath)) {
+    return true;
   }
 
-  // Check env var
+  // Check env vars
   if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
-    return { ok: true, source: 'environment' };
+    return true;
   }
 
-  // Check .claude/settings.json
-  const settings = getClaudeSettings();
-  if (settings?.authToken) {
-    return { ok: true, source: '.claude/settings.json' };
-  }
-
-  // No credentials found
-  return { ok: false, error: 'No Anthropic API key found. Run: claude login' };
+  return false;
 }
 
 export class WorkerManager {
@@ -61,8 +39,7 @@ export class WorkerManager {
   private syncInterval?: Timer;
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
-  private claudeAuthenticated: boolean | null = null;
-  private authError?: string;
+  private hasCredentials: boolean = false;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -83,28 +60,18 @@ export class WorkerManager {
       console.log('Pusher connected for command relay');
     }
 
-    // Check Claude auth on startup (async, non-blocking)
-    this.checkAuth();
-  }
-
-  // Check Claude Code authentication status
-  async checkAuth(): Promise<{ ok: boolean; error?: string }> {
-    const result = await checkClaudeAuth(this.config.anthropicApiKey);
-    this.claudeAuthenticated = result.ok;
-    this.authError = result.error;
-
-    if (result.ok) {
-      console.log(`Claude Code: authenticated (${result.source})`);
+    // Check if credentials exist (don't validate, SDK handles auth)
+    this.hasCredentials = hasClaudeCredentials();
+    if (this.hasCredentials) {
+      console.log('Claude Code: credentials found');
     } else {
-      console.warn('Claude Code: NOT authenticated -', result.error);
+      console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
     }
-
-    return result;
   }
 
-  // Get current auth status
-  getAuthStatus(): { authenticated: boolean | null; error?: string } {
-    return { authenticated: this.claudeAuthenticated, error: this.authError };
+  // Check if credentials exist
+  getAuthStatus(): { hasCredentials: boolean } {
+    return { hasCredentials: this.hasCredentials };
   }
 
   // Subscribe to commands from server
@@ -221,18 +188,9 @@ export class WorkerManager {
   }
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
-    // Check Claude auth before claiming
-    if (this.claudeAuthenticated === false) {
-      console.error('Cannot claim task: Claude Code not authenticated');
-      throw new Error(this.authError || 'Claude Code not authenticated. Run: claude login');
-    }
-
-    // If auth status unknown, check now
-    if (this.claudeAuthenticated === null) {
-      const authResult = await this.checkAuth();
-      if (!authResult.ok) {
-        throw new Error(authResult.error || 'Claude Code not authenticated. Run: claude login');
-      }
+    // Warn if no credentials found (but let SDK handle actual auth)
+    if (!this.hasCredentials) {
+      console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
     }
 
     // Resolve workspace path
@@ -295,20 +253,10 @@ export class WorkerManager {
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
     try {
-      // Set API key override if configured (for this session)
-      const originalApiKey = process.env.ANTHROPIC_API_KEY;
-      if (this.config.anthropicApiKey) {
-        process.env.ANTHROPIC_API_KEY = this.config.anthropicApiKey;
-      }
-
+      // SDK handles auth automatically (uses ~/.claude/.credentials.json or env vars)
       const session = unstable_v2_createSession({
         model: this.config.model,
       });
-
-      // Restore original (cleanup happens in finally block)
-      if (this.config.anthropicApiKey && originalApiKey !== undefined) {
-        process.env.ANTHROPIC_API_KEY = originalApiKey;
-      }
 
       this.sessions.set(worker.id, session);
 

@@ -132,8 +132,6 @@ const config: LocalUIConfig = {
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY,
   pusherCluster: process.env.PUSHER_CLUSTER,
-  // Override Anthropic API key (use your own account instead of global .claude/settings.json)
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY_OVERRIDE,
 };
 
 // Allow running without API key - will show setup UI
@@ -225,24 +223,14 @@ const server = Bun.serve({
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
-      const claudeAuth = workerManager?.getAuthStatus() || { authenticated: null };
+      const authStatus = workerManager?.getAuthStatus() || { hasCredentials: false };
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
-        claudeAuth: claudeAuth.authenticated,
-        claudeAuthError: claudeAuth.error,
+        hasClaudeCredentials: authStatus.hasCredentials,
       }, { headers: corsHeaders });
-    }
-
-    // Check/refresh Claude Code auth status
-    if (path === '/api/claude-auth' && req.method === 'GET') {
-      if (!workerManager) {
-        return Response.json({ authenticated: null, error: 'Worker manager not initialized' }, { headers: corsHeaders });
-      }
-      const status = await workerManager.checkAuth();
-      return Response.json({ authenticated: status.ok, error: status.error }, { headers: corsHeaders });
     }
 
     // Enable serverless mode (local-only, no server)
@@ -253,6 +241,14 @@ const server = Bun.serve({
       saveConfig({ serverless: true });
 
       return Response.json({ ok: true, serverless: true }, { headers: corsHeaders });
+    }
+
+    // Disable serverless mode
+    if (path === '/api/config/serverless' && req.method === 'DELETE') {
+      config.serverless = false;
+      saveConfig({ serverless: false });
+
+      return Response.json({ ok: true, serverless: false }, { headers: corsHeaders });
     }
 
     // Set API key
@@ -433,13 +429,7 @@ const server = Bun.serve({
         }
         return Response.json({ worker }, { headers: corsHeaders });
       } catch (err: any) {
-        // Handle auth errors gracefully
-        const isAuthError = err.message?.toLowerCase().includes('not authenticated') ||
-                           err.message?.toLowerCase().includes('login');
-        return Response.json({
-          error: err.message || 'Failed to claim',
-          authError: isAuthError,
-        }, { status: isAuthError ? 401 : 400, headers: corsHeaders });
+        return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
       }
     }
 
@@ -772,7 +762,6 @@ console.log(`  URL:        http://localhost:${PORT}`);
 console.log(`  Server:     ${config.builddServer}`);
 console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
 console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
-console.log(`  Claude:     ${config.anthropicApiKey ? 'override set' : 'using global settings'}`);
 console.log(`  Config:     ${CONFIG_FILE}`);
 console.log('');
 console.log(`Project root(s): ${projectRoots.join(', ')}`);
