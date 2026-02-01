@@ -132,6 +132,8 @@ const config: LocalUIConfig = {
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY,
   pusherCluster: process.env.PUSHER_CLUSTER,
+  // Override Anthropic API key (use your own account instead of global .claude/settings.json)
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY_OVERRIDE,
 };
 
 // Allow running without API key - will show setup UI
@@ -770,6 +772,7 @@ console.log(`  URL:        http://localhost:${PORT}`);
 console.log(`  Server:     ${config.builddServer}`);
 console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
 console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
+console.log(`  Claude:     ${config.anthropicApiKey ? 'override set' : 'using global settings'}`);
 console.log(`  Config:     ${CONFIG_FILE}`);
 console.log('');
 console.log(`Project root(s): ${projectRoots.join(', ')}`);

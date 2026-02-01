@@ -70,4 +70,6 @@ export interface LocalUIConfig {
   // Pusher config (optional, for command relay)
   pusherKey?: string;
   pusherCluster?: string;
+  // Override Anthropic API key (uses own account instead of global settings)
+  anthropicApiKey?: string;
 }
