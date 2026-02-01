@@ -44,6 +44,46 @@ export default async function TasksPage() {
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   };
 
+  // Smart sorting: active tasks first, then pending, then completed/failed
+  const statusPriority: Record<string, number> = {
+    running: 0,
+    assigned: 1,
+    pending: 2,
+    completed: 3,
+    failed: 4,
+  };
+
+  const sortedTasks = [...allTasks].sort((a, b) => {
+    // First by status priority
+    const statusDiff = (statusPriority[a.status] ?? 5) - (statusPriority[b.status] ?? 5);
+    if (statusDiff !== 0) return statusDiff;
+    // Then by priority (higher first)
+    const priorityDiff = (b.priority ?? 0) - (a.priority ?? 0);
+    if (priorityDiff !== 0) return priorityDiff;
+    // Then by date (newer first)
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+
+  // Group tasks by workspace
+  const tasksByWorkspace = sortedTasks.reduce((acc, task) => {
+    const wsId = task.workspaceId;
+    if (!acc[wsId]) {
+      acc[wsId] = { workspace: task.workspace, tasks: [] };
+    }
+    acc[wsId].tasks.push(task);
+    return acc;
+  }, {} as Record<string, { workspace: typeof workspaces.$inferSelect; tasks: typeof allTasks }>);
+
+  // Sort workspace groups: those with active tasks first
+  const sortedGroups = Object.values(tasksByWorkspace).sort((a, b) => {
+    const aHasActive = a.tasks.some(t => t.status === 'running' || t.status === 'assigned');
+    const bHasActive = b.tasks.some(t => t.status === 'running' || t.status === 'assigned');
+    if (aHasActive && !bHasActive) return -1;
+    if (!aHasActive && bHasActive) return 1;
+    // Then by most recent task
+    return new Date(b.tasks[0]?.createdAt || 0).getTime() - new Date(a.tasks[0]?.createdAt || 0).getTime();
+  });
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -76,24 +116,33 @@ export default async function TasksPage() {
             </Link>
           </div>
         ) : (
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
-            {allTasks.map((task) => (
-              <Link
-                key={task.id}
-                href={`/tasks/${task.id}`}
-                className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <h3 className="font-medium">{task.title}</h3>
-                    <p className="text-sm text-gray-500 line-clamp-1">{task.description}</p>
-                    <p className="text-xs text-gray-400 mt-1">{task.workspace?.name}</p>
-                  </div>
-                  <span className={`px-2 py-1 text-xs rounded-full ml-4 ${statusColors[task.status] || statusColors.pending}`}>
-                    {task.status}
-                  </span>
+          <div className="space-y-6">
+            {sortedGroups.map(({ workspace, tasks: wsTasks }) => (
+              <div key={workspace.id}>
+                <div className="flex items-center gap-2 mb-2">
+                  <h2 className="text-sm font-medium text-gray-500">{workspace.name}</h2>
+                  <span className="text-xs text-gray-400">({wsTasks.length})</span>
                 </div>
-              </Link>
+                <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+                  {wsTasks.map((task) => (
+                    <Link
+                      key={task.id}
+                      href={`/tasks/${task.id}`}
+                      className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <h3 className="font-medium">{task.title}</h3>
+                          <p className="text-sm text-gray-500 line-clamp-1">{task.description}</p>
+                        </div>
+                        <span className={`px-2 py-1 text-xs rounded-full ml-4 ${statusColors[task.status] || statusColors.pending}`}>
+                          {task.status}
+                        </span>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
