@@ -8,6 +8,7 @@ import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
+const REPOS_CACHE_FILE = join(homedir(), '.buildd', 'repos-cache.json');
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
@@ -53,6 +54,65 @@ function saveConfig(data: { apiKey?: string; serverless?: boolean }) {
 }
 
 const savedConfig = loadSavedConfig();
+
+// Repos cache
+interface CachedRepo {
+  path: string;
+  remoteUrl: string | null;
+  normalizedUrl: string | null;
+}
+
+let cachedRepos: CachedRepo[] | null = null;
+
+function loadReposCache(): CachedRepo[] | null {
+  try {
+    if (existsSync(REPOS_CACHE_FILE)) {
+      const data = JSON.parse(readFileSync(REPOS_CACHE_FILE, 'utf-8'));
+      if (data.repos && Array.isArray(data.repos)) {
+        console.log(`Loaded ${data.repos.length} repos from cache`);
+        return data.repos;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
+}
+
+function saveReposCache(repos: CachedRepo[]) {
+  try {
+    const dir = join(homedir(), '.buildd');
+    if (!existsSync(dir)) {
+      const { mkdirSync } = require('fs');
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(REPOS_CACHE_FILE, JSON.stringify({ repos, updatedAt: Date.now() }, null, 2));
+    console.log(`Saved ${repos.length} repos to cache`);
+  } catch (err) {
+    console.error('Failed to save repos cache:', err);
+  }
+}
+
+function getRepos(forceRescan = false): CachedRepo[] {
+  if (!forceRescan && cachedRepos) {
+    return cachedRepos;
+  }
+
+  if (!forceRescan) {
+    const cached = loadReposCache();
+    if (cached) {
+      cachedRepos = cached;
+      return cached;
+    }
+  }
+
+  // Scan fresh
+  console.log('Scanning for git repositories...');
+  const scanned = resolver.scanGitRepos();
+  cachedRepos = scanned;
+  saveReposCache(scanned);
+  return scanned;
+}
 
 // Load config from env, falling back to saved config
 const config: LocalUIConfig = {
@@ -449,9 +509,15 @@ const server = Bun.serve({
       return Response.json({ ok: true, action }, { headers: corsHeaders });
     }
 
+    // Rescan local repos
+    if (path === '/api/rescan' && req.method === 'POST') {
+      const repos = getRepos(true); // Force rescan
+      return Response.json({ ok: true, count: repos.length }, { headers: corsHeaders });
+    }
+
     // Combined workspaces endpoint - merges server workspaces with local repos
     if (path === '/api/combined-workspaces' && req.method === 'GET') {
-      const localRepos = resolver.scanGitRepos();
+      const localRepos = getRepos(); // Use cached
       const serverWorkspaces = buildd ? await buildd.listWorkspaces() : [];
       const isServerless = config.serverless || !config.apiKey;
 
@@ -569,7 +635,7 @@ const server = Bun.serve({
 
     // Legacy local repos endpoint
     if (path === '/api/local-repos' && req.method === 'GET') {
-      const repos = resolver.scanGitRepos();
+      const repos = getRepos(); // Use cached
       return Response.json({ repos }, { headers: corsHeaders });
     }
 
@@ -681,9 +747,9 @@ console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4)
 console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
 console.log(`  Config:     ${CONFIG_FILE}`);
 console.log('');
-console.log(`Scanning ${projectRoots.length} project root(s): ${projectRoots.join(', ')}`);
-const repos = resolver.scanGitRepos();
-console.log(`Found ${repos.length} git repositories`);
+console.log(`Project root(s): ${projectRoots.join(', ')}`);
+const repos = getRepos(); // Use cached, will scan only if no cache
+console.log(`${repos.length} git repositories (${cachedRepos ? 'from cache' : 'scanned'})`);
 
 if (!config.apiKey && !config.serverless) {
   console.log('');
