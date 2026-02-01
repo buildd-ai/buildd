@@ -5,11 +5,21 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ hideCompleted?: string }>;
+}) {
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
+  const params = await searchParams;
+  const hideCompleted = params.hideCompleted === 'true';
 
-  let allTasks: (typeof tasks.$inferSelect & { workspace: typeof workspaces.$inferSelect })[] = [];
+  let allTasks: (typeof tasks.$inferSelect & {
+    workspace: typeof workspaces.$inferSelect;
+    subTasks?: { id: string }[];
+    parentTask?: { id: string; title: string } | null;
+  })[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -28,7 +38,11 @@ export default async function TasksPage() {
         allTasks = await db.query.tasks.findMany({
           where: inArray(tasks.workspaceId, workspaceIds),
           orderBy: desc(tasks.createdAt),
-          with: { workspace: true },
+          with: {
+            workspace: true,
+            subTasks: { columns: { id: true } },
+            parentTask: { columns: { id: true, title: true } },
+          },
         }) as any;
       }
     } catch (error) {
@@ -44,6 +58,11 @@ export default async function TasksPage() {
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   };
 
+  // Filter completed tasks if toggle is on
+  const visibleTasks = hideCompleted
+    ? allTasks.filter(t => !['completed', 'failed'].includes(t.status))
+    : allTasks;
+
   // Smart sorting: active tasks first, then pending, then completed/failed
   const statusPriority: Record<string, number> = {
     running: 0,
@@ -53,7 +72,7 @@ export default async function TasksPage() {
     failed: 4,
   };
 
-  const sortedTasks = [...allTasks].sort((a, b) => {
+  const sortedTasks = [...visibleTasks].sort((a, b) => {
     // First by status priority
     const statusDiff = (statusPriority[a.status] ?? 5) - (statusPriority[b.status] ?? 5);
     if (statusDiff !== 0) return statusDiff;
@@ -94,12 +113,20 @@ export default async function TasksPage() {
             </Link>
             <h1 className="text-3xl font-bold">Tasks</h1>
           </div>
-          <Link
-            href="/tasks/new"
-            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
-          >
-            + New Task
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link
+              href={hideCompleted ? '/tasks' : '/tasks?hideCompleted=true'}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              {hideCompleted ? 'Show completed' : 'Hide completed'}
+            </Link>
+            <Link
+              href="/tasks/new"
+              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            >
+              + New Task
+            </Link>
+          </div>
         </div>
 
         {allTasks.length === 0 ? (
@@ -132,7 +159,15 @@ export default async function TasksPage() {
                     >
                       <div className="flex justify-between items-start">
                         <div className="flex-1">
-                          <h3 className="font-medium">{task.title}</h3>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium">{task.title}</h3>
+                            {task.subTasks && task.subTasks.length > 0 && (
+                              <span className="text-xs text-gray-400">↳ {task.subTasks.length} subtask{task.subTasks.length !== 1 ? 's' : ''}</span>
+                            )}
+                            {task.parentTask && (
+                              <span className="text-xs text-gray-400">← from #{task.parentTask.id.slice(0, 8)}</span>
+                            )}
+                          </div>
                           <p className="text-sm text-gray-500 line-clamp-1">{task.description}</p>
                         </div>
                         <span className={`px-2 py-1 text-xs rounded-full ml-4 ${statusColors[task.status] || statusColors.pending}`}>

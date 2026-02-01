@@ -11,10 +11,15 @@ let isConfigured = false;
 const setupEl = document.getElementById('setup');
 const appEl = document.getElementById('app');
 const workersEl = document.getElementById('workers');
+const completedEl = document.getElementById('completed');
+const completedSectionEl = document.getElementById('completedSection');
 const tasksEl = document.getElementById('tasks');
 const workerModal = document.getElementById('workerModal');
 const taskModal = document.getElementById('taskModal');
 const settingsModal = document.getElementById('settingsModal');
+
+// State for collapsed completed section
+let completedCollapsed = true;
 
 // Setup UI elements
 const manualKeyBtn = document.getElementById('manualKeyBtn');
@@ -243,12 +248,25 @@ function handleEvent(event) {
 
 // Render functions
 function renderWorkers() {
-  if (workers.length === 0) {
+  const active = workers.filter(w => ['working', 'stale'].includes(w.status));
+  const completed = workers.filter(w => ['done', 'error'].includes(w.status));
+
+  // Render active workers
+  if (active.length === 0) {
     workersEl.innerHTML = '<div class="empty">No active workers</div>';
-    return;
+  } else {
+    workersEl.innerHTML = active.map(w => renderWorkerCard(w)).join('');
+    workersEl.querySelectorAll('.worker-card').forEach(card => {
+      card.onclick = () => openWorkerModal(card.dataset.id);
+    });
   }
 
-  workersEl.innerHTML = workers.map(w => `
+  // Render completed section
+  renderCompletedSection(completed);
+}
+
+function renderWorkerCard(w) {
+  return `
     <div class="worker-card" data-id="${w.id}">
       <div class="card-header">
         <div class="status-dot ${getStatusClass(w)}"></div>
@@ -262,12 +280,54 @@ function renderWorkers() {
       </div>
       <div class="card-action">${escapeHtml(w.currentAction)}</div>
     </div>
-  `).join('');
+  `;
+}
+
+function renderCompletedSection(completed) {
+  if (completed.length === 0) {
+    completedSectionEl.classList.add('hidden');
+    completedEl.innerHTML = '';
+    return;
+  }
+
+  completedSectionEl.classList.remove('hidden');
+  const recent = completed.slice(0, 10); // Show last 10
+
+  completedEl.innerHTML = `
+    <div class="section-header-collapsible ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
+      <span class="section-title">Completed (${completed.length})</span>
+      <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </div>
+    <div class="completed-list ${completedCollapsed ? 'hidden' : ''}">
+      ${recent.map(w => renderCompletedCard(w)).join('')}
+    </div>
+  `;
 
   // Add click handlers
-  workersEl.querySelectorAll('.worker-card').forEach(card => {
+  completedEl.querySelectorAll('.worker-card').forEach(card => {
     card.onclick = () => openWorkerModal(card.dataset.id);
   });
+}
+
+function renderCompletedCard(w) {
+  return `
+    <div class="worker-card completed-card" data-id="${w.id}">
+      <div class="card-header">
+        <div class="status-dot ${w.status}"></div>
+        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
+        <div class="card-badge">${w.status}</div>
+      </div>
+      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones</div>
+    </div>
+  `;
+}
+
+function toggleCompleted() {
+  completedCollapsed = !completedCollapsed;
+  const completed = workers.filter(w => ['done', 'error'].includes(w.status));
+  renderCompletedSection(completed);
 }
 
 function getStatusClass(worker) {

@@ -32,12 +32,14 @@ export default async function TaskDetailPage({
     redirect('/auth/signin');
   }
 
-  // Get task with workspace (for ownership check)
+  // Get task with workspace (for ownership check) and relationships
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     with: {
       workspace: true,
       account: true,
+      parentTask: { columns: { id: true, title: true, status: true } },
+      subTasks: { columns: { id: true, title: true, status: true } },
     },
   });
 
@@ -130,6 +132,49 @@ export default async function TaskDetailPage({
           <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
             <h2 className="text-sm font-medium text-gray-500 mb-2">Description</h2>
             <p className="whitespace-pre-wrap">{task.description}</p>
+          </div>
+        )}
+
+        {/* Task Relationships */}
+        {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+          <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
+            <h2 className="text-sm font-medium text-gray-500 mb-3">Related Tasks</h2>
+            <div className="space-y-3">
+              {task.parentTask && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Parent:</span>
+                  <Link
+                    href={`/tasks/${task.parentTask.id}`}
+                    className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    {task.parentTask.title}
+                  </Link>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${statusColors[task.parentTask.status] || statusColors.pending}`}>
+                    {task.parentTask.status}
+                  </span>
+                </div>
+              )}
+              {task.subTasks && task.subTasks.length > 0 && (
+                <div>
+                  <span className="text-xs text-gray-400">Subtasks ({task.subTasks.length}):</span>
+                  <div className="mt-2 space-y-1 ml-4">
+                    {task.subTasks.map((sub: { id: string; title: string; status: string }) => (
+                      <div key={sub.id} className="flex items-center gap-2">
+                        <Link
+                          href={`/tasks/${sub.id}`}
+                          className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          {sub.title}
+                        </Link>
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${statusColors[sub.status] || statusColors.pending}`}>
+                          {sub.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
