@@ -24,14 +24,17 @@ const cancelKeyBtn = document.getElementById('cancelKeyBtn');
 const saveKeyBtn = document.getElementById('saveKeyBtn');
 const setupError = document.getElementById('setupError');
 
+let isServerless = false;
+
 // Check configuration on startup
 async function checkConfig() {
   try {
     const res = await fetch('/api/config');
     const data = await res.json();
     isConfigured = data.configured;
+    isServerless = data.serverless;
 
-    if (isConfigured) {
+    if (isConfigured || isServerless) {
       showApp();
     } else {
       showSetup();
@@ -59,7 +62,31 @@ if (manualKeyBtn) {
   manualKeyBtn.addEventListener('click', () => {
     manualKeyForm.classList.remove('hidden');
     manualKeyBtn.classList.add('hidden');
+    document.getElementById('serverlessBtn')?.classList.add('hidden');
     apiKeyInput.focus();
+  });
+}
+
+// Serverless mode button
+const serverlessBtn = document.getElementById('serverlessBtn');
+if (serverlessBtn) {
+  serverlessBtn.addEventListener('click', async () => {
+    serverlessBtn.disabled = true;
+    serverlessBtn.textContent = 'Setting up...';
+
+    try {
+      const res = await fetch('/api/config/serverless', { method: 'POST' });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert('Failed to enable serverless mode');
+      }
+    } catch (err) {
+      alert('Error: ' + err.message);
+    } finally {
+      serverlessBtn.disabled = false;
+      serverlessBtn.textContent = 'Use Local Only (no server)';
+    }
   });
 }
 

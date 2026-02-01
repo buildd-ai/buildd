@@ -18,7 +18,7 @@ if (projectRoots.length === 0) {
 }
 
 // Load saved config
-function loadSavedConfig(): { apiKey?: string } {
+function loadSavedConfig(): { apiKey?: string; serverless?: boolean } {
   try {
     if (existsSync(CONFIG_FILE)) {
       return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
@@ -30,13 +30,15 @@ function loadSavedConfig(): { apiKey?: string } {
 }
 
 // Save config
-function saveConfig(data: { apiKey?: string }) {
+function saveConfig(data: { apiKey?: string; serverless?: boolean }) {
   try {
     const dir = join(homedir(), '.buildd');
     if (!existsSync(dir)) {
       require('fs').mkdirSync(dir, { recursive: true });
     }
-    writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+    // Merge with existing
+    const existing = loadSavedConfig();
+    writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, ...data }, null, 2));
   } catch (err) {
     console.error('Failed to save config:', err);
   }
@@ -52,6 +54,7 @@ const config: LocalUIConfig = {
   apiKey: process.env.BUILDD_API_KEY || savedConfig.apiKey || '',
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
+  serverless: savedConfig.serverless || false,
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
   localUiUrl: process.env.LOCAL_UI_URL,
   // Pusher config for command relay from server
@@ -150,9 +153,20 @@ const server = Bun.serve({
     if (path === '/api/config' && req.method === 'GET') {
       return Response.json({
         configured: !!config.apiKey,
+        serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
       }, { headers: corsHeaders });
+    }
+
+    // Enable serverless mode (local-only, no server)
+    if (path === '/api/config/serverless' && req.method === 'POST') {
+      config.serverless = true;
+      config.apiKey = ''; // Clear API key
+      buildd = null;
+      saveConfig({ serverless: true });
+
+      return Response.json({ ok: true, serverless: true }, { headers: corsHeaders });
     }
 
     // Set API key
@@ -272,10 +286,20 @@ const server = Bun.serve({
       });
     }
 
-    // API endpoints that require authentication
+    // API endpoints that require authentication (unless serverless)
     if (!buildd || !workerManager) {
-      if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
-        return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
+      // In serverless mode, allow local workspace operations
+      if (config.serverless) {
+        // Allow combined-workspaces and local-repos in serverless
+        if (path === '/api/combined-workspaces' || path === '/api/local-repos') {
+          // Will be handled below
+        } else if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+          return Response.json({ error: 'Server features not available in local-only mode', serverless: true }, { status: 400, headers: corsHeaders });
+        }
+      } else {
+        if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+          return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
+        }
       }
     }
 
@@ -421,6 +445,7 @@ const server = Bun.serve({
     if (path === '/api/combined-workspaces' && req.method === 'GET') {
       const localRepos = resolver.scanGitRepos();
       const serverWorkspaces = buildd ? await buildd.listWorkspaces() : [];
+      const isServerless = config.serverless || !config.apiKey;
 
       // Normalize git URL for comparison
       const normalizeUrl = (url: string | null) => {
@@ -430,6 +455,21 @@ const server = Bun.serve({
           .replace(/^https?:\/\/[^/]+\//, '')
           .replace(/^git@[^:]+:/, '');
       };
+
+      // Extract org/owner from normalized URL
+      const getOwner = (url: string | null) => {
+        const normalized = normalizeUrl(url);
+        if (!normalized) return null;
+        const parts = normalized.split('/');
+        return parts.length >= 2 ? parts[0] : null;
+      };
+
+      // Get set of orgs/owners from server workspaces
+      const serverOwners = new Set<string>();
+      for (const ws of serverWorkspaces) {
+        const owner = getOwner(ws.repo);
+        if (owner) serverOwners.add(owner);
+      }
 
       // Build combined list
       const combined: any[] = [];
@@ -464,18 +504,26 @@ const server = Bun.serve({
         }
       }
 
-      // Add local-only repos
+      // Add local-only repos (filtered by matching orgs, unless serverless)
       for (const repo of localRepos) {
         if (!matchedLocalPaths.has(repo.path) && repo.normalizedUrl) {
-          combined.push({
-            id: null,
-            name: repo.path.split('/').pop(),
-            repo: repo.remoteUrl,
-            localPath: repo.path,
-            normalizedUrl: repo.normalizedUrl,
-            status: 'local-only', // Local only, can sync to server
-            source: 'local',
-          });
+          const owner = getOwner(repo.remoteUrl);
+
+          // In serverless mode, show all local repos
+          // In server mode, only show repos from matching orgs
+          const shouldInclude = isServerless || serverOwners.size === 0 || (owner && serverOwners.has(owner));
+
+          if (shouldInclude) {
+            combined.push({
+              id: null,
+              name: repo.path.split('/').pop(),
+              repo: repo.remoteUrl,
+              localPath: repo.path,
+              normalizedUrl: repo.normalizedUrl,
+              status: 'local-only', // Local only, can sync to server
+              source: 'local',
+            });
+          }
         }
       }
 
@@ -483,7 +531,11 @@ const server = Bun.serve({
       const order = { ready: 0, 'needs-clone': 1, 'local-only': 2 };
       combined.sort((a, b) => order[a.status as keyof typeof order] - order[b.status as keyof typeof order]);
 
-      return Response.json({ workspaces: combined }, { headers: corsHeaders });
+      return Response.json({
+        workspaces: combined,
+        serverless: isServerless,
+        serverOwners: Array.from(serverOwners),
+      }, { headers: corsHeaders });
     }
 
     // Clone a server workspace locally
