@@ -28,14 +28,30 @@ fi
 INSTALL_DIR="$HOME/.buildd"
 BIN_DIR="$HOME/.local/bin"
 
-# Clone or update
-if [ -d "$INSTALL_DIR" ]; then
+# Clone or update using sparse checkout (only apps/local-ui)
+if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
   git pull --ff-only origin dev 2>/dev/null || git pull origin dev
 else
-  echo "Cloning buildd..."
-  git clone --depth 1 -b dev https://github.com/buildd-ai/buildd.git "$INSTALL_DIR"
+  echo "Cloning buildd (local-ui only)..."
+
+  # Clean install dir if it exists but isn't a git repo
+  [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+
+  # Initialize sparse checkout
+  mkdir -p "$INSTALL_DIR"
+  cd "$INSTALL_DIR"
+  git init
+  git remote add origin https://github.com/buildd-ai/buildd.git
+  git config core.sparseCheckout true
+
+  # Only checkout local-ui app
+  echo "apps/local-ui/" > .git/info/sparse-checkout
+
+  # Fetch and checkout
+  git fetch --depth 1 origin dev
+  git checkout dev
 fi
 
 # Install dependencies
@@ -73,20 +89,7 @@ if [ -z "$PROJECTS_ROOT" ]; then
   export PROJECTS_ROOT="$ROOTS"
 fi
 
-# Check for API key
-if [ -z "$BUILDD_API_KEY" ]; then
-  echo "BUILDD_API_KEY not set."
-  echo ""
-  echo "Either:"
-  echo "  1. Set it in ~/.buildd.env:"
-  echo "     echo 'export BUILDD_API_KEY=bld_xxx' >> ~/.buildd.env"
-  echo ""
-  echo "  2. Or pass it directly:"
-  echo "     BUILDD_API_KEY=bld_xxx buildd"
-  exit 1
-fi
-
-# Run
+# Run (no longer requires API key upfront - UI handles setup)
 exec bun run "$HOME/.buildd/apps/local-ui/src/index.ts" "$@"
 LAUNCHER
 
@@ -107,19 +110,11 @@ fi
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
-echo "Next steps:"
+echo "Run buildd to start:"
+echo "  buildd"
 echo ""
-echo "1. Add your API key to ~/.buildd.env:"
-echo "   echo 'export BUILDD_API_KEY=bld_xxx' >> ~/.buildd.env"
-echo ""
-echo "2. (Optional) Set custom project roots:"
-echo "   echo 'export PROJECTS_ROOT=~/projects,~/work' >> ~/.buildd.env"
-echo ""
-echo "3. Run buildd:"
-echo "   buildd"
-echo ""
-echo "   Or with a custom port:"
-echo "   PORT=8080 buildd"
+echo "Or with a custom port:"
+echo "  PORT=8080 buildd"
 echo ""
 
 # Reload PATH for current session
