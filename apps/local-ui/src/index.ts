@@ -20,11 +20,15 @@ if (projectRoots.length === 0) {
 // Load saved config
 function loadSavedConfig(): { apiKey?: string; serverless?: boolean } {
   try {
+    console.log(`Loading config from: ${CONFIG_FILE}`);
     if (existsSync(CONFIG_FILE)) {
-      return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+      const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+      console.log(`Loaded config: apiKey=${data.apiKey ? 'bld_***' : 'none'}, serverless=${data.serverless || false}`);
+      return data;
     }
-  } catch {
-    // Ignore
+    console.log('No saved config found');
+  } catch (err) {
+    console.error('Failed to load config:', err);
   }
   return {};
 }
@@ -34,11 +38,15 @@ function saveConfig(data: { apiKey?: string; serverless?: boolean }) {
   try {
     const dir = join(homedir(), '.buildd');
     if (!existsSync(dir)) {
-      require('fs').mkdirSync(dir, { recursive: true });
+      const { mkdirSync } = require('fs');
+      mkdirSync(dir, { recursive: true });
+      console.log(`Created config directory: ${dir}`);
     }
     // Merge with existing
     const existing = loadSavedConfig();
-    writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, ...data }, null, 2));
+    const merged = { ...existing, ...data };
+    writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+    console.log(`Saved config to ${CONFIG_FILE}: apiKey=${merged.apiKey ? 'bld_***' : 'none'}, serverless=${merged.serverless || false}`);
   } catch (err) {
     console.error('Failed to save config:', err);
   }
@@ -663,16 +671,21 @@ const server = Bun.serve({
   },
 });
 
-console.log(`buildd local-ui running at http://localhost:${PORT}`);
-console.log(`Scanning ${projectRoots.length} project root(s)...`);
+console.log('');
+console.log(`╔════════════════════════════════════════════╗`);
+console.log(`║  buildd local-ui                           ║`);
+console.log(`╚════════════════════════════════════════════╝`);
+console.log(`  URL:        http://localhost:${PORT}`);
+console.log(`  Server:     ${config.builddServer}`);
+console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
+console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
+console.log(`  Config:     ${CONFIG_FILE}`);
+console.log('');
+console.log(`Scanning ${projectRoots.length} project root(s): ${projectRoots.join(', ')}`);
 const repos = resolver.scanGitRepos();
-console.log(`Found ${repos.length} git repositories:`);
-for (const repo of repos) {
-  if (repo.normalizedUrl) {
-    console.log(`  ${repo.normalizedUrl} -> ${repo.path}`);
-  }
-}
-if (!config.apiKey) {
+console.log(`Found ${repos.length} git repositories`);
+
+if (!config.apiKey && !config.serverless) {
   console.log('');
-  console.log('No API key configured. Visit http://localhost:' + PORT + ' to set up.');
+  console.log('⚠ No API key configured. Visit http://localhost:' + PORT + ' to set up.');
 }
