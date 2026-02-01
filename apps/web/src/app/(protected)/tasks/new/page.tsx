@@ -4,9 +4,12 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
+const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
+
 interface Workspace {
   id: string;
   name: string;
+  isDefault?: boolean;
 }
 
 export default function NewTaskPage() {
@@ -15,11 +18,35 @@ export default function NewTaskPage() {
   const [error, setError] = useState('');
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
 
   useEffect(() => {
     fetch('/api/workspaces')
       .then(res => res.json())
-      .then(data => setWorkspaces(data.workspaces || []))
+      .then(data => {
+        const ws = data.workspaces || [];
+        setWorkspaces(ws);
+
+        // Smart workspace selection priority:
+        // 1. Last used workspace (from localStorage)
+        // 2. Default workspace (if marked)
+        // 3. First workspace (if only one)
+        if (ws.length > 0) {
+          const lastUsed = localStorage.getItem(LAST_WORKSPACE_KEY);
+          const lastUsedExists = lastUsed && ws.some((w: Workspace) => w.id === lastUsed);
+
+          if (lastUsedExists) {
+            setSelectedWorkspaceId(lastUsed);
+          } else {
+            const defaultWs = ws.find((w: Workspace) => w.isDefault);
+            if (defaultWs) {
+              setSelectedWorkspaceId(defaultWs.id);
+            } else if (ws.length === 1) {
+              setSelectedWorkspaceId(ws[0].id);
+            }
+          }
+        }
+      })
       .catch(() => setWorkspaces([]))
       .finally(() => setLoadingWorkspaces(false));
   }, []);
@@ -30,8 +57,9 @@ export default function NewTaskPage() {
     setError('');
 
     const formData = new FormData(e.currentTarget);
+    const workspaceId = formData.get('workspaceId') as string;
     const data = {
-      workspaceId: formData.get('workspaceId') as string,
+      workspaceId,
       title: formData.get('title') as string,
       description: formData.get('description') as string,
       priority: parseInt(formData.get('priority') as string) || 0,
@@ -48,6 +76,9 @@ export default function NewTaskPage() {
         const err = await res.json();
         throw new Error(err.error || 'Failed to create task');
       }
+
+      // Remember last used workspace
+      localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
 
       router.push('/tasks');
       router.refresh();
@@ -93,6 +124,8 @@ export default function NewTaskPage() {
                 name="workspaceId"
                 required
                 disabled={loadingWorkspaces}
+                value={selectedWorkspaceId}
+                onChange={(e) => setSelectedWorkspaceId(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
                 <option value="">Select a workspace</option>
