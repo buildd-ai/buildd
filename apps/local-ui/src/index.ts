@@ -417,28 +417,100 @@ const server = Bun.serve({
       return Response.json({ ok: true, action }, { headers: corsHeaders });
     }
 
-    // Local repositories endpoint - shows all git repos found locally
+    // Combined workspaces endpoint - merges server workspaces with local repos
+    if (path === '/api/combined-workspaces' && req.method === 'GET') {
+      const localRepos = resolver.scanGitRepos();
+      const serverWorkspaces = buildd ? await buildd.listWorkspaces() : [];
+
+      // Normalize git URL for comparison
+      const normalizeUrl = (url: string | null) => {
+        if (!url) return null;
+        return url.toLowerCase()
+          .replace(/\.git$/, '')
+          .replace(/^https?:\/\/[^/]+\//, '')
+          .replace(/^git@[^:]+:/, '');
+      };
+
+      // Build combined list
+      const combined: any[] = [];
+      const matchedLocalPaths = new Set<string>();
+
+      // Process server workspaces
+      for (const ws of serverWorkspaces) {
+        const normalizedWsRepo = normalizeUrl(ws.repo);
+
+        // Find matching local repo
+        const localMatch = localRepos.find(r => r.normalizedUrl === normalizedWsRepo);
+
+        if (localMatch) {
+          matchedLocalPaths.add(localMatch.path);
+          combined.push({
+            id: ws.id,
+            name: ws.name,
+            repo: ws.repo,
+            localPath: localMatch.path,
+            status: 'ready', // Both server and local
+            source: 'matched',
+          });
+        } else {
+          combined.push({
+            id: ws.id,
+            name: ws.name,
+            repo: ws.repo,
+            localPath: null,
+            status: 'needs-clone', // Server only, needs clone
+            source: 'server',
+          });
+        }
+      }
+
+      // Add local-only repos
+      for (const repo of localRepos) {
+        if (!matchedLocalPaths.has(repo.path) && repo.normalizedUrl) {
+          combined.push({
+            id: null,
+            name: repo.path.split('/').pop(),
+            repo: repo.remoteUrl,
+            localPath: repo.path,
+            normalizedUrl: repo.normalizedUrl,
+            status: 'local-only', // Local only, can sync to server
+            source: 'local',
+          });
+        }
+      }
+
+      // Sort: ready first, then needs-clone, then local-only
+      const order = { ready: 0, 'needs-clone': 1, 'local-only': 2 };
+      combined.sort((a, b) => order[a.status as keyof typeof order] - order[b.status as keyof typeof order]);
+
+      return Response.json({ workspaces: combined }, { headers: corsHeaders });
+    }
+
+    // Clone a server workspace locally
+    if (path === '/api/workspaces/clone' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { workspaceId, repoUrl, targetPath } = body;
+
+      if (!repoUrl) {
+        return Response.json({ error: 'repoUrl required' }, { status: 400, headers: corsHeaders });
+      }
+
+      const clonePath = targetPath || `${config.projectRoots?.[0] || config.projectsRoot}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
+
+      try {
+        const { execSync } = require('child_process');
+        execSync(`git clone ${repoUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+
+        return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Legacy local repos endpoint
     if (path === '/api/local-repos' && req.method === 'GET') {
       const repos = resolver.scanGitRepos();
-      // Enrich with workspace match info if configured
-      const workspaces = buildd ? await buildd.listWorkspaces() : [];
-
-      const enrichedRepos = repos.map(repo => {
-        const matchedWorkspace = workspaces.find((ws: any) => {
-          const normalizedWs = ws.repo?.toLowerCase().replace(/\.git$/, '').split('/').slice(-2).join('/');
-          return normalizedWs === repo.normalizedUrl;
-        });
-
-        return {
-          ...repo,
-          name: repo.path.split('/').pop(),
-          workspaceId: matchedWorkspace?.id || null,
-          workspaceName: matchedWorkspace?.name || null,
-          synced: !!matchedWorkspace,
-        };
-      });
-
-      return Response.json({ repos: enrichedRepos }, { headers: corsHeaders });
+      return Response.json({ repos }, { headers: corsHeaders });
     }
 
     // Create workspace from local repo

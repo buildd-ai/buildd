@@ -356,61 +356,170 @@ async function loadTasks() {
   }
 }
 
+let combinedWorkspaces = [];
+
 async function loadWorkspaces() {
   try {
-    // Fetch both server workspaces and local repos
-    const [wsRes, reposRes] = await Promise.all([
-      fetch('/api/workspaces'),
-      fetch('/api/local-repos'),
-    ]);
-
-    const wsData = await wsRes.json();
-    const reposData = await reposRes.json();
-
-    workspaces = wsData.workspaces || [];
-    const localRepos = reposData.repos || [];
+    const res = await fetch('/api/combined-workspaces');
+    const data = await res.json();
+    combinedWorkspaces = data.workspaces || [];
 
     const select = document.getElementById('taskWorkspace');
 
-    // Build options: server workspaces first, then unsynced local repos
+    // Only show ready workspaces in dropdown
+    const ready = combinedWorkspaces.filter(w => w.status === 'ready');
+    const needsClone = combinedWorkspaces.filter(w => w.status === 'needs-clone');
+
     let options = '';
 
-    if (workspaces.length > 0) {
-      options += '<optgroup label="Server Workspaces">';
-      options += workspaces.map(w =>
+    if (ready.length > 0) {
+      options += ready.map(w =>
         `<option value="${w.id}">${escapeHtml(w.name)}</option>`
       ).join('');
-      options += '</optgroup>';
     }
 
-    // Local repos that aren't synced yet
-    const unsyncedRepos = localRepos.filter(r => !r.synced && r.normalizedUrl);
-    if (unsyncedRepos.length > 0) {
-      options += '<optgroup label="Local Repositories (not synced)">';
-      options += unsyncedRepos.map(r =>
-        `<option value="local:${r.path}" data-repo-path="${escapeHtml(r.path)}">${escapeHtml(r.name)} (${r.normalizedUrl})</option>`
-      ).join('');
-      options += '</optgroup>';
+    if (ready.length === 0 && needsClone.length > 0) {
+      options = '<option value="" disabled>No local workspaces - click Manage to clone</option>';
     }
 
-    // Synced local repos (show workspace ID)
-    const syncedRepos = localRepos.filter(r => r.synced);
-    if (syncedRepos.length > 0 && workspaces.length === 0) {
-      // If no server workspaces loaded, show synced local repos
-      options += '<optgroup label="Local (synced)">';
-      options += syncedRepos.map(r =>
-        `<option value="${r.workspaceId}">${escapeHtml(r.name)}</option>`
-      ).join('');
-      options += '</optgroup>';
+    if (ready.length === 0 && needsClone.length === 0) {
+      options = '<option value="" disabled>No workspaces found</option>';
     }
 
-    if (!options) {
-      options = '<option value="">No workspaces found</option>';
-    }
+    // Add manage option
+    options += '<option value="__manage__">+ Manage Workspaces...</option>';
 
     select.innerHTML = options;
+
+    // Handle manage selection
+    select.onchange = () => {
+      if (select.value === '__manage__') {
+        select.value = ready[0]?.id || '';
+        openWorkspaceModal();
+      }
+    };
   } catch (err) {
     console.error('Failed to load workspaces:', err);
+  }
+}
+
+// Workspace modal
+const workspaceModal = document.getElementById('workspaceModal');
+const workspaceModalBack = document.getElementById('workspaceModalBack');
+
+if (workspaceModalBack) {
+  workspaceModalBack.addEventListener('click', closeWorkspaceModal);
+}
+
+function openWorkspaceModal() {
+  renderWorkspaceModal();
+  workspaceModal.classList.remove('hidden');
+}
+
+function closeWorkspaceModal() {
+  workspaceModal.classList.add('hidden');
+}
+
+async function renderWorkspaceModal() {
+  // Refresh data
+  const res = await fetch('/api/combined-workspaces');
+  const data = await res.json();
+  combinedWorkspaces = data.workspaces || [];
+
+  const ready = combinedWorkspaces.filter(w => w.status === 'ready');
+  const needsClone = combinedWorkspaces.filter(w => w.status === 'needs-clone');
+  const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
+
+  document.getElementById('workspacesReady').innerHTML = ready.length ? ready.map(w => `
+    <div class="workspace-item">
+      <div class="workspace-info">
+        <div class="workspace-name">${escapeHtml(w.name)}</div>
+        <div class="workspace-path">${escapeHtml(w.localPath)}</div>
+      </div>
+      <span class="badge badge-success">Ready</span>
+    </div>
+  `).join('') : '<div class="empty-small">None</div>';
+
+  document.getElementById('workspacesNeedsClone').innerHTML = needsClone.length ? needsClone.map(w => `
+    <div class="workspace-item">
+      <div class="workspace-info">
+        <div class="workspace-name">${escapeHtml(w.name)}</div>
+        <div class="workspace-repo">${escapeHtml(w.repo || '')}</div>
+      </div>
+      <button class="btn btn-small btn-primary" onclick="cloneWorkspace('${w.id}', '${escapeHtml(w.repo)}')">
+        Clone
+      </button>
+    </div>
+  `).join('') : '<div class="empty-small">None</div>';
+
+  document.getElementById('workspacesLocalOnly').innerHTML = localOnly.length ? localOnly.map(w => `
+    <div class="workspace-item">
+      <div class="workspace-info">
+        <div class="workspace-name">${escapeHtml(w.name)}</div>
+        <div class="workspace-repo">${escapeHtml(w.normalizedUrl || '')}</div>
+      </div>
+      <button class="btn btn-small btn-secondary" onclick="syncWorkspace('${escapeHtml(w.localPath)}', '${escapeHtml(w.name)}')">
+        Sync
+      </button>
+    </div>
+  `).join('') : '<div class="empty-small">None</div>';
+}
+
+async function cloneWorkspace(workspaceId, repoUrl) {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Cloning...';
+
+  try {
+    const res = await fetch('/api/workspaces/clone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, repoUrl }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(`Clone failed: ${err.error}`);
+      return;
+    }
+
+    // Refresh
+    await renderWorkspaceModal();
+    await loadWorkspaces();
+  } catch (err) {
+    alert('Clone failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Clone';
+  }
+}
+
+async function syncWorkspace(localPath, name) {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+
+  try {
+    const res = await fetch('/api/local-repos/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoPath: localPath, name }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(`Sync failed: ${err.error}`);
+      return;
+    }
+
+    // Refresh
+    await renderWorkspaceModal();
+    await loadWorkspaces();
+  } catch (err) {
+    alert('Sync failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sync';
   }
 }
 
@@ -480,38 +589,16 @@ async function sendMessage() {
 }
 
 async function createTask() {
-  let workspaceId = document.getElementById('taskWorkspace').value;
+  const workspaceId = document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
 
-  if (!workspaceId || !title) {
-    alert('Please fill in workspace and title');
+  if (!workspaceId || workspaceId === '__manage__' || !title) {
+    alert('Please select a workspace and fill in the title');
     return;
   }
 
   try {
-    // If it's a local repo, sync it first
-    if (workspaceId.startsWith('local:')) {
-      const repoPath = workspaceId.replace('local:', '');
-      const repoName = repoPath.split('/').pop();
-
-      // Sync to server
-      const syncRes = await fetch('/api/local-repos/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoPath, name: repoName }),
-      });
-
-      if (!syncRes.ok) {
-        const err = await syncRes.json();
-        alert(`Failed to sync workspace: ${err.error}`);
-        return;
-      }
-
-      const syncData = await syncRes.json();
-      workspaceId = syncData.workspace.id;
-    }
-
     const payload = {
       workspaceId,
       title,
