@@ -223,12 +223,24 @@ const server = Bun.serve({
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
+      const claudeAuth = workerManager?.getAuthStatus() || { authenticated: null };
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
+        claudeAuth: claudeAuth.authenticated,
+        claudeAuthError: claudeAuth.error,
       }, { headers: corsHeaders });
+    }
+
+    // Check/refresh Claude Code auth status
+    if (path === '/api/claude-auth' && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ authenticated: null, error: 'Worker manager not initialized' }, { headers: corsHeaders });
+      }
+      const status = await workerManager.checkAuth();
+      return Response.json({ authenticated: status.ok, error: status.error }, { headers: corsHeaders });
     }
 
     // Enable serverless mode (local-only, no server)
@@ -412,12 +424,21 @@ const server = Bun.serve({
         return Response.json({ error: 'Task not found' }, { status: 404, headers: corsHeaders });
       }
 
-      const worker = await workerManager!.claimAndStart(task);
-      if (!worker) {
-        return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+      try {
+        const worker = await workerManager!.claimAndStart(task);
+        if (!worker) {
+          return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+        }
+        return Response.json({ worker }, { headers: corsHeaders });
+      } catch (err: any) {
+        // Handle auth errors gracefully
+        const isAuthError = err.message?.toLowerCase().includes('not authenticated') ||
+                           err.message?.toLowerCase().includes('login');
+        return Response.json({
+          error: err.message || 'Failed to claim',
+          authError: isAuthError,
+        }, { status: isAuthError ? 401 : 400, headers: corsHeaders });
       }
-
-      return Response.json({ worker }, { headers: corsHeaders });
     }
 
     if (path === '/api/abort' && req.method === 'POST') {

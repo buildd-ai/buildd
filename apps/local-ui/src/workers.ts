@@ -2,10 +2,60 @@ import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import Pusher from 'pusher-js';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
+
+// Check if Claude Code is authenticated
+async function checkClaudeAuth(): Promise<{ ok: boolean; error?: string }> {
+  // First check env var
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { ok: true };
+  }
+
+  // Check .claude/settings.json
+  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  if (existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (settings.apiKey || settings.anthropicApiKey) {
+        return { ok: true };
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  // Try a quick session to verify
+  try {
+    const session = unstable_v2_createSession({ model: 'claude-sonnet-4-20250514' });
+    await session.send('ping');
+    let authenticated = false;
+
+    for await (const msg of session.stream()) {
+      if (msg.type === 'assistant') {
+        authenticated = true;
+        break;
+      }
+      // Check for auth errors in output
+      if (msg.type === 'system') {
+        const text = JSON.stringify(msg).toLowerCase();
+        if (text.includes('api key') || text.includes('unauthorized')) {
+          session.close();
+          return { ok: false, error: 'Claude Code not authenticated. Run: claude login' };
+        }
+      }
+    }
+    session.close();
+    return authenticated ? { ok: true } : { ok: false, error: 'Could not verify authentication' };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Authentication check failed' };
+  }
+}
 
 export class WorkerManager {
   private config: LocalUIConfig;
@@ -19,6 +69,8 @@ export class WorkerManager {
   private syncInterval?: Timer;
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
+  private claudeAuthenticated: boolean | null = null;
+  private authError?: string;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -38,6 +90,29 @@ export class WorkerManager {
       });
       console.log('Pusher connected for command relay');
     }
+
+    // Check Claude auth on startup (async, non-blocking)
+    this.checkAuth();
+  }
+
+  // Check Claude Code authentication status
+  async checkAuth(): Promise<{ ok: boolean; error?: string }> {
+    const result = await checkClaudeAuth();
+    this.claudeAuthenticated = result.ok;
+    this.authError = result.error;
+
+    if (result.ok) {
+      console.log('Claude Code: authenticated');
+    } else {
+      console.warn('Claude Code: NOT authenticated -', result.error);
+    }
+
+    return result;
+  }
+
+  // Get current auth status
+  getAuthStatus(): { authenticated: boolean | null; error?: string } {
+    return { authenticated: this.claudeAuthenticated, error: this.authError };
   }
 
   // Subscribe to commands from server
@@ -154,6 +229,20 @@ export class WorkerManager {
   }
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
+    // Check Claude auth before claiming
+    if (this.claudeAuthenticated === false) {
+      console.error('Cannot claim task: Claude Code not authenticated');
+      throw new Error(this.authError || 'Claude Code not authenticated. Run: claude login');
+    }
+
+    // If auth status unknown, check now
+    if (this.claudeAuthenticated === null) {
+      const authResult = await this.checkAuth();
+      if (!authResult.ok) {
+        throw new Error(authResult.error || 'Claude Code not authenticated. Run: claude login');
+      }
+    }
+
     // Resolve workspace path
     const workspacePath = this.resolver.resolve({
       id: task.workspaceId,
