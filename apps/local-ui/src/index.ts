@@ -3,6 +3,7 @@ import { join } from 'path';
 import type { LocalUIConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
+import { createWorkspaceResolver } from './workspace';
 
 const PORT = parseInt(process.env.PORT || '8766');
 
@@ -26,7 +27,8 @@ if (!config.apiKey) {
 }
 
 const buildd = new BuilddClient(config);
-const workerManager = new WorkerManager(config);
+const resolver = createWorkspaceResolver(config.projectsRoot);
+const workerManager = new WorkerManager(config, resolver);
 
 // SSE clients
 const sseClients = new Set<ReadableStreamDefaultController>();
@@ -245,6 +247,51 @@ const server = Bun.serve({
       }
 
       return Response.json({ ok: true, action }, { headers: corsHeaders });
+    }
+
+    // Debug endpoints for workspace resolution testing
+    if (path === '/api/debug/directories' && req.method === 'GET') {
+      return Response.json({
+        projectsRoot: config.projectsRoot,
+        directories: resolver.listLocalDirectories(),
+        pathOverrides: resolver.getPathOverrides(),
+        gitRepos: resolver.scanGitRepos(),
+      }, { headers: corsHeaders });
+    }
+
+    if (path === '/api/debug/resolve' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { id, name, repo } = body;
+      if (!name) {
+        return Response.json({ error: 'name is required' }, { status: 400, headers: corsHeaders });
+      }
+      const debug = resolver.debugResolve({ id: id || '', name, repo });
+      return Response.json(debug, { headers: corsHeaders });
+    }
+
+    if (path === '/api/debug/resolve-all' && req.method === 'GET') {
+      // Fetch all workspaces from API and try to resolve each one
+      const workspaces = await buildd.listWorkspaces();
+      const results = workspaces.map((ws: any) => ({
+        workspace: { id: ws.id, name: ws.name, repo: ws.repo },
+        ...resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo }),
+      }));
+      return Response.json({
+        projectsRoot: config.projectsRoot,
+        localDirectories: resolver.listLocalDirectories(),
+        pathOverrides: resolver.getPathOverrides(),
+        workspaces: results,
+      }, { headers: corsHeaders });
+    }
+
+    if (path === '/api/debug/override' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { workspaceName, localPath } = body;
+      if (!workspaceName || !localPath) {
+        return Response.json({ error: 'workspaceName and localPath required' }, { status: 400, headers: corsHeaders });
+      }
+      resolver.setPathOverride(workspaceName, localPath);
+      return Response.json({ ok: true, overrides: resolver.getPathOverrides() }, { headers: corsHeaders });
     }
 
     // Static files
