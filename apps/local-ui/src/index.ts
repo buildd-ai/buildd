@@ -93,6 +93,8 @@ function saveReposCache(repos: CachedRepo[]) {
   }
 }
 
+let reposLoadedFromCache = false;
+
 function getRepos(forceRescan = false): CachedRepo[] {
   if (!forceRescan && cachedRepos) {
     return cachedRepos;
@@ -102,6 +104,7 @@ function getRepos(forceRescan = false): CachedRepo[] {
     const cached = loadReposCache();
     if (cached) {
       cachedRepos = cached;
+      reposLoadedFromCache = true;
       return cached;
     }
   }
@@ -110,6 +113,7 @@ function getRepos(forceRescan = false): CachedRepo[] {
   console.log('Scanning for git repositories...');
   const scanned = resolver.scanGitRepos();
   cachedRepos = scanned;
+  reposLoadedFromCache = false;
   saveReposCache(scanned);
   return scanned;
 }
@@ -749,7 +753,7 @@ console.log(`  Config:     ${CONFIG_FILE}`);
 console.log('');
 console.log(`Project root(s): ${projectRoots.join(', ')}`);
 const repos = getRepos(); // Use cached, will scan only if no cache
-console.log(`${repos.length} git repositories (${cachedRepos ? 'from cache' : 'scanned'})`);
+console.log(`${repos.length} git repositories${reposLoadedFromCache ? ' (cached)' : ''}`);
 
 if (!config.apiKey && !config.serverless) {
   console.log('');
