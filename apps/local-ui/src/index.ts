@@ -128,6 +128,7 @@ async function parseBody(req: Request) {
 // Handle requests
 const server = Bun.serve({
   port: PORT,
+  idleTimeout: 120, // 2 minutes for long-running requests
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;
@@ -279,8 +280,19 @@ const server = Bun.serve({
     }
 
     if (path === '/api/tasks' && req.method === 'GET') {
-      const tasks = await buildd!.listTasks();
-      return Response.json({ tasks }, { headers: corsHeaders });
+      try {
+        const tasks = await buildd!.listTasks();
+        return Response.json({ tasks }, { headers: corsHeaders });
+      } catch (err: any) {
+        // If 401, API key is invalid - clear and show setup
+        if (err.message?.includes('401')) {
+          config.apiKey = '';
+          buildd = null;
+          workerManager = null;
+          return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
+        }
+        throw err;
+      }
     }
 
     if (path === '/api/workspaces' && req.method === 'GET') {
