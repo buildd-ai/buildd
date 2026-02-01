@@ -260,12 +260,30 @@ export class WorkerManager {
         this.handleMessage(worker, msg);
       }
 
-      // Completed
-      worker.status = 'done';
-      worker.currentAction = 'Completed';
-      worker.hasNewActivity = true;
-      await this.buildd.updateWorker(worker.id, { status: 'completed' });
-      this.emit({ type: 'worker_update', worker });
+      // Check if session actually did work or just errored
+      const outputText = worker.output.join('\n').toLowerCase();
+      const isAuthError = outputText.includes('invalid api key') ||
+                          outputText.includes('please run /login') ||
+                          outputText.includes('authentication') ||
+                          outputText.includes('unauthorized');
+
+      if (isAuthError) {
+        // Auth error - mark as failed, not completed
+        worker.status = 'error';
+        worker.error = 'Agent authentication failed';
+        worker.currentAction = 'Auth failed';
+        worker.hasNewActivity = true;
+        await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
+        this.emit({ type: 'worker_update', worker });
+      } else {
+        // Actually completed
+        this.addMilestone(worker, 'Task completed');
+        worker.status = 'done';
+        worker.currentAction = 'Completed';
+        worker.hasNewActivity = true;
+        await this.buildd.updateWorker(worker.id, { status: 'completed' });
+        this.emit({ type: 'worker_update', worker });
+      }
 
     } catch (error) {
       console.error(`Worker ${worker.id} error:`, error);
@@ -346,9 +364,8 @@ export class WorkerManager {
 
     if (msg.type === 'result') {
       const result = msg as any;
-      if (result.subtype === 'success') {
-        this.addMilestone(worker, 'Task completed');
-      } else {
+      // Don't add "Task completed" here - we check for auth errors after stream ends
+      if (result.subtype !== 'success') {
         this.addMilestone(worker, `Error: ${result.subtype}`);
       }
     }
