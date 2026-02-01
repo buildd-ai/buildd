@@ -197,6 +197,49 @@
         </div>
       </div>
     </div>
+
+    <!-- Workspace management modal -->
+    <div id="workspaceModal" class="modal hidden">
+      <div class="modal-content modal-large">
+        <header class="modal-header">
+          <button class="btn-icon" id="workspaceModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <h2>Manage Workspaces</h2>
+          <div></div>
+        </header>
+        <div class="modal-body">
+          <div class="workspace-sections">
+            <section class="workspace-section">
+              <h3 class="section-label">
+                <span class="status-dot status-ready"></span>
+                Ready to Use
+              </h3>
+              <div id="workspacesReady" class="workspace-list"></div>
+            </section>
+
+            <section class="workspace-section">
+              <h3 class="section-label">
+                <span class="status-dot status-clone"></span>
+                Needs Clone
+              </h3>
+              <div id="workspacesNeedsClone" class="workspace-list"></div>
+            </section>
+
+            <section class="workspace-section">
+              <h3 class="section-label">
+                <span class="status-dot status-local"></span>
+                Local Only
+              </h3>
+              <p class="section-hint">These repos can be synced to buildd server</p>
+              <div id="workspacesLocalOnly" class="workspace-list"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <script src="/app.js"></script>
 </body>
