@@ -75,4 +75,14 @@ export class BuilddClient {
     const data = await this.fetch('/api/workspaces');
     return data.workspaces || [];
   }
+
+  async createWorkspace(workspace: {
+    name: string;
+    repoUrl?: string;
+  }) {
+    return this.fetch('/api/workspaces', {
+      method: 'POST',
+      body: JSON.stringify(workspace),
+    });
+  }
 }
