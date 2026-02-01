@@ -2,7 +2,7 @@ import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import Pusher from 'pusher-js';
@@ -11,12 +11,31 @@ type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
 // Check if Claude Code credentials exist (OAuth or API key)
-// We don't validate - just check if credentials file exists
+// We don't validate - just check if credentials exist
 function hasClaudeCredentials(): boolean {
-  // Check for OAuth credentials from `claude login`
+  // Check for OAuth credentials from `claude login` (.credentials.json)
   const credentialsPath = join(homedir(), '.claude', '.credentials.json');
   if (existsSync(credentialsPath)) {
     return true;
+  }
+
+  // Check for oauthAccount in Claude state files (where OAuth is sometimes stored)
+  const stateFiles = [
+    join(homedir(), '.claude', 'settings.json'),
+    join(homedir(), '.claude', 'settings.local.json'),
+    join(homedir(), '.claude.json'),
+  ];
+  for (const statePath of stateFiles) {
+    if (existsSync(statePath)) {
+      try {
+        const data = JSON.parse(readFileSync(statePath, 'utf-8'));
+        if (data.oauthAccount?.accessToken || data.oauthAccount?.refreshToken) {
+          return true;
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
   }
 
   // Check env vars
