@@ -10,51 +10,43 @@ import Pusher from 'pusher-js';
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
-// Check if Claude Code is authenticated
-async function checkClaudeAuth(): Promise<{ ok: boolean; error?: string }> {
-  // First check env var
-  if (process.env.ANTHROPIC_API_KEY) {
-    return { ok: true };
-  }
-
-  // Check .claude/settings.json
+// Read Claude settings
+function getClaudeSettings(): { authToken?: string; baseUrl?: string } | null {
   const settingsPath = join(homedir(), '.claude', 'settings.json');
   if (existsSync(settingsPath)) {
     try {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (settings.apiKey || settings.anthropicApiKey) {
-        return { ok: true };
-      }
+      return {
+        authToken: settings.env?.ANTHROPIC_AUTH_TOKEN || settings.env?.ANTHROPIC_API_KEY,
+        baseUrl: settings.env?.ANTHROPIC_BASE_URL,
+      };
     } catch {
-      // Ignore parse errors
+      return null;
     }
   }
+  return null;
+}
 
-  // Try a quick session to verify
-  try {
-    const session = unstable_v2_createSession({ model: 'claude-sonnet-4-20250514' });
-    await session.send('ping');
-    let authenticated = false;
-
-    for await (const msg of session.stream()) {
-      if (msg.type === 'assistant') {
-        authenticated = true;
-        break;
-      }
-      // Check for auth errors in output
-      if (msg.type === 'system') {
-        const text = JSON.stringify(msg).toLowerCase();
-        if (text.includes('api key') || text.includes('unauthorized')) {
-          session.close();
-          return { ok: false, error: 'Claude Code not authenticated. Run: claude login' };
-        }
-      }
-    }
-    session.close();
-    return authenticated ? { ok: true } : { ok: false, error: 'Could not verify authentication' };
-  } catch (err: any) {
-    return { ok: false, error: err.message || 'Authentication check failed' };
+// Check if Claude Code is authenticated
+async function checkClaudeAuth(overrideApiKey?: string): Promise<{ ok: boolean; error?: string; source?: string }> {
+  // Check override first (from local-ui config)
+  if (overrideApiKey) {
+    return { ok: true, source: 'local-ui config' };
   }
+
+  // Check env var
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+    return { ok: true, source: 'environment' };
+  }
+
+  // Check .claude/settings.json
+  const settings = getClaudeSettings();
+  if (settings?.authToken) {
+    return { ok: true, source: '.claude/settings.json' };
+  }
+
+  // No credentials found
+  return { ok: false, error: 'No Anthropic API key found. Run: claude login' };
 }
 
 export class WorkerManager {
@@ -97,12 +89,12 @@ export class WorkerManager {
 
   // Check Claude Code authentication status
   async checkAuth(): Promise<{ ok: boolean; error?: string }> {
-    const result = await checkClaudeAuth();
+    const result = await checkClaudeAuth(this.config.anthropicApiKey);
     this.claudeAuthenticated = result.ok;
     this.authError = result.error;
 
     if (result.ok) {
-      console.log('Claude Code: authenticated');
+      console.log(`Claude Code: authenticated (${result.source})`);
     } else {
       console.warn('Claude Code: NOT authenticated -', result.error);
     }
@@ -303,9 +295,20 @@ export class WorkerManager {
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
     try {
+      // Set API key override if configured (for this session)
+      const originalApiKey = process.env.ANTHROPIC_API_KEY;
+      if (this.config.anthropicApiKey) {
+        process.env.ANTHROPIC_API_KEY = this.config.anthropicApiKey;
+      }
+
       const session = unstable_v2_createSession({
         model: this.config.model,
       });
+
+      // Restore original (cleanup happens in finally block)
+      if (this.config.anthropicApiKey && originalApiKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = originalApiKey;
+      }
 
       this.sessions.set(worker.id, session);
 
