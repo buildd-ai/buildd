@@ -29,7 +29,7 @@ function hasClaudeCredentials(): boolean {
     if (existsSync(statePath)) {
       try {
         const data = JSON.parse(readFileSync(statePath, 'utf-8'));
-        if (data.oauthAccount?.accessToken || data.oauthAccount?.refreshToken) {
+        if (data.oauthAccount?.accountUuid) {
           return true;
         }
       } catch {
