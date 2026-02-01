@@ -119,14 +119,16 @@ function getRepos(forceRescan = false): CachedRepo[] {
 }
 
 // Load config from env, falling back to saved config
+const apiKey = process.env.BUILDD_API_KEY || savedConfig.apiKey || '';
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || 'https://buildd-three.vercel.app',
-  apiKey: process.env.BUILDD_API_KEY || savedConfig.apiKey || '',
+  apiKey,
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
-  serverless: savedConfig.serverless || false,
+  // Serverless only if no API key configured
+  serverless: apiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
   localUiUrl: process.env.LOCAL_UI_URL,
   // Pusher config for command relay from server
