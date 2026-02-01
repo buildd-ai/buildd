@@ -358,13 +358,57 @@ async function loadTasks() {
 
 async function loadWorkspaces() {
   try {
-    const res = await fetch('/api/workspaces');
-    const data = await res.json();
-    workspaces = data.workspaces || [];
+    // Fetch both server workspaces and local repos
+    const [wsRes, reposRes] = await Promise.all([
+      fetch('/api/workspaces'),
+      fetch('/api/local-repos'),
+    ]);
+
+    const wsData = await wsRes.json();
+    const reposData = await reposRes.json();
+
+    workspaces = wsData.workspaces || [];
+    const localRepos = reposData.repos || [];
+
     const select = document.getElementById('taskWorkspace');
-    select.innerHTML = workspaces.map(w =>
-      `<option value="${w.id}">${escapeHtml(w.name)}</option>`
-    ).join('');
+
+    // Build options: server workspaces first, then unsynced local repos
+    let options = '';
+
+    if (workspaces.length > 0) {
+      options += '<optgroup label="Server Workspaces">';
+      options += workspaces.map(w =>
+        `<option value="${w.id}">${escapeHtml(w.name)}</option>`
+      ).join('');
+      options += '</optgroup>';
+    }
+
+    // Local repos that aren't synced yet
+    const unsyncedRepos = localRepos.filter(r => !r.synced && r.normalizedUrl);
+    if (unsyncedRepos.length > 0) {
+      options += '<optgroup label="Local Repositories (not synced)">';
+      options += unsyncedRepos.map(r =>
+        `<option value="local:${r.path}" data-repo-path="${escapeHtml(r.path)}">${escapeHtml(r.name)} (${r.normalizedUrl})</option>`
+      ).join('');
+      options += '</optgroup>';
+    }
+
+    // Synced local repos (show workspace ID)
+    const syncedRepos = localRepos.filter(r => r.synced);
+    if (syncedRepos.length > 0 && workspaces.length === 0) {
+      // If no server workspaces loaded, show synced local repos
+      options += '<optgroup label="Local (synced)">';
+      options += syncedRepos.map(r =>
+        `<option value="${r.workspaceId}">${escapeHtml(r.name)}</option>`
+      ).join('');
+      options += '</optgroup>';
+    }
+
+    if (!options) {
+      options = '<option value="">No workspaces found</option>';
+    }
+
+    select.innerHTML = options;
   } catch (err) {
     console.error('Failed to load workspaces:', err);
   }
@@ -436,7 +480,7 @@ async function sendMessage() {
 }
 
 async function createTask() {
-  const workspaceId = document.getElementById('taskWorkspace').value;
+  let workspaceId = document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
 
@@ -446,6 +490,28 @@ async function createTask() {
   }
 
   try {
+    // If it's a local repo, sync it first
+    if (workspaceId.startsWith('local:')) {
+      const repoPath = workspaceId.replace('local:', '');
+      const repoName = repoPath.split('/').pop();
+
+      // Sync to server
+      const syncRes = await fetch('/api/local-repos/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoPath, name: repoName }),
+      });
+
+      if (!syncRes.ok) {
+        const err = await syncRes.json();
+        alert(`Failed to sync workspace: ${err.error}`);
+        return;
+      }
+
+      const syncData = await syncRes.json();
+      workspaceId = syncData.workspace.id;
+    }
+
     const payload = {
       workspaceId,
       title,
