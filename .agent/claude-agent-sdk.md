@@ -1,5 +1,103 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
+> **Version investigated**: 0.1.77
+
+---
+
+## Local-UI Implementation
+
+**Location**: `apps/local-ui/src/workers.ts`
+
+Uses `query()` API for task execution:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
+// Filter out problematic env vars (expired OAuth tokens)
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) =>
+    !k.includes('CLAUDE_CODE_OAUTH_TOKEN')
+  )
+);
+
+const queryInstance = query({
+  prompt: taskDescription,
+  options: {
+    cwd: workspacePath,
+    model: 'claude-sonnet-4-5-20250929',
+    abortController,
+    env: cleanEnv,
+    settingSources: ['project'],  // Loads CLAUDE.md
+    systemPrompt: { type: 'preset', preset: 'claude_code' },
+    permissionMode: 'acceptEdits',
+  },
+});
+
+// Stream responses, break on result
+for await (const msg of queryInstance) {
+  handleMessage(msg);
+  if (msg.type === 'result') break;
+}
+```
+
+Key features used:
+- `settingSources: ['project']` - Auto-loads workspace CLAUDE.md
+- `cwd` - Sets working directory for file operations
+- `env` - Filtered env to avoid expired OAuth tokens
+- `abortController` - Enables task cancellation
+- `permissionMode: 'acceptEdits'` - Autonomous execution without prompts
+- Break on `result` message to avoid process exit errors
+
+---
+
+## ⚠️ CRITICAL: V2 Session API Limitations
+
+**The `unstable_v2_createSession` API does NOT support most orchestration options.**
+
+Investigation of `sdk.mjs` (2025-02) revealed that `SessionImpl` hardcodes defaults and ignores user-provided options:
+
+```javascript
+// From sdk.mjs - SessionImpl constructor
+const transport = new ProcessTransport({
+  settingSources: [],           // HARDCODED - user option IGNORED
+  mcpServers: {},               // HARDCODED - user option IGNORED
+  permissionMode: "default",    // HARDCODED - user option IGNORED
+  // cwd, systemPrompt, hooks, etc. are NOT passed through
+});
+```
+
+### API Comparison
+
+| Option | `query()` | `unstable_v2_createSession()` |
+|--------|-----------|------------------------------|
+| `cwd` | ✅ Passed to CLI | ❌ Ignored |
+| `settingSources` | ✅ `--setting-sources` flag | ❌ Hardcoded `[]` |
+| `systemPrompt` | ✅ Handled (string or preset) | ❌ Ignored |
+| `mcpServers` | ✅ `--mcp-config` flag | ❌ Hardcoded `{}` |
+| `permissionMode` | ✅ Passed | ❌ Hardcoded `"default"` |
+| `hooks` | ✅ Supported | ❌ Hardcoded `false` |
+| `allowedTools` | ✅ Passed | ❌ Hardcoded `[]` |
+
+### When to Use Each API
+
+| Use Case | Recommended API |
+|----------|-----------------|
+| Simple interactive chat | `unstable_v2_createSession` |
+| Task orchestration with project context | `query()` |
+| Multi-workspace worker execution | `query()` |
+| Sessions needing CLAUDE.md | `query()` with `settingSources: ['project']` |
+
+### Key Insight: CLAUDE.md Loading
+
+To auto-load a project's CLAUDE.md, you **must** use `query()` with:
+```typescript
+settingSources: ['project']  // Loads .claude/settings.json AND CLAUDE.md
+```
+
+The V2 session API cannot load CLAUDE.md because `settingSources` is hardcoded to `[]`.
+
+---
+
 ### Core Integration Pattern
 Standard setup for spawning workers that respect project context.
 
@@ -21,22 +119,32 @@ const result = query({
 
 ### 1. Session Management (V2)
 
-Preferred for multi-turn orchestration. Use `await using` for automatic cleanup.
+> ⚠️ **Limited options support** - See "V2 Session API Limitations" above.
+> Only use for simple interactive sessions. For orchestration, use `query()`.
+
+The V2 API only supports these options (as of 0.1.77):
+- `model` - Model to use
+- `pathToClaudeCodeExecutable` - Custom CLI path
+- `executable` - `'node'` or `'bun'`
+- `executableArgs` - Args for runtime
+- `env` - Environment variables
+- `resume` - Session ID to resume
 
 ```typescript
 import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
 
-// Create new session
+// Create new session (simple interactive use only)
 await using session = unstable_v2_createSession({
   model: 'claude-sonnet-4-5-20250929'
 });
 
-// Resume existing session (e.g., after pause/restart)
+// Resume existing session
 await using resumedSession = unstable_v2_resumeSession(sessionId, {
   model: 'claude-sonnet-4-5-20250929'
 });
 
-// Forking: To branch a session, use query() with { resume: id, forkSession: true }
+// For orchestration with full options, use query() instead:
+// query({ prompt, options: { cwd, settingSources, systemPrompt, ... } })
 
 ```
 
@@ -149,3 +257,106 @@ await query({
 * **Interaction**: `AskUserQuestion`, `TodoWrite`
 * **Delegation**: `Task`
 * **Web**: `WebSearch`, `WebFetch`
+
+---
+
+## Migration: V2 Session to query() for Orchestration
+
+If you need project context (CLAUDE.md), hooks, MCP servers, or custom permissions, migrate from V2 to `query()`.
+
+### Before (V2 - limited)
+```typescript
+const session = unstable_v2_createSession({
+  model: 'claude-sonnet-4-5-20250929',
+});
+await session.send(taskDescription);
+for await (const msg of session.stream()) {
+  handleMessage(msg);
+}
+```
+
+### After (query - full options)
+```typescript
+const queryInstance = query({
+  prompt: taskDescription,
+  options: {
+    cwd: workspacePath,
+    model: 'claude-sonnet-4-5-20250929',
+    settingSources: ['project'],  // Loads CLAUDE.md automatically
+    systemPrompt: { type: 'preset', preset: 'claude_code' },
+    permissionMode: 'acceptEdits',
+    hooks: {
+      PostToolUse: [{ hooks: [logToolUsage] }]
+    }
+  }
+});
+
+for await (const msg of queryInstance) {
+  handleMessage(msg);
+}
+```
+
+### Key Differences
+
+| Aspect | V2 Session | query() |
+|--------|------------|---------|
+| Multi-turn | `session.send()` multiple times | Single prompt (use hooks for interaction) |
+| Streaming | `session.stream()` | Async iterator directly |
+| Cleanup | `session.close()` / `await using` | `abortController.abort()` |
+| Resume | `unstable_v2_resumeSession(id)` | `options.resume: id` |
+
+---
+
+## Integration Test
+
+**Location**: `apps/local-ui/src/test-query-integration.ts`
+
+Run: `bun run test:integration` (from `apps/local-ui`)
+
+Tests:
+1. Creates temp workspace with unique marker in CLAUDE.md
+2. Runs `query()` with `settingSources: ['project']`
+3. Asks agent to report the marker from project instructions
+4. Verifies CLAUDE.md was loaded by checking response contains marker
+
+Expected output:
+```
+[PASS] Marker found in response - CLAUDE.md was loaded!
+SUCCESS: query() correctly loaded CLAUDE.md via settingSources
+```
+
+---
+
+## Known Issues
+
+### CLAUDE_CODE_OAUTH_TOKEN env var
+
+If `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment with an expired/invalid token, it will override valid credentials and cause 401 auth errors.
+
+**Symptoms**: Agent returns `API Error: 401 {"type":"error","error":{"type":"authentication_error"...` as its response text.
+
+**Fix**: Unset the env var or ensure it contains a valid token:
+```bash
+unset CLAUDE_CODE_OAUTH_TOKEN
+```
+
+Local-UI filters out this env var automatically when spawning queries.
+
+---
+
+## Investigation Notes (2025-02)
+
+**How we verified V2 limitations:**
+
+1. Searched `sdk.mjs` for option handling:
+   ```bash
+   rg -n "settingSources|cwd|systemPrompt|mcpServers" sdk.mjs
+   ```
+
+2. Found `SessionImpl` constructor hardcodes values:
+   - Line ~8613: `settingSources: []`
+   - Line ~8616: `mcpServers: {}`
+
+3. Compared with `query()` function which properly extracts and passes all options via `ProcessTransport`.
+
+4. Confirmed by TypeScript types: `SDKSessionOptions` only declares `model`, `env`, `executable`, `executableArgs`, `pathToClaudeCodeExecutable`, matching the runtime behavior.
