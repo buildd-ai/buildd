@@ -4,6 +4,7 @@
   "installCommand": "bun install",
   "framework": "nextjs",
   "outputDirectory": "apps/web/.next",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- apps/web/ packages/",
   "git": {
     "deploymentEnabled": {
       "dev": false
