@@ -23,6 +23,7 @@ const DEFAULT_PROJECT_PATHS = [
   join(homedir(), 'repos'),
   join(homedir(), 'workspace'),
   join(homedir(), 'work'),
+  homedir(), // Fallback to home directory
 ];
 
 // Expand tilde to home directory

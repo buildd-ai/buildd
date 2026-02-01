@@ -65,9 +65,12 @@ if [ -z "$PROJECTS_ROOT" ]; then
   done
   ROOTS="${ROOTS#,}"  # Remove leading comma
 
-  if [ -n "$ROOTS" ]; then
-    export PROJECTS_ROOT="$ROOTS"
+  # Fall back to home directory if no standard dirs found
+  if [ -z "$ROOTS" ]; then
+    ROOTS="$HOME"
   fi
+
+  export PROJECTS_ROOT="$ROOTS"
 fi
 
 # Check for API key
