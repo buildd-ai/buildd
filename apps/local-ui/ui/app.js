@@ -26,6 +26,9 @@ const setupError = document.getElementById('setupError');
 
 let isServerless = false;
 
+let claudeAuthStatus = null;
+let claudeAuthError = null;
+
 // Check configuration on startup
 async function checkConfig() {
   try {
@@ -39,15 +42,71 @@ async function checkConfig() {
     console.log('Config check:', data);
     isConfigured = data.configured;
     isServerless = data.serverless;
+    claudeAuthStatus = data.claudeAuth;
+    claudeAuthError = data.claudeAuthError;
 
     if (isConfigured || isServerless) {
       showApp();
+      // Show Claude auth warning if not authenticated
+      if (claudeAuthStatus === false) {
+        showClaudeAuthWarning(claudeAuthError);
+      }
     } else {
       showSetup();
     }
   } catch (err) {
     console.error('Failed to check config:', err);
     showSetup();
+  }
+}
+
+function showClaudeAuthWarning(error) {
+  // Create warning banner if not exists
+  let banner = document.getElementById('claudeAuthBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'claudeAuthBanner';
+    banner.className = 'auth-warning-banner';
+    banner.innerHTML = `
+      <div class="auth-warning-content">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span>Claude Code not authenticated. Run <code>claude login</code> in terminal.</span>
+        <button class="btn btn-small" onclick="recheckClaudeAuth()">Recheck</button>
+      </div>
+    `;
+    document.querySelector('.main').prepend(banner);
+  }
+  banner.classList.remove('hidden');
+}
+
+async function recheckClaudeAuth() {
+  const btn = document.querySelector('#claudeAuthBanner button');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+  }
+
+  try {
+    const res = await fetch('/api/claude-auth');
+    const data = await res.json();
+    claudeAuthStatus = data.authenticated;
+    claudeAuthError = data.error;
+
+    if (data.authenticated) {
+      const banner = document.getElementById('claudeAuthBanner');
+      if (banner) banner.classList.add('hidden');
+    } else {
+      if (btn) btn.textContent = 'Still not authenticated';
+      setTimeout(() => { if (btn) btn.textContent = 'Recheck'; }, 2000);
+    }
+  } catch (err) {
+    console.error('Auth check failed:', err);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -693,6 +752,10 @@ async function claimTask(taskId) {
     const data = await res.json();
     if (data.worker) {
       loadTasks();
+    } else if (data.authError) {
+      // Show auth warning banner
+      showClaudeAuthWarning(data.error);
+      alert('Claude Code not authenticated.\n\nRun "claude login" in your terminal first.');
     } else {
       alert(data.error || 'Failed to claim task');
     }
