@@ -31,26 +31,44 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // If API key auth, return workspaces linked to that account
+    // If API key auth, return workspaces linked to that account + open workspaces
     // If session auth, return workspaces owned by the user
     let allWorkspaces;
     if (apiAccount) {
-      // For API key auth, get workspaces linked via accountWorkspaces
-      const linkedWorkspaces = await db.query.accountWorkspaces.findMany({
-        where: eq(accountWorkspaces.accountId, apiAccount.id),
-        with: {
-          workspace: {
-            with: {
-              accountWorkspaces: {
-                with: {
-                  account: true,
+      // For API key auth, get workspaces linked via accountWorkspaces + open workspaces
+      const [linkedWorkspaces, openWorkspaces] = await Promise.all([
+        db.query.accountWorkspaces.findMany({
+          where: eq(accountWorkspaces.accountId, apiAccount.id),
+          with: {
+            workspace: {
+              with: {
+                accountWorkspaces: {
+                  with: {
+                    account: true,
+                  },
                 },
               },
             },
           },
-        },
-      });
-      allWorkspaces = linkedWorkspaces.map(aw => aw.workspace);
+        }),
+        db.query.workspaces.findMany({
+          where: eq(workspaces.accessMode, 'open'),
+          orderBy: desc(workspaces.createdAt),
+          with: {
+            accountWorkspaces: {
+              with: {
+                account: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      // Merge linked and open, dedupe by id
+      const linkedWs = linkedWorkspaces.map(aw => aw.workspace);
+      const seenIds = new Set(linkedWs.map(w => w.id));
+      const openOnly = openWorkspaces.filter(w => !seenIds.has(w.id));
+      allWorkspaces = [...linkedWs, ...openOnly];
     } else {
       // For session auth, get workspaces owned by user
       allWorkspaces = await db.query.workspaces.findMany({

@@ -525,6 +525,37 @@ if (workspaceModalBack) {
   workspaceModalBack.addEventListener('click', closeWorkspaceModal);
 }
 
+// Rescan button
+const rescanBtn = document.getElementById('rescanBtn');
+if (rescanBtn) {
+  rescanBtn.addEventListener('click', async () => {
+    rescanBtn.disabled = true;
+    const originalText = rescanBtn.innerHTML;
+    rescanBtn.innerHTML = `
+      <svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+        <path d="M21 3v5h-5"/>
+      </svg>
+      Scanning...
+    `;
+
+    try {
+      const res = await fetch('/api/rescan', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        // Refresh workspace modal data
+        await renderWorkspaceModal();
+        await loadWorkspaces();
+      }
+    } catch (err) {
+      console.error('Rescan failed:', err);
+    } finally {
+      rescanBtn.disabled = false;
+      rescanBtn.innerHTML = originalText;
+    }
+  });
+}
+
 function openWorkspaceModal() {
   renderWorkspaceModal();
   workspaceModal.classList.remove('hidden');
