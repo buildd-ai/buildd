@@ -417,6 +417,63 @@ const server = Bun.serve({
       return Response.json({ ok: true, action }, { headers: corsHeaders });
     }
 
+    // Local repositories endpoint - shows all git repos found locally
+    if (path === '/api/local-repos' && req.method === 'GET') {
+      const repos = resolver.scanGitRepos();
+      // Enrich with workspace match info if configured
+      const workspaces = buildd ? await buildd.listWorkspaces() : [];
+
+      const enrichedRepos = repos.map(repo => {
+        const matchedWorkspace = workspaces.find((ws: any) => {
+          const normalizedWs = ws.repo?.toLowerCase().replace(/\.git$/, '').split('/').slice(-2).join('/');
+          return normalizedWs === repo.normalizedUrl;
+        });
+
+        return {
+          ...repo,
+          name: repo.path.split('/').pop(),
+          workspaceId: matchedWorkspace?.id || null,
+          workspaceName: matchedWorkspace?.name || null,
+          synced: !!matchedWorkspace,
+        };
+      });
+
+      return Response.json({ repos: enrichedRepos }, { headers: corsHeaders });
+    }
+
+    // Create workspace from local repo
+    if (path === '/api/local-repos/sync' && req.method === 'POST') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { repoPath, name } = body;
+
+      if (!repoPath) {
+        return Response.json({ error: 'repoPath required' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Get git remote for this repo
+      const repos = resolver.scanGitRepos();
+      const repo = repos.find(r => r.path === repoPath);
+
+      if (!repo || !repo.remoteUrl) {
+        return Response.json({ error: 'Not a git repository or no remote configured' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Create workspace on server
+      try {
+        const workspace = await buildd.createWorkspace({
+          name: name || repo.path.split('/').pop() || 'unnamed',
+          repoUrl: repo.remoteUrl,
+        });
+        return Response.json({ workspace }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Debug endpoints for workspace resolution testing
     if (path === '/api/debug/directories' && req.method === 'GET') {
       return Response.json({
