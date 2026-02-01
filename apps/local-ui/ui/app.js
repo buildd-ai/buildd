@@ -384,6 +384,71 @@ async function loadTasks() {
 }
 
 let combinedWorkspaces = [];
+let selectedWorkspaceId = '';
+
+// Custom dropdown component
+function initCustomSelect(id, onSelect) {
+  const container = document.getElementById(id);
+  if (!container) return;
+
+  const trigger = container.querySelector('.custom-select-trigger');
+  const dropdown = container.querySelector('.custom-select-dropdown');
+  const options = container.querySelector('.custom-select-options');
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = !dropdown.classList.contains('hidden');
+    closeAllDropdowns();
+    if (!isOpen) {
+      dropdown.classList.remove('hidden');
+      container.classList.add('open');
+    }
+  });
+
+  options.addEventListener('click', (e) => {
+    const option = e.target.closest('.custom-select-option');
+    if (option && !option.classList.contains('disabled')) {
+      const value = option.dataset.value;
+      const label = option.textContent;
+      selectOption(container, value, label);
+      if (onSelect) onSelect(value);
+      closeAllDropdowns();
+    }
+  });
+
+  return {
+    setOptions: (opts) => {
+      options.innerHTML = opts.map(o => `
+        <div class="custom-select-option ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
+          ${o.icon ? `<span class="option-icon">${o.icon}</span>` : ''}
+          <span class="option-label">${escapeHtml(o.label)}</span>
+          ${o.hint ? `<span class="option-hint">${escapeHtml(o.hint)}</span>` : ''}
+        </div>
+      `).join('');
+    },
+    setValue: (value, label) => selectOption(container, value, label),
+    getValue: () => container.querySelector('.custom-select-trigger').dataset.value || '',
+  };
+}
+
+function selectOption(container, value, label) {
+  const trigger = container.querySelector('.custom-select-trigger');
+  const valueEl = trigger.querySelector('.custom-select-value');
+  trigger.dataset.value = value;
+  valueEl.textContent = label;
+  valueEl.classList.toggle('placeholder', !value);
+}
+
+function closeAllDropdowns() {
+  document.querySelectorAll('.custom-select-dropdown').forEach(d => d.classList.add('hidden'));
+  document.querySelectorAll('.custom-select').forEach(c => c.classList.remove('open'));
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', closeAllDropdowns);
+
+// Workspace select
+let workspaceSelect = null;
 
 async function loadWorkspaces() {
   try {
@@ -391,36 +456,54 @@ async function loadWorkspaces() {
     const data = await res.json();
     combinedWorkspaces = data.workspaces || [];
 
-    const select = document.getElementById('taskWorkspace');
     const hint = document.getElementById('workspaceHint');
+    const hiddenInput = document.getElementById('taskWorkspace');
+
+    // Initialize custom select if not done
+    if (!workspaceSelect) {
+      workspaceSelect = initCustomSelect('workspaceSelect', (value) => {
+        selectedWorkspaceId = value;
+        hiddenInput.value = value;
+      });
+    }
 
     // Only show ready workspaces in dropdown
     const ready = combinedWorkspaces.filter(w => w.status === 'ready');
     const needsClone = combinedWorkspaces.filter(w => w.status === 'needs-clone');
     const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
 
-    let options = '';
+    let options = [];
 
     if (ready.length > 0) {
-      options = ready.map(w =>
-        `<option value="${w.id}">${escapeHtml(w.name)}</option>`
-      ).join('');
+      options = ready.map(w => ({
+        value: w.id,
+        label: w.name,
+        hint: w.localPath?.split('/').pop() || '',
+      }));
       hint.classList.add('hidden');
-    } else if (needsClone.length > 0) {
-      options = '<option value="" disabled selected>Select a workspace...</option>';
-      hint.textContent = `${needsClone.length} workspace(s) need to be cloned locally. Click Manage.`;
-      hint.classList.remove('hidden');
-    } else if (localOnly.length > 0) {
-      options = '<option value="" disabled selected>Select a workspace...</option>';
-      hint.textContent = `${localOnly.length} local repo(s) can be synced. Click Manage.`;
-      hint.classList.remove('hidden');
+      // Auto-select first
+      if (!selectedWorkspaceId && ready[0]) {
+        selectedWorkspaceId = ready[0].id;
+        hiddenInput.value = ready[0].id;
+        workspaceSelect.setValue(ready[0].id, ready[0].name);
+      }
     } else {
-      options = '<option value="" disabled selected>No workspaces found</option>';
-      hint.textContent = 'Add a git repository to your project folder to get started.';
-      hint.classList.remove('hidden');
+      options = [{ value: '', label: 'No workspaces ready', disabled: true }];
+
+      if (needsClone.length > 0) {
+        hint.textContent = `${needsClone.length} workspace(s) need to be cloned locally. Click Manage.`;
+        hint.classList.remove('hidden');
+      } else if (localOnly.length > 0) {
+        hint.textContent = `${localOnly.length} local repo(s) can be synced. Click Manage.`;
+        hint.classList.remove('hidden');
+      } else {
+        hint.textContent = 'Add a git repository to your project folder to get started.';
+        hint.classList.remove('hidden');
+      }
+      workspaceSelect.setValue('', 'Select workspace...');
     }
 
-    select.innerHTML = options;
+    workspaceSelect.setOptions(options);
   } catch (err) {
     console.error('Failed to load workspaces:', err);
   }
@@ -620,11 +703,11 @@ async function sendMessage() {
 }
 
 async function createTask() {
-  const workspaceId = document.getElementById('taskWorkspace').value;
+  const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
 
-  if (!workspaceId || workspaceId === '__manage__' || !title) {
+  if (!workspaceId || !title) {
     alert('Please select a workspace and fill in the title');
     return;
   }

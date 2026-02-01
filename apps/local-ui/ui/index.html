@@ -147,7 +147,17 @@
           <div class="form-group">
             <label>Workspace</label>
             <div class="workspace-select-row">
-              <select id="taskWorkspace" class="input flex-1"></select>
+              <div class="custom-select flex-1" id="workspaceSelect">
+                <button type="button" class="custom-select-trigger" id="workspaceSelectTrigger">
+                  <span class="custom-select-value">Select workspace...</span>
+                  <svg class="custom-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </button>
+                <div class="custom-select-dropdown hidden" id="workspaceSelectDropdown">
+                  <div class="custom-select-options" id="workspaceSelectOptions"></div>
+                </div>
+              </div>
               <button type="button" class="btn btn-secondary btn-icon-text" id="manageWorkspacesBtn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                   <circle cx="12" cy="12" r="3"/>
@@ -157,6 +167,7 @@
               </button>
             </div>
             <p id="workspaceHint" class="form-hint hidden"></p>
+            <input type="hidden" id="taskWorkspace" value="">
           </div>
           <div class="form-group">
             <label>Title</label>
