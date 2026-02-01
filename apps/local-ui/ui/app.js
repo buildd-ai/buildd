@@ -382,6 +382,15 @@ async function loadTasks() {
   try {
     const res = await fetch('/api/tasks');
     const data = await res.json();
+
+    // Handle auth errors - show setup screen
+    if (data.needsSetup || res.status === 401) {
+      console.error('API key invalid, showing setup');
+      isConfigured = false;
+      showSetup();
+      return;
+    }
+
     tasks = data.tasks || [];
     renderTasks();
   } catch (err) {
