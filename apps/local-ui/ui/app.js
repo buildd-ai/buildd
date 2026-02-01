@@ -392,42 +392,46 @@ async function loadWorkspaces() {
     combinedWorkspaces = data.workspaces || [];
 
     const select = document.getElementById('taskWorkspace');
+    const hint = document.getElementById('workspaceHint');
 
     // Only show ready workspaces in dropdown
     const ready = combinedWorkspaces.filter(w => w.status === 'ready');
     const needsClone = combinedWorkspaces.filter(w => w.status === 'needs-clone');
+    const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
 
     let options = '';
 
     if (ready.length > 0) {
-      options += ready.map(w =>
+      options = ready.map(w =>
         `<option value="${w.id}">${escapeHtml(w.name)}</option>`
       ).join('');
+      hint.classList.add('hidden');
+    } else if (needsClone.length > 0) {
+      options = '<option value="" disabled selected>Select a workspace...</option>';
+      hint.textContent = `${needsClone.length} workspace(s) need to be cloned locally. Click Manage.`;
+      hint.classList.remove('hidden');
+    } else if (localOnly.length > 0) {
+      options = '<option value="" disabled selected>Select a workspace...</option>';
+      hint.textContent = `${localOnly.length} local repo(s) can be synced. Click Manage.`;
+      hint.classList.remove('hidden');
+    } else {
+      options = '<option value="" disabled selected>No workspaces found</option>';
+      hint.textContent = 'Add a git repository to your project folder to get started.';
+      hint.classList.remove('hidden');
     }
-
-    if (ready.length === 0 && needsClone.length > 0) {
-      options = '<option value="" disabled>No local workspaces - click Manage to clone</option>';
-    }
-
-    if (ready.length === 0 && needsClone.length === 0) {
-      options = '<option value="" disabled>No workspaces found</option>';
-    }
-
-    // Add manage option
-    options += '<option value="__manage__">+ Manage Workspaces...</option>';
 
     select.innerHTML = options;
-
-    // Handle manage selection
-    select.onchange = () => {
-      if (select.value === '__manage__') {
-        select.value = ready[0]?.id || '';
-        openWorkspaceModal();
-      }
-    };
   } catch (err) {
     console.error('Failed to load workspaces:', err);
   }
+}
+
+// Manage workspaces button
+const manageWorkspacesBtn = document.getElementById('manageWorkspacesBtn');
+if (manageWorkspacesBtn) {
+  manageWorkspacesBtn.addEventListener('click', () => {
+    openWorkspaceModal();
+  });
 }
 
 // Workspace modal
