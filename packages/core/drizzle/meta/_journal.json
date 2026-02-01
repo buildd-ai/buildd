@@ -50,6 +50,13 @@
       "when": 1769903010236,
       "tag": "0006_light_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1769965597255,
+      "tag": "0007_jazzy_the_santerians",
+      "breakpoints": true
     }
   ]
 }
