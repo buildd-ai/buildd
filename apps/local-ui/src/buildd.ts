@@ -78,6 +78,31 @@ export class BuilddClient {
     return data.workspaces || [];
   }
 
+  async getWorkspaceConfig(workspaceId: string): Promise<{
+    gitConfig?: {
+      defaultBranch: string;
+      branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+      branchPrefix?: string;
+      useBuildBranch?: boolean;
+      commitStyle: 'conventional' | 'freeform' | 'custom';
+      commitPrefix?: string;
+      requiresPR: boolean;
+      targetBranch?: string;
+      autoCreatePR: boolean;
+      agentInstructions?: string;
+      useClaudeMd: boolean;
+    };
+    configStatus: 'unconfigured' | 'admin_confirmed';
+  }> {
+    try {
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/config`);
+      return data;
+    } catch (err) {
+      console.warn('Failed to fetch workspace config:', err);
+      return { configStatus: 'unconfigured' };
+    }
+  }
+
   async createWorkspace(workspace: {
     name: string;
     repoUrl?: string;

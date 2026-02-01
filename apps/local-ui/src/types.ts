@@ -33,11 +33,38 @@ export interface BuilddTask {
   title: string;
   description: string;
   workspaceId: string;
-  workspace?: { name: string; repo?: string };
+  workspace?: {
+    name: string;
+    repo?: string;
+    gitConfig?: WorkspaceGitConfig;
+    configStatus?: 'unconfigured' | 'admin_confirmed';
+  };
   status: string;
   priority: number;
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+}
+
+// Git workflow configuration (matches server schema)
+export interface WorkspaceGitConfig {
+  // Branching
+  defaultBranch: string;
+  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchPrefix?: string;
+  useBuildBranch?: boolean;
+
+  // Commit conventions
+  commitStyle: 'conventional' | 'freeform' | 'custom';
+  commitPrefix?: string;
+
+  // PR/Merge behavior
+  requiresPR: boolean;
+  targetBranch?: string;
+  autoCreatePR: boolean;
+
+  // Agent instructions
+  agentInstructions?: string;
+  useClaudeMd: boolean;
 }
 
 // SSE event types

@@ -63,6 +63,28 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
 
+// Git workflow configuration type
+export interface WorkspaceGitConfig {
+  // Branching
+  defaultBranch: string;              // 'main', 'master', 'dev'
+  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchPrefix?: string;              // 'feature/', 'buildd/', null for none
+  useBuildBranch?: boolean;          // Use buildd/task-id naming
+
+  // Commit conventions
+  commitStyle: 'conventional' | 'freeform' | 'custom';
+  commitPrefix?: string;              // '[JIRA-123]', null
+
+  // PR/Merge behavior
+  requiresPR: boolean;
+  targetBranch?: string;              // Where PRs should target
+  autoCreatePR: boolean;
+
+  // Agent instructions (prepended to prompt)
+  agentInstructions?: string;         // Free-form, admin-defined
+  useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
+}
+
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
@@ -74,6 +96,11 @@ export const workspaces = pgTable('workspaces', {
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+
+  // Git workflow configuration
+  gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -83,6 +110,7 @@ export const workspaces = pgTable('workspaces', {
   githubRepoIdx: index('workspaces_github_repo_idx').on(t.githubRepoId),
   githubInstallationIdx: index('workspaces_github_installation_idx').on(t.githubInstallationId),
   ownerIdx: index('workspaces_owner_idx').on(t.ownerId),
+  configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
 export const sources = pgTable('sources', {

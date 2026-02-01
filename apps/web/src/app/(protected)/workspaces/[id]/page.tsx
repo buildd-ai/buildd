@@ -79,6 +79,12 @@ export default async function WorkspaceDetailPage({
             )}
           </div>
           <div className="flex gap-2">
+            <Link
+              href={`/workspaces/${workspace.id}/config`}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+            >
+              ⚙️ Configure
+            </Link>
             <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
             <Link
               href={`/tasks/new?workspaceId=${workspace.id}`}
@@ -230,12 +236,11 @@ export default async function WorkspaceDetailPage({
                       <h3 className="font-medium">{task.title}</h3>
                       <p className="text-sm text-gray-500 line-clamp-1">{task.description}</p>
                     </div>
-                    <span className={`px-2 py-1 text-xs rounded-full ${
-                      task.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                    <span className={`px-2 py-1 text-xs rounded-full ${task.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
                       task.status === 'failed' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
-                      task.status === 'assigned' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
-                      'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-                    }`}>
+                        task.status === 'assigned' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
+                          'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                      }`}>
                       {task.status}
                     </span>
                   </div>
