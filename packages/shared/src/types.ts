@@ -70,6 +70,16 @@ export const SourceType = {
 
 export type SourceTypeValue = typeof SourceType[keyof typeof SourceType];
 
+export const CreationSource = {
+  DASHBOARD: 'dashboard',
+  API: 'api',
+  MCP: 'mcp',
+  GITHUB: 'github',
+  LOCAL_UI: 'local_ui',
+} as const;
+
+export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
+
 // ============================================================================
 // ENTITIES
 // ============================================================================
@@ -145,12 +155,22 @@ export interface Task {
   claimedBy: string | null;
   claimedAt: Date | null;
   expiresAt: Date | null;
+  // Creator tracking
+  createdByAccountId: string | null;
+  createdByWorkerId: string | null;
+  creationSource: CreationSourceValue;
+  parentTaskId: string | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
   source?: Source;
   worker?: Worker;
   account?: Account;
+  // Creator tracking relations
+  creatorAccount?: Account;
+  creatorWorker?: Worker;
+  parentTask?: Task;
+  subTasks?: Task[];
 }
 
 export interface Worker {
@@ -255,6 +275,10 @@ export interface CreateTaskInput {
   description?: string;
   context?: Record<string, unknown>;
   priority?: number;
+  // Optional creator tracking (typically set by API)
+  createdByWorkerId?: string;
+  parentTaskId?: string;
+  creationSource?: CreationSourceValue;
 }
 
 export interface CreateWorkerInput {

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
+import { accounts, tasks, workspaces, accountWorkspaces, workers } from '@buildd/core/db/schema';
 import { desc, eq, inArray, or } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
+
+type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui';
 
 async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
@@ -97,10 +99,74 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, title, description, priority, runnerPreference, requiredCapabilities, attachments } = body;
+    const {
+      workspaceId,
+      title,
+      description,
+      priority,
+      runnerPreference,
+      requiredCapabilities,
+      attachments,
+      // New creator tracking fields
+      createdByWorkerId,
+      parentTaskId,
+      creationSource: requestedSource,
+    } = body;
 
     if (!workspaceId || !title) {
       return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
+    }
+
+    // Determine creator account ID
+    let createdByAccountId: string | null = null;
+    if (apiAccount) {
+      createdByAccountId = apiAccount.id;
+    } else if (user) {
+      // For session auth, get the user's first account (primary)
+      const userAccount = await db.query.accounts.findFirst({
+        where: eq(accounts.ownerId, user.id),
+      });
+      createdByAccountId = userAccount?.id || null;
+    }
+
+    // Determine creation source
+    let creationSource: CreationSource = 'api';
+    if (requestedSource && ['dashboard', 'api', 'mcp', 'github', 'local_ui'].includes(requestedSource)) {
+      creationSource = requestedSource as CreationSource;
+    } else if (!apiAccount && user) {
+      // Session auth typically means dashboard
+      creationSource = 'dashboard';
+    }
+
+    // Validate createdByWorkerId if provided
+    let validatedWorkerId: string | null = null;
+    let derivedParentTaskId: string | null = parentTaskId || null;
+    if (createdByWorkerId) {
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.id, createdByWorkerId),
+      });
+      if (worker) {
+        // Validate worker belongs to the authenticated account
+        if (apiAccount && worker.accountId === apiAccount.id) {
+          validatedWorkerId = createdByWorkerId;
+          // Auto-derive parentTaskId from worker's current task if not provided
+          if (!derivedParentTaskId && worker.taskId) {
+            derivedParentTaskId = worker.taskId;
+          }
+        }
+        // For session auth, allow if worker is in a workspace owned by user
+        else if (user) {
+          const workspace = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, worker.workspaceId),
+          });
+          if (workspace?.ownerId === user.id) {
+            validatedWorkerId = createdByWorkerId;
+            if (!derivedParentTaskId && worker.taskId) {
+              derivedParentTaskId = worker.taskId;
+            }
+          }
+        }
+      }
     }
 
     // Process attachments - store as base64 in context
@@ -129,6 +195,11 @@ export async function POST(req: NextRequest) {
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: processedAttachments.length > 0 ? { attachments: processedAttachments } : {},
+        // Creator tracking
+        createdByAccountId,
+        createdByWorkerId: validatedWorkerId,
+        creationSource,
+        parentTaskId: derivedParentTaskId,
       })
       .returning();
 

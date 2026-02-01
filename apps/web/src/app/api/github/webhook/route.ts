@@ -214,6 +214,11 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
               repoFullName: repository.full_name,
             },
           },
+          // Creator tracking - GitHub webhook creates tasks without a user account
+          creationSource: 'github',
+          createdByAccountId: null,
+          createdByWorkerId: null,
+          parentTaskId: null,
         })
         .onConflictDoNothing(); // Don't create duplicate tasks
       break;
