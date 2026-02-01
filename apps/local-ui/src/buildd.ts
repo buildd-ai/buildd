@@ -7,7 +7,7 @@ export class BuilddClient {
     this.config = config;
   }
 
-  private async fetch(endpoint: string, options: RequestInit = {}) {
+  private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
     const res = await fetch(`${this.config.builddServer}${endpoint}`, {
       ...options,
       headers: {
@@ -17,7 +17,7 @@ export class BuilddClient {
       },
     });
 
-    if (!res.ok) {
+    if (!res.ok && !allowedErrors.includes(res.status)) {
       const error = await res.text();
       throw new Error(`API error: ${res.status} - ${error}`);
     }
@@ -46,17 +46,19 @@ export class BuilddClient {
     currentAction?: string;
     milestones?: Array<{ label: string; timestamp: number }>;
   }) {
+    // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
       method: 'PATCH',
       body: JSON.stringify(update),
-    });
+    }, [409]);
   }
 
   async sendCommand(workerId: string, action: string, text?: string) {
+    // Allow 409 (already completed) - can't send commands to finished workers
     return this.fetch(`/api/workers/${workerId}/cmd`, {
       method: 'POST',
       body: JSON.stringify({ action, text }),
-    });
+    }, [409]);
   }
 
   async createTask(task: {

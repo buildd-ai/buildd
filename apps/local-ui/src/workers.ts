@@ -494,7 +494,12 @@ export class WorkerManager {
       worker.status = 'error';
       worker.error = 'Aborted by user';
       worker.currentAction = 'Aborted';
-      await this.buildd.updateWorker(workerId, { status: 'failed', error: 'Aborted' });
+      // This may return 409 if already completed on server - that's ok
+      try {
+        await this.buildd.updateWorker(workerId, { status: 'failed', error: 'Aborted' });
+      } catch {
+        // Ignore - worker may already be done on server
+      }
       this.emit({ type: 'worker_update', worker });
     }
   }
