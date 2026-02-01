@@ -5,13 +5,113 @@ let workspaces = [];
 let config = {};
 let currentWorkerId = null;
 let attachments = [];
+let isConfigured = false;
 
 // Elements
+const setupEl = document.getElementById('setup');
+const appEl = document.getElementById('app');
 const workersEl = document.getElementById('workers');
 const tasksEl = document.getElementById('tasks');
 const workerModal = document.getElementById('workerModal');
 const taskModal = document.getElementById('taskModal');
 const settingsModal = document.getElementById('settingsModal');
+
+// Setup UI elements
+const manualKeyBtn = document.getElementById('manualKeyBtn');
+const manualKeyForm = document.getElementById('manualKeyForm');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const cancelKeyBtn = document.getElementById('cancelKeyBtn');
+const saveKeyBtn = document.getElementById('saveKeyBtn');
+const setupError = document.getElementById('setupError');
+
+// Check configuration on startup
+async function checkConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const data = await res.json();
+    isConfigured = data.configured;
+
+    if (isConfigured) {
+      showApp();
+    } else {
+      showSetup();
+    }
+  } catch (err) {
+    console.error('Failed to check config:', err);
+    showSetup();
+  }
+}
+
+function showSetup() {
+  setupEl.classList.remove('hidden');
+  appEl.classList.add('hidden');
+}
+
+function showApp() {
+  setupEl.classList.add('hidden');
+  appEl.classList.remove('hidden');
+  connectSSE();
+  loadTasks();
+}
+
+// Setup event handlers
+if (manualKeyBtn) {
+  manualKeyBtn.addEventListener('click', () => {
+    manualKeyForm.classList.remove('hidden');
+    manualKeyBtn.classList.add('hidden');
+    apiKeyInput.focus();
+  });
+}
+
+if (cancelKeyBtn) {
+  cancelKeyBtn.addEventListener('click', () => {
+    manualKeyForm.classList.add('hidden');
+    manualKeyBtn.classList.remove('hidden');
+    apiKeyInput.value = '';
+    setupError.classList.add('hidden');
+  });
+}
+
+if (saveKeyBtn) {
+  saveKeyBtn.addEventListener('click', async () => {
+    const apiKey = apiKeyInput.value.trim();
+    if (!apiKey) {
+      showSetupError('Please enter an API key');
+      return;
+    }
+
+    saveKeyBtn.disabled = true;
+    saveKeyBtn.textContent = 'Verifying...';
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        showSetupError(data.error || 'Failed to save API key');
+        return;
+      }
+
+      // Success - reload page
+      window.location.reload();
+    } catch (err) {
+      showSetupError('Connection error');
+    } finally {
+      saveKeyBtn.disabled = false;
+      saveKeyBtn.textContent = 'Save';
+    }
+  });
+}
+
+function showSetupError(msg) {
+  setupError.textContent = msg;
+  setupError.classList.remove('hidden');
+}
 
 // SSE connection
 let eventSource = null;
@@ -39,6 +139,11 @@ function handleEvent(event) {
     case 'init':
       workers = event.workers || [];
       config = event.config || {};
+      // Check if configured from SSE init
+      if (event.configured === false) {
+        showSetup();
+        return;
+      }
       renderWorkers();
       updateSettings();
       break;
@@ -508,6 +613,8 @@ window.onpopstate = () => {
 };
 
 // Initialize
-connectSSE();
-loadTasks();
-handleRoute();
+checkConfig().then(() => {
+  if (isConfigured) {
+    handleRoute();
+  }
+});
