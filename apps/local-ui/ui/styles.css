@@ -761,3 +761,15 @@ select.input {
   color: var(--text-muted);
   padding: 8px 0;
 }
+
+/* Ghost button */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.btn-ghost:hover {
+  background: var(--surface);
+  color: var(--text);
+}

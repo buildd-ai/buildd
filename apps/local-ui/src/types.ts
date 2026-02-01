@@ -63,6 +63,8 @@ export interface LocalUIConfig {
   apiKey: string;
   maxConcurrent: number;
   model: string;
+  // Serverless mode (no server connection)
+  serverless?: boolean;
   // Direct access URL for this local-ui instance
   localUiUrl?: string;
   // Pusher config (optional, for command relay)
