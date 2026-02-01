@@ -54,6 +54,8 @@ function saveConfig(data: { apiKey?: string; serverless?: boolean }) {
 }
 
 const savedConfig = loadSavedConfig();
+console.log('[startup] Env key:', process.env.BUILDD_API_KEY ? process.env.BUILDD_API_KEY.slice(0, 15) + '...' : 'none');
+console.log('[startup] Saved key:', savedConfig.apiKey ? savedConfig.apiKey.slice(0, 15) + '...' : 'none');
 
 // Repos cache
 interface CachedRepo {
@@ -139,6 +141,8 @@ const config: LocalUIConfig = {
 // Allow running without API key - will show setup UI
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, createWorkspaceResolver(projectRoots)) : null;
+console.log('[startup] Using key:', config.apiKey ? config.apiKey.slice(0, 15) + '...' : 'none');
+console.log('[startup] buildd client:', buildd ? 'initialized' : 'null');
 const resolver = createWorkspaceResolver(projectRoots);
 
 // Reinitialize clients after API key is set
@@ -389,11 +393,15 @@ const server = Bun.serve({
 
     if (path === '/api/tasks' && req.method === 'GET') {
       try {
+        console.log('[tasks] Fetching with key:', config.apiKey?.slice(0, 15) + '...');
         const tasks = await buildd!.listTasks();
+        console.log('[tasks] Got', tasks.length, 'tasks');
         return Response.json({ tasks }, { headers: corsHeaders });
       } catch (err: any) {
+        console.log('[tasks] Error:', err.message);
         // If 401, API key is invalid - clear and show setup
         if (err.message?.includes('401')) {
+          console.log('[tasks] Clearing invalid key:', config.apiKey?.slice(0, 15) + '...');
           config.apiKey = '';
           buildd = null;
           workerManager = null;
