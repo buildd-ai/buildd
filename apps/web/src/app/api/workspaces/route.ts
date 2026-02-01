@@ -103,6 +103,22 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// Extract repo name from various URL formats
+function extractRepoName(repoUrl: string): string | null {
+  // Handle: https://github.com/owner/repo.git, git@github.com:owner/repo, owner/repo
+  const cleaned = repoUrl
+    .replace(/\.git$/, '')
+    .replace(/^https?:\/\/[^/]+\//, '')  // Remove https://github.com/
+    .replace(/^git@[^:]+:/, '');          // Remove git@github.com:
+
+  // Get the repo name (last part after /)
+  const parts = cleaned.split('/');
+  if (parts.length >= 1) {
+    return parts[parts.length - 1] || null;
+  }
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   // Dev mode returns mock
   if (process.env.NODE_ENV === 'development') {
@@ -118,14 +134,20 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { name, repoUrl, defaultBranch, githubRepoId, githubInstallationId, accessMode } = body;
 
-    if (!name) {
-      return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+    // Auto-derive name from repoUrl if not provided
+    let workspaceName = name;
+    if (!workspaceName && repoUrl) {
+      workspaceName = extractRepoName(repoUrl);
+    }
+
+    if (!workspaceName) {
+      return NextResponse.json({ error: 'Name is required (or provide repoUrl to auto-derive)' }, { status: 400 });
     }
 
     const [workspace] = await db
       .insert(workspaces)
       .values({
-        name,
+        name: workspaceName,
         repo: repoUrl || null,
         localPath: defaultBranch || null,
         githubRepoId: githubRepoId || null,
