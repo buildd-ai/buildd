@@ -23,6 +23,140 @@ interface Repo {
   hasWorkspace: boolean;
 }
 
+type NameMode = 'repo' | 'full' | 'custom';
+
+function NameModal({
+  repo,
+  currentName,
+  onSelect,
+  onClose,
+}: {
+  repo: { name: string; fullName: string } | null;
+  currentName: string;
+  onSelect: (name: string, mode: NameMode) => void;
+  onClose: () => void;
+}) {
+  const [customName, setCustomName] = useState(currentName);
+  const [mode, setMode] = useState<NameMode>('repo');
+
+  const repoName = repo?.name || '';
+  const fullName = repo?.fullName || '';
+
+  useEffect(() => {
+    if (currentName === repoName) setMode('repo');
+    else if (currentName === fullName) setMode('full');
+    else setMode('custom');
+  }, [currentName, repoName, fullName]);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold">Workspace Name</h2>
+        <p className="text-sm text-gray-500">Choose how to name this workspace</p>
+
+        <div className="space-y-2">
+          {repo && (
+            <>
+              <label
+                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                  mode === 'repo'
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                }`}
+                onClick={() => setMode('repo')}
+              >
+                <input
+                  type="radio"
+                  name="nameMode"
+                  checked={mode === 'repo'}
+                  onChange={() => setMode('repo')}
+                  className="w-4 h-4"
+                />
+                <div>
+                  <div className="font-medium">{repoName}</div>
+                  <div className="text-xs text-gray-500">Repository name only</div>
+                </div>
+              </label>
+
+              <label
+                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                  mode === 'full'
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                }`}
+                onClick={() => setMode('full')}
+              >
+                <input
+                  type="radio"
+                  name="nameMode"
+                  checked={mode === 'full'}
+                  onChange={() => setMode('full')}
+                  className="w-4 h-4"
+                />
+                <div>
+                  <div className="font-medium">{fullName}</div>
+                  <div className="text-xs text-gray-500">Include organization</div>
+                </div>
+              </label>
+            </>
+          )}
+
+          <label
+            className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+              mode === 'custom'
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+            }`}
+            onClick={() => setMode('custom')}
+          >
+            <input
+              type="radio"
+              name="nameMode"
+              checked={mode === 'custom'}
+              onChange={() => setMode('custom')}
+              className="w-4 h-4"
+            />
+            <div className="flex-1">
+              <div className="font-medium">Custom</div>
+              {mode === 'custom' && (
+                <input
+                  type="text"
+                  value={customName}
+                  onChange={(e) => setCustomName(e.target.value)}
+                  placeholder="Enter custom name"
+                  autoFocus
+                  className="mt-2 w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              )}
+            </div>
+          </label>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={() => {
+              const name = mode === 'repo' ? repoName : mode === 'full' ? fullName : customName;
+              onSelect(name, mode);
+            }}
+            className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+          >
+            Apply
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function NewWorkspacePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -37,8 +171,46 @@ export default function NewWorkspacePage() {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [useManual, setUseManual] = useState(false);
 
+  // Workspace name
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [manualRepoUrl, setManualRepoUrl] = useState('');
+
   // Access control
   const [accessMode, setAccessMode] = useState<'open' | 'restricted'>('open');
+
+  // Extract repo info from URL for manual entry
+  function extractRepoInfo(url: string): { name: string; fullName: string } | null {
+    if (!url) return null;
+    const cleaned = url
+      .replace(/\.git$/, '')
+      .replace(/^https?:\/\/[^/]+\//, '')
+      .replace(/^git@[^:]+:/, '');
+    const parts = cleaned.split('/');
+    if (parts.length >= 2) {
+      return { name: parts[parts.length - 1], fullName: cleaned };
+    } else if (parts.length === 1 && parts[0]) {
+      return { name: parts[0], fullName: parts[0] };
+    }
+    return null;
+  }
+
+  // Auto-update name when repo changes
+  useEffect(() => {
+    if (selectedRepo) {
+      setWorkspaceName(selectedRepo.name);
+    }
+  }, [selectedRepo]);
+
+  // Auto-update name when manual URL changes
+  useEffect(() => {
+    if (useManual && manualRepoUrl) {
+      const info = extractRepoInfo(manualRepoUrl);
+      if (info && !workspaceName) {
+        setWorkspaceName(info.name);
+      }
+    }
+  }, [manualRepoUrl, useManual]);
 
   // Load GitHub installations on mount
   useEffect(() => {
@@ -90,9 +262,18 @@ export default function NewWorkspacePage() {
     setError('');
 
     const formData = new FormData(e.currentTarget);
+    const manualRepoUrl = formData.get('repoUrl') as string;
+
+    // Determine final name
+    let finalName = workspaceName;
+    if (!finalName && selectedRepo) {
+      finalName = selectedRepo.name;
+    } else if (!finalName && manualRepoUrl) {
+      finalName = extractRepoInfo(manualRepoUrl)?.name || '';
+    }
 
     const data: Record<string, unknown> = {
-      name: formData.get('name') as string,
+      name: finalName || undefined, // Let server auto-derive if empty
       accessMode,
     };
 
@@ -101,7 +282,7 @@ export default function NewWorkspacePage() {
       data.githubRepoId = selectedRepo.id;
       data.githubInstallationId = selectedInstallation;
     } else {
-      data.repoUrl = formData.get('repoUrl') as string;
+      data.repoUrl = manualRepoUrl;
     }
 
     try {
@@ -216,6 +397,15 @@ export default function NewWorkspacePage() {
                   type="text"
                   id="repoUrl"
                   name="repoUrl"
+                  value={manualRepoUrl}
+                  onChange={(e) => {
+                    setManualRepoUrl(e.target.value);
+                    // Auto-derive name from URL
+                    const info = extractRepoInfo(e.target.value);
+                    if (info) {
+                      setWorkspaceName(info.name);
+                    }
+                  }}
                   placeholder="org/repo or https://github.com/org/repo"
                   className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
@@ -235,21 +425,27 @@ export default function NewWorkspacePage() {
             </>
           )}
 
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium mb-2">
-              Workspace Name
-            </label>
-            <input
-              type="text"
-              id="name"
-              name="name"
-              required
-              placeholder={selectedRepo ? selectedRepo.name : 'my-project'}
-              defaultValue={selectedRepo?.name || ''}
-              key={selectedRepo?.id || 'manual'}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
+          {/* Workspace Name - shown when repo is selected or manual URL entered */}
+          {(selectedRepo || manualRepoUrl || workspaceName) && (
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Workspace Name
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg font-mono text-sm">
+                  {workspaceName || selectedRepo?.name || extractRepoInfo(manualRepoUrl)?.name || 'unnamed'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowNameModal(true)}
+                  className="px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Edit
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Auto-derived from repository</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-2">
@@ -299,6 +495,19 @@ export default function NewWorkspacePage() {
             </Link>
           </div>
         </form>
+
+        {/* Name editing modal */}
+        {showNameModal && (
+          <NameModal
+            repo={selectedRepo || extractRepoInfo(manualRepoUrl)}
+            currentName={workspaceName || selectedRepo?.name || extractRepoInfo(manualRepoUrl)?.name || ''}
+            onSelect={(name) => {
+              setWorkspaceName(name);
+              setShowNameModal(false);
+            }}
+            onClose={() => setShowNameModal(false)}
+          />
+        )}
       </div>
     </main>
   );

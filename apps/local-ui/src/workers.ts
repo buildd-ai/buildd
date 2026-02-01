@@ -1,7 +1,7 @@
 import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
-import { createWorkspaceResolver } from './workspace';
+import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import Pusher from 'pusher-js';
 
 type EventHandler = (event: any) => void;
@@ -12,7 +12,7 @@ export class WorkerManager {
   private workers = new Map<string, LocalWorker>();
   private sessions = new Map<string, any>();
   private buildd: BuilddClient;
-  private resolver: ReturnType<typeof createWorkspaceResolver>;
+  private resolver: WorkspaceResolver;
   private eventHandlers: EventHandler[] = [];
   private commandHandlers: CommandHandler[] = [];
   private staleCheckInterval?: Timer;
@@ -20,10 +20,10 @@ export class WorkerManager {
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
 
-  constructor(config: LocalUIConfig) {
+  constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
     this.buildd = new BuilddClient(config);
-    this.resolver = createWorkspaceResolver(config.projectsRoot);
+    this.resolver = resolver || createWorkspaceResolver(config.projectsRoot);
 
     // Check for stale workers every 30s
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
