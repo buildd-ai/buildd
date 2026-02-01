@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { execSync } from 'child_process';
+import { homedir } from 'os';
 
 export interface WorkspaceResolver {
   resolve(workspace: { id: string; name: string; repo?: string | null }): string | null;
@@ -9,6 +10,57 @@ export interface WorkspaceResolver {
   getPathOverrides(): Record<string, string>;
   setPathOverride(workspaceName: string, localPath: string): void;
   scanGitRepos(): GitRepoInfo[];
+  getProjectRoots(): string[];
+}
+
+// Common project locations to auto-discover
+const DEFAULT_PROJECT_PATHS = [
+  '/home/coder/project',
+  join(homedir(), 'projects'),
+  join(homedir(), 'dev'),
+  join(homedir(), 'code'),
+  join(homedir(), 'src'),
+  join(homedir(), 'repos'),
+  join(homedir(), 'workspace'),
+  join(homedir(), 'work'),
+];
+
+// Expand tilde to home directory
+function expandTilde(p: string): string {
+  if (p.startsWith('~/')) {
+    return join(homedir(), p.slice(2));
+  }
+  if (p === '~') {
+    return homedir();
+  }
+  return p;
+}
+
+// Parse PROJECTS_ROOT which can be comma-separated or single path
+export function parseProjectRoots(envValue: string | undefined): string[] {
+  if (!envValue) {
+    // Auto-discover from common locations
+    const found = DEFAULT_PROJECT_PATHS.filter(p => existsSync(p));
+    if (found.length > 0) {
+      console.log(`Auto-discovered project roots: ${found.join(', ')}`);
+    }
+    return found;
+  }
+
+  // Support comma-separated paths with tilde expansion
+  const paths = envValue
+    .split(',')
+    .map(p => resolve(expandTilde(p.trim())))
+    .filter(p => {
+      if (!existsSync(p)) {
+        console.warn(`Project root does not exist: ${p}`);
+        return false;
+      }
+      return true;
+    });
+
+  console.log(`Using project roots: ${paths.join(', ')}`);
+  return paths;
 }
 
 export interface GitRepoInfo {
@@ -70,21 +122,29 @@ function getGitRemote(dirPath: string): string | null {
   }
 }
 
-export function createWorkspaceResolver(projectsRoot: string): WorkspaceResolver {
-  // Build git remote cache for all directories
+export function createWorkspaceResolver(projectRoots: string | string[]): WorkspaceResolver {
+  // Normalize to array
+  const roots = Array.isArray(projectRoots) ? projectRoots : [projectRoots];
+
+  // Build git remote cache for all directories across all roots
   const buildGitCache = (): Map<string, string | null> => {
     const cache = new Map<string, string | null>();
-    try {
-      const dirs = readdirSync(projectsRoot, { withFileTypes: true })
-        .filter(d => d.isDirectory() && !d.name.startsWith('.'));
 
-      for (const dir of dirs) {
-        const dirPath = join(projectsRoot, dir.name);
-        const remote = getGitRemote(dirPath);
-        cache.set(dirPath, remote);
+    for (const root of roots) {
+      try {
+        if (!existsSync(root)) continue;
+
+        const dirs = readdirSync(root, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+
+        for (const dir of dirs) {
+          const dirPath = join(root, dir.name);
+          const remote = getGitRemote(dirPath);
+          cache.set(dirPath, remote);
+        }
+      } catch {
+        // Ignore errors for this root
       }
-    } catch {
-      // Ignore errors
     }
     return cache;
   };
@@ -125,78 +185,96 @@ export function createWorkspaceResolver(projectsRoot: string): WorkspaceResolver
       }
     }
 
-    // Check by workspace ID (some workspaces might use ID as folder name)
-    if (workspace.id) {
-      const byId = join(projectsRoot, workspace.id);
-      const exists = existsSync(byId);
-      attempts.push({ path: byId, exists, method: 'id' });
-      if (exists) return { path: byId, attempts };
-    }
+    // Try name-based matching across all roots
+    for (const root of roots) {
+      if (!existsSync(root)) continue;
 
-    // Try workspace name directly
-    const byName = join(projectsRoot, workspace.name);
-    attempts.push({ path: byName, exists: existsSync(byName), method: 'name' });
-    if (existsSync(byName)) {
-      return { path: byName, attempts };
-    }
+      // Check by workspace ID
+      if (workspace.id) {
+        const byId = join(root, workspace.id);
+        const exists = existsSync(byId);
+        attempts.push({ path: byId, exists, method: 'id' });
+        if (exists) return { path: byId, attempts };
+      }
 
-    // Try extracting repo name from URL
-    if (workspace.repo) {
-      const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
-      if (repoName) {
-        const byRepo = join(projectsRoot, repoName);
-        attempts.push({ path: byRepo, exists: existsSync(byRepo), method: 'repo-name' });
-        if (existsSync(byRepo)) {
-          return { path: byRepo, attempts };
+      // Try workspace name directly
+      const byName = join(root, workspace.name);
+      const nameExists = existsSync(byName);
+      attempts.push({ path: byName, exists: nameExists, method: 'name' });
+      if (nameExists) {
+        return { path: byName, attempts };
+      }
+
+      // Try extracting repo name from URL
+      if (workspace.repo) {
+        const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
+        if (repoName) {
+          const byRepo = join(root, repoName);
+          const repoExists = existsSync(byRepo);
+          attempts.push({ path: byRepo, exists: repoExists, method: 'repo-name' });
+          if (repoExists) {
+            return { path: byRepo, attempts };
+          }
         }
       }
-    }
 
-    // Try lowercase
-    const byLower = join(projectsRoot, workspace.name.toLowerCase());
-    attempts.push({ path: byLower, exists: existsSync(byLower), method: 'lowercase' });
-    if (existsSync(byLower)) {
-      return { path: byLower, attempts };
-    }
+      // Try lowercase
+      const byLower = join(root, workspace.name.toLowerCase());
+      const lowerExists = existsSync(byLower);
+      attempts.push({ path: byLower, exists: lowerExists, method: 'lowercase' });
+      if (lowerExists) {
+        return { path: byLower, attempts };
+      }
 
-    // Try kebab-case
-    const kebab = workspace.name.toLowerCase().replace(/\s+/g, '-');
-    const byKebab = join(projectsRoot, kebab);
-    attempts.push({ path: byKebab, exists: existsSync(byKebab), method: 'kebab-case' });
-    if (existsSync(byKebab)) {
-      return { path: byKebab, attempts };
+      // Try kebab-case
+      const kebab = workspace.name.toLowerCase().replace(/\s+/g, '-');
+      const byKebab = join(root, kebab);
+      const kebabExists = existsSync(byKebab);
+      attempts.push({ path: byKebab, exists: kebabExists, method: 'kebab-case' });
+      if (kebabExists) {
+        return { path: byKebab, attempts };
+      }
     }
 
     return { path: null, attempts };
   };
 
   const listDirs = (): string[] => {
-    try {
-      return readdirSync(projectsRoot, { withFileTypes: true })
-        .filter(d => d.isDirectory() && !d.name.startsWith('.'))
-        .map(d => d.name);
-    } catch {
-      return [];
+    const allDirs: string[] = [];
+    for (const root of roots) {
+      try {
+        if (!existsSync(root)) continue;
+        const dirs = readdirSync(root, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+          .map(d => d.name);
+        allDirs.push(...dirs);
+      } catch {
+        // Ignore errors
+      }
     }
+    return [...new Set(allDirs)]; // Dedupe
   };
 
   const scanGitRepos = (): GitRepoInfo[] => {
     const repos: GitRepoInfo[] = [];
-    try {
-      const dirs = readdirSync(projectsRoot, { withFileTypes: true })
-        .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+    for (const root of roots) {
+      try {
+        if (!existsSync(root)) continue;
+        const dirs = readdirSync(root, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith('.'));
 
-      for (const dir of dirs) {
-        const dirPath = join(projectsRoot, dir.name);
-        const remoteUrl = getGitRemote(dirPath);
-        repos.push({
-          path: dirPath,
-          remoteUrl,
-          normalizedUrl: normalizeGitUrl(remoteUrl),
-        });
+        for (const dir of dirs) {
+          const dirPath = join(root, dir.name);
+          const remoteUrl = getGitRemote(dirPath);
+          repos.push({
+            path: dirPath,
+            remoteUrl,
+            normalizedUrl: normalizeGitUrl(remoteUrl),
+          });
+        }
+      } catch {
+        // Ignore errors
       }
-    } catch {
-      // Ignore errors
     }
     return repos;
   };
@@ -227,7 +305,7 @@ export function createWorkspaceResolver(projectsRoot: string): WorkspaceResolver
       const { path, attempts } = attemptResolve(workspace);
       return {
         workspace,
-        projectsRoot,
+        projectsRoot: roots.join(', '),
         attemptedPaths: attempts,
         resolvedPath: path,
         availableDirectories: listDirs(),
@@ -254,6 +332,10 @@ export function createWorkspaceResolver(projectsRoot: string): WorkspaceResolver
       // Clear cache and rescan
       gitRemoteCache = null;
       return scanGitRepos();
+    },
+
+    getProjectRoots() {
+      return [...roots];
     },
   };
 }

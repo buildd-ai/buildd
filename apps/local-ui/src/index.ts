@@ -3,13 +3,22 @@ import { join } from 'path';
 import type { LocalUIConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
-import { createWorkspaceResolver } from './workspace';
+import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 
 const PORT = parseInt(process.env.PORT || '8766');
 
+// Parse project roots (supports ~/path, comma-separated, auto-discovery)
+const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
+
+if (projectRoots.length === 0) {
+  console.error('No valid project roots found. Set PROJECTS_ROOT env var (e.g., ~/projects,~/work)');
+  process.exit(1);
+}
+
 // Load config from env
 const config: LocalUIConfig = {
-  projectsRoot: process.env.PROJECTS_ROOT || '/home/coder/project',
+  projectsRoot: projectRoots[0], // Primary for backwards compat
+  projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || 'https://buildd-three.vercel.app',
   apiKey: process.env.BUILDD_API_KEY || '',
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
@@ -27,7 +36,7 @@ if (!config.apiKey) {
 }
 
 const buildd = new BuilddClient(config);
-const resolver = createWorkspaceResolver(config.projectsRoot);
+const resolver = createWorkspaceResolver(projectRoots);
 const workerManager = new WorkerManager(config, resolver);
 
 // SSE clients
@@ -252,7 +261,7 @@ const server = Bun.serve({
     // Debug endpoints for workspace resolution testing
     if (path === '/api/debug/directories' && req.method === 'GET') {
       return Response.json({
-        projectsRoot: config.projectsRoot,
+        projectRoots: resolver.getProjectRoots(),
         directories: resolver.listLocalDirectories(),
         pathOverrides: resolver.getPathOverrides(),
         gitRepos: resolver.scanGitRepos(),
@@ -315,3 +324,11 @@ const server = Bun.serve({
 });
 
 console.log(`buildd local-ui running at http://localhost:${PORT}`);
+console.log(`Scanning ${projectRoots.length} project root(s)...`);
+const repos = resolver.scanGitRepos();
+console.log(`Found ${repos.length} git repositories:`);
+for (const repo of repos) {
+  if (repo.normalizedUrl) {
+    console.log(`  ${repo.normalizedUrl} -> ${repo.path}`);
+  }
+}

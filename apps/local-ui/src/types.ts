@@ -57,7 +57,8 @@ export interface WorkerCommand {
 
 // Config
 export interface LocalUIConfig {
-  projectsRoot: string;
+  projectsRoot: string;  // Primary root (backwards compat)
+  projectRoots?: string[];  // All roots to search
   builddServer: string;
   apiKey: string;
   maxConcurrent: number;
