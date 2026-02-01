@@ -8,11 +8,16 @@ export class BuilddClient {
   }
 
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
-    const res = await fetch(`${this.config.builddServer}${endpoint}`, {
+    const apiKey = this.config.apiKey?.trim(); // Trim any whitespace
+    const url = `${this.config.builddServer}${endpoint}`;
+    console.log(`[fetch] ${options.method || 'GET'} ${url}`);
+    console.log(`[fetch] Key length: ${apiKey?.length}, starts: ${apiKey?.slice(0, 10)}, ends: ${apiKey?.slice(-10)}`);
+
+    const res = await fetch(url, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Authorization': `Bearer ${apiKey}`,
         ...options.headers,
       },
     });
