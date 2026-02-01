@@ -73,5 +73,5 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ## Local Docs
 
-See `.agent/` if present (gitignored) for architecture deep-dives.
-i.e claude-agent-sdk.md
+See `.agent/` for architecture deep-dives.
+i.e .agent/claude-agent-sdk.md
