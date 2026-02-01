@@ -754,6 +754,9 @@ const server = Bun.serve({
     if (path === '/app.js') {
       return serveStatic('app.js');
     }
+    if (path === '/icon.png') {
+      return serveStatic('icon.png');
+    }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)
     if (path.startsWith('/worker/')) {
