@@ -30,7 +30,13 @@ let isServerless = false;
 async function checkConfig() {
   try {
     const res = await fetch('/api/config');
+    if (!res.ok) {
+      console.error('Config fetch failed:', res.status);
+      showSetup();
+      return;
+    }
     const data = await res.json();
+    console.log('Config check:', data);
     isConfigured = data.configured;
     isServerless = data.serverless;
 
