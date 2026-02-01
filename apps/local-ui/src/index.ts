@@ -1,11 +1,13 @@
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import type { LocalUIConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 
 const PORT = parseInt(process.env.PORT || '8766');
+const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
@@ -15,12 +17,39 @@ if (projectRoots.length === 0) {
   process.exit(1);
 }
 
-// Load config from env
+// Load saved config
+function loadSavedConfig(): { apiKey?: string } {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+    }
+  } catch {
+    // Ignore
+  }
+  return {};
+}
+
+// Save config
+function saveConfig(data: { apiKey?: string }) {
+  try {
+    const dir = join(homedir(), '.buildd');
+    if (!existsSync(dir)) {
+      require('fs').mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Failed to save config:', err);
+  }
+}
+
+const savedConfig = loadSavedConfig();
+
+// Load config from env, falling back to saved config
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || 'https://buildd-three.vercel.app',
-  apiKey: process.env.BUILDD_API_KEY || '',
+  apiKey: process.env.BUILDD_API_KEY || savedConfig.apiKey || '',
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
@@ -30,14 +59,20 @@ const config: LocalUIConfig = {
   pusherCluster: process.env.PUSHER_CLUSTER,
 };
 
-if (!config.apiKey) {
-  console.error('BUILDD_API_KEY is required');
-  process.exit(1);
-}
-
-const buildd = new BuilddClient(config);
+// Allow running without API key - will show setup UI
+let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
+let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, createWorkspaceResolver(projectRoots)) : null;
 const resolver = createWorkspaceResolver(projectRoots);
-const workerManager = new WorkerManager(config, resolver);
+
+// Reinitialize clients after API key is set
+function initializeClients() {
+  if (config.apiKey) {
+    buildd = new BuilddClient(config);
+    workerManager = new WorkerManager(config, resolver);
+    workerManager.onEvent(broadcast);
+    console.log('API key configured, clients initialized');
+  }
+}
 
 // SSE clients
 const sseClients = new Set<ReadableStreamDefaultController>();
@@ -54,8 +89,10 @@ function broadcast(event: any) {
   }
 }
 
-// Subscribe to worker events
-workerManager.onEvent(broadcast);
+// Subscribe to worker events (if configured)
+if (workerManager) {
+  workerManager.onEvent(broadcast);
+}
 
 // Serve static files
 function serveStatic(path: string): Response {
@@ -106,6 +143,100 @@ const server = Bun.serve({
       return new Response(null, { headers: corsHeaders });
     }
 
+    // Auth & Config endpoints (work without API key)
+
+    // Check if configured
+    if (path === '/api/config' && req.method === 'GET') {
+      return Response.json({
+        configured: !!config.apiKey,
+        builddServer: config.builddServer,
+        projectRoots: config.projectRoots,
+      }, { headers: corsHeaders });
+    }
+
+    // Set API key
+    if (path === '/api/config' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { apiKey } = body;
+
+      if (!apiKey || !apiKey.startsWith('bld_')) {
+        return Response.json({ error: 'Invalid API key format (should start with bld_)' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Test the API key
+      const testConfig = { ...config, apiKey };
+      const testClient = new BuilddClient(testConfig);
+      try {
+        await testClient.listWorkspaces();
+      } catch (err) {
+        return Response.json({ error: 'Invalid API key - failed to connect to server' }, { status: 401, headers: corsHeaders });
+      }
+
+      // Save and activate
+      config.apiKey = apiKey;
+      saveConfig({ apiKey });
+      initializeClients();
+
+      return Response.json({ ok: true, configured: true }, { headers: corsHeaders });
+    }
+
+    // OAuth: Redirect to server login
+    if (path === '/auth/login') {
+      const callbackUrl = `http://localhost:${PORT}/auth/callback`;
+      const loginUrl = `${config.builddServer}/api/auth/local-ui?callback=${encodeURIComponent(callbackUrl)}`;
+      return Response.redirect(loginUrl, 302);
+    }
+
+    // OAuth: Callback from server with token
+    if (path === '/auth/callback') {
+      const token = url.searchParams.get('token');
+      const error = url.searchParams.get('error');
+
+      if (error) {
+        return new Response(`
+          <!DOCTYPE html>
+          <html>
+          <head><title>Auth Error</title></head>
+          <body style="font-family: system-ui; padding: 40px; text-align: center;">
+            <h1>Authentication Failed</h1>
+            <p>${error}</p>
+            <a href="/">Go back</a>
+          </body>
+          </html>
+        `, { headers: { 'Content-Type': 'text/html' } });
+      }
+
+      if (token && token.startsWith('bld_')) {
+        config.apiKey = token;
+        saveConfig({ apiKey: token });
+        initializeClients();
+
+        return new Response(`
+          <!DOCTYPE html>
+          <html>
+          <head><title>Auth Success</title></head>
+          <body style="font-family: system-ui; padding: 40px; text-align: center;">
+            <h1>Success!</h1>
+            <p>API key configured. Redirecting...</p>
+            <script>setTimeout(() => window.location.href = '/', 1000);</script>
+          </body>
+          </html>
+        `, { headers: { 'Content-Type': 'text/html' } });
+      }
+
+      return new Response(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Auth Error</title></head>
+        <body style="font-family: system-ui; padding: 40px; text-align: center;">
+          <h1>Invalid Token</h1>
+          <p>No valid token received</p>
+          <a href="/">Go back</a>
+        </body>
+        </html>
+      `, { headers: { 'Content-Type': 'text/html' } });
+    }
+
     // SSE endpoint
     if (path === '/api/events') {
       const stream = new ReadableStream({
@@ -115,7 +246,8 @@ const server = Bun.serve({
           // Send initial state
           const init = {
             type: 'init',
-            workers: workerManager.getWorkers(),
+            configured: !!config.apiKey,
+            workers: workerManager?.getWorkers() || [],
             config: {
               projectsRoot: config.projectsRoot,
               builddServer: config.builddServer,
@@ -139,19 +271,25 @@ const server = Bun.serve({
       });
     }
 
-    // API endpoints
+    // API endpoints that require authentication
+    if (!buildd || !workerManager) {
+      if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+    }
+
     if (path === '/api/tasks' && req.method === 'GET') {
-      const tasks = await buildd.listTasks();
+      const tasks = await buildd!.listTasks();
       return Response.json({ tasks }, { headers: corsHeaders });
     }
 
     if (path === '/api/workspaces' && req.method === 'GET') {
-      const workspaces = await buildd.listWorkspaces();
+      const workspaces = await buildd!.listWorkspaces();
       return Response.json({ workspaces }, { headers: corsHeaders });
     }
 
     if (path === '/api/workers' && req.method === 'GET') {
-      return Response.json({ workers: workerManager.getWorkers() }, { headers: corsHeaders });
+      return Response.json({ workers: workerManager!.getWorkers() }, { headers: corsHeaders });
     }
 
     if (path === '/api/claim' && req.method === 'POST') {
@@ -159,14 +297,14 @@ const server = Bun.serve({
       const { taskId } = body;
 
       // Get the task first
-      const tasks = await buildd.listTasks();
+      const tasks = await buildd!.listTasks();
       const task = tasks.find((t: any) => t.id === taskId);
 
       if (!task) {
         return Response.json({ error: 'Task not found' }, { status: 404, headers: corsHeaders });
       }
 
-      const worker = await workerManager.claimAndStart(task);
+      const worker = await workerManager!.claimAndStart(task);
       if (!worker) {
         return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
       }
@@ -176,30 +314,33 @@ const server = Bun.serve({
 
     if (path === '/api/abort' && req.method === 'POST') {
       const body = await parseBody(req);
-      await workerManager.abort(body.workerId);
+      await workerManager!.abort(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
     if (path === '/api/done' && req.method === 'POST') {
       const body = await parseBody(req);
-      await workerManager.markDone(body.workerId);
+      await workerManager!.markDone(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
     if (path === '/api/read' && req.method === 'POST') {
       const body = await parseBody(req);
-      workerManager.markRead(body.workerId);
+      workerManager!.markRead(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
-      const task = await buildd.createTask(body);
+      const task = await buildd!.createTask(body);
       return Response.json({ task }, { headers: corsHeaders });
     }
 
     // Send message to running worker session
     if (path.startsWith('/api/workers/') && path.endsWith('/send') && req.method === 'POST') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
       const workerId = path.split('/')[3];
       const body = await parseBody(req);
       const success = await workerManager.sendMessage(workerId, body.message);
@@ -211,6 +352,9 @@ const server = Bun.serve({
 
     // Command endpoint for direct access (when server relays or user accesses directly)
     if (path === '/cmd' && req.method === 'POST') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
       const body = await parseBody(req);
       const { workerId, action, text } = body;
 
@@ -238,6 +382,9 @@ const server = Bun.serve({
 
     // Worker-specific command shorthand
     if (path.startsWith('/api/workers/') && path.endsWith('/cmd') && req.method === 'POST') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
       const workerId = path.split('/')[3];
       const body = await parseBody(req);
       const { action, text } = body;
@@ -280,7 +427,7 @@ const server = Bun.serve({
 
     if (path === '/api/debug/resolve-all' && req.method === 'GET') {
       // Fetch all workspaces from API and try to resolve each one
-      const workspaces = await buildd.listWorkspaces();
+      const workspaces = buildd ? await buildd.listWorkspaces() : [];
       const results = workspaces.map((ws: any) => ({
         workspace: { id: ws.id, name: ws.name, repo: ws.repo },
         ...resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo }),
@@ -331,4 +478,8 @@ for (const repo of repos) {
   if (repo.normalizedUrl) {
     console.log(`  ${repo.normalizedUrl} -> ${repo.path}`);
   }
+}
+if (!config.apiKey) {
+  console.log('');
+  console.log('No API key configured. Visit http://localhost:' + PORT + ' to set up.');
 }
