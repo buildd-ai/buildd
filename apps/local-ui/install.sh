@@ -61,17 +61,32 @@ bun install
 # Create bin directory
 mkdir -p "$BIN_DIR"
 
+# Migrate: remove old .buildd.env if it only contains API key
+# Config is now stored in ~/.buildd/config.json
+if [ -f "$HOME/.buildd.env" ]; then
+  # Check if .env only has BUILDD_API_KEY lines
+  if grep -qvE '^(export\s+)?BUILDD_API_KEY=|^#|^\s*$' "$HOME/.buildd.env" 2>/dev/null; then
+    echo -e "${YELLOW}Note: ~/.buildd.env has custom settings, keeping it${NC}"
+  else
+    echo -e "${YELLOW}Migrating: API key now stored in ~/.buildd/config.json${NC}"
+    rm -f "$HOME/.buildd.env"
+  fi
+fi
+
 # Create launcher script
 cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #!/bin/bash
 
-# Default config location
-CONFIG_FILE="$HOME/.buildd.env"
-
-# Load config if exists
-if [ -f "$CONFIG_FILE" ]; then
-  source "$CONFIG_FILE"
-fi
+# =============================================================================
+# buildd launcher
+# =============================================================================
+# Config is stored in ~/.buildd/config.json (managed by the web UI)
+# Env vars override config for CI/Docker use:
+#   BUILDD_API_KEY  - API key (overrides config.json)
+#   PROJECTS_ROOT   - Project directories to scan
+#   BUILDD_SERVER   - Server URL (default: https://buildd-three.vercel.app)
+#   PORT            - Local server port (default: 8766)
+# =============================================================================
 
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
@@ -89,7 +104,7 @@ if [ -z "$PROJECTS_ROOT" ]; then
   export PROJECTS_ROOT="$ROOTS"
 fi
 
-# Run (no longer requires API key upfront - UI handles setup)
+# Run
 exec bun run "$HOME/.buildd/apps/local-ui/src/index.ts" "$@"
 LAUNCHER
 
@@ -113,8 +128,9 @@ echo ""
 echo "Run buildd to start:"
 echo "  buildd"
 echo ""
-echo "Or with a custom port:"
-echo "  PORT=8080 buildd"
+echo "Then open http://localhost:8766 to connect your account."
+echo ""
+echo "Config is stored in ~/.buildd/config.json"
 echo ""
 
 # Reload PATH for current session
