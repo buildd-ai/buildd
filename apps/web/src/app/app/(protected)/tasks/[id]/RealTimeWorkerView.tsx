@@ -64,10 +64,12 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   // Subscribe to real-time updates
   useEffect(() => {
     const channelName = `worker-${worker.id}`;
+    console.log('[RealTimeWorkerView] Setting up subscription for:', channelName);
     const channel = subscribeToChannel(channelName);
 
     if (channel) {
       const handleUpdate = (data: { worker: Worker }) => {
+        console.log('[RealTimeWorkerView] Received update:', data.worker?.status, data.worker?.progress);
         setWorker(data.worker);
       };
 
@@ -75,12 +77,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       channel.bind('worker:completed', handleUpdate);
       channel.bind('worker:failed', handleUpdate);
 
+      // Log all events for debugging
+      channel.bind_global((eventName: string, data: unknown) => {
+        console.log('[RealTimeWorkerView] Event received:', eventName, data);
+      });
+
       return () => {
         channel.unbind('worker:progress', handleUpdate);
         channel.unbind('worker:completed', handleUpdate);
         channel.unbind('worker:failed', handleUpdate);
         unsubscribeFromChannel(channelName);
       };
+    } else {
+      console.warn('[RealTimeWorkerView] No channel returned - Pusher not configured?');
     }
   }, [worker.id]);
 
