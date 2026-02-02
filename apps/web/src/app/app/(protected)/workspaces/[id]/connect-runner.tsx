@@ -84,7 +84,7 @@ The workflow should:
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create an Action account</div>
               <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                Go to <a href="/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
               </p>
             </div>
 
@@ -94,7 +94,7 @@ The workflow should:
                 After creating the account, use the API to connect it to this workspace:
               </p>
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://buildd-three.vercel.app/api/workspaces/${workspaceId}/accounts \\
+{`curl -X POST https://app.buildd.dev/api/workspaces/${workspaceId}/accounts \\
   -H "Content-Type: application/json" \\
   -d '{"accountId": "YOUR_ACCOUNT_ID", "canClaim": true}'`}
               </pre>
@@ -125,7 +125,7 @@ jobs:
       - name: Claim and process tasks
         env:
           BUILDD_API_KEY: \${{ secrets.BUILDD_API_KEY }}
-          BUILDD_SERVER: https://buildd-three.vercel.app
+          BUILDD_SERVER: https://app.buildd.dev
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           # Claim a task
@@ -198,7 +198,7 @@ jobs:
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a Service account</div>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Go to <a href="/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
               </p>
             </div>
 
@@ -210,7 +210,7 @@ jobs:
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
 {`cd your-repo
 export BUILDD_API_KEY=bld_xxx
-export BUILDD_SERVER=https://buildd-three.vercel.app
+export BUILDD_SERVER=https://app.buildd.dev
 export ANTHROPIC_API_KEY=sk-ant-xxx
 
 # Run the agent (loops forever, claiming tasks)
@@ -231,7 +231,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/your-repo
 Environment=BUILDD_API_KEY=bld_xxx
-Environment=BUILDD_SERVER=https://buildd-three.vercel.app
+Environment=BUILDD_SERVER=https://app.buildd.dev
 Environment=ANTHROPIC_API_KEY=sk-ant-xxx
 ExecStart=/usr/local/bin/bun run /home/ubuntu/buildd/apps/agent/src/index.ts
 Restart=always
@@ -252,7 +252,7 @@ WantedBy=multi-user.target`}
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a User account</div>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Go to <a href="/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
               </p>
             </div>
 
@@ -262,7 +262,7 @@ WantedBy=multi-user.target`}
                 Run this command in your terminal:
               </p>
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd-three.vercel.app"}}'`}
+{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://app.buildd.dev"}}'`}
               </pre>
             </div>
 

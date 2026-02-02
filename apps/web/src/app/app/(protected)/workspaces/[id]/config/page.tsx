@@ -16,7 +16,7 @@ export default async function WorkspaceConfigPage({
     const user = await getCurrentUser();
 
     if (!user) {
-        redirect('/auth/signin');
+        redirect('/app/auth/signin');
     }
 
     const workspace = await db.query.workspaces.findFirst({
@@ -46,7 +46,7 @@ export default async function WorkspaceConfigPage({
     return (
         <main className="min-h-screen p-8">
             <div className="max-w-2xl mx-auto">
-                <Link href={`/workspaces/${id}`} className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+                <Link href={`/app/workspaces/${id}`} className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
                     &larr; Back to {workspace.name}
                 </Link>
 

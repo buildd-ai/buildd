@@ -20,7 +20,7 @@ export default async function DashboardPage() {
 
   if (!isDev) {
     if (!user) {
-      redirect('/auth/signin');
+      redirect('/app/auth/signin');
     }
 
     try {
@@ -86,7 +86,7 @@ export default async function DashboardPage() {
             {githubConfigured && (
               githubOrgs.length > 0 ? (
                 <Link
-                  href="/settings"
+                  href="/app/settings"
                   className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30"
                 >
                   <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 24 24">
@@ -109,13 +109,13 @@ export default async function DashboardPage() {
               )
             )}
             <Link
-              href="/settings"
+              href="/app/settings"
               className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
             >
               Settings
             </Link>
             <Link
-              href="/accounts"
+              href="/app/accounts"
               className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
             >
               Accounts
@@ -157,7 +157,7 @@ export default async function DashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           {/* Workspaces Card */}
           <Link
-            href="/workspaces"
+            href="/app/workspaces"
             className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
           >
             <div className="flex justify-between items-start mb-4">
@@ -171,7 +171,7 @@ export default async function DashboardPage() {
 
           {/* Tasks Card */}
           <Link
-            href="/tasks"
+            href="/app/tasks"
             className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
           >
             <div className="flex justify-between items-start mb-4">
@@ -185,7 +185,7 @@ export default async function DashboardPage() {
 
           {/* Workers Card */}
           <Link
-            href="/workers"
+            href="/app/workers"
             className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
           >
             <div className="flex justify-between items-start mb-4">
@@ -203,7 +203,7 @@ export default async function DashboardPage() {
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-semibold">Recent Tasks</h2>
             <Link
-              href="/tasks/new"
+              href="/app/tasks/new"
               className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 text-sm"
             >
               + New Task
@@ -214,7 +214,7 @@ export default async function DashboardPage() {
             <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
               <p className="text-gray-500 mb-4">No tasks yet</p>
               <Link
-                href="/tasks/new"
+                href="/app/tasks/new"
                 className="text-blue-600 hover:underline"
               >
                 Create your first task
@@ -225,7 +225,7 @@ export default async function DashboardPage() {
               {recentTasks.map((task) => (
                 <Link
                   key={task.id}
-                  href={`/tasks/${task.id}`}
+                  href={`/app/tasks/${task.id}`}
                   className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
                 >
                   <div className="flex justify-between items-start">
@@ -314,7 +314,7 @@ export default async function DashboardPage() {
                         </a>
                       )}
                       <Link
-                        href={`/workers/${worker.id}`}
+                        href={`/app/workers/${worker.id}`}
                         className="px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
                       >
                         Details
