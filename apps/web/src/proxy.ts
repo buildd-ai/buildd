@@ -22,12 +22,8 @@ export function proxy(request: NextRequest) {
     if (!pathname.startsWith('/app')) {
       return NextResponse.rewrite(new URL(`/app${pathname}`, request.url));
     }
-  } else {
-    // Marketing domain - block /app/* access
-    if (pathname.startsWith('/app')) {
-      return NextResponse.redirect(new URL('/', request.url));
-    }
   }
+  // Allow /app/* on all domains (subdomain routing optional)
 
   return NextResponse.next();
 }
