@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces, tasks, workers, githubInstallations } from '@buildd/core/db/schema';
 import { desc, inArray, eq, and } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
