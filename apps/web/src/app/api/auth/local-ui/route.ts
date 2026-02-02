@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   if (!session?.user?.id) {
     // Not logged in - redirect to login page with return URL
     const returnUrl = `/api/auth/local-ui?callback=${encodeURIComponent(callback)}`;
-    const loginUrl = `/login?callbackUrl=${encodeURIComponent(returnUrl)}`;
+    const loginUrl = `/app/auth/signin?callbackUrl=${encodeURIComponent(returnUrl)}`;
     return NextResponse.redirect(new URL(loginUrl, req.url));
   }
 
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
           name: 'Local UI',
           type: 'user',
           level: 'worker',
-          authType: 'api_key',
+          authType: 'api',
           apiKey: generateApiKey(),
           ownerId: session.user.id,
         })
