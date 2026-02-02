@@ -15,7 +15,7 @@ export async function AuthGuard({ children }: AuthGuardProps) {
 
   const session = await auth();
   if (!session?.user) {
-    redirect('/auth/signin');
+    redirect('/app/auth/signin');
   }
 
   return <>{children}</>;
