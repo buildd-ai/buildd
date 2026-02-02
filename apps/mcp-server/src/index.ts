@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { execSync } from "child_process";
 
-const SERVER_URL = process.env.BUILDD_SERVER || "https://buildd-three.vercel.app";
+const SERVER_URL = process.env.BUILDD_SERVER || "https://app.buildd.dev";
 const API_KEY = process.env.BUILDD_API_KEY || "";
 const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || "";
 const WORKER_ID = process.env.BUILDD_WORKER_ID || "";
