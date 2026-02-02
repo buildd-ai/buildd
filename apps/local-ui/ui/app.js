@@ -518,15 +518,46 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
 
     searchInput.addEventListener('click', (e) => e.stopPropagation());
     searchInput.addEventListener('keydown', (e) => {
+      const visibleOptions = optionsContainer.querySelectorAll('.custom-select-option:not(.hidden):not(.disabled)');
+      const highlighted = optionsContainer.querySelector('.custom-select-option.highlighted');
+
       if (e.key === 'Escape') {
         closeAllDropdowns();
-      } else if (e.key === 'Enter') {
-        const visibleOption = optionsContainer.querySelector('.custom-select-option:not(.hidden):not(.disabled)');
-        if (visibleOption) {
-          visibleOption.click();
+      } else if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        const toSelect = highlighted || visibleOptions[0];
+        if (toSelect) {
+          toSelect.click();
         }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navigateOptions(visibleOptions, highlighted, 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateOptions(visibleOptions, highlighted, -1);
       }
     });
+  }
+
+  function navigateOptions(visibleOptions, current, direction) {
+    if (visibleOptions.length === 0) return;
+
+    // Remove current highlight
+    if (current) current.classList.remove('highlighted');
+
+    let nextIndex = 0;
+    if (current) {
+      const currentIndex = Array.from(visibleOptions).indexOf(current);
+      nextIndex = currentIndex + direction;
+      if (nextIndex < 0) nextIndex = visibleOptions.length - 1;
+      if (nextIndex >= visibleOptions.length) nextIndex = 0;
+    } else {
+      nextIndex = direction > 0 ? 0 : visibleOptions.length - 1;
+    }
+
+    const next = visibleOptions[nextIndex];
+    next.classList.add('highlighted');
+    next.scrollIntoView({ block: 'nearest' });
   }
 
   function filterOptions(query) {
@@ -537,7 +568,11 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
       const matchLabel = opt.label.toLowerCase().includes(query);
       const matchHint = opt.hint && opt.hint.toLowerCase().includes(query);
       el.classList.toggle('hidden', query && !matchLabel && !matchHint);
+      el.classList.remove('highlighted');
     });
+    // Auto-highlight first visible option
+    const firstVisible = optionsContainer.querySelector('.custom-select-option:not(.hidden):not(.disabled)');
+    if (firstVisible) firstVisible.classList.add('highlighted');
   }
 
   trigger.addEventListener('click', (e) => {
