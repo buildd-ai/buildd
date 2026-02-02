@@ -4,10 +4,8 @@ export function proxy(request: NextRequest) {
   const hostname = request.headers.get('host') || '';
   const pathname = request.nextUrl.pathname;
 
-  const isAppDomain =
-    hostname.startsWith('app.') ||
-    hostname === 'localhost:3000' ||
-    hostname.startsWith('localhost:');
+  // app.* subdomain (prod: app.buildd.dev, dev: app.localhost:*)
+  const isAppDomain = hostname.startsWith('app.');
 
   // API routes work on both domains
   if (pathname.startsWith('/api/')) {
