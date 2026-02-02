@@ -925,6 +925,35 @@ select.input {
   white-space: nowrap;
 }
 
+.custom-select-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.custom-select-search-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+
+.custom-select-search-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.custom-select-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.custom-select-option.hidden {
+  display: none;
+}
+
 /* Auth warning banner */
 .auth-warning-banner {
   background: rgba(239, 68, 68, 0.1);

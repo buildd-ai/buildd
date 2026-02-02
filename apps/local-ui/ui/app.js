@@ -491,13 +491,54 @@ let combinedWorkspaces = [];
 let selectedWorkspaceId = '';
 
 // Custom dropdown component
-function initCustomSelect(id, onSelect) {
+function initCustomSelect(id, onSelect, { searchable = false } = {}) {
   const container = document.getElementById(id);
   if (!container) return;
 
   const trigger = container.querySelector('.custom-select-trigger');
   const dropdown = container.querySelector('.custom-select-dropdown');
-  const options = container.querySelector('.custom-select-options');
+  const optionsContainer = container.querySelector('.custom-select-options');
+
+  let allOptions = [];
+  let searchInput = null;
+
+  if (searchable) {
+    const searchWrapper = document.createElement('div');
+    searchWrapper.className = 'custom-select-search';
+    searchWrapper.innerHTML = `
+      <input type="text" class="custom-select-search-input" placeholder="Search workspaces...">
+    `;
+    dropdown.insertBefore(searchWrapper, optionsContainer);
+    searchInput = searchWrapper.querySelector('input');
+
+    searchInput.addEventListener('input', () => {
+      const query = searchInput.value.toLowerCase().trim();
+      filterOptions(query);
+    });
+
+    searchInput.addEventListener('click', (e) => e.stopPropagation());
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeAllDropdowns();
+      } else if (e.key === 'Enter') {
+        const visibleOption = optionsContainer.querySelector('.custom-select-option:not(.hidden):not(.disabled)');
+        if (visibleOption) {
+          visibleOption.click();
+        }
+      }
+    });
+  }
+
+  function filterOptions(query) {
+    const optionEls = optionsContainer.querySelectorAll('.custom-select-option');
+    optionEls.forEach((el, i) => {
+      const opt = allOptions[i];
+      if (!opt) return;
+      const matchLabel = opt.label.toLowerCase().includes(query);
+      const matchHint = opt.hint && opt.hint.toLowerCase().includes(query);
+      el.classList.toggle('hidden', query && !matchLabel && !matchHint);
+    });
+  }
 
   trigger.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -506,15 +547,20 @@ function initCustomSelect(id, onSelect) {
     if (!isOpen) {
       dropdown.classList.remove('hidden');
       container.classList.add('open');
+      if (searchInput) {
+        searchInput.value = '';
+        filterOptions('');
+        setTimeout(() => searchInput.focus(), 0);
+      }
     }
   });
 
-  options.addEventListener('click', (e) => {
+  optionsContainer.addEventListener('click', (e) => {
     const option = e.target.closest('.custom-select-option');
-    if (option && !option.classList.contains('disabled')) {
+    if (option && !option.classList.contains('disabled') && !option.classList.contains('hidden')) {
       const value = option.dataset.value;
-      const label = option.textContent;
-      selectOption(container, value, label);
+      const label = option.querySelector('.option-label')?.textContent || option.textContent;
+      selectOption(container, value, label.trim());
       if (onSelect) onSelect(value);
       closeAllDropdowns();
     }
@@ -522,7 +568,8 @@ function initCustomSelect(id, onSelect) {
 
   return {
     setOptions: (opts) => {
-      options.innerHTML = opts.map(o => `
+      allOptions = opts;
+      optionsContainer.innerHTML = opts.map(o => `
         <div class="custom-select-option ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
           ${o.icon ? `<span class="option-icon">${o.icon}</span>` : ''}
           <span class="option-label">${escapeHtml(o.label)}</span>
@@ -554,6 +601,24 @@ document.addEventListener('click', closeAllDropdowns);
 // Workspace select
 let workspaceSelect = null;
 
+const LAST_WORKSPACE_KEY = 'buildd_last_workspace_id';
+
+function saveLastWorkspace(workspaceId) {
+  try {
+    localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
+  } catch (e) {
+    // localStorage not available
+  }
+}
+
+function getLastWorkspace() {
+  try {
+    return localStorage.getItem(LAST_WORKSPACE_KEY);
+  } catch (e) {
+    return null;
+  }
+}
+
 async function loadWorkspaces() {
   try {
     const res = await fetch('/api/combined-workspaces');
@@ -563,12 +628,13 @@ async function loadWorkspaces() {
     const hint = document.getElementById('workspaceHint');
     const hiddenInput = document.getElementById('taskWorkspace');
 
-    // Initialize custom select if not done
+    // Initialize custom select if not done (with searchable typeahead)
     if (!workspaceSelect) {
       workspaceSelect = initCustomSelect('workspaceSelect', (value) => {
         selectedWorkspaceId = value;
         hiddenInput.value = value;
-      });
+        saveLastWorkspace(value);
+      }, { searchable: true });
     }
 
     // Only show ready workspaces in dropdown
@@ -585,11 +651,16 @@ async function loadWorkspaces() {
         hint: w.localPath?.split('/').pop() || '',
       }));
       hint.classList.add('hidden');
-      // Auto-select first
-      if (!selectedWorkspaceId && ready[0]) {
-        selectedWorkspaceId = ready[0].id;
-        hiddenInput.value = ready[0].id;
-        workspaceSelect.setValue(ready[0].id, ready[0].name);
+
+      // Default to last used workspace if available and still ready
+      const lastWorkspaceId = getLastWorkspace();
+      const lastWorkspace = lastWorkspaceId ? ready.find(w => w.id === lastWorkspaceId) : null;
+      const defaultWorkspace = lastWorkspace || ready[0];
+
+      if (!selectedWorkspaceId && defaultWorkspace) {
+        selectedWorkspaceId = defaultWorkspace.id;
+        hiddenInput.value = defaultWorkspace.id;
+        workspaceSelect.setValue(defaultWorkspace.id, defaultWorkspace.name);
       }
     } else {
       options = [{ value: '', label: 'No workspaces ready', disabled: true }];
