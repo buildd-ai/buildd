@@ -7,6 +7,7 @@ import QuickCreateModal from './QuickCreateModal';
 
 const COLLAPSED_STATE_KEY = 'buildd:workspaceCollapsed';
 const SHOW_ALL_KEY = 'buildd:workspaceShowAll';
+const COMPLETED_COLLAPSED_KEY = 'buildd:completedCollapsed';
 const TASKS_PER_WORKSPACE = 5;
 
 interface Task {
@@ -29,8 +30,12 @@ interface Props {
 function getStatusIndicator(status: string): React.ReactNode {
   switch (status) {
     case 'running':
+      // Actively running - spinning indicator
+      return (
+        <span className="h-2 w-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+      );
     case 'assigned':
-      // Active work - pulsing amber indicator
+      // Claimed but not actively running - pulsing amber
       return (
         <span className="relative flex h-2 w-2">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
@@ -38,10 +43,10 @@ function getStatusIndicator(status: string): React.ReactNode {
         </span>
       );
     case 'pending':
-      // Requires action - solid circle
+      // Awaiting claim - solid gray
       return <span className="h-2 w-2 rounded-full bg-gray-400 dark:bg-gray-500" />;
     case 'completed':
-      // Done/pushed - green circle
+      // Done - green circle
       return <span className="h-2 w-2 rounded-full bg-green-500" />;
     case 'failed':
       // Failed - red circle
@@ -56,6 +61,7 @@ export default function WorkspaceSidebar({ workspaces }: Props) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+  const [completedCollapsed, setCompletedCollapsed] = useState<Record<string, boolean>>({});
   const [quickCreateWorkspaceId, setQuickCreateWorkspaceId] = useState<string | null>(null);
 
   // Load collapsed state from localStorage
@@ -65,6 +71,8 @@ export default function WorkspaceSidebar({ workspaces }: Props) {
       if (saved) setCollapsed(JSON.parse(saved));
       const savedShowAll = localStorage.getItem(SHOW_ALL_KEY);
       if (savedShowAll) setShowAll(JSON.parse(savedShowAll));
+      const savedCompletedCollapsed = localStorage.getItem(COMPLETED_COLLAPSED_KEY);
+      if (savedCompletedCollapsed) setCompletedCollapsed(JSON.parse(savedCompletedCollapsed));
     } catch {
       // ignore
     }
@@ -80,6 +88,12 @@ export default function WorkspaceSidebar({ workspaces }: Props) {
     const newState = { ...showAll, [wsId]: !showAll[wsId] };
     setShowAll(newState);
     localStorage.setItem(SHOW_ALL_KEY, JSON.stringify(newState));
+  };
+
+  const toggleCompletedCollapsed = (wsId: string) => {
+    const newState = { ...completedCollapsed, [wsId]: !completedCollapsed[wsId] };
+    setCompletedCollapsed(newState);
+    localStorage.setItem(COMPLETED_COLLAPSED_KEY, JSON.stringify(newState));
   };
 
   // Get selected task ID from pathname
@@ -171,42 +185,82 @@ export default function WorkspaceSidebar({ workspaces }: Props) {
                     </div>
 
                     {/* Tasks */}
-                    {!isCollapsed && (
-                      <div className="ml-4 mt-0.5 space-y-0.5">
-                        {visibleTasks.length === 0 ? (
-                          <div className="px-2 py-1 text-xs text-gray-400">
-                            No tasks
-                          </div>
-                        ) : (
-                          <>
-                            {visibleTasks.map((task) => (
-                              <Link
-                                key={task.id}
-                                href={`/app/tasks/${task.id}`}
-                                className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${
-                                  selectedTaskId === task.id
-                                    ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
-                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-                                }`}
-                              >
-                                {getStatusIndicator(task.status)}
-                                <span className="truncate flex-1">{task.title}</span>
-                              </Link>
-                            ))}
-                            {hasMore && (
-                              <button
-                                onClick={() => toggleShowAll(ws.id)}
-                                className="px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                              >
-                                {isShowingAll
-                                  ? 'Show less'
-                                  : `See all (${ws.tasks.length})`}
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    )}
+                    {!isCollapsed && (() => {
+                      // Split tasks into active/pending vs completed/failed
+                      const activeTasks = visibleTasks.filter(t =>
+                        ['running', 'assigned', 'pending'].includes(t.status)
+                      );
+                      const completedTasks = visibleTasks.filter(t =>
+                        ['completed', 'failed'].includes(t.status)
+                      );
+                      const isCompletedHidden = completedCollapsed[ws.id] ?? true; // Default collapsed
+
+                      return (
+                        <div className="ml-4 mt-0.5 space-y-0.5">
+                          {activeTasks.length === 0 && completedTasks.length === 0 ? (
+                            <div className="px-2 py-1 text-xs text-gray-400">
+                              No tasks
+                            </div>
+                          ) : (
+                            <>
+                              {/* Active/Pending tasks */}
+                              {activeTasks.map((task) => (
+                                <Link
+                                  key={task.id}
+                                  href={`/app/tasks/${task.id}`}
+                                  className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${
+                                    selectedTaskId === task.id
+                                      ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
+                                      : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                  }`}
+                                >
+                                  {getStatusIndicator(task.status)}
+                                  <span className="truncate flex-1">{task.title}</span>
+                                </Link>
+                              ))}
+
+                              {/* Completed section - collapsible */}
+                              {completedTasks.length > 0 && (
+                                <>
+                                  <button
+                                    onClick={() => toggleCompletedCollapsed(ws.id)}
+                                    className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
+                                  >
+                                    <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
+                                    <span>Completed ({completedTasks.length})</span>
+                                  </button>
+                                  {!isCompletedHidden && completedTasks.map((task) => (
+                                    <Link
+                                      key={task.id}
+                                      href={`/app/tasks/${task.id}`}
+                                      className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${
+                                        selectedTaskId === task.id
+                                          ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
+                                          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                      }`}
+                                    >
+                                      {getStatusIndicator(task.status)}
+                                      <span className="truncate flex-1">{task.title}</span>
+                                    </Link>
+                                  ))}
+                                </>
+                              )}
+
+                              {hasMore && (
+                                <button
+                                  onClick={() => toggleShowAll(ws.id)}
+                                  className="px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                >
+                                  {isShowingAll
+                                    ? 'Show less'
+                                    : `See all (${ws.tasks.length})`}
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
