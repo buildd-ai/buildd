@@ -1,12 +1,12 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
 
-export default async function Home() {
+export default async function AppHome() {
   const session = await auth();
 
   if (session?.user) {
-    redirect('/dashboard');
+    redirect('/app/dashboard');
   }
 
-  redirect('/auth/signin');
+  redirect('/app/auth/signin');
 }

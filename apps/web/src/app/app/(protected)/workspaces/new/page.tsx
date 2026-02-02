@@ -297,7 +297,7 @@ export default function NewWorkspacePage() {
         throw new Error(err.error || 'Failed to create workspace');
       }
 
-      router.push('/workspaces');
+      router.push('/app/workspaces');
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -311,7 +311,7 @@ export default function NewWorkspacePage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/workspaces" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/workspaces" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
           &larr; Workspaces
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Workspace</h1>
@@ -488,7 +488,7 @@ export default function NewWorkspacePage() {
               {loading ? 'Creating...' : 'Create Workspace'}
             </button>
             <Link
-              href="/workspaces"
+              href="/app/workspaces"
               className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
             >
               Cancel

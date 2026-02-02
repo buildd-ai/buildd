@@ -14,7 +14,7 @@ export default async function AccountsPage() {
 
   if (!isDev) {
     if (!user) {
-      redirect('/auth/signin');
+      redirect('/app/auth/signin');
     }
 
     try {
@@ -38,14 +38,14 @@ export default async function AccountsPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+            <Link href="/app/dashboard" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
               ← Dashboard
             </Link>
             <h1 className="text-3xl font-bold">Accounts</h1>
             <p className="text-gray-500">API keys for agents to connect</p>
           </div>
           <Link
-            href="/accounts/new"
+            href="/app/accounts/new"
             className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
           >
             + New Account
@@ -59,7 +59,7 @@ export default async function AccountsPage() {
               Create an account to get an API key for agents
             </p>
             <Link
-              href="/accounts/new"
+              href="/app/accounts/new"
               className="px-6 py-3 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
             >
               Create Account
@@ -111,7 +111,7 @@ export default async function AccountsPage() {
               Connect Claude Code directly to buildd with one command:
             </p>
             <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd-three.vercel.app"}}'`}
+{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://app.buildd.dev"}}'`}
             </pre>
             <p className="text-xs text-gray-500 mt-2">
               Or add <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">--scope user</code> to use across all projects
@@ -131,7 +131,7 @@ export default async function AccountsPage() {
       "command": "bun",
       "args": ["run", "~/path/to/buildd/apps/mcp-server/src/index.ts"],
       "env": {
-        "BUILDD_SERVER": "https://buildd-three.vercel.app",
+        "BUILDD_SERVER": "https://app.buildd.dev",
         "BUILDD_API_KEY": "YOUR_API_KEY"
       }
     }
@@ -147,7 +147,7 @@ export default async function AccountsPage() {
               Or use the API directly to claim tasks:
             </p>
             <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://buildd-three.vercel.app/api/workers/claim \\
+{`curl -X POST https://app.buildd.dev/api/workers/claim \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"maxTasks": 1}'`}
