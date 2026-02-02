@@ -1,24 +1,48 @@
-import Link from 'next/link';
+import Image from 'next/image';
 
 export default function LandingPage() {
   return (
-    <main className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white">
+    <main className="min-h-screen bg-[#2a2d3a] text-white">
       {/* Hero Section */}
-      <div className="max-w-6xl mx-auto px-6 pt-24 pb-16">
-        <div className="text-center space-y-6">
-          <h1 className="text-5xl md:text-6xl font-bold tracking-tight">
-            buildd
-          </h1>
-          <p className="text-xl md:text-2xl text-gray-400 max-w-2xl mx-auto">
-            AI Dev Team Orchestration
-          </p>
-          <p className="text-lg text-gray-500">
-            Coordinate Claude agents across your codebase. Free for personal use.
-          </p>
-          <div className="pt-8">
+      <div className="max-w-6xl mx-auto px-6 pt-16 pb-16">
+        <div className="text-center space-y-8">
+          {/* Hero Logo */}
+          <div className="relative mx-auto w-full max-w-md md:max-w-lg lg:max-w-xl">
+            <picture>
+              <source
+                media="(min-width: 1024px)"
+                srcSet="/hero/logo-desktop.webp"
+                type="image/webp"
+              />
+              <source
+                media="(min-width: 768px)"
+                srcSet="/hero/logo-tablet.webp"
+                type="image/webp"
+              />
+              <source srcSet="/hero/logo-mobile.webp" type="image/webp" />
+              <img
+                src="/hero/logo-desktop.png"
+                alt="Buildd"
+                className="w-full h-auto"
+                width={1600}
+                height={1194}
+              />
+            </picture>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-xl md:text-2xl text-gray-300 max-w-2xl mx-auto">
+              AI Dev Team Orchestration
+            </p>
+            <p className="text-lg text-gray-400">
+              Coordinate Claude agents across your codebase. Free for personal use.
+            </p>
+          </div>
+
+          <div className="pt-4">
             <a
               href="https://app.buildd.dev"
-              className="inline-flex items-center px-8 py-4 bg-white text-black font-semibold rounded-lg hover:bg-gray-100 transition-colors"
+              className="inline-flex items-center px-8 py-4 bg-gradient-to-r from-fuchsia-500 to-cyan-400 text-white font-semibold rounded-lg hover:from-fuchsia-600 hover:to-cyan-500 transition-all shadow-lg shadow-fuchsia-500/25"
             >
               Get Started
               <svg
@@ -42,10 +66,10 @@ export default function LandingPage() {
       {/* Features Section */}
       <div className="max-w-6xl mx-auto px-6 py-16">
         <div className="grid md:grid-cols-3 gap-8">
-          <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
-            <div className="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center mb-4">
+          <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
+            <div className="w-12 h-12 bg-fuchsia-500/20 rounded-lg flex items-center justify-center mb-4">
               <svg
-                className="w-6 h-6 text-blue-400"
+                className="w-6 h-6 text-fuchsia-400"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -65,10 +89,10 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
-            <div className="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center mb-4">
+          <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
+            <div className="w-12 h-12 bg-violet-500/20 rounded-lg flex items-center justify-center mb-4">
               <svg
-                className="w-6 h-6 text-green-400"
+                className="w-6 h-6 text-violet-400"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -88,10 +112,10 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
-            <div className="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center mb-4">
+          <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
+            <div className="w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center mb-4">
               <svg
-                className="w-6 h-6 text-purple-400"
+                className="w-6 h-6 text-cyan-400"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -114,13 +138,13 @@ export default function LandingPage() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t border-gray-800 mt-16">
+      <footer className="border-t border-white/10 mt-16">
         <div className="max-w-6xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <p className="text-gray-500 text-sm">
+            <p className="text-gray-400 text-sm">
               buildd - AI Dev Team Orchestration
             </p>
-            <div className="flex gap-6 text-sm text-gray-500">
+            <div className="flex gap-6 text-sm text-gray-400">
               <a
                 href="https://github.com/anthropics/claude-code"
                 target="_blank"
