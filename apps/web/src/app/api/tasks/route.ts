@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray, or } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveCreatorContext } from '@/lib/task-service';
 
 async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
@@ -97,11 +98,32 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workspaceId, title, description, priority, runnerPreference, requiredCapabilities, attachments } = body;
+    const {
+      workspaceId,
+      title,
+      description,
+      priority,
+      runnerPreference,
+      requiredCapabilities,
+      attachments,
+      // New creator tracking fields
+      createdByWorkerId,
+      parentTaskId,
+      creationSource: requestedSource,
+    } = body;
 
     if (!workspaceId || !title) {
       return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
     }
+
+    // Resolve creator context using the service
+    const creatorContext = await resolveCreatorContext({
+      apiAccount,
+      userId: user?.id,
+      createdByWorkerId,
+      parentTaskId,
+      creationSource: requestedSource,
+    });
 
     // Process attachments - store as base64 in context
     const processedAttachments: Array<{ filename: string; mimeType: string; data: string }> = [];
@@ -129,6 +151,8 @@ export async function POST(req: NextRequest) {
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: processedAttachments.length > 0 ? { attachments: processedAttachments } : {},
+        // Creator tracking (from service)
+        ...creatorContext,
       })
       .returning();
 

@@ -18,42 +18,87 @@ if (projectRoots.length === 0) {
   process.exit(1);
 }
 
-// Load saved config
-function loadSavedConfig(): { apiKey?: string; serverless?: boolean } {
+// =============================================================================
+// CONFIG MANAGEMENT
+// =============================================================================
+// Single source of truth: ~/.buildd/config.json
+// Env vars (BUILDD_API_KEY, etc.) override for CI/Docker but are NOT recommended
+// for normal use. The web UI handles API key setup via OAuth.
+// =============================================================================
+
+interface SavedConfig {
+  apiKey?: string;
+  serverless?: boolean;
+}
+
+function loadSavedConfig(): SavedConfig {
   try {
-    console.log(`Loading config from: ${CONFIG_FILE}`);
     if (existsSync(CONFIG_FILE)) {
       const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
-      console.log(`Loaded config: apiKey=${data.apiKey ? 'bld_***' : 'none'}, serverless=${data.serverless || false}`);
-      return data;
+      return {
+        apiKey: data.apiKey?.trim(), // Always trim to avoid whitespace issues
+        serverless: data.serverless,
+      };
     }
-    console.log('No saved config found');
   } catch (err) {
     console.error('Failed to load config:', err);
   }
   return {};
 }
 
-// Save config
-function saveConfig(data: { apiKey?: string; serverless?: boolean }) {
+function saveConfig(data: Partial<SavedConfig>) {
   try {
     const dir = join(homedir(), '.buildd');
     if (!existsSync(dir)) {
       const { mkdirSync } = require('fs');
       mkdirSync(dir, { recursive: true });
-      console.log(`Created config directory: ${dir}`);
     }
-    // Merge with existing
-    const existing = loadSavedConfig();
+    // Merge with existing, but don't recursively call loadSavedConfig
+    let existing: SavedConfig = {};
+    if (existsSync(CONFIG_FILE)) {
+      try {
+        existing = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+      } catch { /* ignore */ }
+    }
     const merged = { ...existing, ...data };
+    // Clean up: remove empty/null values
+    if (!merged.apiKey) delete merged.apiKey;
     writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
-    console.log(`Saved config to ${CONFIG_FILE}: apiKey=${merged.apiKey ? 'bld_***' : 'none'}, serverless=${merged.serverless || false}`);
+    console.log(`Config saved to ${CONFIG_FILE}`);
   } catch (err) {
     console.error('Failed to save config:', err);
   }
 }
 
+// Load config with clear priority logging
 const savedConfig = loadSavedConfig();
+const envApiKey = process.env.BUILDD_API_KEY?.trim();
+
+// Determine API key source
+let apiKeySource: 'env' | 'config' | 'none' = 'none';
+let resolvedApiKey = '';
+if (envApiKey) {
+  resolvedApiKey = envApiKey;
+  apiKeySource = 'env';
+} else if (savedConfig.apiKey) {
+  resolvedApiKey = savedConfig.apiKey;
+  apiKeySource = 'config';
+}
+
+// Log config source clearly
+console.log('');
+console.log('Config:');
+console.log(`  File: ${CONFIG_FILE}`);
+if (apiKeySource === 'env') {
+  console.log(`  API Key: from BUILDD_API_KEY env var (${resolvedApiKey.slice(0, 10)}...${resolvedApiKey.slice(-4)})`);
+  console.log('  Note: Env var overrides config.json. Unset BUILDD_API_KEY to use saved config.');
+} else if (apiKeySource === 'config') {
+  console.log(`  API Key: from config.json (${resolvedApiKey.slice(0, 10)}...${resolvedApiKey.slice(-4)})`);
+} else {
+  console.log('  API Key: not configured');
+}
+console.log(`  Serverless: ${savedConfig.serverless || false}`);
+console.log('');
 
 // Repos cache
 interface CachedRepo {
@@ -118,15 +163,16 @@ function getRepos(forceRescan = false): CachedRepo[] {
   return scanned;
 }
 
-// Load config from env, falling back to saved config
+// Build runtime config
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || 'https://buildd-three.vercel.app',
-  apiKey: process.env.BUILDD_API_KEY || savedConfig.apiKey || '',
+  apiKey: resolvedApiKey,
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
-  serverless: savedConfig.serverless || false,
+  // Serverless only if no API key configured
+  serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
   localUiUrl: process.env.LOCAL_UI_URL,
   // Pusher config for command relay from server
@@ -134,10 +180,11 @@ const config: LocalUIConfig = {
   pusherCluster: process.env.PUSHER_CLUSTER,
 };
 
-// Allow running without API key - will show setup UI
-let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
-let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, createWorkspaceResolver(projectRoots)) : null;
 const resolver = createWorkspaceResolver(projectRoots);
+
+// Initialize clients (null if no API key - will show setup UI)
+let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
+let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
 
 // Reinitialize clients after API key is set
 function initializeClients() {
@@ -223,11 +270,13 @@ const server = Bun.serve({
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
+      const authStatus = workerManager?.getAuthStatus() || { hasCredentials: false };
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
+        hasClaudeCredentials: authStatus.hasCredentials,
       }, { headers: corsHeaders });
     }
 
@@ -239,6 +288,14 @@ const server = Bun.serve({
       saveConfig({ serverless: true });
 
       return Response.json({ ok: true, serverless: true }, { headers: corsHeaders });
+    }
+
+    // Disable serverless mode
+    if (path === '/api/config/serverless' && req.method === 'DELETE') {
+      config.serverless = false;
+      saveConfig({ serverless: false });
+
+      return Response.json({ ok: true, serverless: false }, { headers: corsHeaders });
     }
 
     // Set API key
@@ -382,9 +439,12 @@ const server = Bun.serve({
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup
         if (err.message?.includes('401')) {
+          console.log('API key rejected by server, clearing config');
           config.apiKey = '';
           buildd = null;
           workerManager = null;
+          // Also clear saved config so restart doesn't reuse bad key
+          saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
         throw err;
@@ -412,12 +472,15 @@ const server = Bun.serve({
         return Response.json({ error: 'Task not found' }, { status: 404, headers: corsHeaders });
       }
 
-      const worker = await workerManager!.claimAndStart(task);
-      if (!worker) {
-        return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+      try {
+        const worker = await workerManager!.claimAndStart(task);
+        if (!worker) {
+          return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+        }
+        return Response.json({ worker }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
       }
-
-      return Response.json({ worker }, { headers: corsHeaders });
     }
 
     if (path === '/api/abort' && req.method === 'POST') {
@@ -730,6 +793,9 @@ const server = Bun.serve({
     }
     if (path === '/app.js') {
       return serveStatic('app.js');
+    }
+    if (path === '/icon.png') {
+      return serveStatic('icon.png');
     }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)

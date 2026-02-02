@@ -154,10 +154,30 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(tasks.id, task.id));
 
-    const branch = `buildd/${task.id.substring(0, 8)}-${task.title
+    // Generate branch name based on workspace gitConfig
+    const gitConfig = task.workspace?.gitConfig as {
+      branchPrefix?: string;
+      useBuildBranch?: boolean;
+      defaultBranch?: string;
+    } | null;
+
+    const sanitizedTitle = task.title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
-      .substring(0, 30)}`;
+      .substring(0, 30);
+    const taskIdShort = task.id.substring(0, 8);
+
+    let branch: string;
+    if (gitConfig?.useBuildBranch) {
+      // Explicitly opted into buildd branch naming
+      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+    } else if (gitConfig?.branchPrefix) {
+      // Use configured prefix
+      branch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
+    } else {
+      // Default: use buildd/ prefix (backwards compatible, agent can choose differently)
+      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+    }
 
     const [worker] = await db
       .insert(workers)

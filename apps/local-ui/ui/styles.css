@@ -64,6 +64,18 @@ body {
   font-weight: 700;
 }
 
+.logo-img {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+}
+
+.logo-img.large {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 16px;
+}
+
 .header-actions {
   display: flex;
   gap: 8px;
@@ -911,4 +923,89 @@ select.input {
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Auth warning banner */
+.auth-warning-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.auth-warning-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.auth-warning-content svg {
+  flex-shrink: 0;
+}
+
+.auth-warning-content code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.auth-warning-content .btn {
+  margin-left: auto;
+}
+
+/* Collapsible section header */
+.section-header-collapsible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-header-collapsible:hover {
+  opacity: 0.8;
+}
+
+.section-header-collapsible .section-title {
+  margin-bottom: 0;
+}
+
+.section-header-collapsible .chevron {
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.section-header-collapsible.collapsed .chevron {
+  transform: rotate(-90deg);
+}
+
+/* Completed workers list */
+.completed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.completed-card {
+  opacity: 0.7;
+  padding: 12px;
+}
+
+.completed-card:hover {
+  opacity: 1;
+}
+
+.completed-card .card-header {
+  margin-bottom: 4px;
+}
+
+.completed-card .card-meta {
+  margin-bottom: 0;
 }
