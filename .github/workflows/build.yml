@@ -41,7 +41,7 @@ jobs:
         run: cd apps/web && bunx tsc --noEmit
 
       - name: Run tests
-        run: bun test:run
+        run: bun test apps/web apps/local-ui/__tests__/unit
 
       - name: Build
         run: cd apps/web && bun run build:only
