@@ -28,14 +28,30 @@ fi
 INSTALL_DIR="$HOME/.buildd"
 BIN_DIR="$HOME/.local/bin"
 
-# Clone or update
-if [ -d "$INSTALL_DIR" ]; then
+# Clone or update using sparse checkout (only apps/local-ui)
+if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
   git pull --ff-only origin dev 2>/dev/null || git pull origin dev
 else
-  echo "Cloning buildd..."
-  git clone --depth 1 -b dev https://github.com/buildd-ai/buildd.git "$INSTALL_DIR"
+  echo "Cloning buildd (local-ui only)..."
+
+  # Clean install dir if it exists but isn't a git repo
+  [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+
+  # Initialize sparse checkout
+  mkdir -p "$INSTALL_DIR"
+  cd "$INSTALL_DIR"
+  git init
+  git remote add origin https://github.com/buildd-ai/buildd.git
+  git config core.sparseCheckout true
+
+  # Only checkout local-ui app
+  echo "apps/local-ui/" > .git/info/sparse-checkout
+
+  # Fetch and checkout
+  git fetch --depth 1 origin dev
+  git checkout dev
 fi
 
 # Install dependencies
@@ -45,17 +61,32 @@ bun install
 # Create bin directory
 mkdir -p "$BIN_DIR"
 
+# Migrate: remove old .buildd.env if it only contains API key
+# Config is now stored in ~/.buildd/config.json
+if [ -f "$HOME/.buildd.env" ]; then
+  # Check if .env only has BUILDD_API_KEY lines
+  if grep -qvE '^(export\s+)?BUILDD_API_KEY=|^#|^\s*$' "$HOME/.buildd.env" 2>/dev/null; then
+    echo -e "${YELLOW}Note: ~/.buildd.env has custom settings, keeping it${NC}"
+  else
+    echo -e "${YELLOW}Migrating: API key now stored in ~/.buildd/config.json${NC}"
+    rm -f "$HOME/.buildd.env"
+  fi
+fi
+
 # Create launcher script
 cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #!/bin/bash
 
-# Default config location
-CONFIG_FILE="$HOME/.buildd.env"
-
-# Load config if exists
-if [ -f "$CONFIG_FILE" ]; then
-  source "$CONFIG_FILE"
-fi
+# =============================================================================
+# buildd launcher
+# =============================================================================
+# Config is stored in ~/.buildd/config.json (managed by the web UI)
+# Env vars override config for CI/Docker use:
+#   BUILDD_API_KEY  - API key (overrides config.json)
+#   PROJECTS_ROOT   - Project directories to scan
+#   BUILDD_SERVER   - Server URL (default: https://buildd-three.vercel.app)
+#   PORT            - Local server port (default: 8766)
+# =============================================================================
 
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
@@ -71,19 +102,6 @@ if [ -z "$PROJECTS_ROOT" ]; then
   fi
 
   export PROJECTS_ROOT="$ROOTS"
-fi
-
-# Check for API key
-if [ -z "$BUILDD_API_KEY" ]; then
-  echo "BUILDD_API_KEY not set."
-  echo ""
-  echo "Either:"
-  echo "  1. Set it in ~/.buildd.env:"
-  echo "     echo 'export BUILDD_API_KEY=bld_xxx' >> ~/.buildd.env"
-  echo ""
-  echo "  2. Or pass it directly:"
-  echo "     BUILDD_API_KEY=bld_xxx buildd"
-  exit 1
 fi
 
 # Run
@@ -107,19 +125,12 @@ fi
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
-echo "Next steps:"
+echo "Run buildd to start:"
+echo "  buildd"
 echo ""
-echo "1. Add your API key to ~/.buildd.env:"
-echo "   echo 'export BUILDD_API_KEY=bld_xxx' >> ~/.buildd.env"
+echo "Then open http://localhost:8766 to connect your account."
 echo ""
-echo "2. (Optional) Set custom project roots:"
-echo "   echo 'export PROJECTS_ROOT=~/projects,~/work' >> ~/.buildd.env"
-echo ""
-echo "3. Run buildd:"
-echo "   buildd"
-echo ""
-echo "   Or with a custom port:"
-echo "   PORT=8080 buildd"
+echo "Config is stored in ~/.buildd/config.json"
 echo ""
 
 # Reload PATH for current session

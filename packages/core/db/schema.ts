@@ -63,6 +63,28 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
 
+// Git workflow configuration type
+export interface WorkspaceGitConfig {
+  // Branching
+  defaultBranch: string;              // 'main', 'master', 'dev'
+  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchPrefix?: string;              // 'feature/', 'buildd/', null for none
+  useBuildBranch?: boolean;          // Use buildd/task-id naming
+
+  // Commit conventions
+  commitStyle: 'conventional' | 'freeform' | 'custom';
+  commitPrefix?: string;              // '[JIRA-123]', null
+
+  // PR/Merge behavior
+  requiresPR: boolean;
+  targetBranch?: string;              // Where PRs should target
+  autoCreatePR: boolean;
+
+  // Agent instructions (prepended to prompt)
+  agentInstructions?: string;         // Free-form, admin-defined
+  useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
+}
+
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
@@ -74,6 +96,11 @@ export const workspaces = pgTable('workspaces', {
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+
+  // Git workflow configuration
+  gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -83,6 +110,7 @@ export const workspaces = pgTable('workspaces', {
   githubRepoIdx: index('workspaces_github_repo_idx').on(t.githubRepoId),
   githubInstallationIdx: index('workspaces_github_installation_idx').on(t.githubInstallationId),
   ownerIdx: index('workspaces_owner_idx').on(t.ownerId),
+  configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
 export const sources = pgTable('sources', {
@@ -112,6 +140,11 @@ export const tasks = pgTable('tasks', {
   claimedBy: uuid('claimed_by').references(() => accounts.id, { onDelete: 'set null' }),
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
+  // Task creator tracking
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui'>(),
+  parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -120,6 +153,8 @@ export const tasks = pgTable('tasks', {
   claimedByIdx: index('tasks_claimed_by_idx').on(t.claimedBy),
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   sourceExternalIdx: uniqueIndex('tasks_source_external_idx').on(t.sourceId, t.externalId),
+  createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
+  parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
 }));
 
 export const workers = pgTable('workers', {
@@ -274,6 +309,7 @@ export const accountsRelations = relations(accounts, ({ one, many }) => ({
   accountWorkspaces: many(accountWorkspaces),
   tasks: many(tasks),
   workers: many(workers),
+  createdTasks: many(tasks, { relationName: 'createdTasks' }),
 }));
 
 export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one }) => ({
@@ -301,6 +337,11 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   source: one(sources, { fields: [tasks.sourceId], references: [sources.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
   workers: many(workers),
+  // Creator tracking relations
+  creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'createdTasks' }),
+  creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'createdTasks' }),
+  parentTask: one(tasks, { fields: [tasks.parentTaskId], references: [tasks.id], relationName: 'subTasks' }),
+  subTasks: many(tasks, { relationName: 'subTasks' }),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
@@ -310,6 +351,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
   artifacts: many(artifacts),
   comments: many(comments),
   messages: many(messages),
+  createdTasks: many(tasks, { relationName: 'createdTasks' }),
 }));
 
 export const artifactsRelations = relations(artifacts, ({ one, many }) => ({

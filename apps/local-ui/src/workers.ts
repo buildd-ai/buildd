@@ -1,16 +1,119 @@
-import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import Pusher from 'pusher-js';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
+// Async message stream for multi-turn conversations
+class MessageStream implements AsyncIterable<SDKUserMessage> {
+  private queue: SDKUserMessage[] = [];
+  private resolvers: Array<(result: IteratorResult<SDKUserMessage>) => void> = [];
+  private done = false;
+
+  enqueue(message: SDKUserMessage) {
+    if (this.done) return;
+    if (this.resolvers.length > 0) {
+      const resolver = this.resolvers.shift()!;
+      resolver({ value: message, done: false });
+    } else {
+      this.queue.push(message);
+    }
+  }
+
+  end() {
+    this.done = true;
+    for (const resolver of this.resolvers) {
+      resolver({ value: undefined as any, done: true });
+    }
+    this.resolvers = [];
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: () => {
+        if (this.queue.length > 0) {
+          return Promise.resolve({ value: this.queue.shift()!, done: false });
+        }
+        if (this.done) {
+          return Promise.resolve({ value: undefined as any, done: true });
+        }
+        return new Promise(resolve => {
+          this.resolvers.push(resolve);
+        });
+      }
+    };
+  }
+}
+
+// Build a user message for the SDK
+function buildUserMessage(content: string | Array<{ type: string; text?: string; source?: any }>): SDKUserMessage {
+  const messageContent = typeof content === 'string'
+    ? [{ type: 'text' as const, text: content }]
+    : content;
+
+  return {
+    type: 'user',
+    session_id: '',
+    message: {
+      role: 'user',
+      content: messageContent as any,
+    },
+    parent_tool_use_id: null,
+  };
+}
+
+// Worker session state
+interface WorkerSession {
+  inputStream: MessageStream;
+  abortController: AbortController;
+}
+
+// Check if Claude Code credentials exist (OAuth or API key)
+// We don't validate - just check if credentials exist
+function hasClaudeCredentials(): boolean {
+  // Check for OAuth credentials from `claude login` (.credentials.json)
+  const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+  if (existsSync(credentialsPath)) {
+    return true;
+  }
+
+  // Check for oauthAccount in Claude state files (where OAuth is sometimes stored)
+  const stateFiles = [
+    join(homedir(), '.claude', 'settings.json'),
+    join(homedir(), '.claude', 'settings.local.json'),
+    join(homedir(), '.claude.json'),
+  ];
+  for (const statePath of stateFiles) {
+    if (existsSync(statePath)) {
+      try {
+        const data = JSON.parse(readFileSync(statePath, 'utf-8'));
+        if (data.oauthAccount?.accountUuid) {
+          return true;
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+  }
+
+  // Check env vars
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+    return true;
+  }
+
+  return false;
+}
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
-  private sessions = new Map<string, any>();
+  private sessions = new Map<string, WorkerSession>();
   private buildd: BuilddClient;
   private resolver: WorkspaceResolver;
   private eventHandlers: EventHandler[] = [];
@@ -19,6 +122,7 @@ export class WorkerManager {
   private syncInterval?: Timer;
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
+  private hasCredentials: boolean = false;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -38,6 +142,19 @@ export class WorkerManager {
       });
       console.log('Pusher connected for command relay');
     }
+
+    // Check if credentials exist (don't validate, SDK handles auth)
+    this.hasCredentials = hasClaudeCredentials();
+    if (this.hasCredentials) {
+      console.log('Claude Code: credentials found');
+    } else {
+      console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
+    }
+  }
+
+  // Check if credentials exist
+  getAuthStatus(): { hasCredentials: boolean } {
+    return { hasCredentials: this.hasCredentials };
   }
 
   // Subscribe to commands from server
@@ -154,6 +271,11 @@ export class WorkerManager {
   }
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
+    // Warn if no credentials found (but let SDK handle actual auth)
+    if (!this.hasCredentials) {
+      console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
+    }
+
     // Resolve workspace path
     const workspacePath = this.resolver.resolve({
       id: task.workspaceId,
@@ -206,19 +328,26 @@ export class WorkerManager {
       }).catch(err => console.error('Failed to register localUiUrl:', err));
     }
 
-    // Start SDK session
-    this.startSession(worker, workspacePath, task);
+    // Start SDK session (async, runs in background)
+    this.startSession(worker, workspacePath, task).catch(err => {
+      console.error(`[Worker ${worker.id}] Session error:`, err);
+    });
 
     return worker;
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
-    try {
-      const session = unstable_v2_createSession({
-        model: this.config.model,
-      });
+    const inputStream = new MessageStream();
+    const abortController = new AbortController();
 
-      this.sessions.set(worker.id, session);
+    // Store session state for sendMessage and abort
+    this.sessions.set(worker.id, { inputStream, abortController });
+
+    try {
+      // Fetch workspace git config from server
+      const workspaceConfig = await this.buildd.getWorkspaceConfig(task.workspaceId);
+      const gitConfig = workspaceConfig.gitConfig;
+      const isConfigured = workspaceConfig.configStatus === 'admin_confirmed';
 
       // Build message content with text and images
       const content: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
@@ -248,24 +377,114 @@ export class WorkerManager {
         }
       }
 
-      // Send as structured content if we have images, otherwise just text
-      if (content.length > 1) {
-        await session.send(content as any);
-      } else {
-        await session.send(task.description || task.title);
+      // Build prompt with workspace context
+      const promptParts: string[] = [];
+
+      // Add admin-defined agent instructions (if configured)
+      if (isConfigured && gitConfig?.agentInstructions) {
+        promptParts.push(`## Workspace Instructions\n${gitConfig.agentInstructions}`);
       }
+
+      // Add git workflow context (if configured)
+      if (isConfigured && gitConfig) {
+        const gitContext: string[] = ['## Git Workflow'];
+        gitContext.push(`- Default branch: ${gitConfig.defaultBranch}`);
+
+        if (gitConfig.branchPrefix) {
+          gitContext.push(`- Branch naming: ${gitConfig.branchPrefix}<task-name>`);
+        } else if (gitConfig.useBuildBranch) {
+          gitContext.push(`- Branch naming: buildd/<task-id>-<task-name>`);
+        }
+
+        if (gitConfig.requiresPR) {
+          gitContext.push(`- Changes require PR to ${gitConfig.targetBranch || gitConfig.defaultBranch}`);
+          if (gitConfig.autoCreatePR) {
+            gitContext.push(`- Create PR when done`);
+          }
+        }
+
+        if (gitConfig.commitStyle === 'conventional') {
+          gitContext.push(`- Use conventional commits (feat:, fix:, chore:, etc.)`);
+        }
+
+        promptParts.push(gitContext.join('\n'));
+      }
+
+      // Add task description
+      promptParts.push(`## Task\n${task.description || task.title}`);
+
+      // Add task metadata
+      promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
+
+      const promptText = promptParts.join('\n\n');
+
+      // Filter out potentially problematic env vars (expired OAuth tokens)
+      const cleanEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([k]) =>
+          !k.includes('CLAUDE_CODE_OAUTH_TOKEN')  // Can contain expired tokens
+        )
+      );
+
+      // Determine whether to load CLAUDE.md
+      // Default to true if not configured, respect admin setting if configured
+      const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
+
+      // Start query with full options
+      const queryInstance = query({
+        prompt: promptText,
+        options: {
+          cwd,
+          model: this.config.model,
+          abortController,
+          env: cleanEnv,
+          settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
+          systemPrompt: { type: 'preset', preset: 'claude_code' },
+          permissionMode: 'acceptEdits',  // Auto-accept edits for autonomous execution
+          stderr: (data: string) => {
+            console.log(`[Worker ${worker.id}] stderr: ${data}`);
+          },
+        },
+      });
 
       // Stream responses
-      for await (const msg of session.stream()) {
+      for await (const msg of queryInstance) {
         this.handleMessage(worker, msg);
+
+        // Break on result - the query is complete
+        if (msg.type === 'result') {
+          break;
+        }
       }
 
-      // Completed
-      worker.status = 'done';
-      worker.currentAction = 'Completed';
-      worker.hasNewActivity = true;
-      await this.buildd.updateWorker(worker.id, { status: 'completed' });
-      this.emit({ type: 'worker_update', worker });
+      // Note: Image attachments temporarily disabled - need to handle via follow-up message
+      if (ctx?.attachments && ctx.attachments.length > 0) {
+        console.log(`[Worker ${worker.id}] Warning: ${ctx.attachments.length} image attachments not sent (TODO)`);
+      }
+
+      // Check if session actually did work or just errored
+      const outputText = worker.output.join('\n').toLowerCase();
+      const isAuthError = outputText.includes('invalid api key') ||
+        outputText.includes('please run /login') ||
+        outputText.includes('authentication') ||
+        outputText.includes('unauthorized');
+
+      if (isAuthError) {
+        // Auth error - mark as failed, not completed
+        worker.status = 'error';
+        worker.error = 'Agent authentication failed';
+        worker.currentAction = 'Auth failed';
+        worker.hasNewActivity = true;
+        await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
+        this.emit({ type: 'worker_update', worker });
+      } else {
+        // Actually completed
+        this.addMilestone(worker, 'Task completed');
+        worker.status = 'done';
+        worker.currentAction = 'Completed';
+        worker.hasNewActivity = true;
+        await this.buildd.updateWorker(worker.id, { status: 'completed' });
+        this.emit({ type: 'worker_update', worker });
+      }
 
     } catch (error) {
       console.error(`Worker ${worker.id} error:`, error);
@@ -278,9 +497,10 @@ export class WorkerManager {
       });
       this.emit({ type: 'worker_update', worker });
     } finally {
+      // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {
-        session.close();
+        session.inputStream.end();
         this.sessions.delete(worker.id);
       }
     }
@@ -346,9 +566,8 @@ export class WorkerManager {
 
     if (msg.type === 'result') {
       const result = msg as any;
-      if (result.subtype === 'success') {
-        this.addMilestone(worker, 'Task completed');
-      } else {
+      // Don't add "Task completed" here - we check for auth errors after stream ends
+      if (result.subtype !== 'success') {
         this.addMilestone(worker, `Error: ${result.subtype}`);
       }
     }
@@ -373,7 +592,9 @@ export class WorkerManager {
   async abort(workerId: string) {
     const session = this.sessions.get(workerId);
     if (session) {
-      session.close();
+      // Abort the query and end the input stream
+      session.abortController.abort();
+      session.inputStream.end();
       this.sessions.delete(workerId);
     }
 
@@ -385,7 +606,12 @@ export class WorkerManager {
       worker.status = 'error';
       worker.error = 'Aborted by user';
       worker.currentAction = 'Aborted';
-      await this.buildd.updateWorker(workerId, { status: 'failed', error: 'Aborted' });
+      // This may return 409 if already completed on server - that's ok
+      try {
+        await this.buildd.updateWorker(workerId, { status: 'failed', error: 'Aborted' });
+      } catch {
+        // Ignore - worker may already be done on server
+      }
       this.emit({ type: 'worker_update', worker });
     }
   }
@@ -409,7 +635,8 @@ export class WorkerManager {
     }
 
     try {
-      await session.send(message);
+      // Enqueue message to the input stream for multi-turn conversation
+      session.inputStream.enqueue(buildUserMessage(message));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
@@ -435,8 +662,11 @@ export class WorkerManager {
     if (this.pusher) {
       this.pusher.disconnect();
     }
+    // Abort all active sessions
     for (const session of this.sessions.values()) {
-      session.close();
+      session.abortController.abort();
+      session.inputStream.end();
     }
+    this.sessions.clear();
   }
 }

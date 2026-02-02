@@ -10,6 +10,7 @@ import { execSync } from "child_process";
 const SERVER_URL = process.env.BUILDD_SERVER || "https://buildd-three.vercel.app";
 const API_KEY = process.env.BUILDD_API_KEY || "";
 const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || "";
+const WORKER_ID = process.env.BUILDD_WORKER_ID || "";
 
 // Cache for workspace lookup and account info
 let cachedWorkspaceId: string | null = null;
@@ -636,21 +637,31 @@ export BUILDD_SERVER=${SERVER_URL}`;
           throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
         }
 
+        // Build request body with creator tracking
+        const taskBody: Record<string, unknown> = {
+          workspaceId,
+          title: args.title,
+          description: args.description,
+          priority: args.priority || 5,
+          creationSource: 'mcp',
+        };
+
+        // If running in context of a worker, include worker context
+        if (WORKER_ID) {
+          taskBody.createdByWorkerId = WORKER_ID;
+          // parentTaskId will be auto-derived from worker's current task by the API
+        }
+
         const task = await apiCall("/api/tasks", {
           method: "POST",
-          body: JSON.stringify({
-            workspaceId,
-            title: args.title,
-            description: args.description,
-            priority: args.priority || 5,
-          }),
+          body: JSON.stringify(taskBody),
         });
 
         return {
           content: [
             {
               type: "text",
-              text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}`,
+              text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${WORKER_ID ? `\nCreated by worker: ${WORKER_ID}` : ''}`,
             },
           ],
         };

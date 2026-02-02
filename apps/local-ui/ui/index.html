@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>buildd</title>
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -11,7 +13,7 @@
   <div id="setup" class="setup hidden">
     <div class="setup-content">
       <div class="setup-logo">
-        <span class="logo-icon large">B</span>
+        <img src="/icon.png" alt="buildd" class="logo-img large">
         <h1>buildd</h1>
       </div>
       <p class="setup-subtitle">Local task runner for AI agents</p>
@@ -59,7 +61,7 @@
     <!-- Header -->
     <header class="header">
       <div class="logo">
-        <span class="logo-icon">B</span>
+        <img src="/icon.png" alt="buildd" class="logo-img">
         <span>buildd</span>
       </div>
       <div class="header-actions">
@@ -89,6 +91,11 @@
       <section class="section">
         <h2 class="section-title">Active</h2>
         <div id="workers" class="worker-list"></div>
+      </section>
+
+      <!-- Completed workers section -->
+      <section class="section" id="completedSection">
+        <div id="completed"></div>
       </section>
 
       <!-- Tasks section -->
