@@ -32,7 +32,9 @@ BIN_DIR="$HOME/.local/bin"
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
-  git pull --ff-only origin dev 2>/dev/null || git pull origin dev
+  # Reset any local changes (this is an install dir, not a dev dir)
+  git fetch origin dev
+  git reset --hard origin/dev
 else
   echo "Cloning buildd (local-ui only)..."
 
