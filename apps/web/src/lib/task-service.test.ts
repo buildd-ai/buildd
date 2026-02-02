@@ -1,28 +1,33 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { resolveCreatorContext, resolveCreationSource } from './task-service';
 
+// Mock functions with proper typing
+const mockAccountsFindFirst = mock(() => null as any);
+const mockWorkersFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
+
 // Mock the database module
-vi.mock('@buildd/core/db', () => ({
+mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: {
-        findFirst: vi.fn(),
+        findFirst: mockAccountsFindFirst,
       },
       workers: {
-        findFirst: vi.fn(),
+        findFirst: mockWorkersFindFirst,
       },
       workspaces: {
-        findFirst: vi.fn(),
+        findFirst: mockWorkspacesFindFirst,
       },
     },
   },
 }));
 
-import { db } from '@buildd/core/db';
-
 describe('task-service', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAccountsFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
   });
 
   describe('resolveCreationSource', () => {
@@ -65,11 +70,11 @@ describe('task-service', () => {
         });
 
         expect(result.createdByAccountId).toBe('account-123');
-        expect(db.query.accounts.findFirst).not.toHaveBeenCalled();
+        expect(mockAccountsFindFirst).not.toHaveBeenCalled();
       });
 
       it('looks up user account for session auth', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockAccountsFindFirst.mockResolvedValue({
           id: 'user-account-456',
         });
 
@@ -78,11 +83,11 @@ describe('task-service', () => {
         });
 
         expect(result.createdByAccountId).toBe('user-account-456');
-        expect(db.query.accounts.findFirst).toHaveBeenCalled();
+        expect(mockAccountsFindFirst).toHaveBeenCalled();
       });
 
       it('returns null if user has no account', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+        mockAccountsFindFirst.mockResolvedValue(null);
 
         const result = await resolveCreatorContext({
           userId: 'user-789',
@@ -104,7 +109,7 @@ describe('task-service', () => {
         });
 
         expect(result.createdByAccountId).toBe('api-account');
-        expect(db.query.accounts.findFirst).not.toHaveBeenCalled();
+        expect(mockAccountsFindFirst).not.toHaveBeenCalled();
       });
     });
 
@@ -118,7 +123,7 @@ describe('task-service', () => {
       });
 
       it('defaults to "dashboard" for session auth', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockAccountsFindFirst.mockResolvedValue({
           id: 'acc',
         });
 
@@ -150,7 +155,7 @@ describe('task-service', () => {
 
     describe('createdByWorkerId validation', () => {
       it('validates worker belongs to authenticated API account', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'account-123',
           taskId: 'parent-task-1',
@@ -166,7 +171,7 @@ describe('task-service', () => {
       });
 
       it('rejects worker from different account', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'different-account',
           taskId: 'parent-task-1',
@@ -182,7 +187,7 @@ describe('task-service', () => {
       });
 
       it('returns null when worker not found', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+        mockWorkersFindFirst.mockResolvedValue(null);
 
         const result = await resolveCreatorContext({
           apiAccount: { id: 'account-123' },
@@ -198,20 +203,20 @@ describe('task-service', () => {
         });
 
         expect(result.createdByWorkerId).toBeNull();
-        expect(db.query.workers.findFirst).not.toHaveBeenCalled();
+        expect(mockWorkersFindFirst).not.toHaveBeenCalled();
       });
 
       it('validates worker via workspace ownership for session auth', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockAccountsFindFirst.mockResolvedValue({
           id: 'user-account',
         });
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'other-account',
           taskId: 'parent-task-1',
           workspaceId: 'ws-1',
         });
-        (db.query.workspaces.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkspacesFindFirst.mockResolvedValue({
           id: 'ws-1',
           ownerId: 'user-123',
         });
@@ -225,16 +230,16 @@ describe('task-service', () => {
       });
 
       it('rejects worker when workspace not owned by user', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockAccountsFindFirst.mockResolvedValue({
           id: 'user-account',
         });
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'other-account',
           taskId: 'parent-task-1',
           workspaceId: 'ws-1',
         });
-        (db.query.workspaces.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkspacesFindFirst.mockResolvedValue({
           id: 'ws-1',
           ownerId: 'different-user',
         });
@@ -250,7 +255,7 @@ describe('task-service', () => {
 
     describe('parentTaskId derivation', () => {
       it('auto-derives from worker current task when not provided', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'account-123',
           taskId: 'parent-task-1',
@@ -266,7 +271,7 @@ describe('task-service', () => {
       });
 
       it('uses explicit parentTaskId over derived', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'account-123',
           taskId: 'auto-parent',
@@ -283,7 +288,7 @@ describe('task-service', () => {
       });
 
       it('returns null when worker has no current task', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'account-123',
           taskId: null,
@@ -307,7 +312,7 @@ describe('task-service', () => {
       });
 
       it('does not derive parentTaskId when worker validation fails', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'worker-1',
           accountId: 'different-account',
           taskId: 'should-not-derive',
@@ -325,7 +330,7 @@ describe('task-service', () => {
 
     describe('full integration scenarios', () => {
       it('handles MCP task creation with worker context', async () => {
-        (db.query.workers.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockWorkersFindFirst.mockResolvedValue({
           id: 'mcp-worker',
           accountId: 'account-123',
           taskId: 'current-task',
@@ -347,7 +352,7 @@ describe('task-service', () => {
       });
 
       it('handles dashboard task creation', async () => {
-        (db.query.accounts.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        mockAccountsFindFirst.mockResolvedValue({
           id: 'user-account',
         });
 

@@ -5,9 +5,8 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
-    "test": "vitest",
-    "test:run": "vitest run",
-    "test:coverage": "vitest --coverage",
+    "test": "bun test",
+    "test:run": "bun test",
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build"
   },
@@ -18,7 +17,6 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.4.0",
-    "vitest": "^4.0.18"
+    "typescript": "^5.4.0"
   }
 }
