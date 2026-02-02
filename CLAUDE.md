@@ -3,7 +3,8 @@
 ## Quick Reference
 
 - **Monorepo**: Turborepo with `apps/` and `packages/`
-- **Stack**: Next.js 15 (app router), Drizzle ORM, Postgres (Neon), Pusher
+- **Stack**: Next.js 16 (app router), Drizzle ORM, Postgres (Neon), Pusher
+- **Routing**: `proxy.ts` handles subdomain routing (Next.js 16 feature)
 - **Key paths**:
   - API routes: `apps/web/src/app/api/`
   - DB schema: `packages/core/db/schema.ts`
