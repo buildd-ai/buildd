@@ -378,6 +378,17 @@ function renderWorkerDetail(worker) {
     <span class="meta-tag">${worker.status}</span>
   `;
 
+  // Render description with markdown support
+  const descriptionEl = document.getElementById('modalDescription');
+  if (worker.taskDescription) {
+    descriptionEl.innerHTML = `
+      <h3>Description</h3>
+      <div class="markdown-content">${marked.parse(worker.taskDescription)}</div>
+    `;
+  } else {
+    descriptionEl.innerHTML = '';
+  }
+
   document.getElementById('modalMilestones').innerHTML = `
     <h3>Milestones</h3>
     <div class="milestone-list">
