@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "buildd": {
+      "command": "bun",
+      "args": ["run", "apps/mcp-server/src/index.ts"],
+      "env": {
+        "BUILDD_SERVER": "https://app.buildd.dev",
+        "BUILDD_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
