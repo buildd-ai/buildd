@@ -6,10 +6,12 @@
 - **Stack**: Next.js 16 (app router), Drizzle ORM, Postgres (Neon), Pusher
 - **Routing**: `proxy.ts` handles subdomain routing (Next.js 16 feature)
 - **Key paths**:
+  - Web dashboard: `apps/web/src/app/`
   - API routes: `apps/web/src/app/api/`
+  - Local UI (Bun): `apps/local-ui/` - standalone worker runner with web UI
+  - MCP server: `apps/mcp-server/` - Claude Code MCP integration
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - MCP server: `apps/mcp-server/`
   - CLI agent: `apps/agent/`
   - Worker runner: `packages/core/worker-runner.ts`
 

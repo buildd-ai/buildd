@@ -29,6 +29,7 @@ if (projectRoots.length === 0) {
 interface SavedConfig {
   apiKey?: string;
   serverless?: boolean;
+  model?: string;
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -38,6 +39,7 @@ function loadSavedConfig(): SavedConfig {
       return {
         apiKey: data.apiKey?.trim(), // Always trim to avoid whitespace issues
         serverless: data.serverless,
+        model: data.model,
       };
     }
   } catch (err) {
@@ -170,7 +172,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || 'https://app.buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
+  model: process.env.MODEL || savedConfig.model || 'claude-opus-4-5-20251101',
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
@@ -277,6 +279,7 @@ const server = Bun.serve({
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
         hasClaudeCredentials: authStatus.hasCredentials,
+        model: config.model,
       }, { headers: corsHeaders });
     }
 
@@ -296,6 +299,27 @@ const server = Bun.serve({
       saveConfig({ serverless: false });
 
       return Response.json({ ok: true, serverless: false }, { headers: corsHeaders });
+    }
+
+    // Update model setting
+    if (path === '/api/config/model' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { model } = body;
+
+      const validModels = [
+        'claude-opus-4-5-20251101',
+        'claude-sonnet-4-5-20250929',
+        'claude-haiku-4-20250514',
+      ];
+
+      if (!model || !validModels.includes(model)) {
+        return Response.json({ error: 'Invalid model' }, { status: 400, headers: corsHeaders });
+      }
+
+      config.model = model;
+      saveConfig({ model });
+
+      return Response.json({ ok: true, model }, { headers: corsHeaders });
     }
 
     // Set API key

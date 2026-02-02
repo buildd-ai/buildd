@@ -36,13 +36,51 @@ export default async function DashboardPage() {
       const workspaceIds = userWorkspaces.map(w => w.id);
 
       if (workspaceIds.length > 0) {
-        // Get recent tasks (from user's workspaces)
-        recentTasks = await db.query.tasks.findMany({
-          where: inArray(tasks.workspaceId, workspaceIds),
-          orderBy: desc(tasks.createdAt),
+        // Get active tasks first (running, assigned, pending, failed) - sorted by status priority
+        const activeTasks = await db.query.tasks.findMany({
+          where: and(
+            inArray(tasks.workspaceId, workspaceIds),
+            inArray(tasks.status, ['running', 'assigned', 'pending', 'failed'])
+          ),
+          orderBy: desc(tasks.updatedAt),
           limit: 10,
           with: { workspace: true },
         }) as any;
+
+        // Sort by status priority: running/assigned first, then pending, then failed
+        const getStatusPriority = (status: string) => {
+          switch (status) {
+            case 'running':
+            case 'assigned':
+              return 0;
+            case 'pending':
+              return 1;
+            case 'failed':
+              return 2;
+            default:
+              return 3;
+          }
+        };
+        activeTasks.sort((a: any, b: any) => {
+          const priorityDiff = getStatusPriority(a.status) - getStatusPriority(b.status);
+          if (priorityDiff !== 0) return priorityDiff;
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+        });
+
+        // Backfill with completed if room (max 3 total shown on dashboard)
+        const maxDisplay = 3;
+        const remaining = Math.max(0, maxDisplay - activeTasks.length);
+        const completedTasks = remaining > 0 ? await db.query.tasks.findMany({
+          where: and(
+            inArray(tasks.workspaceId, workspaceIds),
+            eq(tasks.status, 'completed')
+          ),
+          orderBy: desc(tasks.updatedAt),
+          limit: remaining,
+          with: { workspace: true },
+        }) as any : [];
+
+        recentTasks = [...activeTasks.slice(0, maxDisplay), ...completedTasks];
 
         // Get active workers (from user's workspaces)
         activeWorkers = await db.query.workers.findMany({
@@ -198,42 +236,60 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        {/* Recent Tasks */}
+        {/* Recent Tasks - Simplified view, max 3 */}
         <div className="mb-8">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Recent Tasks</h2>
-            <Link
-              href="/app/tasks/new"
-              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 text-sm"
-            >
-              + New Task
-            </Link>
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-semibold">Tasks</h2>
+              {recentTasks.length > 3 && (
+                <Link
+                  href="/app/tasks"
+                  className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  +{recentTasks.length - 3} more →
+                </Link>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/app/tasks"
+                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                View All
+              </Link>
+              <Link
+                href="/app/tasks/new"
+                className="px-3 py-1.5 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 text-sm"
+              >
+                + New
+              </Link>
+            </div>
           </div>
 
           {recentTasks.length === 0 ? (
-            <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-              <p className="text-gray-500 mb-4">No tasks yet</p>
+            <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-6 text-center">
+              <p className="text-gray-500 mb-2">No active tasks</p>
               <Link
                 href="/app/tasks/new"
-                className="text-blue-600 hover:underline"
+                className="text-sm text-blue-600 hover:underline"
               >
                 Create your first task
               </Link>
             </div>
           ) : (
             <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
-              {recentTasks.map((task) => (
+              {recentTasks.slice(0, 3).map((task) => (
                 <Link
                   key={task.id}
                   href={`/app/tasks/${task.id}`}
-                  className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  className="block p-3 hover:bg-gray-50 dark:hover:bg-gray-900"
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-medium">{task.title}</h3>
-                      <p className="text-sm text-gray-500">{task.workspace?.name}</p>
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <StatusBadge status={task.status} />
+                      <span className="font-medium truncate">{task.title}</span>
+                      <span className="text-sm text-gray-400 truncate hidden sm:inline">{task.workspace?.name}</span>
                     </div>
-                    <StatusBadge status={task.status} />
                   </div>
                 </Link>
               ))}

@@ -172,6 +172,16 @@ const baseTools = [
           description: "Filter by status (pending, assigned, completed, failed)",
           enum: ["pending", "assigned", "completed", "failed"],
         },
+        limit: {
+          type: "number",
+          description: "Maximum number of tasks to return (default: 10, max: 50)",
+          default: 10,
+        },
+        offset: {
+          type: "number",
+          description: "Number of tasks to skip for pagination (default: 0)",
+          default: 0,
+        },
       },
     },
   },
@@ -195,7 +205,7 @@ const baseTools = [
   },
   {
     name: "buildd_update_progress",
-    description: "Report progress on a claimed task. Include git stats when available for better tracking.",
+    description: "Report progress on a claimed task. Only call at meaningful milestones (e.g., 25%, 50%, 75%) - not for every small step. Include git stats when available.",
     inputSchema: {
       type: "object",
       properties: {
@@ -407,24 +417,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           filtered = filtered.filter((t: Task) => t.status === args.status);
         }
 
-        const summary = filtered.map((t: Task) =>
+        // Sort by status priority: pending > assigned > completed/failed
+        const statusPriority: Record<string, number> = {
+          pending: 0,
+          assigned: 1,
+          completed: 2,
+          failed: 2,
+        };
+        filtered.sort((a: Task, b: Task) => {
+          const priorityDiff = (statusPriority[a.status] ?? 3) - (statusPriority[b.status] ?? 3);
+          if (priorityDiff !== 0) return priorityDiff;
+          // Within same status, sort by priority (higher first) then by most recent
+          return (b.priority || 0) - (a.priority || 0);
+        });
+
+        // Apply pagination
+        const limit = Math.min(Math.max(args?.limit || 10, 1), 50);
+        const offset = Math.max(args?.offset || 0, 0);
+        const totalCount = filtered.length;
+        const paginated = filtered.slice(offset, offset + limit);
+        const hasMore = offset + limit < totalCount;
+
+        const summary = paginated.map((t: Task) =>
           `- [${t.status}] ${t.title} (id: ${t.id})\n  Workspace: ${t.workspace?.name || 'unknown'}\n  ${t.description?.slice(0, 100) || 'No description'}...`
         ).join("\n\n");
 
+        // Build pagination info
+        const paginationInfo = `Showing ${offset + 1}-${Math.min(offset + limit, totalCount)} of ${totalCount} tasks`;
+        const nextPageHint = hasMore ? `\nUse offset=${offset + limit} to see more` : "";
+
         // Show debug info
         let workspaceNote = "";
-        if (explicitWorkspaceId && tasks.length > filtered.length) {
-          workspaceNote = `\n\n(Filtered to workspace ${explicitWorkspaceId} - ${tasks.length - filtered.length} tasks hidden)`;
-        } else if (explicitWorkspaceId) {
-          workspaceNote = `\n\n(Filtered to BUILDD_WORKSPACE_ID)`;
+        if (explicitWorkspaceId && tasks.length > totalCount) {
+          workspaceNote = `\n(Filtered to workspace - ${tasks.length - totalCount} tasks hidden)`;
         }
 
         return {
           content: [
             {
               type: "text",
-              text: filtered.length > 0
-                ? `Found ${filtered.length} tasks:\n\n${summary}${workspaceNote}`
+              text: paginated.length > 0
+                ? `${paginationInfo}${workspaceNote}\n\n${summary}${nextPageHint}`
                 : `No tasks found.\n\nAPI returned ${tasks.length} tasks total. If you expect tasks, check that the API account is linked to workspaces via accountWorkspaces table.`,
             },
           ],
