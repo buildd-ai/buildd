@@ -13,6 +13,7 @@ export interface LocalWorker {
   id: string;
   taskId: string;
   taskTitle: string;
+  taskDescription?: string;
   workspaceId: string;
   workspaceName: string;
   branch: string;
