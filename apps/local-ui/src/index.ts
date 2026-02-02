@@ -167,7 +167,7 @@ function getRepos(forceRescan = false): CachedRepo[] {
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
-  builddServer: process.env.BUILDD_SERVER || 'https://buildd-three.vercel.app',
+  builddServer: process.env.BUILDD_SERVER || 'https://app.buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
