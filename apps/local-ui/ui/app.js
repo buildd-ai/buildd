@@ -395,7 +395,28 @@ function renderWorkerDetail(worker) {
     <div class="output-box" id="outputBox">${escapeHtml(worker.output.slice(-50).join('\n'))}</div>
   `;
 
-  document.getElementById('modalCommits').innerHTML = worker.commits.length > 0 ? `
+  // Show tool calls if worker is completed
+  const toolCallsHtml = (worker.status === 'done' || worker.status === 'error') && worker.toolCalls && worker.toolCalls.length > 0 ? `
+    <div class="tool-calls-section">
+      <div class="collapsible-header" onclick="toggleToolCalls()">
+        <h3>Tool Calls (${worker.toolCalls.length})</h3>
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+      <div class="tool-calls-list collapsed" id="toolCallsList">
+        ${worker.toolCalls.map(tc => `
+          <div class="tool-call-item">
+            <span class="tool-name">${escapeHtml(tc.name)}</span>
+            ${tc.input?.file_path ? `<span class="tool-detail">${escapeHtml(tc.input.file_path)}</span>` : ''}
+            ${tc.input?.command ? `<span class="tool-detail">${escapeHtml(tc.input.command.slice(0, 60))}${tc.input.command.length > 60 ? '...' : ''}</span>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  ` : '';
+
+  document.getElementById('modalCommits').innerHTML = toolCallsHtml + (worker.commits.length > 0 ? `
     <h3>Commits</h3>
     <div class="commit-list">
       ${worker.commits.map(c => `
@@ -405,14 +426,39 @@ function renderWorkerDetail(worker) {
         </div>
       `).join('')}
     </div>
-  ` : '';
+  ` : '');
+
+  // Show/hide message input based on status
+  const messageInputEl = document.querySelector('.modal-input');
+  if (worker.status === 'working' || worker.status === 'done') {
+    messageInputEl.classList.remove('hidden');
+    const placeholder = worker.status === 'done'
+      ? 'Give the agent a follow-up task...'
+      : 'Send a message to the agent...';
+    document.getElementById('messageInput').placeholder = placeholder;
+  } else {
+    messageInputEl.classList.add('hidden');
+  }
+}
+
+function toggleToolCalls() {
+  const list = document.getElementById('toolCallsList');
+  const header = document.querySelector('.collapsible-header');
+  if (list) {
+    list.classList.toggle('collapsed');
+    header.classList.toggle('collapsed');
+  }
 }
 
 function appendOutput(line) {
   const box = document.getElementById('outputBox');
   if (box) {
     box.textContent += '\n' + line;
-    box.scrollTop = box.scrollHeight;
+    // Only auto-scroll if user is already at bottom (within 100px threshold)
+    const isAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 100;
+    if (isAtBottom) {
+      box.scrollTop = box.scrollHeight;
+    }
   }
 }
 
@@ -460,10 +506,40 @@ function updateSettings() {
   document.getElementById('settingsRoot').value = config.projectsRoot || '';
   document.getElementById('settingsServer').value = config.builddServer || '';
 
+  const modelSelect = document.getElementById('settingsModel');
+  if (modelSelect && config.model) {
+    modelSelect.value = config.model;
+  }
+
   const maxEl = document.getElementById('settingsMax');
   maxEl.innerHTML = [1, 2, 3, 4].map(n => `
     <button class="btn ${n === config.maxConcurrent ? 'btn-primary' : 'btn-secondary'}">${n}</button>
   `).join('');
+}
+
+// Handle model selection change
+async function handleModelChange() {
+  const modelSelect = document.getElementById('settingsModel');
+  const model = modelSelect.value;
+
+  try {
+    const res = await fetch('/api/config/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+
+    if (res.ok) {
+      config.model = model;
+      // Show notification that restart is required
+      alert('Model updated. Please restart buildd local-ui for the change to take effect.');
+    } else {
+      alert('Failed to update model');
+    }
+  } catch (err) {
+    console.error('Failed to update model:', err);
+    alert('Failed to update model');
+  }
 }
 
 // API calls
@@ -951,6 +1027,11 @@ document.getElementById('taskModalCancel').onclick = closeTaskModal;
 document.getElementById('taskModalCreate').onclick = createTask;
 
 document.getElementById('settingsModalBack').onclick = closeSettingsModal;
+
+const modelSelect = document.getElementById('settingsModel');
+if (modelSelect) {
+  modelSelect.onchange = handleModelChange;
+}
 
 document.getElementById('fileInput').onchange = handleFileSelect;
 

@@ -312,6 +312,7 @@ export class WorkerManager {
       currentAction: 'Starting...',
       commits: [],
       output: [],
+      toolCalls: [],
     };
 
     this.workers.set(worker.id, worker);
@@ -533,10 +534,17 @@ export class WorkerManager {
           }
         }
 
-        // Detect tool use for milestones
+        // Detect tool use for milestones and tracking
         if (block.type === 'tool_use') {
           const toolName = block.name;
           const input = block.input || {};
+
+          // Track all tool calls
+          worker.toolCalls.push({
+            name: toolName,
+            timestamp: Date.now(),
+            input: input,
+          });
 
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
@@ -627,10 +635,63 @@ export class WorkerManager {
   }
 
   async sendMessage(workerId: string, message: string): Promise<boolean> {
-    const session = this.sessions.get(workerId);
     const worker = this.workers.get(workerId);
+    if (!worker) {
+      return false;
+    }
 
-    if (!session || !worker || worker.status !== 'working') {
+    const session = this.sessions.get(workerId);
+
+    // If worker is done but session ended, restart it
+    if (worker.status === 'done' && !session) {
+      console.log(`Restarting session for worker ${workerId} with follow-up message`);
+
+      // Update worker status
+      worker.status = 'working';
+      worker.currentAction = 'Processing follow-up...';
+      worker.hasNewActivity = true;
+      worker.lastActivity = Date.now();
+      this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
+      this.emit({ type: 'worker_update', worker });
+
+      // Update server
+      await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Processing follow-up...' });
+
+      // Get workspace path and task
+      const workspacePath = this.resolver.resolve({
+        id: worker.workspaceId,
+        name: worker.workspaceName,
+        repo: undefined,
+      });
+
+      if (!workspacePath) {
+        console.error(`Cannot resolve workspace for worker: ${worker.id}`);
+        return false;
+      }
+
+      // Reconstruct task for startSession
+      const task = {
+        id: worker.taskId,
+        title: worker.taskTitle,
+        description: message, // Use follow-up message as new description
+        workspaceId: worker.workspaceId,
+        workspace: {
+          name: worker.workspaceName,
+        },
+        status: 'assigned',
+        priority: 1,
+      };
+
+      // Start new session with follow-up message
+      this.startSession(worker, workspacePath, task as any).catch(err => {
+        console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
+      });
+
+      return true;
+    }
+
+    // Normal case - active session
+    if (!session || worker.status !== 'working') {
       return false;
     }
 
