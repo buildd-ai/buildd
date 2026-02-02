@@ -8,6 +8,7 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import MarkdownContent from '@/components/MarkdownContent';
 
 export default async function TaskDetailPage({
   params,
@@ -136,7 +137,7 @@ export default async function TaskDetailPage({
         {task.description && (
           <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
             <h2 className="text-sm font-medium text-gray-500 mb-2">Description</h2>
-            <p className="whitespace-pre-wrap">{task.description}</p>
+            <MarkdownContent content={task.description} />
           </div>
         )}
 

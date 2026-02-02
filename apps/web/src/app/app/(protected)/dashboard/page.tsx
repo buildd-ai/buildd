@@ -1,7 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaces, tasks, workers, githubInstallations } from '@buildd/core/db/schema';
 import { desc, inArray, eq, and } from 'drizzle-orm';
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -313,12 +312,6 @@ export default async function DashboardPage() {
                           Open Terminal
                         </a>
                       )}
-                      <Link
-                        href={`/app/workers/${worker.id}`}
-                        className="px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
-                      >
-                        Details
-                      </Link>
                     </div>
                   </div>
                 </div>
