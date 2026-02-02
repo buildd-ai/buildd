@@ -302,6 +302,7 @@ export class WorkerManager {
       id: claimedWorker.id,
       taskId: task.id,
       taskTitle: task.title,
+      taskDescription: task.description,
       workspaceId: task.workspaceId,
       workspaceName: task.workspace?.name || 'unknown',
       branch: claimedWorker.branch,

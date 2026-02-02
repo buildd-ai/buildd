@@ -1070,3 +1070,95 @@ select.input {
 .completed-card .card-meta {
   margin-bottom: 0;
 }
+
+/* Markdown content styles */
+.markdown-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.markdown-content h1 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  color: var(--text);
+}
+
+.markdown-content h2 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin: 14px 0 6px;
+  color: var(--text);
+}
+
+.markdown-content h3 {
+  font-size: 1.1em;
+  font-weight: 500;
+  margin: 12px 0 4px;
+  color: var(--text);
+}
+
+.markdown-content p {
+  margin: 8px 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.markdown-content li {
+  margin: 4px 0;
+}
+
+.markdown-content code {
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background: var(--surface);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.markdown-content a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.worker-description {
+  margin-bottom: 16px;
+}
+
+.worker-description h3 {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
