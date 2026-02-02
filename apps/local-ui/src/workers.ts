@@ -412,7 +412,13 @@ export class WorkerManager {
       }
 
       // Add task description
-      promptParts.push(`## Task\n${task.description || task.title}`);
+      // Clean up description: strip anything after "---" separator which might be polluted context from previous runs
+      let taskDescription = task.description || task.title;
+      const separatorIndex = taskDescription.indexOf('\n---');
+      if (separatorIndex > 0) {
+        taskDescription = taskDescription.substring(0, separatorIndex).trim();
+      }
+      promptParts.push(`## Task\n${taskDescription}`);
 
       // Add task metadata
       promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);

@@ -390,21 +390,40 @@ function renderWorkerDetail(worker) {
     </div>
   `;
 
+  // Preserve scroll position when updating output
+  const existingOutputBox = document.getElementById('outputBox');
+  const scrollPos = existingOutputBox ? existingOutputBox.scrollTop : null;
+  const wasAtBottom = existingOutputBox
+    ? (existingOutputBox.scrollHeight - existingOutputBox.scrollTop - existingOutputBox.clientHeight < 100)
+    : true;
+
   document.getElementById('modalOutput').innerHTML = `
     <h3>Output</h3>
     <div class="output-box" id="outputBox">${escapeHtml(worker.output.slice(-50).join('\n'))}</div>
   `;
 
-  // Show tool calls if worker is completed
-  const toolCallsHtml = (worker.status === 'done' || worker.status === 'error') && worker.toolCalls && worker.toolCalls.length > 0 ? `
+  // Restore scroll position (only auto-scroll if was at bottom)
+  const newOutputBox = document.getElementById('outputBox');
+  if (newOutputBox && scrollPos !== null) {
+    if (wasAtBottom) {
+      newOutputBox.scrollTop = newOutputBox.scrollHeight;
+    } else {
+      newOutputBox.scrollTop = scrollPos;
+    }
+  }
+
+  // Show tool calls during execution AND after completion
+  const showToolCalls = worker.toolCalls && worker.toolCalls.length > 0;
+  const isCompleted = worker.status === 'done' || worker.status === 'error';
+  const toolCallsHtml = showToolCalls ? `
     <div class="tool-calls-section">
-      <div class="collapsible-header" onclick="toggleToolCalls()">
-        <h3>Tool Calls (${worker.toolCalls.length})</h3>
+      <div class="collapsible-header ${isCompleted ? '' : 'collapsed'}" onclick="toggleToolCalls()">
+        <h3>Tool Calls (${worker.toolCalls.length})${!isCompleted ? ' <span class="tool-calls-live">LIVE</span>' : ''}</h3>
         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </div>
-      <div class="tool-calls-list collapsed" id="toolCallsList">
+      <div class="tool-calls-list ${isCompleted ? '' : 'collapsed'}" id="toolCallsList">
         ${worker.toolCalls.map(tc => `
           <div class="tool-call-item">
             <span class="tool-name">${escapeHtml(tc.name)}</span>
@@ -531,8 +550,8 @@ async function handleModelChange() {
 
     if (res.ok) {
       config.model = model;
-      // Show notification that restart is required
-      alert('Model updated. Please restart buildd local-ui for the change to take effect.');
+      // Show success feedback
+      showToast(`Model updated to ${getModelDisplayName(model)}. New workers will use this model.`);
     } else {
       alert('Failed to update model');
     }
@@ -540,6 +559,35 @@ async function handleModelChange() {
     console.error('Failed to update model:', err);
     alert('Failed to update model');
   }
+}
+
+function getModelDisplayName(model) {
+  const names = {
+    'claude-opus-4-5-20251101': 'Opus 4.5',
+    'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
+    'claude-haiku-4-20250514': 'Haiku 4',
+  };
+  return names[model] || model;
+}
+
+function showToast(message) {
+  // Remove existing toast
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  // Animate in
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  // Remove after 3s
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
 }
 
 // API calls
