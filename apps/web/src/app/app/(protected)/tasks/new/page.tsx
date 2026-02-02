@@ -80,7 +80,7 @@ export default function NewTaskPage() {
       // Remember last used workspace
       localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
 
-      router.push('/tasks');
+      router.push('/app/tasks');
       router.refresh();
     } catch (err: any) {
       setError(err.message);
@@ -90,18 +90,15 @@ export default function NewTaskPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-xl mx-auto">
-        <Link href="/tasks" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
-          ← Tasks
-        </Link>
-        <h1 className="text-3xl font-bold mb-8">New Task</h1>
+    <div className="p-8 overflow-auto h-full">
+      <div className="max-w-xl">
+        <h1 className="text-2xl font-bold mb-6">New Task</h1>
 
         {workspaces.length === 0 && !loadingWorkspaces ? (
           <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
             <p className="text-gray-500 mb-4">You need a workspace first</p>
             <Link
-              href="/workspaces/new"
+              href="/app/workspaces/new"
               className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
             >
               Create Workspace
@@ -189,7 +186,7 @@ export default function NewTaskPage() {
                 {loading ? 'Creating...' : 'Create Task'}
               </button>
               <Link
-                href="/tasks"
+                href="/app/tasks"
                 className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
               >
                 Cancel
@@ -198,6 +195,6 @@ export default function NewTaskPage() {
           </form>
         )}
       </div>
-    </main>
+    </div>
   );
 }

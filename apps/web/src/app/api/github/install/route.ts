@@ -6,7 +6,7 @@ export async function GET(req: NextRequest) {
   // Require auth
   const session = await auth();
   if (!session?.user) {
-    return NextResponse.redirect(new URL('/auth/signin', req.url));
+    return NextResponse.redirect(new URL('/app/auth/signin', req.url));
   }
 
   if (!isGitHubAppConfigured()) {
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   // state parameter will help us identify the user after callback
   const state = Buffer.from(JSON.stringify({
     userId: session.user.email,
-    returnUrl: req.nextUrl.searchParams.get('returnUrl') || '/workspaces',
+    returnUrl: req.nextUrl.searchParams.get('returnUrl') || '/app/workspaces',
   })).toString('base64url');
 
   const installUrl = new URL(config.installUrl);

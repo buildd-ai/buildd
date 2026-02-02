@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import ReassignButton from './ReassignButton';
+import EditTaskButton from './EditTaskButton';
+import DeleteTaskButton from './DeleteTaskButton';
 import InstructWorkerForm from './InstructWorkerForm';
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
@@ -20,16 +22,16 @@ export default async function TaskDetailPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
+      <div className="p-8">
+        <div className="max-w-4xl">
           <p className="text-gray-500">Development mode - no database</p>
         </div>
-      </main>
+      </div>
     );
   }
 
   if (!user) {
-    redirect('/auth/signin');
+    redirect('/app/auth/signin');
   }
 
   // Get task with workspace (for ownership check) and relationships
@@ -93,26 +95,31 @@ export default async function TaskDetailPage({
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
-        <Link href="/tasks" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
-          &larr; Tasks
-        </Link>
-
+    <div className="p-8 overflow-auto h-full">
+      <div className="max-w-4xl">
         {/* Header */}
         <div className="flex justify-between items-start mb-6">
           <div className="flex-1">
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-3xl font-bold">{task.title}</h1>
+              <h1 className="text-2xl font-bold">{task.title}</h1>
               <span className={`px-3 py-1 text-sm rounded-full ${statusColors[task.status] || statusColors.pending}`}>
                 {task.status}
               </span>
             </div>
-            <p className="text-gray-500">
+            <p className="text-gray-500 text-sm">
               {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
           <div className="flex gap-2">
+            <EditTaskButton
+              task={{
+                id: task.id,
+                title: task.title,
+                description: task.description,
+                priority: task.priority,
+              }}
+            />
+            <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
             {canReassign && <ReassignButton taskId={task.id} />}
             {task.externalUrl && (
               <a
@@ -144,7 +151,7 @@ export default async function TaskDetailPage({
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-400">Parent:</span>
                   <Link
-                    href={`/tasks/${task.parentTask.id}`}
+                    href={`/app/tasks/${task.parentTask.id}`}
                     className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
                   >
                     {task.parentTask.title}
@@ -161,7 +168,7 @@ export default async function TaskDetailPage({
                     {task.subTasks.map((sub: { id: string; title: string; status: string }) => (
                       <div key={sub.id} className="flex items-center gap-2">
                         <Link
-                          href={`/tasks/${sub.id}`}
+                          href={`/app/tasks/${sub.id}`}
                           className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
                         >
                           {sub.title}
@@ -430,6 +437,6 @@ export default async function TaskDetailPage({
           </div>
         )}
       </div>
-    </main>
+    </div>
   );
 }
