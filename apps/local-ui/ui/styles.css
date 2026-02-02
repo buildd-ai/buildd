@@ -873,34 +873,41 @@ select.input {
   right: 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   z-index: 1000;
-  max-height: 240px;
+  max-height: 280px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .custom-select-options {
-  padding: 4px;
+  padding: 8px;
 }
 
 .custom-select-option {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.1s, color 0.1s;
+  margin-bottom: 2px;
 }
 
-.custom-select-option:hover:not(.disabled) {
+.custom-select-option:last-child {
+  margin-bottom: 0;
+}
+
+.custom-select-option:hover:not(.disabled):not(.highlighted) {
   background: var(--surface-2);
 }
 
 .custom-select-option.disabled {
   color: var(--text-muted);
   cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .option-icon {
@@ -926,24 +933,28 @@ select.input {
 }
 
 .custom-select-search {
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 8px 0 8px;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
 }
 
 .custom-select-search-input {
   width: 100%;
-  padding: 8px 10px;
-  background: var(--surface-2);
+  padding: 10px 12px;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 14px;
   outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .custom-select-search-input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 .custom-select-search-input::placeholder {
@@ -952,6 +963,27 @@ select.input {
 
 .custom-select-option.hidden {
   display: none;
+}
+
+.custom-select-option.highlighted {
+  background: var(--primary);
+  color: white;
+}
+
+.custom-select-option.highlighted .option-hint {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Keyboard hint in dropdown */
+.custom-select-options::after {
+  content: '↑↓ navigate · Tab select · Esc close';
+  display: block;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
 }
 
 /* Auth warning banner */
