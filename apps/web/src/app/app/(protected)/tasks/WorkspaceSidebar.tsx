@@ -41,8 +41,22 @@ function getStatusIndicator(status: string): React.ReactNode {
       // Requires action - solid circle
       return <span className="h-2 w-2 rounded-full bg-gray-400 dark:bg-gray-500" />;
     case 'completed':
-      // Done/pushed - green circle
-      return <span className="h-2 w-2 rounded-full bg-green-500" />;
+      // Done/pushed - checkmark icon
+      return (
+        <svg
+          className="h-3.5 w-3.5 text-green-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={3}
+            d="M5 13l4 4L19 7"
+          />
+        </svg>
+      );
     case 'failed':
       // Failed - red circle
       return <span className="h-2 w-2 rounded-full bg-red-500" />;
@@ -93,8 +107,35 @@ export default function WorkspaceSidebar({ workspaces }: Props) {
     router.refresh();
   };
 
-  // Sort workspaces: those with active tasks first
-  const sortedWorkspaces = [...workspaces].sort((a, b) => {
+  // Helper to get status priority for sorting
+  const getStatusPriority = (status: string): number => {
+    switch (status) {
+      case 'running':
+      case 'assigned':
+        return 0; // Highest priority
+      case 'pending':
+        return 1;
+      case 'failed':
+        return 2;
+      case 'completed':
+        return 3; // Lowest priority
+      default:
+        return 4;
+    }
+  };
+
+  // Sort workspaces: those with active tasks first, then sort tasks within each workspace
+  const sortedWorkspaces = [...workspaces].map(ws => ({
+    ...ws,
+    tasks: [...ws.tasks].sort((a, b) => {
+      // First sort by status priority
+      const priorityDiff = getStatusPriority(a.status) - getStatusPriority(b.status);
+      if (priorityDiff !== 0) return priorityDiff;
+
+      // Then by most recent update
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    })
+  })).sort((a, b) => {
     const aHasActive = a.tasks.some(t => t.status === 'running' || t.status === 'assigned');
     const bHasActive = b.tasks.some(t => t.status === 'running' || t.status === 'assigned');
     if (aHasActive && !bHasActive) return -1;

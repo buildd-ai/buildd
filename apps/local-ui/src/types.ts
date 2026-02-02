@@ -8,6 +8,13 @@ export interface Milestone {
   timestamp?: number;
 }
 
+// Tool call tracking
+export interface ToolCall {
+  name: string;
+  timestamp: number;
+  input?: any;
+}
+
 // Local worker state
 export interface LocalWorker {
   id: string;
@@ -23,6 +30,7 @@ export interface LocalWorker {
   currentAction: string;
   commits: Array<{ sha: string; message: string }>;
   output: string[];  // Recent output lines
+  toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   sessionId?: string;
   error?: string;
 }
