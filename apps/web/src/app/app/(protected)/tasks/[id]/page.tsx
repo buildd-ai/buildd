@@ -7,9 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
-import InstructWorkerForm from './InstructWorkerForm';
-import WorkerActivityTimeline from './WorkerActivityTimeline';
-import InstructionHistory from './InstructionHistory';
+import RealTimeWorkerView from './RealTimeWorkerView';
 
 export default async function TaskDetailPage({
   params,
@@ -229,144 +227,41 @@ export default async function TaskDetailPage({
           </div>
         </div>
 
-        {/* Active Worker */}
+        {/* Active Worker - Real-time updates */}
         {activeWorker && (
           <div className="mb-8">
             <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+              <span className="w-2 h-2 rounded-full border-2 border-green-500 border-t-transparent animate-spin"></span>
               Active Worker
             </h2>
-            <div className="border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded-lg p-4">
-              <div className="flex justify-between items-start mb-3">
-                <div>
-                  <h3 className="font-medium text-lg">{activeWorker.name}</h3>
-                  <p className="text-sm text-gray-500">Branch: {activeWorker.branch}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={`px-2 py-1 text-xs rounded-full ${workerStatusColors[activeWorker.status]}`}>
-                    {activeWorker.status}
-                  </span>
-                  {activeWorker.localUiUrl && (
-                    <a
-                      href={`${activeWorker.localUiUrl}/worker/${activeWorker.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
-                    >
-                      Open Terminal
-                    </a>
-                  )}
-                </div>
-              </div>
-
-              {/* Current action (only for MCP workers - local-ui shows in timeline) */}
-              {!activeWorker.localUiUrl && activeWorker.currentAction && (
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                  {activeWorker.currentAction}
-                </p>
-              )}
-
-              {/* Progress bar */}
-              {activeWorker.progress > 0 && (
-                <div className="mb-3">
-                  <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-green-500 transition-all"
-                      style={{ width: `${activeWorker.progress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Activity Timeline (rich view for local-ui workers) */}
-              {activeWorker.localUiUrl ? (
-                <WorkerActivityTimeline
-                  milestones={(activeWorker.milestones as any[]) || []}
-                  currentAction={activeWorker.currentAction}
-                />
-              ) : (
-                /* Simple milestone boxes for MCP workers */
-                activeWorker.milestones && (activeWorker.milestones as any[]).length > 0 && (
-                  <div className="flex items-center gap-1 mt-2">
-                    {Array.from({ length: Math.min((activeWorker.milestones as any[]).length, 10) }).map((_, i) => (
-                      <div key={i} className="w-6 h-2 bg-blue-500 rounded-sm" />
-                    ))}
-                    {Array.from({ length: Math.max(0, 10 - (activeWorker.milestones as any[]).length) }).map((_, i) => (
-                      <div key={i} className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm" />
-                    ))}
-                    <span className="text-xs text-gray-500 ml-2">
-                      {(activeWorker.milestones as any[]).length} milestones
-                    </span>
-                  </div>
-                )
-              )}
-
-              <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">
-                <span>Turns: {activeWorker.turns}</span>
-                {activeWorker.account?.authType === 'oauth' ? (
-                  // Seat-based: show tokens instead of cost
-                  <span>
-                    {((activeWorker.inputTokens || 0) + (activeWorker.outputTokens || 0)).toLocaleString()} tokens
-                  </span>
-                ) : (
-                  // API-based: show cost
-                  <span>Cost: ${parseFloat(activeWorker.costUsd?.toString() || '0').toFixed(4)}</span>
-                )}
-                {activeWorker.startedAt && (
-                  <span>
-                    {Math.round((Date.now() - new Date(activeWorker.startedAt).getTime()) / 60000)}m elapsed
-                  </span>
-                )}
-                {activeWorker.prUrl && (
-                  <a
-                    href={activeWorker.prUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-green-600 hover:underline"
-                  >
-                    PR #{activeWorker.prNumber}
-                  </a>
-                )}
-              </div>
-
-              {/* Git stats */}
-              {((activeWorker.commitCount ?? 0) > 0 || (activeWorker.filesChanged ?? 0) > 0) && (
-                <div className="flex items-center gap-4 mt-2 text-xs">
-                  {(activeWorker.commitCount ?? 0) > 0 && (
-                    <span className="text-gray-500">
-                      {activeWorker.commitCount} commit{activeWorker.commitCount !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {(activeWorker.filesChanged ?? 0) > 0 && (
-                    <span className="text-gray-500">
-                      {activeWorker.filesChanged} file{activeWorker.filesChanged !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {((activeWorker.linesAdded ?? 0) > 0 || (activeWorker.linesRemoved ?? 0) > 0) && (
-                    <span>
-                      <span className="text-green-600">+{activeWorker.linesAdded ?? 0}</span>
-                      {' / '}
-                      <span className="text-red-500">-{activeWorker.linesRemoved ?? 0}</span>
-                    </span>
-                  )}
-                  {activeWorker.lastCommitSha && (
-                    <span className="text-gray-400 font-mono">
-                      {activeWorker.lastCommitSha.slice(0, 7)}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Instruction history and input */}
-              <InstructionHistory
-                history={(activeWorker.instructionHistory as any[]) || []}
-                pendingInstruction={activeWorker.pendingInstructions}
-              />
-              <InstructWorkerForm
-                workerId={activeWorker.id}
-                pendingInstructions={null} // History component handles pending display
-              />
-            </div>
+            <RealTimeWorkerView
+              initialWorker={{
+                id: activeWorker.id,
+                name: activeWorker.name,
+                branch: activeWorker.branch,
+                status: activeWorker.status,
+                progress: activeWorker.progress,
+                currentAction: activeWorker.currentAction,
+                milestones: (activeWorker.milestones as any[]) || [],
+                turns: activeWorker.turns,
+                costUsd: activeWorker.costUsd?.toString() || null,
+                inputTokens: activeWorker.inputTokens,
+                outputTokens: activeWorker.outputTokens,
+                startedAt: activeWorker.startedAt?.toISOString() || null,
+                prUrl: activeWorker.prUrl,
+                prNumber: activeWorker.prNumber,
+                localUiUrl: activeWorker.localUiUrl,
+                commitCount: activeWorker.commitCount,
+                filesChanged: activeWorker.filesChanged,
+                linesAdded: activeWorker.linesAdded,
+                linesRemoved: activeWorker.linesRemoved,
+                lastCommitSha: activeWorker.lastCommitSha,
+                instructionHistory: (activeWorker.instructionHistory as any[]) || [],
+                pendingInstructions: activeWorker.pendingInstructions,
+                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
+              }}
+              statusColors={workerStatusColors}
+            />
           </div>
         )}
 
