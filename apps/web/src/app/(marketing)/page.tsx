@@ -1,46 +1,45 @@
+import Image from 'next/image';
+
 export default function LandingPage() {
   return (
     <main className="min-h-screen bg-[#2a2d3a] text-white">
-      {/* Hero Section with Background */}
-      <div className="relative min-h-[80vh] flex items-center justify-center overflow-hidden">
-        {/* Hero Background */}
-        <div className="absolute inset-0 z-0">
-          <picture>
-            <source
-              media="(min-width: 1024px)"
-              srcSet="/hero/logo-desktop.webp"
-              type="image/webp"
-            />
-            <source
-              media="(min-width: 768px)"
-              srcSet="/hero/logo-tablet.webp"
-              type="image/webp"
-            />
-            <source srcSet="/hero/logo-mobile.webp" type="image/webp" />
-            <img
-              src="/hero/logo-desktop.png"
-              alt=""
-              className="w-full h-full object-cover scale-110 blur-sm opacity-30"
-            />
-          </picture>
-          {/* Gradient overlay */}
-          <div className="absolute inset-0 bg-gradient-to-b from-[#2a2d3a]/40 via-[#2a2d3a]/70 to-[#2a2d3a]" />
-        </div>
+      {/* Hero Section */}
+      <div className="max-w-6xl mx-auto px-6 pt-16 pb-16">
+        <div className="text-center space-y-8">
+          {/* Hero Logo */}
+          <div className="relative mx-auto w-full max-w-md md:max-w-lg lg:max-w-xl">
+            <picture>
+              <source
+                media="(min-width: 1024px)"
+                srcSet="/hero/logo-desktop.webp"
+                type="image/webp"
+              />
+              <source
+                media="(min-width: 768px)"
+                srcSet="/hero/logo-tablet.webp"
+                type="image/webp"
+              />
+              <source srcSet="/hero/logo-mobile.webp" type="image/webp" />
+              <img
+                src="/hero/logo-desktop.png"
+                alt="Buildd"
+                className="w-full h-auto"
+                width={1600}
+                height={1194}
+              />
+            </picture>
+          </div>
 
-        {/* Content */}
-        <div className="relative z-10 max-w-4xl mx-auto px-6 text-center">
-          {/* Glassmorphic Card */}
-          <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-3xl p-8 md:p-12 shadow-2xl">
-            <h1 className="text-5xl md:text-7xl font-bold mb-4 bg-gradient-to-r from-white via-fuchsia-200 to-cyan-200 bg-clip-text text-transparent">
-              buildd
-            </h1>
-            <p className="text-xl md:text-2xl text-gray-300 mb-2">
+          <div className="space-y-4">
+            <p className="text-xl md:text-2xl text-gray-300 max-w-2xl mx-auto">
               AI Dev Team Orchestration
             </p>
-            <p className="text-lg text-gray-400 mb-8">
+            <p className="text-lg text-gray-400">
               Coordinate Claude agents across your codebase. Free for personal use.
             </p>
+          </div>
 
+          <div className="pt-4">
             <a
               href="/app"
               className="inline-flex items-center px-8 py-4 bg-gradient-to-r from-fuchsia-500 to-cyan-400 text-white font-semibold rounded-lg hover:from-fuchsia-600 hover:to-cyan-500 transition-all shadow-lg shadow-fuchsia-500/25"
@@ -155,7 +154,7 @@ export default function LandingPage() {
                 GitHub
               </a>
               <a
-                href="https://app.buildd.dev"
+                href="/app"
                 className="hover:text-white transition-colors"
               >
                 Sign In
