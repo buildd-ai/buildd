@@ -11,3 +11,4 @@ coverage/
 .claude/
 *.tsbuildinfo
 .mcp.json
+.env*.local
