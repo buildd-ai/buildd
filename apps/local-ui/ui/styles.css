@@ -5,12 +5,15 @@
   --border: #3f3f46;
   --text: #fafafa;
   --text-muted: #a1a1aa;
-  --primary: #3b82f6;
-  --primary-hover: #60a5fa;
+  --primary: #d946ef;
+  --primary-hover: #e879f9;
+  --accent: #22d3ee;
+  --gradient: linear-gradient(135deg, #d946ef, #22d3ee);
+  --gradient-hover: linear-gradient(135deg, #c026d3, #06b6d4);
   --success: #22c55e;
   --warning: #f97316;
   --danger: #ef4444;
-  --info: #06b6d4;
+  --info: #3b82f6;
   --radius: 12px;
   --radius-sm: 8px;
 }
@@ -55,7 +58,7 @@ body {
 .logo-icon {
   width: 32px;
   height: 32px;
-  background: linear-gradient(135deg, var(--primary), var(--info));
+  background: var(--gradient);
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -120,12 +123,18 @@ body {
 }
 
 .btn-primary {
-  background: var(--primary);
+  background: var(--gradient);
   color: white;
+  box-shadow: 0 4px 14px rgba(217, 70, 239, 0.25);
+}
+
+.btn-primary:hover {
+  background: var(--gradient-hover);
 }
 
 .btn-primary:active {
-  background: var(--primary-hover);
+  background: var(--gradient-hover);
+  transform: scale(0.98);
 }
 
 .btn-secondary {
