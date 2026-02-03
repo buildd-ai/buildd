@@ -32,10 +32,11 @@ export default function LandingPage() {
 
           <div className="space-y-4">
             <p className="text-xl md:text-2xl text-gray-300 max-w-2xl mx-auto">
-              AI Dev Team Orchestration
+              Task Queue for AI Agents
             </p>
             <p className="text-lg text-gray-400">
-              Coordinate Claude agents across your codebase. Free for personal use.
+              Create tasks. Agents work. Code ships.<br />
+              GitHub-native with real-time monitoring.
             </p>
           </div>
 
@@ -82,10 +83,10 @@ export default function LandingPage() {
                 />
               </svg>
             </div>
-            <h3 className="text-xl font-semibold mb-2">Task Coordination</h3>
+            <h3 className="text-xl font-semibold mb-2">Multi-Agent Coordination</h3>
             <p className="text-gray-400">
-              Create and assign tasks to AI agents. Track progress in real-time
-              with automatic status updates.
+              Run Claude agents on laptops, VMs, or GitHub Actions.
+              One dashboard controls them all.
             </p>
           </div>
 
@@ -105,10 +106,10 @@ export default function LandingPage() {
                 />
               </svg>
             </div>
-            <h3 className="text-xl font-semibold mb-2">GitHub Integration</h3>
+            <h3 className="text-xl font-semibold mb-2">GitHub-Native</h3>
             <p className="text-gray-400">
-              Connect your repositories. Agents work directly with your code,
-              creating commits and pull requests.
+              Agents create branches, commit code, and open PRs automatically.
+              Full webhook integration.
             </p>
           </div>
 
@@ -128,10 +129,9 @@ export default function LandingPage() {
                 />
               </svg>
             </div>
-            <h3 className="text-xl font-semibold mb-2">Real-time Dashboard</h3>
+            <h3 className="text-xl font-semibold mb-2">Real-Time Control</h3>
             <p className="text-gray-400">
-              Monitor all your agents from a single dashboard. Live updates via
-              WebSocket keep you informed.
+              Monitor progress, costs, and send instructions to running agents mid-task.
             </p>
           </div>
         </div>
@@ -142,7 +142,7 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <p className="text-gray-400 text-sm">
-              buildd - AI Dev Team Orchestration
+              buildd - Task Queue for AI Agents
             </p>
             <div className="flex gap-6 text-sm text-gray-400">
               <a
