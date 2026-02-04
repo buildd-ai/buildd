@@ -85,6 +85,18 @@ export interface WorkspaceGitConfig {
   useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
 }
 
+// Webhook configuration for external agent dispatch (e.g., OpenClaw)
+export interface WorkspaceWebhookConfig {
+  // Webhook endpoint URL (e.g., http://localhost:18789/hooks/agent)
+  url: string;
+  // Bearer token for authentication
+  token: string;
+  // Whether to dispatch new tasks to this webhook
+  enabled: boolean;
+  // Optional: only dispatch tasks with specific runner preference
+  runnerPreference?: 'any' | 'user' | 'service' | 'action';
+}
+
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
@@ -100,6 +112,9 @@ export const workspaces = pgTable('workspaces', {
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
+
+  // Webhook configuration for external agent dispatch (OpenClaw, etc.)
+  webhookConfig: jsonb('webhook_config').$type<WorkspaceWebhookConfig>(),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -261,6 +276,25 @@ export const attachments = pgTable('attachments', {
   messageIdx: index('attachments_message_idx').on(t.messageId),
 }));
 
+// Workspace observations (persistent memory across tasks)
+export const observations = pgTable('observations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  type: text('type').notNull().$type<'discovery' | 'decision' | 'gotcha' | 'pattern' | 'architecture' | 'summary'>(),
+  title: text('title').notNull(),
+  content: text('content').notNull(),
+  files: jsonb('files').default([]).$type<string[]>(),
+  concepts: jsonb('concepts').default([]).$type<string[]>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('observations_workspace_idx').on(t.workspaceId),
+  typeIdx: index('observations_type_idx').on(t.type),
+  workerIdx: index('observations_worker_idx').on(t.workerId),
+  taskIdx: index('observations_task_idx').on(t.taskId),
+}));
+
 // GitHub App Integration
 export const githubInstallations = pgTable('github_installations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -325,6 +359,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   tasks: many(tasks),
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
+  observations: many(observations),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
@@ -339,6 +374,7 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   source: one(sources, { fields: [tasks.sourceId], references: [sources.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
   workers: many(workers),
+  observations: many(observations),
   // Creator tracking relations
   creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'createdTasks' }),
   creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'createdTasks' }),
@@ -353,6 +389,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
   artifacts: many(artifacts),
   comments: many(comments),
   messages: many(messages),
+  observations: many(observations),
   createdTasks: many(tasks, { relationName: 'createdTasks' }),
 }));
 
@@ -373,6 +410,12 @@ export const messagesRelations = relations(messages, ({ one, many }) => ({
 
 export const attachmentsRelations = relations(attachments, ({ one }) => ({
   message: one(messages, { fields: [attachments.messageId], references: [messages.id] }),
+}));
+
+export const observationsRelations = relations(observations, ({ one }) => ({
+  workspace: one(workspaces, { fields: [observations.workspaceId], references: [workspaces.id] }),
+  worker: one(workers, { fields: [observations.workerId], references: [workers.id] }),
+  task: one(tasks, { fields: [observations.taskId], references: [tasks.id] }),
 }));
 
 export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({

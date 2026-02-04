@@ -126,12 +126,20 @@ export interface AccountWorkspace {
   canCreate: boolean;
 }
 
+export interface WebhookConfig {
+  url: string;
+  token: string;
+  enabled: boolean;
+  runnerPreference?: 'any' | 'user' | 'service' | 'action';
+}
+
 export interface Workspace {
   id: string;
   name: string;
   repo: string | null;
   localPath: string | null;
   memory: Record<string, unknown>;
+  webhookConfig?: WebhookConfig | null;
   createdAt: Date;
   updatedAt: Date;
   taskCount?: number;
