@@ -1,8 +1,10 @@
-# buildd
+# Buildd
 
-**Distributed AI dev team orchestration.** Task broker that coordinates Claude agents across laptops, Coder workspaces, GitHub Actions, and dedicated VMs.
+**Task Queue for AI Agents** - Create tasks. Agents work. Code ships.
 
-**Live:** https://app.buildd.dev
+Open source task coordination system for Claude AI agents. Run agents on laptops, VMs, or GitHub Actions and control them all from one dashboard.
+
+**Live:** https://buildd.dev
 
 ## Architecture
 
@@ -14,26 +16,27 @@
 └─────────────────────────────────────────────────────────────┘
                               ▲
                               │ REST API
-          ┌───────────────────┼───────────────────┐
-          │                   │                   │
-   ┌──────┴──────┐     ┌──────┴──────┐     ┌──────┴──────┐
-   │ Claude Code │     │ Agent Binary│     │ GitHub      │
-   │ + MCP       │     │ (Bun)       │     │ Actions     │
-   │             │     │             │     │             │
-   │ Your laptop │     │ Coder/VM    │     │ CI runner   │
-   └─────────────┘     └─────────────┘     └─────────────┘
+          ┌──────────┬────────┼────────┬──────────┐
+          │          │        │        │          │
+   ┌──────┴──────┐ ┌─┴────────┴─┐ ┌────┴───┐ ┌────┴─────┐
+   │ Claude Code │ │  Local UI  │ │ Agent  │ │ GitHub   │
+   │ + MCP       │ │  (Bun)     │ │ Binary │ │ Actions  │
+   │             │ │            │ │        │ │          │
+   │ Your laptop │ │ Your laptop│ │ VM     │ │ CI runner│
+   └─────────────┘ └────────────┘ └────────┘ └──────────┘
 ```
 
 ## Quick Start
 
-### 1. Get an API Key
+### Install Local UI (Recommended)
 
-1. Go to https://app.buildd.dev
-2. Sign in with Google
-3. Go to **Accounts** → **New Account**
-4. Copy your API key (`bld_xxx...`)
+```bash
+curl -fsSL https://buildd.dev/install.sh | bash
+```
 
-### 2. Connect Claude Code (Recommended)
+This installs the **local-ui** - a standalone web interface for running workers on your machine with real-time streaming of agent output.
+
+### Or Connect Claude Code via MCP
 
 Add to your project's `.mcp.json`:
 
@@ -57,7 +60,7 @@ Then tell Claude Code:
 - *"Claim a task from buildd and work on it"*
 - *"Mark the buildd task complete"*
 
-### 3. Or Run the Agent Binary
+### Or Run the Agent Binary
 
 ```bash
 cd apps/agent
@@ -68,63 +71,42 @@ export CLAUDE_CODE_OAUTH_TOKEN=xxx  # or ANTHROPIC_API_KEY
 bun run start --max-tasks=1
 ```
 
+## Features
+
+- **Multi-agent coordination** - Run Claude agents on laptops, VMs, or GitHub Actions. One dashboard controls them all.
+- **Real-time dashboard** - Monitor progress, costs, and artifacts via Pusher-powered live updates.
+- **Planning mode** - Agents propose implementation plans for human approval before executing code changes.
+- **GitHub-native** - Agents create branches, commit code, and open PRs. Full webhook integration.
+- **Local UI** - Standalone web interface with agent output streaming, artifact viewer, and milestone tracking.
+- **MCP integration** - Use Claude Code IDE to claim and work on tasks directly.
+- **Dual auth** - API keys (pay-per-token) or OAuth (seat-based) with per-account cost tracking.
+- **Workspace management** - Organize tasks by project with per-workspace context and memory.
+
 ## Project Structure
 
 ```
-buildd/
-├── apps/
-│   ├── web/                 # Next.js dashboard (Vercel)
-│   │   └── src/
-│   │       ├── app/         # App Router
-│   │       │   ├── (protected)/  # Auth-required pages
-│   │       │   │   ├── dashboard/
-│   │       │   │   ├── workspaces/
-│   │       │   │   ├── tasks/
-│   │       │   │   ├── workers/
-│   │       │   │   └── accounts/
-│   │       │   ├── api/     # REST API
-│   │       │   │   ├── auth/[...nextauth]/
-│   │       │   │   ├── workspaces/
-│   │       │   │   ├── tasks/
-│   │       │   │   ├── workers/
-│   │       │   │   │   ├── claim/
-│   │       │   │   │   └── [id]/
-│   │       │   │   └── accounts/
-│   │       │   └── auth/    # Sign in/error pages
-│   │       ├── auth.ts      # NextAuth config
-│   │       └── lib/         # Pusher, auth helpers
-│   │
-│   ├── agent/               # Standalone agent binary
-│   │   └── src/
-│   │       ├── index.ts     # CLI entry
-│   │       ├── agent.ts     # Task polling
-│   │       └── runner.ts    # Claude execution
-│   │
-│   └── mcp-server/          # MCP server for Claude Code
-│       └── src/
-│           └── index.ts     # MCP tools
-│
-└── packages/
-    ├── shared/              # Shared TypeScript types
-    └── core/                # Database, config
-        ├── db/
-        │   ├── schema.ts    # Drizzle schema
-        │   └── client.ts    # DB connection
-        └── drizzle.config.ts
+apps/
+├── web/              Next.js dashboard + API (deployed on Vercel)
+├── local-ui/         Standalone worker runner with web UI (Bun)
+├── mcp-server/       Claude Code MCP integration
+└── agent/            CLI-based headless worker
+
+packages/
+├── core/             Database schema (Drizzle ORM) + migrations
+└── shared/           Shared TypeScript types
 ```
 
 ## API Endpoints
 
-### Authentication
 All agent endpoints require `Authorization: Bearer <API_KEY>` header.
-
-### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/workers/claim` | Claim available tasks |
 | GET | `/api/workers/:id` | Get worker details |
-| PATCH | `/api/workers/:id` | Update worker status |
+| PATCH | `/api/workers/:id` | Update worker status/progress |
+| POST | `/api/workers/:id/plan/submit` | Submit a plan for approval |
+| GET | `/api/workers/:id/plan/status` | Check plan approval status |
 | GET | `/api/workspaces` | List workspaces |
 | POST | `/api/workspaces` | Create workspace |
 | GET | `/api/tasks` | List tasks |
@@ -186,15 +168,7 @@ When using the MCP server with Claude Code:
 | `buildd_complete_task` | Mark task as done |
 | `buildd_fail_task` | Mark task as failed |
 
-## Account Types
-
-| Type | Description | Auth Method |
-|------|-------------|-------------|
-| `user` | Personal laptop/workstation | OAuth (seat-based) |
-| `service` | Always-on server/VM | API (pay-per-token) |
-| `action` | GitHub Actions runner | API (pay-per-token) |
-
-## Authentication Methods
+## Authentication
 
 ### OAuth (CLAUDE_CODE_OAUTH_TOKEN)
 - Uses Claude Pro/Team subscription
@@ -205,38 +179,6 @@ When using the MCP server with Claude Code:
 - Pay-per-token billing
 - Scalable, no session limits
 - Best for: Service accounts, CI/CD
-
-## Environment Variables
-
-### Vercel (Required)
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Neon PostgreSQL connection |
-| `AUTH_SECRET` | NextAuth secret (`openssl rand -base64 32`) |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth secret |
-
-### Vercel (Optional)
-
-| Variable | Description |
-|----------|-------------|
-| `ALLOWED_EMAILS` | Comma-separated email whitelist |
-| `PUSHER_APP_ID` | Pusher app ID (for realtime) |
-| `PUSHER_KEY` | Pusher key |
-| `PUSHER_SECRET` | Pusher secret |
-| `PUSHER_CLUSTER` | Pusher cluster (e.g., us2) |
-| `NEXT_PUBLIC_PUSHER_KEY` | Same as PUSHER_KEY |
-| `NEXT_PUBLIC_PUSHER_CLUSTER` | Same as PUSHER_CLUSTER |
-
-### Agent
-
-| Variable | Description |
-|----------|-------------|
-| `BUILDD_SERVER` | Server URL |
-| `BUILDD_API_KEY` | Your API key |
-| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (seat-based) |
-| `ANTHROPIC_API_KEY` | API key (pay-per-token) |
 
 ## Development
 
@@ -252,39 +194,65 @@ cp .env.example .env.local
 # Edit with your Neon DATABASE_URL
 
 # Push database schema
-cd packages/core
-bun run db:push
+cd packages/core && bun run db:push && cd ../..
 
 # Run dev server
-cd ../..
 bun dev
 ```
 
-## Database
+### Database
 
 Uses Drizzle ORM with Neon PostgreSQL.
 
 ```bash
-# Push schema changes
 cd packages/core
-bun run db:push
 
-# Generate migrations
+# Generate migrations (after schema changes)
 bun run db:generate
+
+# Run migrations
+bun run db:migrate
 
 # Open Drizzle Studio
 bun run db:studio
 ```
 
-## Stack
+### Environment Variables
+
+#### Server (Vercel)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | Neon PostgreSQL connection |
+| `AUTH_SECRET` | Yes | NextAuth secret (`openssl rand -base64 32`) |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth secret |
+| `ALLOWED_EMAILS` | No | Comma-separated email whitelist |
+| `PUSHER_APP_ID` | No | Pusher app ID (for realtime) |
+| `PUSHER_KEY` | No | Pusher key |
+| `PUSHER_SECRET` | No | Pusher secret |
+| `PUSHER_CLUSTER` | No | Pusher cluster (e.g., us2) |
+| `NEXT_PUBLIC_PUSHER_KEY` | No | Same as PUSHER_KEY |
+| `NEXT_PUBLIC_PUSHER_CLUSTER` | No | Same as PUSHER_CLUSTER |
+
+#### Agent / Worker
+
+| Variable | Description |
+|----------|-------------|
+| `BUILDD_SERVER` | Server URL |
+| `BUILDD_API_KEY` | Your API key (`bld_xxx`) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (seat-based) |
+| `ANTHROPIC_API_KEY` | API key (pay-per-token) |
+
+## Tech Stack
 
 - **Runtime**: Bun
-- **Framework**: Next.js 15 (App Router)
+- **Framework**: Next.js 16 (App Router)
 - **Database**: Neon PostgreSQL + Drizzle ORM
 - **Auth**: NextAuth v5 + Google OAuth
 - **Deployment**: Vercel
-- **Realtime**: Pusher (optional)
-- **Agent**: Claude Code SDK / Claude CLI
+- **Real-time**: Pusher
+- **Agent SDK**: @anthropic-ai/claude-agent-sdk
 
 ## License
 
