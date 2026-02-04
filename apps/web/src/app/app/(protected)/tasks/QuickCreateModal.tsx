@@ -2,6 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 
+interface PastedImage {
+  filename: string;
+  mimeType: string;
+  data: string;
+}
+
 interface ActiveLocalUi {
   localUiUrl: string;
   accountId: string;
@@ -37,6 +43,7 @@ export default function QuickCreateModal({
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [assignmentStatus, setAssignmentStatus] = useState<'idle' | 'waiting' | 'accepted' | 'reassigned'>('idle');
   const [countdown, setCountdown] = useState(0);
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -67,6 +74,36 @@ export default function QuickCreateModal({
       // Silently fail - worker assignment is optional
     }
   };
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          setPastedImages(prev => [...prev, {
+            filename: file.name || `pasted-image-${Date.now()}.png`,
+            mimeType: file.type,
+            data: dataUrl,
+          }]);
+        };
+        reader.readAsDataURL(file);
+        // Auto-show description area when image is pasted
+        setShowDescription(true);
+      }
+    }
+  }, []);
+
+  const removeImage = useCallback((index: number) => {
+    setPastedImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
 
   const pollTaskStatus = useCallback(async (taskId: string, startTime: number) => {
     try {
@@ -129,8 +166,8 @@ export default function QuickCreateModal({
           description: description.trim() || null,
           priority: 5,
           creationSource: 'dashboard',
-          // Optionally assign to a specific local-ui
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
+          ...(pastedImages.length > 0 && { attachments: pastedImages }),
         }),
       });
 
@@ -230,6 +267,7 @@ export default function QuickCreateModal({
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
+                onPaste={handlePaste}
                 placeholder="Task title"
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 disabled={loading}
@@ -239,7 +277,8 @@ export default function QuickCreateModal({
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Description (optional)"
+                  onPaste={handlePaste}
+                  placeholder="Description (optional) — paste images here"
                   rows={3}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                   disabled={loading}
@@ -252,6 +291,27 @@ export default function QuickCreateModal({
                 >
                   + Add description
                 </button>
+              )}
+
+              {pastedImages.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pastedImages.map((img, i) => (
+                    <div key={i} className="relative group">
+                      <img
+                        src={img.data}
+                        alt={img.filename}
+                        className="max-h-20 rounded border border-gray-200 dark:border-gray-700"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(i)}
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
 
               {/* Worker assignment */}
