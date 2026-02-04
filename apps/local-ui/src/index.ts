@@ -31,6 +31,8 @@ interface SavedConfig {
   serverless?: boolean;
   model?: string;
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
+  bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
+  openBrowser?: boolean; // Auto-open browser on startup
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -42,12 +44,45 @@ function loadSavedConfig(): SavedConfig {
         serverless: data.serverless,
         model: data.model,
         acceptRemoteTasks: data.acceptRemoteTasks,
+        bypassPermissions: data.bypassPermissions,
+        openBrowser: data.openBrowser,
       };
     }
   } catch (err) {
     console.error('Failed to load config:', err);
   }
   return {};
+}
+
+// Create clickable terminal link using OSC 8 escape sequence
+function terminalLink(url: string, text?: string): string {
+  const displayText = text || url;
+  return `\x1b]8;;${url}\x07${displayText}\x1b]8;;\x07`;
+}
+
+// Prompt user for yes/no input
+async function promptYesNo(question: string): Promise<boolean> {
+  process.stdout.write(`${question} [y/n]: `);
+
+  return new Promise((resolve) => {
+    const onData = (data: Buffer) => {
+      const input = data.toString().trim().toLowerCase();
+      if (input === 'y' || input === 'yes') {
+        process.stdin.removeListener('data', onData);
+        process.stdin.pause();
+        resolve(true);
+      } else if (input === 'n' || input === 'no') {
+        process.stdin.removeListener('data', onData);
+        process.stdin.pause();
+        resolve(false);
+      } else {
+        process.stdout.write('Please enter y or n: ');
+      }
+    };
+
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
 }
 
 function saveConfig(data: Partial<SavedConfig>) {
@@ -184,6 +219,8 @@ const config: LocalUIConfig = {
   pusherCluster: process.env.PUSHER_CLUSTER,
   // Accept remote task assignments (default: true)
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
+  // Bypass permission prompts (default: false)
+  bypassPermissions: savedConfig.bypassPermissions || false,
 };
 
 const resolver = createWorkspaceResolver(projectRoots);
@@ -285,6 +322,7 @@ const server = Bun.serve({
         hasClaudeCredentials: authStatus.hasCredentials,
         model: config.model,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
+        bypassPermissions: config.bypassPermissions || false,
       }, { headers: corsHeaders });
     }
 
@@ -341,6 +379,17 @@ const server = Bun.serve({
       }
 
       return Response.json({ ok: true, acceptRemoteTasks: config.acceptRemoteTasks }, { headers: corsHeaders });
+    }
+
+    // Toggle bypass permissions setting
+    if (path === '/api/config/bypass-permissions' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { enabled } = body;
+
+      config.bypassPermissions = enabled === true;
+      saveConfig({ bypassPermissions: config.bypassPermissions });
+
+      return Response.json({ ok: true, bypassPermissions: config.bypassPermissions }, { headers: corsHeaders });
     }
 
     // Set API key
@@ -892,11 +941,13 @@ const server = Bun.serve({
   },
 });
 
+const localUrl = `http://localhost:${PORT}`;
+
 console.log('');
 console.log(`╔════════════════════════════════════════════╗`);
 console.log(`║  buildd local-ui                           ║`);
 console.log(`╚════════════════════════════════════════════╝`);
-console.log(`  URL:        http://localhost:${PORT}`);
+console.log(`  URL:        ${terminalLink(localUrl)}`);
 console.log(`  Server:     ${config.builddServer}`);
 console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
 console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
@@ -908,5 +959,23 @@ console.log(`${repos.length} git repositories${reposLoadedFromCache ? ' (cached)
 
 if (!config.apiKey && !config.serverless) {
   console.log('');
-  console.log('⚠ No API key configured. Visit http://localhost:' + PORT + ' to set up.');
+  console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
 }
+
+// Handle browser auto-open preference
+(async () => {
+  // Check if this is first run (openBrowser preference not set)
+  if (savedConfig.openBrowser === undefined) {
+    console.log('');
+    const shouldOpen = await promptYesNo('Auto-open browser on startup?');
+    saveConfig({ openBrowser: shouldOpen });
+
+    if (shouldOpen) {
+      console.log('Opening browser...');
+      Bun.spawn(['open', localUrl]);
+    }
+    console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
+  } else if (savedConfig.openBrowser) {
+    Bun.spawn(['open', localUrl]);
+  }
+})();
