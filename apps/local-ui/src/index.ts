@@ -552,6 +552,46 @@ const server = Bun.serve({
       return Response.json({ task }, { headers: corsHeaders });
     }
 
+    // Takeover an assigned task (force reassign + claim)
+    if (path === '/api/takeover' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { taskId } = body;
+
+      if (!taskId) {
+        return Response.json({ error: 'taskId required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        // Force reassign the task (resets it to pending)
+        const reassignResult = await buildd!.reassignTask(taskId, true);
+
+        if (!reassignResult.reassigned) {
+          return Response.json({
+            error: reassignResult.reason || 'Cannot take over task',
+            canTakeover: reassignResult.canTakeover,
+            isStale: reassignResult.isStale,
+          }, { status: 400, headers: corsHeaders });
+        }
+
+        // Refetch task and claim it
+        const tasks = await buildd!.listTasks();
+        const task = tasks.find((t: any) => t.id === taskId);
+
+        if (!task) {
+          return Response.json({ error: 'Task not found after reassign' }, { status: 404, headers: corsHeaders });
+        }
+
+        const worker = await workerManager!.claimAndStart(task);
+        if (!worker) {
+          return Response.json({ error: 'Failed to claim task after reassign' }, { status: 400, headers: corsHeaders });
+        }
+
+        return Response.json({ worker, reassigned: true }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to take over task' }, { status: 400, headers: corsHeaders });
+      }
+    }
+
     // Send message to running worker session
     if (path.startsWith('/api/workers/') && path.endsWith('/send') && req.method === 'POST') {
       if (!workerManager) {

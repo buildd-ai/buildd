@@ -172,4 +172,23 @@ export class BuilddClient {
       return { markdown: '', count: 0 };
     }
   }
+
+  async reassignTask(taskId: string, force = false): Promise<{
+    reassigned: boolean;
+    reason?: string;
+    canTakeover?: boolean;
+    isStale?: boolean;
+  }> {
+    const url = force ? `/api/tasks/${taskId}/reassign?force=true` : `/api/tasks/${taskId}/reassign`;
+    return this.fetch(url, { method: 'POST' }, [403]);
+  }
+
+  async getAccountLevel(): Promise<'admin' | 'member' | 'unknown'> {
+    try {
+      const data = await this.fetch('/api/account/level');
+      return data.level || 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
 }

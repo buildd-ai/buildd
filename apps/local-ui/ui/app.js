@@ -347,25 +347,66 @@ function renderMilestoneBoxes(milestones) {
 
 function renderTasks() {
   const pending = tasks.filter(t => t.status === 'pending');
+  const assigned = tasks.filter(t => t.status === 'assigned');
 
+  let html = '';
+
+  // Pending tasks
   if (pending.length === 0) {
-    tasksEl.innerHTML = '<div class="empty">No pending tasks</div>';
-    return;
+    html += '<div class="empty">No pending tasks</div>';
+  } else {
+    html += pending.map(t => `
+      <div class="task-card" data-id="${t.id}">
+        <div class="card-header">
+          <div class="status-dot pending"></div>
+          <div class="card-title">${escapeHtml(t.title)}</div>
+        </div>
+        <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
+      </div>
+    `).join('');
   }
 
-  tasksEl.innerHTML = pending.map(t => `
-    <div class="task-card" data-id="${t.id}">
-      <div class="card-header">
-        <div class="status-dot pending"></div>
-        <div class="card-title">${escapeHtml(t.title)}</div>
+  // Assigned tasks section
+  if (assigned.length > 0) {
+    html += `
+      <div class="assigned-section">
+        <div class="section-label">Assigned Elsewhere (${assigned.length})</div>
+        ${assigned.map(t => {
+          const isStale = t.expiresAt && new Date(t.expiresAt) < new Date();
+          const staleLabel = isStale ? '<span class="badge badge-warning">Stale</span>' : '';
+          return `
+            <div class="task-card assigned-card" data-id="${t.id}" data-stale="${isStale}">
+              <div class="card-header">
+                <div class="status-dot assigned"></div>
+                <div class="card-title">${escapeHtml(t.title)}</div>
+                ${staleLabel}
+              </div>
+              <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
+              <div class="card-actions">
+                <button class="btn btn-small btn-secondary takeover-btn" data-id="${t.id}" data-stale="${isStale}">
+                  Take Over
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('')}
       </div>
-      <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
-    </div>
-  `).join('');
+    `;
+  }
 
-  // Add click handlers
-  tasksEl.querySelectorAll('.task-card').forEach(card => {
+  tasksEl.innerHTML = html;
+
+  // Add click handlers for pending tasks
+  tasksEl.querySelectorAll('.task-card:not(.assigned-card)').forEach(card => {
     card.onclick = () => claimTask(card.dataset.id);
+  });
+
+  // Add click handlers for takeover buttons
+  tasksEl.querySelectorAll('.takeover-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      takeoverTask(btn.dataset.id, btn);
+    };
   });
 }
 
@@ -1080,6 +1121,44 @@ async function claimTask(taskId) {
   } catch (err) {
     console.error('Failed to claim task:', err);
     alert('Failed to claim task');
+  }
+}
+
+async function takeoverTask(taskId, btn) {
+  if (!btn) btn = event?.target;
+  const originalText = btn?.textContent || 'Take Over';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Taking over...';
+  }
+
+  try {
+    const res = await fetch('/api/takeover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId })
+    });
+    const data = await res.json();
+
+    if (data.worker) {
+      showToast('Task taken over successfully');
+      loadTasks();
+    } else {
+      const errorMsg = data.error || 'Failed to take over task';
+      if (data.canTakeover === false) {
+        alert(`${errorMsg}\n\nYou can only take over tasks that are:\n- Stale (expired)\n- In a workspace you own`);
+      } else {
+        alert(errorMsg);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to take over task:', err);
+    alert('Failed to take over task');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
   }
 }
 

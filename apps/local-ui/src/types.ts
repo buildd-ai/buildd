@@ -57,12 +57,17 @@ export interface BuilddTask {
     repo?: string;
     gitConfig?: WorkspaceGitConfig;
     configStatus?: 'unconfigured' | 'admin_confirmed';
+    ownerId?: string;
   };
   status: string;
   priority: number;
   mode?: TaskMode;  // 'planning' or 'execution' (default)
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // Assignment tracking
+  claimedBy?: string | null;
+  claimedAt?: string | null;
+  expiresAt?: string | null;
 }
 
 // Git workflow configuration (matches server schema)

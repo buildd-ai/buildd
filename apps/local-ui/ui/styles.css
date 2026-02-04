@@ -771,6 +771,50 @@ select.input {
   color: var(--success);
 }
 
+.badge-warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+}
+
+/* Assigned tasks section */
+.assigned-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.assigned-section .section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.assigned-card {
+  opacity: 0.8;
+  cursor: default;
+}
+
+.assigned-card:hover {
+  opacity: 1;
+}
+
+.assigned-card:active {
+  transform: none;
+}
+
+.status-dot.assigned {
+  background: var(--info);
+}
+
+.card-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
 .status-dot.status-ready {
   background: var(--success);
 }
