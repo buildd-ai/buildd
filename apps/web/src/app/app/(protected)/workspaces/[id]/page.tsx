@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, observations } from '@buildd/core/db/schema';
 import { eq, desc, and, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -64,6 +64,12 @@ export default async function WorkspaceDetailPage({
 
   const taskCountMap = Object.fromEntries(taskCounts.map((t) => [t.status, Number(t.count)]));
 
+  const [obsCount] = await db
+    .select({ count: count() })
+    .from(observations)
+    .where(eq(observations.workspaceId, id));
+  const observationCount = Number(obsCount?.count || 0);
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -80,10 +86,16 @@ export default async function WorkspaceDetailPage({
           </div>
           <div className="flex gap-2">
             <Link
+              href={`/app/workspaces/${workspace.id}/memory`}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+            >
+              Memory{observationCount > 0 ? ` (${observationCount})` : ''}
+            </Link>
+            <Link
               href={`/app/workspaces/${workspace.id}/config`}
               className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
             >
-              ⚙️ Configure
+              Configure
             </Link>
             <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
             <Link

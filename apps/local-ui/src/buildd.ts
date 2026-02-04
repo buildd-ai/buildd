@@ -132,4 +132,44 @@ export class BuilddClient {
       body: JSON.stringify({ feedback }),
     });
   }
+
+  async createObservation(workspaceId: string, data: {
+    type: string;
+    title: string;
+    content: string;
+    files?: string[];
+    concepts?: string[];
+    workerId?: string;
+    taskId?: string;
+  }) {
+    return this.fetch(`/api/workspaces/${workspaceId}/observations`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getObservations(workspaceId: string, params?: {
+    type?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const searchParams = new URLSearchParams();
+    if (params?.type) searchParams.set('type', params.type);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.offset) searchParams.set('offset', String(params.offset));
+    const qs = searchParams.toString();
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/observations${qs ? `?${qs}` : ''}`);
+    return data.observations || [];
+  }
+
+  async getCompactObservations(workspaceId: string): Promise<{ markdown: string; count: number }> {
+    try {
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/observations/compact`);
+      return { markdown: data.markdown || '', count: data.count || 0 };
+    } catch {
+      return { markdown: '', count: 0 };
+    }
+  }
 }

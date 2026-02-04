@@ -543,6 +543,9 @@ export class WorkerManager {
         }
       }
 
+      // Fetch workspace observations for context
+      const observationsData = await this.buildd.getCompactObservations(task.workspaceId);
+
       // Build prompt with workspace context
       const promptParts: string[] = [];
 
@@ -574,6 +577,11 @@ export class WorkerManager {
         }
 
         promptParts.push(gitContext.join('\n'));
+      }
+
+      // Add workspace memory (observations from prior tasks)
+      if (observationsData.count > 0) {
+        promptParts.push(observationsData.markdown);
       }
 
       // Add task description
@@ -686,6 +694,22 @@ export class WorkerManager {
         worker.hasNewActivity = true;
         await this.buildd.updateWorker(worker.id, { status: 'completed' });
         this.emit({ type: 'worker_update', worker });
+
+        // Capture summary observation (non-fatal)
+        try {
+          const summary = this.buildSessionSummary(worker);
+          const files = this.extractFilesFromToolCalls(worker.toolCalls);
+          await this.buildd.createObservation(task.workspaceId, {
+            type: 'summary',
+            title: `Task: ${task.title}`,
+            content: summary,
+            files,
+            workerId: worker.id,
+            taskId: task.id,
+          });
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Failed to capture summary observation:`, err);
+        }
       }
 
     } catch (error) {
@@ -937,6 +961,58 @@ export class WorkerManager {
       console.error('Failed to send message:', err);
       return false;
     }
+  }
+
+  private buildSessionSummary(worker: LocalWorker): string {
+    const parts: string[] = [];
+
+    // Milestones summary
+    const milestones = worker.milestones
+      .filter(m => m.label !== 'Session started' && m.label !== 'Task completed')
+      .map(m => m.label);
+    if (milestones.length > 0) {
+      parts.push(`Milestones: ${milestones.slice(-10).join(', ')}`);
+    }
+
+    // Commits summary
+    if (worker.commits.length > 0) {
+      const commitMsgs = worker.commits.map(c => c.message).slice(-5);
+      parts.push(`Commits: ${commitMsgs.join('; ')}`);
+    }
+
+    // Tool usage stats
+    const toolCounts: Record<string, number> = {};
+    for (const tc of worker.toolCalls) {
+      toolCounts[tc.name] = (toolCounts[tc.name] || 0) + 1;
+    }
+    const toolSummary = Object.entries(toolCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `${name}(${count})`)
+      .join(', ');
+    if (toolSummary) {
+      parts.push(`Tools used: ${toolSummary}`);
+    }
+
+    // Last output lines as context
+    const lastOutput = worker.output.slice(-3).join(' ').trim();
+    if (lastOutput) {
+      const truncated = lastOutput.length > 200 ? lastOutput.slice(0, 200) + '...' : lastOutput;
+      parts.push(`Result: ${truncated}`);
+    }
+
+    const summary = parts.join('\n');
+    return summary.length > 500 ? summary.slice(0, 500) + '...' : summary;
+  }
+
+  private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {
+    const files = new Set<string>();
+    for (const tc of toolCalls) {
+      if ((tc.name === 'Read' || tc.name === 'Edit' || tc.name === 'Write') && tc.input?.file_path) {
+        files.add(tc.input.file_path);
+      }
+    }
+    return Array.from(files).slice(0, 20);
   }
 
   destroy() {
