@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { workspaces, type WorkspaceGitConfig, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
+import { WebhookConfigForm } from './WebhookConfigForm';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -27,6 +28,7 @@ export default async function WorkspaceConfigPage({
             repo: true,
             gitConfig: true,
             configStatus: true,
+            webhookConfig: true,
         },
     });
 
@@ -62,6 +64,18 @@ export default async function WorkspaceConfigPage({
                     workspaceName={workspace.name}
                     initialConfig={workspace.gitConfig as WorkspaceGitConfig | null}
                     configStatus={workspace.configStatus as 'unconfigured' | 'admin_confirmed'}
+                />
+
+                <div className="mt-12 mb-8">
+                    <h1 className="text-3xl font-bold">Webhook Dispatch</h1>
+                    <p className="text-gray-500 mt-1">
+                        Automatically send new tasks to an external agent (e.g., OpenClaw).
+                    </p>
+                </div>
+
+                <WebhookConfigForm
+                    workspaceId={workspace.id}
+                    initialConfig={workspace.webhookConfig as WorkspaceWebhookConfig | null}
                 />
             </div>
         </main>

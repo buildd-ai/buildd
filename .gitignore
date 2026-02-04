@@ -13,3 +13,4 @@ coverage/
 *.tsbuildinfo
 .mcp.json
 .env*.local
+.plan

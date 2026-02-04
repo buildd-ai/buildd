@@ -71,6 +71,13 @@
       "when": 1770213538338,
       "tag": "0009_young_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1770233860449,
+      "tag": "0010_peaceful_franklin_richards",
+      "breakpoints": true
     }
   ]
 }

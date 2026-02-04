@@ -1,10 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
+import { accounts, tasks, workspaces, accountWorkspaces, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
+
+/**
+ * Dispatch task to external webhook (e.g., OpenClaw)
+ */
+async function dispatchToWebhook(
+  webhookConfig: WorkspaceWebhookConfig,
+  task: { id: string; title: string; description: string | null; workspaceId: string }
+): Promise<boolean> {
+  if (!webhookConfig.enabled || !webhookConfig.url) {
+    return false;
+  }
+
+  try {
+    // Build message for OpenClaw-style webhook
+    const message = `Work on Buildd task: ${task.title}
+
+${task.description || 'No description provided.'}
+
+---
+Task ID: ${task.id}
+Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.buildd.dev'}/api/workers/{workerId}`;
+
+    const response = await fetch(webhookConfig.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${webhookConfig.token}`,
+      },
+      body: JSON.stringify({
+        message,
+        sessionKey: `buildd-${task.id}`,
+        name: 'buildd',
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Webhook dispatch failed: ${response.status} ${await response.text()}`);
+      return false;
+    }
+
+    console.log(`Task ${task.id} dispatched to webhook: ${webhookConfig.url}`);
+    return true;
+  } catch (error) {
+    console.error('Webhook dispatch error:', error);
+    return false;
+  }
+}
 
 async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
@@ -174,6 +221,27 @@ export async function POST(req: NextRequest) {
         events.TASK_ASSIGNED,
         { task, targetLocalUiUrl: assignToLocalUiUrl }
       );
+    }
+
+    // Check if workspace has webhook config for external dispatch (e.g., OpenClaw)
+    // Only dispatch if not already assigned to a specific local-ui
+    if (!assignToLocalUiUrl) {
+      const workspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+        columns: { webhookConfig: true },
+      });
+
+      if (workspace?.webhookConfig) {
+        const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
+        // Check runner preference filter
+        const shouldDispatch = !webhookConfig.runnerPreference ||
+          webhookConfig.runnerPreference === 'any' ||
+          webhookConfig.runnerPreference === (runnerPreference || 'any');
+
+        if (shouldDispatch) {
+          await dispatchToWebhook(webhookConfig, task);
+        }
+      }
     }
 
     return NextResponse.json(task);

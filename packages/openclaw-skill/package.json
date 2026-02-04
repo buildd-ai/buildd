@@ -1,0 +1,35 @@
+{
+  "name": "@buildd/openclaw-skill",
+  "version": "0.1.0",
+  "description": "Buildd skill for OpenClaw - task coordination for AI agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "buildd": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "openclaw",
+    "buildd",
+    "ai-agent",
+    "task-queue",
+    "skill"
+  ],
+  "author": "Buildd",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "dist",
+    "SKILL.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/buildd-ai/buildd"
+  }
+}
