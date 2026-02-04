@@ -106,4 +106,6 @@ export interface LocalUIConfig {
   // Pusher config (optional, for command relay)
   pusherKey?: string;
   pusherCluster?: string;
+  // Accept remote task assignments from dashboard (default: true)
+  acceptRemoteTasks?: boolean;
 }
