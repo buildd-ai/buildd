@@ -15,6 +15,7 @@ interface GitConfig {
     autoCreatePR: boolean;
     agentInstructions?: string;
     useClaudeMd: boolean;
+    bypassPermissions?: boolean;
 }
 
 interface Props {
@@ -44,6 +45,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [autoCreatePR, setAutoCreatePR] = useState(initialConfig?.autoCreatePR || false);
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
+    const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -66,6 +68,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     autoCreatePR,
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
+                    bypassPermissions,
                 }),
             });
 
@@ -247,6 +250,22 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             placeholder="Always run tests before committing.&#10;Use npm run lint to check code style."
                         />
                     </div>
+
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="bypassPermissions"
+                            checked={bypassPermissions}
+                            onChange={(e) => setBypassPermissions(e.target.checked)}
+                            className="rounded"
+                        />
+                        <label htmlFor="bypassPermissions" className="text-sm">
+                            Bypass permission prompts
+                        </label>
+                    </div>
+                    <p className="text-xs text-gray-500 -mt-2">
+                        Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
+                    </p>
                 </div>
             </div>
 

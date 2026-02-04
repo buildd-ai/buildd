@@ -47,6 +47,9 @@ async function checkConfig() {
     isConfigured = data.configured;
     isServerless = data.serverless;
     hasClaudeCredentials = data.hasClaudeCredentials;
+    // Store config values from API response
+    config.bypassPermissions = data.bypassPermissions || false;
+    config.model = data.model || config.model;
 
     if (isConfigured || isServerless) {
       showApp();
@@ -637,6 +640,11 @@ function updateSettings() {
   maxEl.innerHTML = [1, 2, 3, 4].map(n => `
     <button class="btn ${n === config.maxConcurrent ? 'btn-primary' : 'btn-secondary'}">${n}</button>
   `).join('');
+
+  const bypassCheckbox = document.getElementById('settingsBypass');
+  if (bypassCheckbox) {
+    bypassCheckbox.checked = config.bypassPermissions || false;
+  }
 }
 
 // Handle model selection change
@@ -661,6 +669,33 @@ async function handleModelChange() {
   } catch (err) {
     console.error('Failed to update model:', err);
     alert('Failed to update model');
+  }
+}
+
+async function handleBypassChange() {
+  const bypassCheckbox = document.getElementById('settingsBypass');
+  const enabled = bypassCheckbox.checked;
+
+  try {
+    const res = await fetch('/api/config/bypass-permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+
+    if (res.ok) {
+      config.bypassPermissions = enabled;
+      showToast(enabled
+        ? 'Permission bypass enabled. New workers will skip permission prompts.'
+        : 'Permission bypass disabled. New workers will use standard permissions.');
+    } else {
+      bypassCheckbox.checked = !enabled; // Revert
+      alert('Failed to update bypass permissions');
+    }
+  } catch (err) {
+    console.error('Failed to update bypass permissions:', err);
+    bypassCheckbox.checked = !enabled; // Revert
+    alert('Failed to update bypass permissions');
   }
 }
 
@@ -1326,6 +1361,11 @@ document.getElementById('settingsModalBack').onclick = closeSettingsModal;
 const modelSelect = document.getElementById('settingsModel');
 if (modelSelect) {
   modelSelect.onchange = handleModelChange;
+}
+
+const bypassCheckbox = document.getElementById('settingsBypass');
+if (bypassCheckbox) {
+  bypassCheckbox.onchange = handleBypassChange;
 }
 
 document.getElementById('fileInput').onchange = handleFileSelect;

@@ -83,6 +83,9 @@ export interface WorkspaceGitConfig {
   // Agent instructions (prepended to prompt)
   agentInstructions?: string;         // Free-form, admin-defined
   useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
+
+  // Permission mode
+  bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

@@ -89,6 +89,9 @@ export async function POST(
             // Agent instructions
             agentInstructions: body.agentInstructions || undefined,
             useClaudeMd: body.useClaudeMd ?? true,
+
+            // Permission mode
+            bypassPermissions: body.bypassPermissions ?? false,
         };
 
         await db
