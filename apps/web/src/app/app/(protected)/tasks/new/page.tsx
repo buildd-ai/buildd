@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -12,6 +12,12 @@ interface Workspace {
   isDefault?: boolean;
 }
 
+interface PastedImage {
+  filename: string;
+  mimeType: string;
+  data: string; // base64 data URL
+}
+
 export default function NewTaskPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -19,6 +25,35 @@ export default function NewTaskPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          setPastedImages(prev => [...prev, {
+            filename: file.name || `pasted-image-${Date.now()}.png`,
+            mimeType: file.type,
+            data: dataUrl,
+          }]);
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+  }, []);
+
+  const removeImage = useCallback((index: number) => {
+    setPastedImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
 
   useEffect(() => {
     fetch('/api/workspaces')
@@ -63,6 +98,7 @@ export default function NewTaskPage() {
       title: formData.get('title') as string,
       description: formData.get('description') as string,
       priority: parseInt(formData.get('priority') as string) || 0,
+      ...(pastedImages.length > 0 && { attachments: pastedImages }),
     };
 
     try {
@@ -157,9 +193,30 @@ export default function NewTaskPage() {
                 name="description"
                 required
                 rows={6}
-                placeholder="Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior."
+                placeholder="Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
+                onPaste={handlePaste}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
+              {pastedImages.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {pastedImages.map((img, i) => (
+                    <div key={i} className="relative group">
+                      <img
+                        src={img.data}
+                        alt={img.filename}
+                        className="max-h-24 rounded border border-gray-200 dark:border-gray-700"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(i)}
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div>

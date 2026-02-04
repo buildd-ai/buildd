@@ -99,6 +99,16 @@
         "typescript": "^5.4.0",
       },
     },
+    "packages/openclaw-skill": {
+      "name": "@buildd/openclaw-skill",
+      "version": "0.1.0",
+      "bin": {
+        "buildd": "./dist/cli.js",
+      },
+      "devDependencies": {
+        "typescript": "^5.0.0",
+      },
+    },
     "packages/shared": {
       "name": "@buildd/shared",
       "version": "0.1.0",
@@ -121,6 +131,8 @@
     "@buildd/local-ui": ["@buildd/local-ui@workspace:apps/local-ui"],
 
     "@buildd/mcp-server": ["@buildd/mcp-server@workspace:apps/mcp-server"],
+
+    "@buildd/openclaw-skill": ["@buildd/openclaw-skill@workspace:packages/openclaw-skill"],
 
     "@buildd/shared": ["@buildd/shared@workspace:packages/shared"],
 
