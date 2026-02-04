@@ -88,6 +88,17 @@ export const CreationSource = {
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
 
+export const ObservationType = {
+  DISCOVERY: 'discovery',
+  DECISION: 'decision',
+  GOTCHA: 'gotcha',
+  PATTERN: 'pattern',
+  ARCHITECTURE: 'architecture',
+  SUMMARY: 'summary',
+} as const;
+
+export type ObservationTypeValue = typeof ObservationType[keyof typeof ObservationType];
+
 // ============================================================================
 // ENTITIES
 // ============================================================================
@@ -273,6 +284,19 @@ export interface Attachment {
   createdAt: Date;
 }
 
+export interface Observation {
+  id: string;
+  workspaceId: string;
+  workerId: string | null;
+  taskId: string | null;
+  type: ObservationTypeValue;
+  title: string;
+  content: string;
+  files: string[];
+  concepts: string[];
+  createdAt: Date;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================
@@ -348,6 +372,16 @@ export interface ClaimTasksResponse {
     branch: string;
     task: Task;
   }>;
+}
+
+export interface CreateObservationInput {
+  type: ObservationTypeValue;
+  title: string;
+  content: string;
+  files?: string[];
+  concepts?: string[];
+  workerId?: string;
+  taskId?: string;
 }
 
 // ============================================================================
