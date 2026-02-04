@@ -8,12 +8,60 @@ import { randomBytes } from 'crypto';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
+// Cookie domain for cross-subdomain auth (e.g., .buildd.dev)
+// This allows cookies to be shared between app.buildd.dev and buildd.dev
+const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
+
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
 }
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
+  cookies: cookieDomain
+    ? {
+        pkceCodeVerifier: {
+          name: 'authjs.pkce.code_verifier',
+          options: {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: '/',
+            secure: true,
+            domain: cookieDomain,
+          },
+        },
+        state: {
+          name: 'authjs.state',
+          options: {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: '/',
+            secure: true,
+            domain: cookieDomain,
+          },
+        },
+        callbackUrl: {
+          name: 'authjs.callback-url',
+          options: {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: '/',
+            secure: true,
+            domain: cookieDomain,
+          },
+        },
+        sessionToken: {
+          name: 'authjs.session-token',
+          options: {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: '/',
+            secure: true,
+            domain: cookieDomain,
+          },
+        },
+      }
+    : undefined,
   providers: [
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID!,
