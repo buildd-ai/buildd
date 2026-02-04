@@ -1,8 +1,9 @@
-import { query, createSdkMcpServer, tool, type SDKMessage, type SDKUserMessage, type McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool, type SDKMessage, type SDKUserMessage, type McpSdkServerConfigWithInstance, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -502,6 +503,83 @@ export class WorkerManager {
     });
   }
 
+  // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
+  // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
+  // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
+  private createPermissionHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+
+      const toolName = (input as any).tool_name;
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // Block dangerous bash commands
+      if (toolName === 'Bash') {
+        const command = (toolInput.command as string) || '';
+        for (const pattern of DANGEROUS_PATTERNS) {
+          if (pattern.test(command)) {
+            console.log(`[Worker ${worker.id}] Blocked dangerous command: ${command.slice(0, 80)}`);
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: 'Dangerous command blocked by safety policy',
+              },
+            };
+          }
+        }
+
+        // Explicitly allow safe bash commands (prevents acceptEdits stall)
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'allow' as const,
+            permissionDecisionReason: 'Allowed by buildd permission hook',
+          },
+        };
+      }
+
+      // Block writes to sensitive paths
+      if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
+        const filePath = (toolInput.file_path as string) || (toolInput.filePath as string) || '';
+        for (const pattern of SENSITIVE_PATHS) {
+          if (pattern.test(filePath)) {
+            console.log(`[Worker ${worker.id}] Blocked sensitive path write: ${filePath}`);
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `Cannot write to sensitive path: ${filePath}`,
+              },
+            };
+          }
+        }
+      }
+
+      return {};
+    };
+  }
+
+  // Resolve whether to use bypassPermissions mode.
+  // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
+  private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
+    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
+    const wsBypass = workspaceConfig.gitConfig?.bypassPermissions;
+
+    // Workspace-level setting takes priority if admin confirmed
+    if (isAdminConfirmed && typeof wsBypass === 'boolean') {
+      return wsBypass;
+    }
+
+    // Fall back to local-ui config
+    if (typeof this.config.bypassPermissions === 'boolean') {
+      return this.config.bypassPermissions;
+    }
+
+    // Default: false
+    return false;
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -612,6 +690,17 @@ export class WorkerManager {
       // Check if task is in planning mode
       const isPlanningMode = task.mode === 'planning';
 
+      // Resolve permission mode
+      const bypassPermissions = this.resolveBypassPermissions(workspaceConfig);
+      let permissionMode: 'plan' | 'acceptEdits' | 'bypassPermissions';
+      if (isPlanningMode) {
+        permissionMode = 'plan';
+      } else if (bypassPermissions) {
+        permissionMode = 'bypassPermissions';
+      } else {
+        permissionMode = 'acceptEdits';
+      }
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         cwd,
@@ -619,11 +708,18 @@ export class WorkerManager {
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
-        permissionMode: isPlanningMode ? 'plan' : 'acceptEdits',  // Use plan mode or auto-accept edits
+        permissionMode,
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
       };
+
+      // Attach permission hook for execution mode (blocks dangerous commands, allows safe bash)
+      if (!isPlanningMode) {
+        queryOptions.hooks = {
+          PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
+        };
+      }
 
       // Configure system prompt based on mode
       if (isPlanningMode) {

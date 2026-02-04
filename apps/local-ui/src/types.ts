@@ -90,6 +90,9 @@ export interface WorkspaceGitConfig {
   // Agent instructions
   agentInstructions?: string;
   useClaudeMd: boolean;
+
+  // Permission mode
+  bypassPermissions?: boolean;
 }
 
 // SSE event types
@@ -124,4 +127,6 @@ export interface LocalUIConfig {
   pusherCluster?: string;
   // Accept remote task assignments from dashboard (default: true)
   acceptRemoteTasks?: boolean;
+  // Bypass permission prompts for bash commands (dangerous commands still blocked)
+  bypassPermissions?: boolean;
 }
