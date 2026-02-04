@@ -42,9 +42,6 @@ export default function LandingPage() {
               </svg>
               Self-Hostable
             </span>
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-fuchsia-500/20 to-cyan-400/20 border border-fuchsia-500/30 rounded-full text-sm text-fuchsia-300">
-              Free for Personal Use
-            </span>
           </div>
 
           <div className="space-y-4">
@@ -165,26 +162,6 @@ export default function LandingPage() {
         </div>
       </div>
 
-      {/* Enterprise CTA */}
-      <div className="max-w-6xl mx-auto px-6 py-16">
-        <div className="bg-white/5 rounded-xl p-8 border border-white/10 backdrop-blur-sm text-center">
-          <h2 className="text-2xl font-semibold mb-3">Need More?</h2>
-          <p className="text-gray-400 mb-6 max-w-xl mx-auto">
-            Looking for enterprise features, dedicated support, or custom integrations?
-            We&apos;d love to hear from you.
-          </p>
-          <a
-            href="mailto:hello@buildd.dev?subject=Enterprise%20Inquiry"
-            className="inline-flex items-center px-6 py-3 bg-white/10 border border-white/20 text-white font-medium rounded-lg hover:bg-white/20 transition-all"
-          >
-            <svg className="mr-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-            Get in Touch
-          </a>
-        </div>
-      </div>
-
       {/* Footer */}
       <footer className="border-t border-white/10">
         <div className="max-w-6xl mx-auto px-6 py-8">
@@ -206,6 +183,12 @@ export default function LandingPage() {
                 className="hover:text-white transition-colors"
               >
                 Contact
+              </a>
+              <a
+                href="mailto:hello@buildd.dev?subject=Enterprise%20Inquiry"
+                className="hover:text-white transition-colors"
+              >
+                Enterprise
               </a>
               <a
                 href="/app"
