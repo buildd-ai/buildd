@@ -7,12 +7,20 @@ export const WorkerStatus = {
   STARTING: 'starting',
   RUNNING: 'running',
   WAITING_INPUT: 'waiting_input',
+  AWAITING_PLAN_APPROVAL: 'awaiting_plan_approval',
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ERROR: 'error',
 } as const;
 
 export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
+
+export const TaskMode = {
+  EXECUTION: 'execution',
+  PLANNING: 'planning',
+} as const;
+
+export type TaskModeValue = typeof TaskMode[keyof typeof TaskMode];
 
 export const TaskStatus = {
   PENDING: 'pending',
@@ -150,6 +158,7 @@ export interface Task {
   context: Record<string, unknown>;
   status: TaskStatusType;
   priority: number;
+  mode: TaskModeValue;
   runnerPreference: RunnerPreferenceValue;
   requiredCapabilities: string[];
   claimedBy: string | null;
@@ -275,6 +284,7 @@ export interface CreateTaskInput {
   description?: string;
   context?: Record<string, unknown>;
   priority?: number;
+  mode?: TaskModeValue;
   // Optional creator tracking (typically set by API)
   createdByWorkerId?: string;
   parentTaskId?: string;

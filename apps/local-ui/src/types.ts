@@ -36,6 +36,9 @@ export interface LocalWorker {
   error?: string;
 }
 
+// Task mode
+export type TaskMode = 'execution' | 'planning';
+
 // Task from buildd
 export interface BuilddTask {
   id: string;
@@ -50,6 +53,7 @@ export interface BuilddTask {
   };
   status: string;
   priority: number;
+  mode?: TaskMode;  // 'planning' or 'execution' (default)
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
 }
