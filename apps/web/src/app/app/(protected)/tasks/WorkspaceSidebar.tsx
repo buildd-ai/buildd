@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import QuickCreateModal from './QuickCreateModal';
+import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 
 const COLLAPSED_STATE_KEY = 'buildd:workspaceCollapsed';
 const SHOW_ALL_KEY = 'buildd:workspaceShowAll';
@@ -70,13 +71,73 @@ function getStatusIndicator(status: string): React.ReactNode {
   }
 }
 
-export default function WorkspaceSidebar({ workspaces }: Props) {
+// Worker type from Pusher events
+interface WorkerUpdate {
+  id: string;
+  taskId: string | null;
+  status: string;
+  workspaceId: string;
+}
+
+export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Props) {
   const pathname = usePathname();
   const router = useRouter();
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(initialWorkspaces);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [completedCollapsed, setCompletedCollapsed] = useState<Record<string, boolean>>({});
   const [quickCreateWorkspaceId, setQuickCreateWorkspaceId] = useState<string | null>(null);
+
+  // Update workspaces when props change (e.g., after navigation)
+  useEffect(() => {
+    setWorkspaces(initialWorkspaces);
+  }, [initialWorkspaces]);
+
+  // Handler for worker updates from Pusher
+  const handleWorkerUpdate = useCallback((data: { worker: WorkerUpdate }) => {
+    const { worker } = data;
+    if (!worker.taskId) return;
+
+    // Map worker status to task status
+    const taskStatus = worker.status === 'completed' ? 'completed'
+      : worker.status === 'failed' ? 'failed'
+      : worker.status === 'running' ? 'running'
+      : 'assigned';
+
+    setWorkspaces(prev => prev.map(ws => ({
+      ...ws,
+      tasks: ws.tasks.map(task =>
+        task.id === worker.taskId
+          ? { ...task, status: taskStatus, updatedAt: new Date() }
+          : task
+      )
+    })));
+  }, []);
+
+  // Stable workspace IDs for dependency tracking
+  const workspaceIds = workspaces.map(ws => ws.id);
+  const workspaceIdsKey = workspaceIds.join(',');
+
+  // Subscribe to Pusher channels for real-time updates
+  useEffect(() => {
+    const channelNames = workspaceIds.map(id => `workspace-${id}`);
+
+    for (const channelName of channelNames) {
+      const channel = subscribeToChannel(channelName);
+      if (channel) {
+        channel.bind('worker:progress', handleWorkerUpdate);
+        channel.bind('worker:completed', handleWorkerUpdate);
+        channel.bind('worker:failed', handleWorkerUpdate);
+      }
+    }
+
+    return () => {
+      for (const channelName of channelNames) {
+        unsubscribeFromChannel(channelName);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceIdsKey, handleWorkerUpdate]);
 
   // Load collapsed state from localStorage
   useEffect(() => {
