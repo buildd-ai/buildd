@@ -124,7 +124,7 @@ export class WorkerManager {
   private pusherChannels = new Map<string, any>();
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
-  private accountChannel?: any;
+  private workspaceChannels = new Map<string, any>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -145,9 +145,9 @@ export class WorkerManager {
       });
       console.log('Pusher connected for command relay');
 
-      // Subscribe to account channel for task assignments if enabled
+      // Subscribe to workspace channels for task assignments if enabled
       if (this.acceptRemoteTasks) {
-        this.subscribeToAccountChannel();
+        this.subscribeToWorkspaceChannels();
       }
     }
 
@@ -163,56 +163,54 @@ export class WorkerManager {
   // Set whether to accept remote task assignments
   setAcceptRemoteTasks(enabled: boolean) {
     this.acceptRemoteTasks = enabled;
-    if (enabled && this.pusher && !this.accountChannel) {
-      this.subscribeToAccountChannel();
-    } else if (!enabled && this.accountChannel) {
-      this.unsubscribeFromAccountChannel();
+    if (enabled && this.pusher) {
+      this.subscribeToWorkspaceChannels();
+    } else if (!enabled) {
+      this.unsubscribeFromWorkspaceChannels();
     }
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
-  // Subscribe to account channel for task assignments
-  private async subscribeToAccountChannel() {
+  // Subscribe to workspace channels for task assignments
+  private async subscribeToWorkspaceChannels() {
     if (!this.pusher) return;
 
     try {
-      // Get account info to determine channel name
+      // Get workspaces to determine channel names
       const workspaces = await this.buildd.listWorkspaces();
       if (workspaces.length === 0) {
-        console.log('No workspaces found, skipping account channel subscription');
+        console.log('No workspaces found, skipping workspace channel subscription');
         return;
       }
 
       // Subscribe to each workspace for task:assigned events
       for (const ws of workspaces) {
         const channelName = `workspace-${ws.id}`;
-        if (!this.pusherChannels.has(channelName)) {
+        if (!this.workspaceChannels.has(channelName)) {
           const channel = this.pusher.subscribe(channelName);
-          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string }) => {
+          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
-          this.pusherChannels.set(channelName, channel);
+          this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
     } catch (err) {
-      console.error('Failed to subscribe to account channel:', err);
+      console.error('Failed to subscribe to workspace channels:', err);
     }
   }
 
-  private unsubscribeFromAccountChannel() {
+  private unsubscribeFromWorkspaceChannels() {
     // Unsubscribe from workspace channels
-    for (const [channelName, channel] of this.pusherChannels) {
-      if (channelName.startsWith('workspace-')) {
-        channel.unbind('task:assigned');
-        // Don't fully unsubscribe as we might have other bindings
-      }
+    for (const [channelName, channel] of this.workspaceChannels) {
+      channel.unbind('task:assigned');
+      this.pusher?.unsubscribe(channelName);
     }
-    this.accountChannel = null;
+    this.workspaceChannels.clear();
   }
 
   // Handle incoming task assignment
-  private async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string }) {
+  private async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
     if (!this.acceptRemoteTasks) {
       console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
       return;
@@ -221,6 +219,8 @@ export class WorkerManager {
     const { task, targetLocalUiUrl } = data;
 
     // Check if this assignment is targeted at this local-ui instance
+    // If targetLocalUiUrl is set, only accept if it matches our URL
+    // If targetLocalUiUrl is null/undefined, any local-ui can accept (broadcast)
     if (targetLocalUiUrl && this.config.localUiUrl && targetLocalUiUrl !== this.config.localUiUrl) {
       console.log(`Task ${task.id} assigned to different local-ui: ${targetLocalUiUrl}`);
       return;
