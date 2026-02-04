@@ -2,6 +2,17 @@
 
 import { useState, useRef, useEffect } from 'react';
 
+interface ActiveLocalUi {
+  localUiUrl: string;
+  accountId: string;
+  accountName: string;
+  maxConcurrent: number;
+  activeWorkers: number;
+  capacity: number;
+  workspaceIds: string[];
+  workspaceNames: string[];
+}
+
 interface Props {
   workspaceId: string;
   workspaceName: string;
@@ -20,11 +31,36 @@ export default function QuickCreateModal({
   const [showDescription, setShowDescription] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [activeLocalUis, setActiveLocalUis] = useState<ActiveLocalUi[]>([]);
+  const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
+  const [loadingWorkers, setLoadingWorkers] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
+    // Fetch active workers
+    fetchActiveWorkers();
   }, []);
+
+  const fetchActiveWorkers = async () => {
+    setLoadingWorkers(true);
+    try {
+      const res = await fetch('/api/workers/active');
+      if (res.ok) {
+        const data = await res.json();
+        // Filter to only show workers that have capacity and can work on this workspace
+        const availableWorkers = (data.activeLocalUis || []).filter(
+          (ui: ActiveLocalUi) =>
+            ui.capacity > 0 && ui.workspaceIds.includes(workspaceId)
+        );
+        setActiveLocalUis(availableWorkers);
+      }
+    } catch {
+      // Silently fail - worker assignment is optional
+    } finally {
+      setLoadingWorkers(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,6 +79,8 @@ export default function QuickCreateModal({
           description: description.trim() || null,
           priority: 5,
           creationSource: 'dashboard',
+          // Optionally assign to a specific local-ui
+          ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
         }),
       });
 
@@ -122,6 +160,33 @@ export default function QuickCreateModal({
               >
                 + Add description
               </button>
+            )}
+
+            {/* Worker assignment */}
+            {activeLocalUis.length > 0 && (
+              <div className="space-y-1">
+                <label className="text-xs text-gray-500 dark:text-gray-400">
+                  Assign to worker (optional)
+                </label>
+                <select
+                  value={selectedLocalUi}
+                  onChange={(e) => setSelectedLocalUi(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                  disabled={loading}
+                >
+                  <option value="">Queue for any worker</option>
+                  {activeLocalUis.map((ui) => (
+                    <option key={ui.localUiUrl} value={ui.localUiUrl}>
+                      {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available)
+                    </option>
+                  ))}
+                </select>
+                {selectedLocalUi && (
+                  <p className="text-xs text-green-600 dark:text-green-400">
+                    Task will be sent directly to this worker
+                  </p>
+                )}
+              </div>
             )}
           </div>
 

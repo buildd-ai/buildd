@@ -57,6 +57,8 @@ export const events = {
   TASK_CLAIMED: 'task:claimed',
   TASK_COMPLETED: 'task:completed',
   TASK_FAILED: 'task:failed',
+  // Task assigned to specific local-ui
+  TASK_ASSIGNED: 'task:assigned',
   WORKER_STARTED: 'worker:started',
   WORKER_PROGRESS: 'worker:progress',
   WORKER_COMPLETED: 'worker:completed',

@@ -123,11 +123,14 @@ export class WorkerManager {
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
   private hasCredentials: boolean = false;
+  private acceptRemoteTasks: boolean = true;
+  private accountChannel?: any;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
     this.buildd = new BuilddClient(config);
     this.resolver = resolver || createWorkspaceResolver(config.projectsRoot);
+    this.acceptRemoteTasks = config.acceptRemoteTasks !== false;
 
     // Check for stale workers every 30s
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
@@ -141,6 +144,11 @@ export class WorkerManager {
         cluster: config.pusherCluster,
       });
       console.log('Pusher connected for command relay');
+
+      // Subscribe to account channel for task assignments if enabled
+      if (this.acceptRemoteTasks) {
+        this.subscribeToAccountChannel();
+      }
     }
 
     // Check if credentials exist (don't validate, SDK handles auth)
@@ -149,6 +157,95 @@ export class WorkerManager {
       console.log('Claude Code: credentials found');
     } else {
       console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
+    }
+  }
+
+  // Set whether to accept remote task assignments
+  setAcceptRemoteTasks(enabled: boolean) {
+    this.acceptRemoteTasks = enabled;
+    if (enabled && this.pusher && !this.accountChannel) {
+      this.subscribeToAccountChannel();
+    } else if (!enabled && this.accountChannel) {
+      this.unsubscribeFromAccountChannel();
+    }
+    console.log(`Accept remote tasks: ${enabled}`);
+  }
+
+  // Subscribe to account channel for task assignments
+  private async subscribeToAccountChannel() {
+    if (!this.pusher) return;
+
+    try {
+      // Get account info to determine channel name
+      const workspaces = await this.buildd.listWorkspaces();
+      if (workspaces.length === 0) {
+        console.log('No workspaces found, skipping account channel subscription');
+        return;
+      }
+
+      // Subscribe to each workspace for task:assigned events
+      for (const ws of workspaces) {
+        const channelName = `workspace-${ws.id}`;
+        if (!this.pusherChannels.has(channelName)) {
+          const channel = this.pusher.subscribe(channelName);
+          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string }) => {
+            this.handleTaskAssignment(data);
+          });
+          this.pusherChannels.set(channelName, channel);
+          console.log(`Subscribed to ${channelName} for task assignments`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to subscribe to account channel:', err);
+    }
+  }
+
+  private unsubscribeFromAccountChannel() {
+    // Unsubscribe from workspace channels
+    for (const [channelName, channel] of this.pusherChannels) {
+      if (channelName.startsWith('workspace-')) {
+        channel.unbind('task:assigned');
+        // Don't fully unsubscribe as we might have other bindings
+      }
+    }
+    this.accountChannel = null;
+  }
+
+  // Handle incoming task assignment
+  private async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string }) {
+    if (!this.acceptRemoteTasks) {
+      console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
+      return;
+    }
+
+    const { task, targetLocalUiUrl } = data;
+
+    // Check if this assignment is targeted at this local-ui instance
+    if (targetLocalUiUrl && this.config.localUiUrl && targetLocalUiUrl !== this.config.localUiUrl) {
+      console.log(`Task ${task.id} assigned to different local-ui: ${targetLocalUiUrl}`);
+      return;
+    }
+
+    // Check if we have capacity
+    const activeWorkers = Array.from(this.workers.values()).filter(
+      w => w.status === 'working' || w.status === 'stale'
+    );
+    if (activeWorkers.length >= this.config.maxConcurrent) {
+      console.log(`Cannot accept task ${task.id}: at max capacity (${activeWorkers.length}/${this.config.maxConcurrent})`);
+      return;
+    }
+
+    console.log(`Received task assignment: ${task.title} (${task.id})`);
+    this.emit({ type: 'task_assigned', task });
+
+    // Auto-claim and start the task
+    try {
+      const worker = await this.claimAndStart(task);
+      if (worker) {
+        console.log(`Successfully started assigned task: ${task.title}`);
+      }
+    } catch (err) {
+      console.error(`Failed to start assigned task ${task.id}:`, err);
     }
   }
 
