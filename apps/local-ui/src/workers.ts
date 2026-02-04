@@ -1,6 +1,6 @@
 import { query, createSdkMcpServer, tool, type SDKMessage, type SDKUserMessage, type McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { existsSync, readFileSync } from 'fs';
@@ -347,7 +347,7 @@ export class WorkerManager {
       if (worker.status === 'working' || worker.status === 'stale') {
         try {
           await this.buildd.updateWorker(worker.id, {
-            status: worker.status === 'stale' ? 'running' : 'running',
+            status: 'running',
             currentAction: worker.currentAction,
             milestones: worker.milestones.map(m => ({ label: m.label, timestamp: m.timestamp || Date.now() })),
             localUiUrl: this.config.localUiUrl,
@@ -442,6 +442,7 @@ export class WorkerManager {
       commits: [],
       output: [],
       toolCalls: [],
+      messages: [],
     };
 
     this.workers.set(worker.id, worker);
@@ -711,6 +712,11 @@ export class WorkerManager {
     worker.lastActivity = Date.now();
     worker.hasNewActivity = true;
 
+    // Recover from stale status when activity resumes
+    if (worker.status === 'stale') {
+      worker.status = 'working';
+    }
+
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
       this.addMilestone(worker, 'Session started');
@@ -721,6 +727,11 @@ export class WorkerManager {
       const content = (msg as any).message?.content || [];
       for (const block of content) {
         if (block.type === 'text') {
+          const text = block.text.trim();
+          if (text) {
+            // Add to unified timeline
+            this.addChatMessage(worker, { type: 'text', content: text, timestamp: Date.now() });
+          }
           const lines = block.text.split('\n');
           for (const line of lines) {
             if (line.trim()) {
@@ -739,12 +750,18 @@ export class WorkerManager {
           const toolName = block.name;
           const input = block.input || {};
 
-          // Track all tool calls
+          // Add to unified timeline
+          this.addChatMessage(worker, { type: 'tool_use', name: toolName, input, timestamp: Date.now() });
+
+          // Track tool calls (keep last 200)
           worker.toolCalls.push({
             name: toolName,
             timestamp: Date.now(),
             input: input,
           });
+          if (worker.toolCalls.length > 200) {
+            worker.toolCalls.shift();
+          }
 
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
@@ -763,6 +780,9 @@ export class WorkerManager {
               const match = cmd.match(/-m\s+["']([^"']+)["']/);
               const message = match ? match[1] : 'commit';
               worker.commits.push({ sha: 'pending', message });
+              if (worker.commits.length > 50) {
+                worker.commits.shift();
+              }
               this.addMilestone(worker, `Commit: ${message}`);
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
@@ -781,6 +801,14 @@ export class WorkerManager {
     }
 
     this.emit({ type: 'worker_update', worker });
+  }
+
+  private addChatMessage(worker: LocalWorker, msg: ChatMessage) {
+    worker.messages.push(msg);
+    // Keep last 200 messages
+    if (worker.messages.length > 200) {
+      worker.messages.shift();
+    }
   }
 
   private addMilestone(worker: LocalWorker, label: string) {
@@ -851,6 +879,7 @@ export class WorkerManager {
       worker.currentAction = 'Processing follow-up...';
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
+      this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
       this.emit({ type: 'worker_update', worker });
 
@@ -900,6 +929,7 @@ export class WorkerManager {
       session.inputStream.enqueue(buildUserMessage(message));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
+      this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
       this.emit({ type: 'worker_update', worker });
       return true;

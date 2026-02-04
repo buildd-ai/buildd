@@ -375,88 +375,87 @@ function renderWorkerDetail(worker) {
   document.getElementById('modalMeta').innerHTML = `
     <span class="meta-tag">${worker.workspaceName}</span>
     <span class="meta-tag">${worker.branch}</span>
-    <span class="meta-tag">${worker.status}</span>
+    <span class="meta-tag status-${worker.status}">${worker.status}</span>
   `;
 
   // Render description with markdown support
   const descriptionEl = document.getElementById('modalDescription');
   if (worker.taskDescription) {
     descriptionEl.innerHTML = `
-      <h3>Description</h3>
-      <div class="markdown-content">${marked.parse(worker.taskDescription)}</div>
+      <div class="task-description-card">
+        <div class="task-description-header">Task</div>
+        <div class="markdown-content">${marked.parse(worker.taskDescription)}</div>
+      </div>
     `;
   } else {
     descriptionEl.innerHTML = '';
   }
 
-  document.getElementById('modalMilestones').innerHTML = `
-    <h3>Milestones</h3>
-    <div class="milestone-list">
-      ${worker.milestones.slice(-10).map(m => `
-        <div class="milestone-item">
-          <span class="check">&#10003;</span>
-          <span>${escapeHtml(m.label)}</span>
-        </div>
-      `).join('')}
-    </div>
-  `;
-
-  // Preserve scroll position when updating output
-  const existingOutputBox = document.getElementById('outputBox');
-  const scrollPos = existingOutputBox ? existingOutputBox.scrollTop : null;
-  const wasAtBottom = existingOutputBox
-    ? (existingOutputBox.scrollHeight - existingOutputBox.scrollTop - existingOutputBox.clientHeight < 100)
+  // Render chat timeline
+  const timelineEl = document.getElementById('chatTimeline');
+  const existingTimeline = timelineEl;
+  const scrollPos = existingTimeline ? existingTimeline.scrollTop : null;
+  const wasAtBottom = existingTimeline
+    ? (existingTimeline.scrollHeight - existingTimeline.scrollTop - existingTimeline.clientHeight < 100)
     : true;
 
-  document.getElementById('modalOutput').innerHTML = `
-    <h3>Output</h3>
-    <div class="output-box" id="outputBox">${escapeHtml(worker.output.slice(-50).join('\n'))}</div>
-  `;
+  const messages = worker.messages || [];
+  const hasMessages = messages.length > 0;
 
-  // Restore scroll position (only auto-scroll if was at bottom)
-  const newOutputBox = document.getElementById('outputBox');
-  if (newOutputBox && scrollPos !== null) {
-    if (wasAtBottom) {
-      newOutputBox.scrollTop = newOutputBox.scrollHeight;
-    } else {
-      newOutputBox.scrollTop = scrollPos;
-    }
+  if (hasMessages) {
+    // Group consecutive same-type messages for cleaner rendering
+    const grouped = groupMessages(messages);
+    timelineEl.innerHTML = grouped.map(group => {
+      if (group.type === 'text') {
+        return `
+          <div class="chat-msg chat-agent">
+            <div class="chat-msg-content">
+              <div class="markdown-content">${marked.parse(group.items.map(m => m.content).join('\n\n'))}</div>
+            </div>
+          </div>`;
+      }
+      if (group.type === 'user') {
+        return group.items.map(m => `
+          <div class="chat-msg chat-user">
+            <div class="chat-msg-label">You</div>
+            <div class="chat-msg-content">${escapeHtml(m.content)}</div>
+          </div>`).join('');
+      }
+      if (group.type === 'tool_use') {
+        return `
+          <div class="chat-tool-group">
+            ${group.items.map(m => renderToolCallInline(m)).join('')}
+          </div>`;
+      }
+      return '';
+    }).join('');
+  } else {
+    // Fallback: render from old output/toolCalls arrays for backwards compat
+    const fallbackHtml = worker.output.length > 0
+      ? `<div class="chat-msg chat-agent"><div class="chat-msg-content"><div class="output-box">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
+      : '<div class="chat-empty">Waiting for agent output...</div>';
+    timelineEl.innerHTML = fallbackHtml;
   }
 
-  // Show tool calls during execution AND after completion
-  const showToolCalls = worker.toolCalls && worker.toolCalls.length > 0;
-  const isCompleted = worker.status === 'done' || worker.status === 'error';
-  const toolCallsHtml = showToolCalls ? `
-    <div class="tool-calls-section">
-      <div class="collapsible-header ${isCompleted ? '' : 'collapsed'}" onclick="toggleToolCalls()">
-        <h3>Tool Calls (${worker.toolCalls.length})${!isCompleted ? ' <span class="tool-calls-live">LIVE</span>' : ''}</h3>
-        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-          <polyline points="6 9 12 15 18 9"/>
-        </svg>
-      </div>
-      <div class="tool-calls-list ${isCompleted ? '' : 'collapsed'}" id="toolCallsList">
-        ${worker.toolCalls.map(tc => `
-          <div class="tool-call-item">
-            <span class="tool-name">${escapeHtml(tc.name)}</span>
-            ${tc.input?.file_path ? `<span class="tool-detail">${escapeHtml(tc.input.file_path)}</span>` : ''}
-            ${tc.input?.command ? `<span class="tool-detail">${escapeHtml(tc.input.command.slice(0, 60))}${tc.input.command.length > 60 ? '...' : ''}</span>` : ''}
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  ` : '';
+  // Status indicator at bottom
+  if (worker.status === 'working' || worker.status === 'stale') {
+    timelineEl.innerHTML += `
+      <div class="chat-status">
+        <div class="chat-status-dot"></div>
+        <span>${escapeHtml(worker.currentAction)}</span>
+      </div>`;
+  }
 
-  document.getElementById('modalCommits').innerHTML = toolCallsHtml + (worker.commits.length > 0 ? `
-    <h3>Commits</h3>
-    <div class="commit-list">
-      ${worker.commits.map(c => `
-        <div class="commit-item">
-          <span class="commit-sha">${c.sha.slice(0, 7)}</span>
-          <span>${escapeHtml(c.message)}</span>
-        </div>
-      `).join('')}
-    </div>
-  ` : '');
+  // Restore scroll position (only auto-scroll if was at bottom)
+  if (scrollPos !== null) {
+    if (wasAtBottom) {
+      timelineEl.scrollTop = timelineEl.scrollHeight;
+    } else {
+      timelineEl.scrollTop = scrollPos;
+    }
+  } else {
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  }
 
   // Show/hide message input based on status
   const messageInputEl = document.querySelector('.modal-input');
@@ -471,13 +470,65 @@ function renderWorkerDetail(worker) {
   }
 }
 
-function toggleToolCalls() {
-  const list = document.getElementById('toolCallsList');
-  const header = document.querySelector('.collapsible-header');
-  if (list) {
-    list.classList.toggle('collapsed');
-    header.classList.toggle('collapsed');
+// Group consecutive messages of the same type
+function groupMessages(messages) {
+  const groups = [];
+  let current = null;
+  for (const msg of messages) {
+    if (current && current.type === msg.type) {
+      current.items.push(msg);
+    } else {
+      current = { type: msg.type, items: [msg] };
+      groups.push(current);
+    }
   }
+  return groups;
+}
+
+// Render a tool call as an inline compact card
+function renderToolCallInline(tc) {
+  const name = tc.name;
+  const input = tc.input || {};
+  let detail = '';
+  let icon = '';
+
+  if (name === 'Read') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    detail = shortPath(input.file_path);
+  } else if (name === 'Edit') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    detail = shortPath(input.file_path);
+  } else if (name === 'Write') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+    detail = shortPath(input.file_path);
+  } else if (name === 'Bash') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+    const cmd = input.command || '';
+    detail = cmd.length > 80 ? cmd.slice(0, 80) + '...' : cmd;
+  } else if (name === 'Glob' || name === 'Grep') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+    detail = input.pattern || input.query || '';
+  } else if (name === 'Task') {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+    detail = input.description || name;
+  } else {
+    icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>`;
+    detail = input.file_path || input.command || name;
+  }
+
+  return `
+    <div class="chat-tool-call">
+      <span class="chat-tool-icon">${icon}</span>
+      <span class="chat-tool-name">${escapeHtml(name)}</span>
+      ${detail ? `<span class="chat-tool-detail">${escapeHtml(detail)}</span>` : ''}
+    </div>`;
+}
+
+// Shorten file paths to last 2-3 segments
+function shortPath(p) {
+  if (!p) return '';
+  const parts = p.split('/');
+  return parts.length > 3 ? '.../' + parts.slice(-3).join('/') : p;
 }
 
 function appendOutput(line) {

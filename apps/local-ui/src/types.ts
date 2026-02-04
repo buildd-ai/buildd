@@ -15,6 +15,12 @@ export interface ToolCall {
   input?: any;
 }
 
+// Chat message for unified timeline
+export type ChatMessage =
+  | { type: 'text'; content: string; timestamp: number }
+  | { type: 'tool_use'; name: string; input?: any; timestamp: number }
+  | { type: 'user'; content: string; timestamp: number };
+
 // Local worker state
 export interface LocalWorker {
   id: string;
@@ -32,6 +38,7 @@ export interface LocalWorker {
   commits: Array<{ sha: string; message: string }>;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
+  messages: ChatMessage[];  // Unified chronological timeline
   sessionId?: string;
   error?: string;
 }
