@@ -112,4 +112,24 @@ export class BuilddClient {
       body: JSON.stringify(workspace),
     });
   }
+
+  async submitPlan(workerId: string, plan: string) {
+    return this.fetch(`/api/workers/${workerId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    });
+  }
+
+  async approvePlan(workerId: string) {
+    return this.fetch(`/api/workers/${workerId}/plan/approve`, {
+      method: 'POST',
+    });
+  }
+
+  async revisePlan(workerId: string, feedback: string) {
+    return this.fetch(`/api/workers/${workerId}/plan/revise`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback }),
+    });
+  }
 }

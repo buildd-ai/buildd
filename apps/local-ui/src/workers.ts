@@ -1,4 +1,5 @@
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool, type SDKMessage, type SDKUserMessage, type McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
@@ -6,6 +7,32 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import Pusher from 'pusher-js';
+
+// Planning mode system prompt - instructs agent to investigate and propose a plan
+const PLANNING_SYSTEM_PROMPT = `
+## PLANNING MODE - READ CAREFULLY
+
+This is a PLANNING task. You must NOT implement any changes yet. Instead:
+
+1. **Investigate the codebase** - Use Read, Glob, Grep to understand the relevant code
+2. **Analyze the requirements** - Break down what needs to be done
+3. **Propose implementation approaches** - Describe 2-3 possible approaches with trade-offs
+4. **Recommend the best approach** - Explain your recommendation and why
+
+When you have completed your investigation and are ready to submit your plan, use the
+\`mcp__buildd__submit_plan\` tool with your complete plan in markdown format.
+
+Your plan should include:
+- **Summary**: Brief overview of the task
+- **Key Files**: Files that will need to be modified
+- **Approach Options**: 2-3 implementation approaches with pros/cons
+- **Recommended Approach**: Your recommendation with justification
+- **Implementation Steps**: Ordered list of changes to make
+- **Risk Assessment**: Potential issues and how to mitigate them
+
+DO NOT make any file edits, writes, or run any commands that modify files. Only investigate and plan.
+After submitting your plan, STOP and wait for the task author to approve before proceeding.
+`;
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -110,6 +137,9 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
+// Plan submission callback type
+type PlanSubmissionCallback = (workerId: string, plan: string) => Promise<void>;
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -125,6 +155,7 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
+  private planSubmissionCallbacks = new Map<string, PlanSubmissionCallback>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -435,6 +466,41 @@ export class WorkerManager {
     return worker;
   }
 
+  // Create MCP server for planning mode with plan submission tool
+  private createPlanningMcpServer(worker: LocalWorker): McpSdkServerConfigWithInstance {
+    return createSdkMcpServer({
+      name: 'buildd',
+      version: '1.0.0',
+      tools: [
+        tool(
+          'submit_plan',
+          'Submit your implementation plan for review. Call this when you have completed investigating the codebase and are ready to propose your implementation approach. The plan will be reviewed by the task author before any implementation begins.',
+          { plan: z.string().describe('The complete implementation plan in markdown format') },
+          async ({ plan }) => {
+            console.log(`[Worker ${worker.id}] Plan submitted (${plan.length} chars)`);
+
+            // Store plan as artifact via buildd API
+            try {
+              await this.buildd.submitPlan(worker.id, plan);
+              this.addMilestone(worker, 'Plan submitted for review');
+              worker.currentAction = 'Awaiting plan approval';
+              this.emit({ type: 'worker_update', worker });
+            } catch (err) {
+              console.error(`[Worker ${worker.id}] Failed to submit plan:`, err);
+            }
+
+            return {
+              content: [{
+                type: 'text' as const,
+                text: 'Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.',
+              }],
+            };
+          }
+        ),
+      ],
+    });
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -534,21 +600,51 @@ export class WorkerManager {
       // Default to true if not configured, respect admin setting if configured
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
 
+      // Check if task is in planning mode
+      const isPlanningMode = task.mode === 'planning';
+
+      // Build query options
+      const queryOptions: Parameters<typeof query>[0]['options'] = {
+        cwd,
+        model: this.config.model,
+        abortController,
+        env: cleanEnv,
+        settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
+        permissionMode: isPlanningMode ? 'plan' : 'acceptEdits',  // Use plan mode or auto-accept edits
+        stderr: (data: string) => {
+          console.log(`[Worker ${worker.id}] stderr: ${data}`);
+        },
+      };
+
+      // Configure system prompt based on mode
+      if (isPlanningMode) {
+        // Planning mode: append planning instructions to system prompt
+        queryOptions.systemPrompt = {
+          type: 'preset',
+          preset: 'claude_code',
+          append: PLANNING_SYSTEM_PROMPT,
+        };
+        // Add MCP server for plan submission
+        queryOptions.mcpServers = {
+          buildd: this.createPlanningMcpServer(worker),
+        };
+        // Only allow read-only tools in planning mode
+        queryOptions.allowedTools = [
+          'Read', 'Glob', 'Grep', 'Task', 'WebSearch', 'WebFetch',
+          'mcp__buildd__submit_plan',
+        ];
+        this.addMilestone(worker, 'Planning mode started');
+        worker.currentAction = 'Investigating codebase...';
+        this.emit({ type: 'worker_update', worker });
+      } else {
+        // Execution mode: standard claude_code preset
+        queryOptions.systemPrompt = { type: 'preset', preset: 'claude_code' };
+      }
+
       // Start query with full options
       const queryInstance = query({
         prompt: promptText,
-        options: {
-          cwd,
-          model: this.config.model,
-          abortController,
-          env: cleanEnv,
-          settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
-          systemPrompt: { type: 'preset', preset: 'claude_code' },
-          permissionMode: 'acceptEdits',  // Auto-accept edits for autonomous execution
-          stderr: (data: string) => {
-            console.log(`[Worker ${worker.id}] stderr: ${data}`);
-          },
-        },
+        options: queryOptions,
       });
 
       // Stream responses
