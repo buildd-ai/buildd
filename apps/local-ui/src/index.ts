@@ -30,6 +30,7 @@ interface SavedConfig {
   apiKey?: string;
   serverless?: boolean;
   model?: string;
+  acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -40,6 +41,7 @@ function loadSavedConfig(): SavedConfig {
         apiKey: data.apiKey?.trim(), // Always trim to avoid whitespace issues
         serverless: data.serverless,
         model: data.model,
+        acceptRemoteTasks: data.acceptRemoteTasks,
       };
     }
   } catch (err) {
@@ -180,6 +182,8 @@ const config: LocalUIConfig = {
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY,
   pusherCluster: process.env.PUSHER_CLUSTER,
+  // Accept remote task assignments (default: true)
+  acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
 };
 
 const resolver = createWorkspaceResolver(projectRoots);
@@ -280,6 +284,7 @@ const server = Bun.serve({
         projectRoots: config.projectRoots,
         hasClaudeCredentials: authStatus.hasCredentials,
         model: config.model,
+        acceptRemoteTasks: config.acceptRemoteTasks !== false,
       }, { headers: corsHeaders });
     }
 
@@ -320,6 +325,22 @@ const server = Bun.serve({
       saveConfig({ model });
 
       return Response.json({ ok: true, model }, { headers: corsHeaders });
+    }
+
+    // Toggle accept remote tasks setting
+    if (path === '/api/config/accept-remote-tasks' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { enabled } = body;
+
+      config.acceptRemoteTasks = enabled !== false;
+      saveConfig({ acceptRemoteTasks: config.acceptRemoteTasks });
+
+      // Notify worker manager to update Pusher subscriptions
+      if (workerManager) {
+        workerManager.setAcceptRemoteTasks(config.acceptRemoteTasks);
+      }
+
+      return Response.json({ ok: true, acceptRemoteTasks: config.acceptRemoteTasks }, { headers: corsHeaders });
     }
 
     // Set API key

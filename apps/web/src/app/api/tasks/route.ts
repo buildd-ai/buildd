@@ -110,6 +110,8 @@ export async function POST(req: NextRequest) {
       createdByWorkerId,
       parentTaskId,
       creationSource: requestedSource,
+      // Direct assignment to a specific local-ui instance
+      assignToLocalUiUrl,
     } = body;
 
     if (!workspaceId || !title) {
@@ -162,6 +164,15 @@ export async function POST(req: NextRequest) {
       events.TASK_CREATED,
       { task }
     );
+
+    // If assigning to a specific local-ui, trigger assignment event
+    if (assignToLocalUiUrl) {
+      await triggerEvent(
+        channels.workspace(workspaceId),
+        events.TASK_ASSIGNED,
+        { task, targetLocalUiUrl: assignToLocalUiUrl }
+      );
+    }
 
     return NextResponse.json(task);
   } catch (error) {
