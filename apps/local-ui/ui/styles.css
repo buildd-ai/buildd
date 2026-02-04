@@ -676,6 +676,24 @@ select.input {
   font-size: 14px;
 }
 
+.setup-oss {
+  margin-top: 32px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.setup-oss a {
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 2px;
+}
+
+.setup-oss a:hover {
+  color: var(--text);
+  text-decoration-color: var(--text-muted);
+}
+
 .hidden {
   display: none !important;
 }

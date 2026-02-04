@@ -55,6 +55,8 @@
       </div>
 
       <p id="setupError" class="setup-error hidden"></p>
+
+      <p class="setup-oss">Built with <a href="https://github.com/anthropics/anthropic-sdk-python/tree/main/src/anthropic/experimental/claude_agent" target="_blank">Claude Agent SDK</a>, <a href="https://bun.sh" target="_blank">Bun</a>, and <a href="https://pusher.com" target="_blank">Pusher</a></p>
     </div>
   </div>
 
@@ -239,10 +241,24 @@
           </div>
           <div class="form-group">
             <div class="flex items-center gap-2">
+              <input type="checkbox" id="settingsAcceptRemote" checked>
+              <label for="settingsAcceptRemote">Accept remote task assignments</label>
+            </div>
+            <p class="form-hint">Allow the dashboard to push tasks directly to this worker</p>
+          </div>
+          <div class="form-group">
+            <div class="flex items-center gap-2">
               <input type="checkbox" id="settingsBypass">
               <label for="settingsBypass">Bypass permission prompts</label>
             </div>
             <p class="form-hint">Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.</p>
+          </div>
+          <div class="form-group">
+            <div class="flex items-center gap-2">
+              <input type="checkbox" id="settingsOpenBrowser" checked>
+              <label for="settingsOpenBrowser">Auto-open browser on startup</label>
+            </div>
+            <p class="form-hint">Automatically open the buildd UI in your browser when starting the server.</p>
           </div>
         </div>
       </div>
