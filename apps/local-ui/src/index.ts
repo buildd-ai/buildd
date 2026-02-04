@@ -229,13 +229,28 @@ const resolver = createWorkspaceResolver(projectRoots);
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
 
+// Current account info (fetched when clients initialize)
+let currentAccountId: string | null = null;
+
+// Fetch and store account info
+async function fetchAccountInfo() {
+  if (buildd) {
+    const info = await buildd.getAccountInfo();
+    if (info) {
+      currentAccountId = info.id;
+      console.log(`Account: ${info.name} (${info.id.slice(0, 8)}...)`);
+    }
+  }
+}
+
 // Reinitialize clients after API key is set
-function initializeClients() {
+async function initializeClients() {
   if (config.apiKey) {
     buildd = new BuilddClient(config);
     workerManager = new WorkerManager(config, resolver);
     workerManager.onEvent(broadcast);
     console.log('API key configured, clients initialized');
+    await fetchAccountInfo();
   }
 }
 
@@ -257,6 +272,11 @@ function broadcast(event: any) {
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
+}
+
+// Fetch account info on startup if already configured
+if (buildd) {
+  fetchAccountInfo();
 }
 
 // Serve static files
@@ -323,6 +343,8 @@ const server = Bun.serve({
         model: config.model,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
+        openBrowser: savedConfig.openBrowser !== false, // default true
+        accountId: currentAccountId,
       }, { headers: corsHeaders });
     }
 
@@ -390,6 +412,16 @@ const server = Bun.serve({
       saveConfig({ bypassPermissions: config.bypassPermissions });
 
       return Response.json({ ok: true, bypassPermissions: config.bypassPermissions }, { headers: corsHeaders });
+    }
+
+    // Toggle open browser setting
+    if (path === '/api/config/open-browser' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { enabled } = body;
+
+      saveConfig({ openBrowser: enabled !== false });
+
+      return Response.json({ ok: true, openBrowser: enabled !== false }, { headers: corsHeaders });
     }
 
     // Set API key

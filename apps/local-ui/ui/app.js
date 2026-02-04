@@ -6,6 +6,7 @@ let config = {};
 let currentWorkerId = null;
 let attachments = [];
 let isConfigured = false;
+let currentAccountId = null;
 
 // Elements
 const setupEl = document.getElementById('setup');
@@ -47,8 +48,11 @@ async function checkConfig() {
     isConfigured = data.configured;
     isServerless = data.serverless;
     hasClaudeCredentials = data.hasClaudeCredentials;
+    currentAccountId = data.accountId || null;
     // Store config values from API response
     config.bypassPermissions = data.bypassPermissions || false;
+    config.acceptRemoteTasks = data.acceptRemoteTasks !== false; // default true
+    config.openBrowser = data.openBrowser !== false; // default true
     config.model = data.model || config.model;
 
     if (isConfigured || isServerless) {
@@ -350,7 +354,8 @@ function renderMilestoneBoxes(milestones) {
 
 function renderTasks() {
   const pending = tasks.filter(t => t.status === 'pending');
-  const assigned = tasks.filter(t => t.status === 'assigned');
+  // Only show tasks assigned to OTHER accounts (not our own)
+  const assigned = tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId);
 
   let html = '';
 
@@ -645,6 +650,16 @@ function updateSettings() {
   if (bypassCheckbox) {
     bypassCheckbox.checked = config.bypassPermissions || false;
   }
+
+  const acceptRemoteCheckbox = document.getElementById('settingsAcceptRemote');
+  if (acceptRemoteCheckbox) {
+    acceptRemoteCheckbox.checked = config.acceptRemoteTasks !== false;
+  }
+
+  const openBrowserCheckbox = document.getElementById('settingsOpenBrowser');
+  if (openBrowserCheckbox) {
+    openBrowserCheckbox.checked = config.openBrowser !== false;
+  }
 }
 
 // Handle model selection change
@@ -696,6 +711,60 @@ async function handleBypassChange() {
     console.error('Failed to update bypass permissions:', err);
     bypassCheckbox.checked = !enabled; // Revert
     alert('Failed to update bypass permissions');
+  }
+}
+
+async function handleAcceptRemoteChange() {
+  const acceptRemoteCheckbox = document.getElementById('settingsAcceptRemote');
+  const enabled = acceptRemoteCheckbox.checked;
+
+  try {
+    const res = await fetch('/api/config/accept-remote-tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+
+    if (res.ok) {
+      config.acceptRemoteTasks = enabled;
+      showToast(enabled
+        ? 'Remote task assignments enabled. Dashboard can push tasks to this worker.'
+        : 'Remote task assignments disabled. Tasks will only run when started locally.');
+    } else {
+      acceptRemoteCheckbox.checked = !enabled; // Revert
+      alert('Failed to update remote task setting');
+    }
+  } catch (err) {
+    console.error('Failed to update remote task setting:', err);
+    acceptRemoteCheckbox.checked = !enabled; // Revert
+    alert('Failed to update remote task setting');
+  }
+}
+
+async function handleOpenBrowserChange() {
+  const openBrowserCheckbox = document.getElementById('settingsOpenBrowser');
+  const enabled = openBrowserCheckbox.checked;
+
+  try {
+    const res = await fetch('/api/config/open-browser', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+
+    if (res.ok) {
+      config.openBrowser = enabled;
+      showToast(enabled
+        ? 'Auto-open browser enabled. Browser will open on next startup.'
+        : 'Auto-open browser disabled.');
+    } else {
+      openBrowserCheckbox.checked = !enabled; // Revert
+      alert('Failed to update browser setting');
+    }
+  } catch (err) {
+    console.error('Failed to update browser setting:', err);
+    openBrowserCheckbox.checked = !enabled; // Revert
+    alert('Failed to update browser setting');
   }
 }
 
@@ -1366,6 +1435,16 @@ if (modelSelect) {
 const bypassCheckbox = document.getElementById('settingsBypass');
 if (bypassCheckbox) {
   bypassCheckbox.onchange = handleBypassChange;
+}
+
+const acceptRemoteCheckbox = document.getElementById('settingsAcceptRemote');
+if (acceptRemoteCheckbox) {
+  acceptRemoteCheckbox.onchange = handleAcceptRemoteChange;
+}
+
+const openBrowserCheckbox = document.getElementById('settingsOpenBrowser');
+if (openBrowserCheckbox) {
+  openBrowserCheckbox.onchange = handleOpenBrowserChange;
 }
 
 document.getElementById('fileInput').onchange = handleFileSelect;

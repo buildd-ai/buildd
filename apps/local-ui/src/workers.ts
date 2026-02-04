@@ -102,6 +102,10 @@ interface WorkerSession {
   abortController: AbortController;
 }
 
+// Constants for repetition detection
+const MAX_IDENTICAL_TOOL_CALLS = 5;  // Abort after 5 identical consecutive calls
+const MAX_SIMILAR_TOOL_CALLS = 8;    // Abort after 8 similar calls (same tool, same key params)
+
 // Check if Claude Code credentials exist (OAuth or API key)
 // We don't validate - just check if credentials exist
 function hasClaudeCredentials(): boolean {
@@ -883,6 +887,19 @@ export class WorkerManager {
             worker.toolCalls.shift();
           }
 
+          // Check for repetitive tool calls (infinite loop detection)
+          const repetitionCheck = this.detectRepetitiveToolCalls(worker);
+          if (repetitionCheck.isRepetitive) {
+            console.error(`[Worker ${worker.id}] ${repetitionCheck.reason}`);
+            this.addMilestone(worker, `Aborted: ${repetitionCheck.reason}`);
+            worker.error = repetitionCheck.reason;
+            // Abort the session
+            this.abort(worker.id).catch(err =>
+              console.error(`[Worker ${worker.id}] Failed to abort:`, err)
+            );
+            return;
+          }
+
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
           } else if (toolName === 'Edit') {
@@ -931,6 +948,55 @@ export class WorkerManager {
     }
   }
 
+  // Detect if agent is stuck in an infinite loop of repeated tool calls
+  private detectRepetitiveToolCalls(worker: LocalWorker): { isRepetitive: boolean; reason?: string } {
+    const recentCalls = worker.toolCalls.slice(-MAX_SIMILAR_TOOL_CALLS);
+    if (recentCalls.length < MAX_IDENTICAL_TOOL_CALLS) {
+      return { isRepetitive: false };
+    }
+
+    // Check for identical consecutive tool calls (same tool + same input)
+    const lastCalls = recentCalls.slice(-MAX_IDENTICAL_TOOL_CALLS);
+    const lastCallKey = JSON.stringify({ name: lastCalls[0].name, input: lastCalls[0].input });
+    const allIdentical = lastCalls.every(
+      tc => JSON.stringify({ name: tc.name, input: tc.input }) === lastCallKey
+    );
+    if (allIdentical) {
+      return {
+        isRepetitive: true,
+        reason: `Agent stuck: made ${MAX_IDENTICAL_TOOL_CALLS} identical ${lastCalls[0].name} calls`,
+      };
+    }
+
+    // Check for similar consecutive tool calls (same tool, similar key parameters)
+    // This catches cases like repeated git commits with slightly different messages
+    if (recentCalls.length >= MAX_SIMILAR_TOOL_CALLS) {
+      const toolName = recentCalls[0].name;
+      const allSameTool = recentCalls.every(tc => tc.name === toolName);
+      if (allSameTool && toolName === 'Bash') {
+        // For Bash, check if the command pattern is similar
+        const commands = recentCalls.map(tc => (tc.input?.command as string) || '');
+        const patterns = commands.map(cmd => {
+          // Normalize command to detect patterns (remove variable parts)
+          return cmd
+            .replace(/"[^"]*"/g, '""')  // Normalize quoted strings
+            .replace(/'[^']*'/g, "''")  // Normalize single-quoted strings
+            .slice(0, 50);  // Compare first 50 chars
+        });
+        const firstPattern = patterns[0];
+        const allSimilar = patterns.every(p => p === firstPattern);
+        if (allSimilar) {
+          return {
+            isRepetitive: true,
+            reason: `Agent stuck: made ${MAX_SIMILAR_TOOL_CALLS} similar Bash commands starting with "${firstPattern.slice(0, 30)}..."`,
+          };
+        }
+      }
+    }
+
+    return { isRepetitive: false };
+  }
+
   private addMilestone(worker: LocalWorker, label: string) {
     const milestone: Milestone = {
       label,
@@ -945,7 +1011,7 @@ export class WorkerManager {
     this.emit({ type: 'milestone', workerId: worker.id, milestone });
   }
 
-  async abort(workerId: string) {
+  async abort(workerId: string, reason?: string) {
     const session = this.sessions.get(workerId);
     if (session) {
       // Abort the query and end the input stream
@@ -960,11 +1026,12 @@ export class WorkerManager {
     const worker = this.workers.get(workerId);
     if (worker) {
       worker.status = 'error';
-      worker.error = 'Aborted by user';
+      // Preserve existing error (e.g., from infinite loop detection) or use provided reason
+      worker.error = worker.error || reason || 'Aborted by user';
       worker.currentAction = 'Aborted';
       // This may return 409 if already completed on server - that's ok
       try {
-        await this.buildd.updateWorker(workerId, { status: 'failed', error: 'Aborted' });
+        await this.buildd.updateWorker(workerId, { status: 'failed', error: worker.error });
       } catch {
         // Ignore - worker may already be done on server
       }

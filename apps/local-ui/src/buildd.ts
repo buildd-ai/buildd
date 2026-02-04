@@ -191,4 +191,13 @@ export class BuilddClient {
       return 'unknown';
     }
   }
+
+  async getAccountInfo(): Promise<{ id: string; name: string } | null> {
+    try {
+      const data = await this.fetch('/api/accounts/me');
+      return { id: data.id, name: data.name };
+    } catch {
+      return null;
+    }
+  }
 }
