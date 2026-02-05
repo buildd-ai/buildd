@@ -21,17 +21,17 @@ export function ConnectRunnerSection({ workspaceId, workspaceName }: ConnectRunn
         body: JSON.stringify({
           workspaceId,
           title: `Set up GitHub Actions runner for ${workspaceName}`,
-          description: `Create a GitHub Actions workflow that runs buildd agent to process tasks.
+          description: `Create a GitHub Actions workflow using the official anthropics/claude-code-action@v1 to process buildd tasks.
 
 Steps:
-1. Create .github/workflows/buildd.yml with the workflow below
-2. Add BUILDD_API_KEY and ANTHROPIC_API_KEY to repository secrets
+1. Create .github/workflows/buildd.yml with the workflow from the connect-runner guide
+2. Add BUILDD_API_KEY and CLAUDE_CODE_OAUTH_TOKEN to repository secrets
 3. Test by manually triggering the workflow
 
 The workflow should:
-- Run on workflow_dispatch (manual) and schedule (every 15 minutes)
-- Claim tasks from buildd and work on them
-- Use the buildd agent or MCP server`,
+- Run on repository_dispatch (buildd-triggered) and workflow_dispatch (manual)
+- Claim tasks from buildd, run Claude Code on them, and report completion
+- Use anthropics/claude-code-action@v1 with OAuth token auth`,
           runnerPreference: 'user',
         }),
       });
@@ -82,9 +82,12 @@ The workflow should:
 
           <div className="space-y-4">
             <div>
-              <div className="text-sm font-medium mb-2">Step 1: Create an Action account</div>
+              <div className="text-sm font-medium mb-2">Step 1: Create an Action account &amp; get OAuth token</div>
               <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
+              </p>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                You&apos;ll also need a <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription for the official <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">claude-code-action</code>.
               </p>
             </div>
 
@@ -109,51 +112,52 @@ The workflow should:
 {`name: Buildd Agent
 
 on:
+  repository_dispatch:
+    types: [buildd-task]
   workflow_dispatch:
-  schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes
+    inputs:
+      task:
+        description: 'Task description'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  process-tasks:
+  process-task:
     runs-on: ubuntu-latest
+    env:
+      BUILDD_API_KEY: \${{ secrets.BUILDD_API_KEY }}
+      BUILDD_SERVER: https://app.buildd.dev
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Claim and process tasks
-        env:
-          BUILDD_API_KEY: \${{ secrets.BUILDD_API_KEY }}
-          BUILDD_SERVER: https://app.buildd.dev
-          ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+      - name: Claim task from buildd
+        id: claim
         run: |
-          # Claim a task
           RESPONSE=$(curl -s -X POST "$BUILDD_SERVER/api/workers/claim" \\
             -H "Authorization: Bearer $BUILDD_API_KEY" \\
             -H "Content-Type: application/json" \\
-            -d '{"maxTasks": 1, "workspaceId": "${workspaceId}"}')
-
+            -d '{"maxTasks": 1}')
           WORKER_ID=$(echo $RESPONSE | jq -r '.workers[0].id // empty')
+          TASK_DESC=$(echo $RESPONSE | jq -r '.workers[0].task.description // empty')
+          TASK_TITLE=$(echo $RESPONSE | jq -r '.workers[0].task.title // empty')
+          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
+          echo "task=$TASK_TITLE: $TASK_DESC" >> $GITHUB_OUTPUT
 
-          if [ -z "$WORKER_ID" ]; then
-            echo "No tasks available"
-            exit 0
-          fi
+      - name: Run Claude Code
+        if: steps.claim.outputs.worker_id != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: \${{ steps.claim.outputs.task }}
+          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
-          echo "Claimed worker: $WORKER_ID"
-
-          # Update status to running
-          curl -s -X PATCH "$BUILDD_SERVER/api/workers/$WORKER_ID" \\
-            -H "Authorization: Bearer $BUILDD_API_KEY" \\
-            -H "Content-Type: application/json" \\
-            -d '{"status": "running"}'
-
-          # TODO: Run Claude Code or your agent here
-          # npx @anthropic-ai/claude-code --task "$(echo $RESPONSE | jq -r '.workers[0].task.description')"
-
-          # Mark complete
-          curl -s -X PATCH "$BUILDD_SERVER/api/workers/$WORKER_ID" \\
+      - name: Report completion
+        if: steps.claim.outputs.worker_id != ''
+        run: |
+          curl -s -X PATCH "$BUILDD_SERVER/api/workers/\${{ steps.claim.outputs.worker_id }}" \\
             -H "Authorization: Bearer $BUILDD_API_KEY" \\
             -H "Content-Type: application/json" \\
             -d '{"status": "completed"}'`}
@@ -166,8 +170,8 @@ jobs:
                 In your GitHub repo, go to Settings &rarr; Secrets &rarr; Actions and add:
               </p>
               <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside mt-1">
-                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">BUILDD_API_KEY</code> - Your action account API key</li>
-                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">ANTHROPIC_API_KEY</code> - Your Anthropic API key</li>
+                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">BUILDD_API_KEY</code> - Your action account API key (for task claim/report)</li>
+                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> - Claude Pro/Max OAuth token (for running Claude Code)</li>
               </ul>
             </div>
 
