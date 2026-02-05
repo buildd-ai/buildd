@@ -1085,6 +1085,89 @@ export class WorkerManager {
     }
   }
 
+  async retry(workerId: string) {
+    const worker = this.workers.get(workerId);
+    if (!worker) return;
+
+    // Abort current session if any
+    const session = this.sessions.get(workerId);
+    if (session) {
+      session.abortController.abort();
+      session.inputStream.end();
+      this.sessions.delete(workerId);
+    }
+
+    // Reset worker state
+    worker.status = 'working';
+    worker.error = undefined;
+    worker.currentAction = 'Retrying...';
+    worker.hasNewActivity = true;
+    worker.lastActivity = Date.now();
+    worker.completedAt = undefined;
+    this.addMilestone(worker, 'Retry requested');
+    this.emit({ type: 'worker_update', worker });
+
+    await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
+
+    // Resolve workspace
+    const workspacePath = this.resolver.resolve({
+      id: worker.workspaceId,
+      name: worker.workspaceName,
+      repo: undefined,
+    });
+
+    if (!workspacePath) {
+      worker.status = 'error';
+      worker.error = 'Cannot resolve workspace path - check PROJECTS_ROOT or set a path override';
+      worker.currentAction = 'Workspace not found';
+      worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
+      this.emit({ type: 'worker_update', worker });
+      await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
+      return;
+    }
+
+    // Build context-preserving description (same as follow-up but with retry framing)
+    const contextParts: string[] = [];
+    if (worker.taskDescription) {
+      contextParts.push(`## Original Task\n${worker.taskDescription}`);
+    }
+
+    // Include what was done so far
+    if (worker.milestones.length > 0) {
+      const milestoneLabels = worker.milestones
+        .filter(m => !['Session started', 'Task completed', 'Retry requested'].includes(m.label))
+        .map(m => `- ${m.label}`);
+      if (milestoneLabels.length > 0) {
+        contextParts.push(`## Work Done Before Retry\n${milestoneLabels.join('\n')}`);
+      }
+    }
+
+    contextParts.push('## Instructions\nThe previous session stalled. Please continue the task from where it left off.');
+
+    const task = {
+      id: worker.taskId,
+      title: worker.taskTitle,
+      description: contextParts.join('\n\n'),
+      workspaceId: worker.workspaceId,
+      workspace: { name: worker.workspaceName },
+      status: 'assigned',
+      priority: 1,
+    };
+
+    this.startSession(worker, workspacePath, task as any).catch(err => {
+      console.error(`[Worker ${worker.id}] Retry session error:`, err);
+      if (worker.status === 'working') {
+        worker.status = 'error';
+        worker.error = err instanceof Error ? err.message : 'Retry session failed';
+        worker.currentAction = 'Retry failed';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        this.emit({ type: 'worker_update', worker });
+      }
+    });
+  }
+
   async markDone(workerId: string) {
     const worker = this.workers.get(workerId);
     if (worker) {
@@ -1103,8 +1186,8 @@ export class WorkerManager {
 
     const session = this.sessions.get(workerId);
 
-    // If worker is done or errored but session ended, restart it
-    if ((worker.status === 'done' || worker.status === 'error') && !session) {
+    // If worker is done, errored, or stale but session ended, restart it
+    if ((worker.status === 'done' || worker.status === 'error' || worker.status === 'stale') && !session) {
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
 
       // Update worker status (clear any previous error)
@@ -1129,6 +1212,13 @@ export class WorkerManager {
 
       if (!workspacePath) {
         console.error(`Cannot resolve workspace for worker: ${worker.id}`);
+        worker.status = 'error';
+        worker.error = 'Cannot resolve workspace path - check PROJECTS_ROOT or set a path override';
+        worker.currentAction = 'Workspace not found';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        this.emit({ type: 'worker_update', worker });
+        await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
         return false;
       }
 
@@ -1227,13 +1317,22 @@ export class WorkerManager {
       // Start new session with context-rich prompt
       this.startSession(worker, workspacePath, task as any).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
+        // Ensure worker doesn't stay stuck in 'working' state
+        if (worker.status === 'working') {
+          worker.status = 'error';
+          worker.error = err instanceof Error ? err.message : 'Follow-up session failed';
+          worker.currentAction = 'Follow-up failed';
+          worker.hasNewActivity = true;
+          worker.completedAt = Date.now();
+          this.emit({ type: 'worker_update', worker });
+        }
       });
 
       return true;
     }
 
-    // Normal case - active session (also handle 'waiting' status)
-    if (!session || !['working', 'waiting'].includes(worker.status)) {
+    // Normal case - active session (also handle 'waiting' and 'stale' status)
+    if (!session || !['working', 'waiting', 'stale'].includes(worker.status)) {
       return false;
     }
 
@@ -1242,11 +1341,14 @@ export class WorkerManager {
       session.inputStream.enqueue(buildUserMessage(message));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
-      // Clear waiting state if answering a question
+      // Clear waiting/stale state
       if (worker.status === 'waiting') {
         worker.status = 'working';
         worker.waitingFor = undefined;
         worker.currentAction = 'Processing response...';
+      } else if (worker.status === 'stale') {
+        worker.status = 'working';
+        worker.currentAction = 'Processing message...';
       }
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);

@@ -274,22 +274,66 @@ function renderWorkers() {
   const active = workers.filter(w => ['working', 'stale'].includes(w.status));
   const waiting = workers.filter(w => w.status === 'waiting');
   const completed = workers.filter(w => ['done', 'error'].includes(w.status));
+  const pending = tasks.filter(t => t.status === 'pending');
 
-  // Render active workers (including waiting at the top)
-  const allActive = [...waiting, ...active];
-  if (allActive.length === 0) {
-    workersEl.innerHTML = '<div class="empty">No active workers</div>';
+  // Update stats bar
+  updateStats(active.length + waiting.length, pending.length, completed.length);
+
+  // Check if we should show empty hero
+  const hasActivity = active.length > 0 || waiting.length > 0 || pending.length > 0;
+  const emptyHero = document.getElementById('emptyHero');
+  const contentSections = document.getElementById('contentSections');
+  const statsBar = document.getElementById('statsBar');
+
+  if (!hasActivity && completed.length === 0) {
+    emptyHero.classList.remove('hidden');
+    contentSections.classList.add('hidden');
+    if (statsBar) statsBar.classList.add('hidden');
+    return;
   } else {
-    workersEl.innerHTML = allActive.map(w =>
-      w.status === 'waiting' ? renderWaitingCard(w) : renderWorkerCard(w)
-    ).join('');
+    emptyHero.classList.add('hidden');
+    contentSections.classList.remove('hidden');
+    if (statsBar) statsBar.classList.remove('hidden');
+  }
+
+  // Render waiting workers (needs attention - top priority)
+  const waitingSection = document.getElementById('waitingSection');
+  const waitingEl = document.getElementById('waiting');
+  if (waiting.length > 0) {
+    waitingSection.classList.remove('hidden');
+    waitingEl.innerHTML = waiting.map(w => renderWaitingCard(w)).join('');
+    waitingEl.querySelectorAll('.waiting-banner').forEach(card => {
+      card.onclick = () => openWorkerModal(card.dataset.id);
+    });
+  } else {
+    waitingSection.classList.add('hidden');
+    waitingEl.innerHTML = '';
+  }
+
+  // Render active workers
+  const activeSection = document.getElementById('activeSection');
+  if (active.length > 0) {
+    activeSection.classList.remove('hidden');
+    workersEl.innerHTML = active.map(w => renderWorkerCard(w)).join('');
     workersEl.querySelectorAll('.worker-card').forEach(card => {
       card.onclick = () => openWorkerModal(card.dataset.id);
     });
+  } else {
+    activeSection.classList.add('hidden');
+    workersEl.innerHTML = '';
   }
 
   // Render completed section
   renderCompletedSection(completed);
+}
+
+function updateStats(activeCount, pendingCount, completedCount) {
+  const statActive = document.getElementById('statActive');
+  const statPending = document.getElementById('statPending');
+  const statCompleted = document.getElementById('statCompleted');
+  if (statActive) statActive.textContent = activeCount;
+  if (statPending) statPending.textContent = pendingCount;
+  if (statCompleted) statCompleted.textContent = completedCount;
 }
 
 function renderWorkerCard(w) {
@@ -312,17 +356,15 @@ function renderWorkerCard(w) {
 
 function renderWaitingCard(w) {
   const question = w.waitingFor?.prompt || 'Awaiting input';
-  const truncatedQuestion = question.length > 100 ? question.slice(0, 100) + '...' : question;
+  const truncatedQuestion = question.length > 120 ? question.slice(0, 120) + '...' : question;
   return `
-    <div class="worker-card waiting-card" data-id="${w.id}">
-      <div class="card-header">
+    <div class="waiting-banner" data-id="${w.id}">
+      <div class="waiting-banner-top">
         <div class="status-dot waiting"></div>
-        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
-        <div class="card-badge waiting">needs input</div>
+        <div class="waiting-banner-title">${escapeHtml(w.taskTitle)}</div>
+        <div class="waiting-badge">needs input</div>
       </div>
-      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
-      <div class="card-question">${escapeHtml(truncatedQuestion)}</div>
-      <div class="card-action">Click to respond</div>
+      <div class="waiting-banner-question">${escapeHtml(truncatedQuestion)}</div>
     </div>
   `;
 }
@@ -417,19 +459,57 @@ function renderTasks() {
   // Only show tasks assigned to OTHER accounts (not our own)
   const assigned = tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId);
 
+  // Update stats when tasks change
+  const active = workers.filter(w => ['working', 'stale', 'waiting'].includes(w.status));
+  const completed = workers.filter(w => ['done', 'error'].includes(w.status));
+  updateStats(active.length, pending.length, completed.length);
+
+  // Show/hide empty hero
+  const hasActivity = active.length > 0 || pending.length > 0;
+  const emptyHero = document.getElementById('emptyHero');
+  const contentSections = document.getElementById('contentSections');
+  const statsBar = document.getElementById('statsBar');
+  if (!hasActivity && completed.length === 0) {
+    emptyHero.classList.remove('hidden');
+    contentSections.classList.add('hidden');
+    if (statsBar) statsBar.classList.add('hidden');
+  } else {
+    emptyHero.classList.add('hidden');
+    contentSections.classList.remove('hidden');
+    if (statsBar) statsBar.classList.remove('hidden');
+  }
+
+  // Show/hide pending section
+  const pendingSection = document.getElementById('pendingSection');
+  if (pending.length === 0 && assigned.length === 0) {
+    pendingSection.classList.add('hidden');
+  } else {
+    pendingSection.classList.remove('hidden');
+  }
+
   let html = '';
 
   // Pending tasks
-  if (pending.length === 0) {
-    html += '<div class="empty">No pending tasks</div>';
+  if (pending.length === 0 && assigned.length === 0) {
+    html += '';
+  } else if (pending.length === 0) {
+    // Only assigned, no pending - skip empty message
   } else {
     html += pending.map(t => `
-      <div class="task-card" data-id="${t.id}">
-        <div class="card-header">
+      <div class="task-card-enhanced" data-id="${t.id}">
+        <div class="task-card-top">
           <div class="status-dot pending"></div>
-          <div class="card-title">${escapeHtml(t.title)}</div>
+          <div class="task-card-body">
+            <div class="task-card-title">${escapeHtml(t.title)}</div>
+            <div class="task-card-workspace">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              ${escapeHtml(t.workspace?.name || 'Unknown')}
+            </div>
+          </div>
+          <button class="task-card-start" data-id="${t.id}">Start</button>
         </div>
-        <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
       </div>
     `).join('');
   }
@@ -467,8 +547,16 @@ function renderTasks() {
 
   tasksEl.innerHTML = html;
 
-  // Add click handlers for pending tasks
-  tasksEl.querySelectorAll('.task-card:not(.assigned-card)').forEach(card => {
+  // Add click handlers for Start buttons on pending tasks
+  tasksEl.querySelectorAll('.task-card-start').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      claimTask(btn.dataset.id);
+    };
+  });
+
+  // Add click handler for card body (also starts)
+  tasksEl.querySelectorAll('.task-card-enhanced').forEach(card => {
     card.onclick = () => claimTask(card.dataset.id);
   });
 
@@ -577,11 +665,29 @@ function renderWorkerDetail(worker) {
   }
 
   // Status indicator at bottom
-  if (worker.status === 'working' || worker.status === 'stale') {
+  if (worker.status === 'working') {
     timelineEl.innerHTML += `
       <div class="chat-status">
         <div class="chat-status-dot"></div>
         <span>${escapeHtml(worker.currentAction)}</span>
+      </div>`;
+  }
+
+  // Stale worker indicator
+  if (worker.status === 'stale') {
+    timelineEl.innerHTML += `
+      <div class="chat-error-prompt" style="border-color: var(--warning-color, #f59e0b);">
+        <div class="chat-error-header" style="color: var(--warning-color, #f59e0b);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          Agent appears stuck
+        </div>
+        <div class="chat-error-text">No activity for over 2 minutes. Last action: ${escapeHtml(worker.currentAction)}</div>
+        <div class="chat-error-hint">Send a message below to nudge the agent, or use Retry to restart the session</div>
+        <button class="btn btn-small btn-secondary" onclick="retryWorker()" style="margin-top: 8px;">Retry</button>
       </div>`;
   }
 
@@ -635,9 +741,9 @@ function renderWorkerDetail(worker) {
   }
 
   // Show/hide message input based on status
-  // Allow input for working, done, waiting, AND error (to restart/continue)
+  // Allow input for working, done, waiting, stale, AND error (to restart/continue)
   const messageInputEl = document.querySelector('.modal-input');
-  if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting' || worker.status === 'error') {
+  if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting' || worker.status === 'error' || worker.status === 'stale') {
     messageInputEl.classList.remove('hidden');
     let placeholder = 'Send a message to the agent...';
     if (worker.status === 'done') {
@@ -646,10 +752,28 @@ function renderWorkerDetail(worker) {
       placeholder = 'Type your answer or click an option above...';
     } else if (worker.status === 'error') {
       placeholder = 'Send a message to restart the task...';
+    } else if (worker.status === 'stale') {
+      placeholder = 'Send a message to nudge the agent...';
     }
     document.getElementById('messageInput').placeholder = placeholder;
   } else {
     messageInputEl.classList.add('hidden');
+  }
+
+  // Show/hide footer action buttons based on status
+  const modalFooter = document.getElementById('modalFooter');
+  const abortBtn = document.getElementById('modalAbortBtn');
+  const doneBtn = document.getElementById('modalDoneBtn');
+
+  if (worker.status === 'working' || worker.status === 'waiting' || worker.status === 'stale') {
+    modalFooter.classList.remove('hidden');
+    abortBtn.classList.remove('hidden');
+    doneBtn.classList.remove('hidden');
+  } else if (worker.status === 'done' || worker.status === 'error') {
+    // Hide footer entirely for completed/failed tasks - message input handles follow-ups
+    modalFooter.classList.add('hidden');
+  } else {
+    modalFooter.classList.add('hidden');
   }
 }
 
@@ -1487,15 +1611,72 @@ async function deleteTask(taskId, btn) {
 
 async function abortWorker() {
   if (!currentWorkerId) return;
+  const abortBtn = document.getElementById('confirmAction');
+  if (abortBtn) {
+    abortBtn.disabled = true;
+    abortBtn.textContent = 'Stopping...';
+  }
   try {
     await fetch('/api/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    hideConfirmDialog();
     closeWorkerModal();
   } catch (err) {
     console.error('Failed to abort:', err);
+    showToast('Failed to stop task', 'error');
+    hideConfirmDialog();
+  } finally {
+    if (abortBtn) {
+      abortBtn.disabled = false;
+      abortBtn.textContent = 'Stop Task';
+    }
+  }
+}
+
+function showConfirmDialog(title, message, actionLabel, onConfirm) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmMessage').textContent = message;
+  const actionBtn = document.getElementById('confirmAction');
+  actionBtn.textContent = actionLabel;
+  actionBtn.disabled = false;
+  actionBtn.onclick = onConfirm;
+  document.getElementById('confirmCancel').onclick = hideConfirmDialog;
+  const overlay = document.getElementById('confirmDialog');
+  overlay.classList.remove('hidden');
+  // Close on clicking backdrop
+  overlay.onclick = (e) => {
+    if (e.target === overlay) hideConfirmDialog();
+  };
+}
+
+function hideConfirmDialog() {
+  document.getElementById('confirmDialog').classList.add('hidden');
+}
+
+function confirmAbort() {
+  showConfirmDialog(
+    'Stop this task?',
+    'The agent will be terminated and the task will be marked as failed. You can restart it later by sending a new message.',
+    'Stop Task',
+    abortWorker
+  );
+}
+
+async function retryWorker() {
+  if (!currentWorkerId) return;
+  try {
+    await fetch('/api/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: currentWorkerId })
+    });
+    showToast('Retrying task...', 'success');
+  } catch (err) {
+    console.error('Failed to retry:', err);
+    showToast('Failed to retry task', 'error');
   }
 }
 
@@ -1583,6 +1764,51 @@ async function createTask() {
   }
 }
 
+async function createAndStartTask() {
+  const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
+  const title = document.getElementById('taskTitle').value.trim();
+  const description = document.getElementById('taskDescription').value.trim();
+
+  if (!workspaceId || !title) {
+    showToast('Please select a workspace and fill in the title', 'warning');
+    return;
+  }
+
+  try {
+    const payload = {
+      workspaceId,
+      title,
+      description,
+      attachments: attachments.map(a => ({
+        data: a.data,
+        mimeType: a.mimeType,
+        filename: a.filename
+      }))
+    };
+
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    closeTaskModal();
+
+    if (data.task?.id) {
+      showToast('Task created, starting...', 'success');
+      // Immediately claim the task to start it
+      await claimTask(data.task.id);
+    } else {
+      showToast('Task created', 'success');
+      loadTasks();
+    }
+  } catch (err) {
+    console.error('Failed to create and start task:', err);
+    showToast('Failed to create task', 'error');
+  }
+}
+
 // Attachments
 function handleFileSelect(e) {
   const files = Array.from(e.target.files);
@@ -1652,13 +1878,19 @@ document.getElementById('addBtn').onclick = openTaskModal;
 document.getElementById('settingsBtn').onclick = openSettingsModal;
 
 document.getElementById('modalBack').onclick = closeWorkerModal;
-document.getElementById('modalAbort').onclick = abortWorker;
-document.getElementById('modalAbortBtn').onclick = abortWorker;
+const modalCloseBtn = document.getElementById('modalClose');
+if (modalCloseBtn) modalCloseBtn.onclick = closeWorkerModal;
+document.getElementById('modalAbortBtn').onclick = confirmAbort;
 document.getElementById('modalDoneBtn').onclick = markDone;
 
 document.getElementById('taskModalBack').onclick = closeTaskModal;
 document.getElementById('taskModalCancel').onclick = closeTaskModal;
 document.getElementById('taskModalCreate').onclick = createTask;
+document.getElementById('taskModalStart').onclick = createAndStartTask;
+
+// Hero & inline new task buttons
+document.getElementById('heroCreateBtn').onclick = openTaskModal;
+document.getElementById('inlineAddBtn').onclick = openTaskModal;
 
 document.getElementById('settingsModalBack').onclick = closeSettingsModal;
 
