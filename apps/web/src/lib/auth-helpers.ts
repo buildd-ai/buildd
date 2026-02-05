@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 
 export type CurrentUser = {
   id: string;
-  googleId: string;
+  googleId: string | null;
   email: string;
   name: string | null;
   image: string | null;

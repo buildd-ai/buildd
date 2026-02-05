@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workers } from '@buildd/core/db/schema';
+import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -92,6 +85,45 @@ export async function POST(
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
+
+      // Get active workers before updating
+      const activeWorkers = await db.query.workers.findMany({
+        where: and(
+          eq(workers.taskId, taskId),
+          inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle'])
+        ),
+      });
+
+      // Mark all active workers as failed
+      if (activeWorkers.length > 0) {
+        await db.update(workers)
+          .set({
+            status: 'failed',
+            error: 'Task was reassigned',
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(workers.taskId, taskId),
+            inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle'])
+          ));
+
+        // Notify each worker's channel about the failure
+        for (const w of activeWorkers) {
+          await triggerEvent(
+            channels.worker(w.id),
+            events.WORKER_FAILED,
+            {
+              worker: {
+                ...w,
+                status: 'failed',
+                error: 'Task was reassigned',
+                completedAt: new Date(),
+              },
+            }
+          );
+        }
+      }
     } else if (task.status !== 'pending') {
       // For completed/failed tasks, don't allow reassign
       return NextResponse.json({

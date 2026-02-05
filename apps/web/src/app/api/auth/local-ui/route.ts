@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
+import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 
 // Local-UI OAuth flow:
 // 1. Local-UI redirects here with ?callback=http://localhost:PORT/auth/callback
@@ -52,8 +53,11 @@ export async function GET(req: NextRequest) {
       ),
     });
 
+    // Generate a fresh plaintext key for this auth flow
+    const plaintextKey = generateApiKey();
+
     if (!account) {
-      // Create dedicated local-ui account
+      // Create dedicated local-ui account with hashed key
       const [newAccount] = await db
         .insert(accounts)
         .values({
@@ -61,26 +65,28 @@ export async function GET(req: NextRequest) {
           type: 'user',
           level: 'worker',
           authType: 'api',
-          apiKey: generateApiKey(),
+          apiKey: hashApiKey(plaintextKey),
+          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
           ownerId: session.user.id,
         })
         .returning();
       account = newAccount;
-    }
-
-    if (!account.apiKey) {
-      // Account exists but no key - generate one
+    } else {
+      // Account exists - rotate key (we can't recover the old plaintext)
       const [updated] = await db
         .update(accounts)
-        .set({ apiKey: generateApiKey() })
+        .set({
+          apiKey: hashApiKey(plaintextKey),
+          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+        })
         .where(eq(accounts.id, account.id))
         .returning();
       account = updated;
     }
 
-    // Redirect back to local-ui with the token
+    // Redirect back to local-ui with the plaintext token (shown once)
     const successUrl = new URL(callback);
-    successUrl.searchParams.set('token', account.apiKey);
+    successUrl.searchParams.set('token', plaintextKey);
     return NextResponse.redirect(successUrl.toString());
 
   } catch (error) {

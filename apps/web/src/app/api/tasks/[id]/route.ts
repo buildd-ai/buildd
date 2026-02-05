@@ -1,16 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workspaces } from '@buildd/core/db/schema';
+import { tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 // GET /api/tasks/[id] - Get a single task
 export async function GET(

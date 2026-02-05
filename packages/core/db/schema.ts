@@ -6,7 +6,8 @@ import { relations } from 'drizzle-orm';
 // Users table for multi-tenancy
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
-  googleId: text('google_id').notNull().unique(),  // from token.sub / account.providerAccountId
+  googleId: text('google_id').unique(),  // from token.sub / account.providerAccountId
+  githubId: text('github_id').unique(),
   email: text('email').notNull(),
   name: text('name'),
   image: text('image'),
@@ -14,6 +15,7 @@ export const users = pgTable('users', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   googleIdIdx: uniqueIndex('users_google_id_idx').on(t.googleId),
+  githubIdIdx: uniqueIndex('users_github_id_idx').on(t.githubId),
   emailIdx: index('users_email_idx').on(t.email),
 }));
 
@@ -23,6 +25,7 @@ export const accounts = pgTable('accounts', {
   level: text('level').default('worker').notNull().$type<'worker' | 'admin'>(),
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
+  apiKeyPrefix: text('api_key_prefix'),
   githubId: text('github_id'),
 
   // Authentication type
