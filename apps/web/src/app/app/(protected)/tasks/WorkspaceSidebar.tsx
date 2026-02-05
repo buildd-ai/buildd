@@ -79,6 +79,17 @@ interface WorkerUpdate {
   workspaceId: string;
 }
 
+// Task type from Pusher events
+interface TaskCreated {
+  task: {
+    id: string;
+    title: string;
+    status: string;
+    workspaceId: string;
+    updatedAt: Date | string;
+  };
+}
+
 export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Props) {
   const pathname = usePathname();
   const router = useRouter();
@@ -114,6 +125,30 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     })));
   }, []);
 
+  // Handler for new task creation from Pusher
+  const handleTaskCreated = useCallback((data: TaskCreated) => {
+    const { task } = data;
+    if (!task) return;
+
+    setWorkspaces(prev => prev.map(ws => {
+      if (ws.id !== task.workspaceId) return ws;
+      // Check if task already exists (avoid duplicates)
+      if (ws.tasks.some(t => t.id === task.id)) return ws;
+      return {
+        ...ws,
+        tasks: [
+          {
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            updatedAt: new Date(task.updatedAt),
+          },
+          ...ws.tasks,
+        ],
+      };
+    }));
+  }, []);
+
   // Stable workspace IDs for dependency tracking
   const workspaceIds = workspaces.map(ws => ws.id);
   const workspaceIdsKey = workspaceIds.join(',');
@@ -128,6 +163,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         channel.bind('worker:progress', handleWorkerUpdate);
         channel.bind('worker:completed', handleWorkerUpdate);
         channel.bind('worker:failed', handleWorkerUpdate);
+        channel.bind('task:created', handleTaskCreated);
       }
     }
 
@@ -137,7 +173,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceIdsKey, handleWorkerUpdate]);
+  }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated]);
 
   // Load collapsed state from localStorage
   useEffect(() => {
@@ -295,6 +331,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       const completedTasks = visibleTasks.filter(t =>
                         ['completed', 'failed'].includes(t.status)
                       );
+                      // Total completed count from ALL tasks (not just visible)
+                      const totalCompletedCount = ws.tasks.filter(t =>
+                        ['completed', 'failed'].includes(t.status)
+                      ).length;
                       const isCompletedHidden = completedCollapsed[ws.id] ?? true; // Default collapsed
 
                       return (
@@ -329,7 +369,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                     className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
                                   >
                                     <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
-                                    <span>Completed ({completedTasks.length})</span>
+                                    <span>Completed ({totalCompletedCount})</span>
                                   </button>
                                   {!isCompletedHidden && completedTasks.map((task) => (
                                     <Link
