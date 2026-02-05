@@ -910,14 +910,20 @@ function updateSettings() {
   }
 
   const maxEl = document.getElementById('settingsMax');
-  maxEl.innerHTML = [1, 2, 3, 4].map(n => `
-    <button class="segment py-2 px-5 border-none bg-transparent text-zinc-400 text-sm font-medium rounded-md cursor-pointer transition-all duration-150 hover:text-zinc-50 ${n === config.maxConcurrent ? 'active' : ''}" data-value="${n}">${n}</button>
-  `).join('');
+  maxEl.innerHTML = `
+    <input type="number" min="1" max="20" value="${config.maxConcurrent || 3}"
+      class="bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-sm text-zinc-50 w-20 focus:outline-none focus:border-fuchsia-500"
+      id="settingsMaxInput">
+  `;
 
-  // Add click handlers for max concurrent
-  maxEl.querySelectorAll('.segment').forEach(btn => {
-    btn.onclick = () => handleMaxConcurrentChange(parseInt(btn.dataset.value));
-  });
+  const maxInput = document.getElementById('settingsMaxInput');
+  let maxDebounce = null;
+  maxInput.onchange = () => {
+    const val = Math.max(1, Math.min(20, parseInt(maxInput.value) || 1));
+    maxInput.value = val;
+    clearTimeout(maxDebounce);
+    maxDebounce = setTimeout(() => handleMaxConcurrentChange(val), 300);
+  };
 
   const bypassCheckbox = document.getElementById('settingsBypass');
   if (bypassCheckbox) {
@@ -957,14 +963,16 @@ async function handleServerUrlChange() {
     if (data.ok) {
       config.builddServer = data.builddServer;
       serverSaveBtn.style.display = 'none';
-      hint.textContent = 'Server URL updated. Connection reinitialized.';
+      hint.textContent = 'Server URL updated. Reconnecting...';
       hint.style.color = '#22c55e';
+      // Reconnect SSE and reload all data
+      connectSSE();
+      await Promise.all([loadTasks(), loadWorkspaces()]);
+      hint.textContent = 'Server URL updated. Connection reinitialized.';
       setTimeout(() => {
         hint.textContent = 'Reinitializes connection when changed';
         hint.style.color = '';
       }, 3000);
-      // Refresh workspaces with new server
-      await loadWorkspaces();
     } else {
       hint.textContent = data.error || 'Failed to update server URL';
       hint.style.color = '#ef4444';
@@ -1629,6 +1637,32 @@ async function syncWorkspace(localPath, name) {
 }
 
 async function claimTask(taskId) {
+  // Find the task being claimed for optimistic UI
+  const task = tasks.find(t => t.id === taskId);
+
+  // Optimistic: move task to active section immediately
+  if (task) {
+    tasks = tasks.filter(t => t.id !== taskId);
+    const optimisticWorker = {
+      id: `claiming-${taskId}`,
+      taskTitle: task.title,
+      workspaceName: task.workspace?.name || 'Unknown',
+      branch: '',
+      status: 'working',
+      hasNewActivity: false,
+      lastActivity: Date.now(),
+      milestones: [],
+      currentAction: 'Starting...',
+      _optimistic: true,
+    };
+    workers.push(optimisticWorker);
+    renderTasks();
+    renderWorkers();
+  }
+
+  // Disable all start buttons to prevent double-click
+  tasksEl.querySelectorAll('.task-card-start').forEach(btn => { btn.disabled = true; });
+
   try {
     const res = await fetch('/api/claim', {
       method: 'POST',
@@ -1637,13 +1671,26 @@ async function claimTask(taskId) {
     });
     const data = await res.json();
     if (data.worker) {
-      showToast('Task claimed successfully', 'success');
+      // Remove optimistic worker (real one comes via SSE)
+      workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+      renderWorkers();
+      showToast('Task started', 'success');
       loadTasks();
     } else {
+      // Failed - restore task to pending
+      workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+      if (task) tasks.unshift(task);
+      renderTasks();
+      renderWorkers();
       showToast(data.error || 'Failed to claim task', 'error');
     }
   } catch (err) {
     console.error('Failed to claim task:', err);
+    // Restore on error
+    workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+    if (task) tasks.unshift(task);
+    renderTasks();
+    renderWorkers();
     showToast('Failed to claim task', 'error');
   }
 }
@@ -1853,29 +1900,56 @@ async function createTask() {
     return;
   }
 
-  try {
-    const payload = {
-      workspaceId,
-      title,
-      description,
-      attachments: attachments.map(a => ({
-        data: a.data,
-        mimeType: a.mimeType,
-        filename: a.filename
-      }))
-    };
+  // Find workspace name for optimistic rendering
+  const workspace = combinedWorkspaces.find(w => (w.id || w.localPath) === workspaceId);
+  const workspaceName = workspace?.name || 'Unknown';
 
-    await fetch('/api/tasks', {
+  const payload = {
+    workspaceId,
+    title,
+    description,
+    attachments: attachments.map(a => ({
+      data: a.data,
+      mimeType: a.mimeType,
+      filename: a.filename
+    }))
+  };
+
+  // Optimistic: add temp task, close modal, show toast immediately
+  const tempId = `temp-${Date.now()}`;
+  const optimisticTask = {
+    id: tempId,
+    title,
+    description,
+    workspaceId,
+    status: 'pending',
+    workspace: { name: workspaceName },
+    _optimistic: true,
+  };
+  tasks.unshift(optimisticTask);
+  renderTasks();
+  closeTaskModal();
+  showToast('Task created', 'success');
+
+  // Background POST
+  try {
+    const res = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
-    closeTaskModal();
-    showToast('Task created successfully', 'success');
-    loadTasks();
+    const data = await res.json();
+    if (data.task) {
+      tasks = tasks.map(t => t.id === tempId ? { ...data.task, workspace: data.task.workspace || { name: workspaceName } } : t);
+    } else {
+      tasks = tasks.filter(t => t.id !== tempId);
+      showToast('Failed to create task', 'error');
+    }
+    renderTasks();
   } catch (err) {
     console.error('Failed to create task:', err);
+    tasks = tasks.filter(t => t.id !== tempId);
+    renderTasks();
     showToast('Failed to create task', 'error');
   }
 }
@@ -1890,37 +1964,80 @@ async function createAndStartTask() {
     return;
   }
 
-  try {
-    const payload = {
-      workspaceId,
-      title,
-      description,
-      attachments: attachments.map(a => ({
-        data: a.data,
-        mimeType: a.mimeType,
-        filename: a.filename
-      }))
-    };
+  // Find workspace name for optimistic rendering
+  const workspace = combinedWorkspaces.find(w => (w.id || w.localPath) === workspaceId);
+  const workspaceName = workspace?.name || 'Unknown';
 
+  const payload = {
+    workspaceId,
+    title,
+    description,
+    attachments: attachments.map(a => ({
+      data: a.data,
+      mimeType: a.mimeType,
+      filename: a.filename
+    }))
+  };
+
+  // Optimistic: show task as "Starting..." in active section immediately
+  const tempId = `temp-${Date.now()}`;
+  const optimisticWorker = {
+    id: tempId,
+    taskTitle: title,
+    workspaceName,
+    branch: '',
+    status: 'working',
+    hasNewActivity: false,
+    lastActivity: Date.now(),
+    milestones: [],
+    currentAction: 'Starting...',
+    _optimistic: true,
+  };
+  workers.push(optimisticWorker);
+  renderWorkers();
+  closeTaskModal();
+  showToast('Task created, starting...', 'success');
+
+  // Background: create task then claim it
+  try {
     const res = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
     const data = await res.json();
-    closeTaskModal();
 
     if (data.task?.id) {
-      showToast('Task created, starting...', 'success');
-      // Immediately claim the task to start it
-      await claimTask(data.task.id);
+      // Claim the task - SSE worker_update will replace optimistic worker
+      const claimRes = await fetch('/api/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: data.task.id })
+      });
+      const claimData = await claimRes.json();
+
+      if (claimData.worker) {
+        // Remove optimistic worker (real one comes via SSE)
+        workers = workers.filter(w => w.id !== tempId);
+        renderWorkers();
+        loadTasks();
+      } else {
+        // Claim failed - remove optimistic worker, show error
+        workers = workers.filter(w => w.id !== tempId);
+        renderWorkers();
+        showToast(claimData.error || 'Failed to start task', 'error');
+        loadTasks();
+      }
     } else {
-      showToast('Task created', 'success');
-      loadTasks();
+      // Create failed
+      workers = workers.filter(w => w.id !== tempId);
+      renderWorkers();
+      showToast('Failed to create task', 'error');
     }
   } catch (err) {
     console.error('Failed to create and start task:', err);
+    workers = workers.filter(w => w.id !== tempId);
+    renderWorkers();
     showToast('Failed to create task', 'error');
   }
 }
