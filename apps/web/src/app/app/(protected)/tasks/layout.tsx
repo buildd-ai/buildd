@@ -72,7 +72,7 @@ export default async function TasksLayout({
           acc[task.workspaceId].push({
             id: task.id,
             title: task.title,
-            status: task.status,
+            status: waitingForByTaskId.has(task.id) ? 'waiting_input' : task.status,
             updatedAt: task.updatedAt,
             waitingFor: waitingForByTaskId.get(task.id) || null,
           });

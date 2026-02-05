@@ -27,6 +27,7 @@ interface Worker {
   linesAdded: number | null;
   linesRemoved: number | null;
   lastCommitSha: string | null;
+  waitingFor: { type: string; prompt: string; options?: string[] } | null;
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
   pendingInstructions: string | null;
   account?: { authType: string } | null;
@@ -144,6 +145,29 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         <div className="mb-3 flex items-center gap-2">
           <span className="w-2 h-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
           <p className="text-sm text-gray-600 dark:text-gray-400">{worker.currentAction}</p>
+        </div>
+      )}
+
+      {/* Waiting for input banner */}
+      {worker.status === 'waiting_input' && worker.waitingFor && (
+        <div className="mb-3 border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 rounded-lg p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+            </span>
+            <span className="text-xs font-medium text-purple-700 dark:text-purple-300 uppercase">Needs input</span>
+          </div>
+          <p className="text-sm text-gray-800 dark:text-gray-200">{worker.waitingFor.prompt}</p>
+          {worker.waitingFor.options && worker.waitingFor.options.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {worker.waitingFor.options.map((opt, i) => (
+                <span key={i} className="px-2 py-1 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 rounded">
+                  {opt}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -260,6 +260,7 @@ export default async function TaskDetailPage({
                 linesAdded: activeWorker.linesAdded,
                 linesRemoved: activeWorker.linesRemoved,
                 lastCommitSha: activeWorker.lastCommitSha,
+                waitingFor: activeWorker.waitingFor as any,
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
