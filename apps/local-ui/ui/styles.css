@@ -142,6 +142,15 @@ body {
   color: var(--text);
 }
 
+.btn-danger {
+  background: var(--danger);
+  color: white;
+}
+
+.btn-danger:hover {
+  background: #dc2626;
+}
+
 .btn-group {
   display: flex;
   gap: 8px;
@@ -152,9 +161,52 @@ body {
   padding: 10px;
 }
 
+/* Segmented control for settings */
+.segmented-control {
+  display: inline-flex;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  gap: 4px;
+}
+
+.segmented-control .segment {
+  padding: 8px 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.segmented-control .segment:hover {
+  color: var(--text);
+}
+
+.segmented-control .segment.active {
+  background: var(--gradient);
+  color: white;
+}
+
 /* Main */
 .main {
   padding: 16px;
+}
+
+/* Desktop layout - constrain content width */
+@media (min-width: 768px) {
+  .main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .header {
+    padding: 16px 24px;
+  }
 }
 
 .section {
@@ -701,9 +753,57 @@ select.input {
   display: none !important;
 }
 
+/* Desktop modal styles */
+@media (min-width: 640px) {
+  .modal {
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .modal.hidden {
+    display: none;
+  }
+
+  .modal-content {
+    background: var(--bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    max-height: 90vh;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Settings modal - narrower */
+  #settingsModal .modal-content {
+    max-width: 420px;
+  }
+
+  /* Worker modal - wider for chat */
+  #workerModal .modal-content {
+    max-width: 640px;
+    height: 80vh;
+  }
+
+  /* Task modal */
+  #taskModal .modal-content {
+    max-width: 520px;
+  }
+}
+
 /* Workspace modal */
 .modal-large {
   max-width: 600px;
+}
+
+@media (min-width: 640px) {
+  .modal-large {
+    max-width: 560px;
+  }
 }
 
 .workspace-sections {
@@ -1693,4 +1793,58 @@ select.input {
 
 .toast.toast-info {
   border-left: 3px solid var(--info);
+}
+
+/* Settings page improvements */
+#settingsModal .form-group {
+  margin-bottom: 20px;
+}
+
+#settingsModal .form-group:last-child {
+  margin-bottom: 0;
+}
+
+#settingsModal .form-group label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+#settingsModal .form-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* Checkbox styling */
+.flex {
+  display: flex;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.gap-2 {
+  gap: 8px;
+}
+
+#settingsModal input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+#settingsModal .flex label {
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+/* Read-only inputs */
+#settingsModal input[readonly] {
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: default;
 }

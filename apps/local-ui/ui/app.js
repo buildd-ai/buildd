@@ -54,6 +54,7 @@ async function checkConfig() {
     config.acceptRemoteTasks = data.acceptRemoteTasks !== false; // default true
     config.openBrowser = data.openBrowser !== false; // default true
     config.model = data.model || config.model;
+    config.maxConcurrent = data.maxConcurrent || 3;
 
     if (isConfigured || isServerless) {
       showApp();
@@ -453,6 +454,9 @@ function renderTasks() {
                 <button class="btn btn-small btn-secondary takeover-btn" data-id="${t.id}" data-stale="${isStale}">
                   Take Over
                 </button>
+                <button class="btn btn-small btn-danger delete-btn" data-id="${t.id}" title="Delete task">
+                  Delete
+                </button>
               </div>
             </div>
           `;
@@ -473,6 +477,14 @@ function renderTasks() {
     btn.onclick = (e) => {
       e.stopPropagation();
       takeoverTask(btn.dataset.id, btn);
+    };
+  });
+
+  // Add click handlers for delete buttons
+  tasksEl.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      deleteTask(btn.dataset.id, btn);
     };
   });
 }
@@ -765,8 +777,13 @@ function updateSettings() {
 
   const maxEl = document.getElementById('settingsMax');
   maxEl.innerHTML = [1, 2, 3, 4].map(n => `
-    <button class="btn ${n === config.maxConcurrent ? 'btn-primary' : 'btn-secondary'}">${n}</button>
+    <button class="segment ${n === config.maxConcurrent ? 'active' : ''}" data-value="${n}">${n}</button>
   `).join('');
+
+  // Add click handlers for max concurrent
+  maxEl.querySelectorAll('.segment').forEach(btn => {
+    btn.onclick = () => handleMaxConcurrentChange(parseInt(btn.dataset.value));
+  });
 
   const bypassCheckbox = document.getElementById('settingsBypass');
   if (bypassCheckbox) {
@@ -887,6 +904,27 @@ async function handleOpenBrowserChange() {
     console.error('Failed to update browser setting:', err);
     openBrowserCheckbox.checked = !enabled; // Revert
     showToast('Failed to update browser setting', 'error');
+  }
+}
+
+async function handleMaxConcurrentChange(value) {
+  try {
+    const res = await fetch('/api/config/max-concurrent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxConcurrent: value }),
+    });
+
+    if (res.ok) {
+      config.maxConcurrent = value;
+      updateSettings(); // Re-render to show active state
+      showToast(`Max concurrent workers set to ${value}`, 'success');
+    } else {
+      showToast('Failed to update max concurrent setting', 'error');
+    }
+  } catch (err) {
+    console.error('Failed to update max concurrent:', err);
+    showToast('Failed to update max concurrent setting', 'error');
   }
 }
 
@@ -1400,6 +1438,45 @@ async function takeoverTask(taskId, btn) {
   } catch (err) {
     console.error('Failed to take over task:', err);
     showToast('Failed to take over task', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+async function deleteTask(taskId, btn) {
+  if (!btn) btn = event?.target;
+  const originalText = btn?.textContent || 'Delete';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Deleting...';
+  }
+
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+
+    // Handle auth errors - show setup screen
+    if (data.needsSetup || res.status === 401) {
+      console.error('API key invalid, showing setup');
+      isConfigured = false;
+      showSetup();
+      return;
+    }
+
+    if (data.success) {
+      showToast('Task deleted', 'success');
+      loadTasks();
+    } else {
+      showToast(data.error || 'Failed to delete task', 'error');
+    }
+  } catch (err) {
+    console.error('Failed to delete task:', err);
+    showToast('Failed to delete task', 'error');
   } finally {
     if (btn) {
       btn.disabled = false;

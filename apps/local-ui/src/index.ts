@@ -30,6 +30,7 @@ interface SavedConfig {
   apiKey?: string;
   serverless?: boolean;
   model?: string;
+  maxConcurrent?: number; // Max concurrent workers (default: 3)
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
@@ -43,6 +44,7 @@ function loadSavedConfig(): SavedConfig {
         apiKey: data.apiKey?.trim(), // Always trim to avoid whitespace issues
         serverless: data.serverless,
         model: data.model,
+        maxConcurrent: data.maxConcurrent,
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
@@ -208,7 +210,7 @@ const config: LocalUIConfig = {
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || 'https://app.buildd.dev',
   apiKey: resolvedApiKey,
-  maxConcurrent: parseInt(process.env.MAX_CONCURRENT || '3'),
+  maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || savedConfig.model || 'claude-opus-4-5-20251101',
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
@@ -341,6 +343,7 @@ const server = Bun.serve({
         projectRoots: config.projectRoots,
         hasClaudeCredentials: authStatus.hasCredentials,
         model: config.model,
+        maxConcurrent: config.maxConcurrent,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
@@ -422,6 +425,21 @@ const server = Bun.serve({
       saveConfig({ openBrowser: enabled !== false });
 
       return Response.json({ ok: true, openBrowser: enabled !== false }, { headers: corsHeaders });
+    }
+
+    // Update max concurrent setting
+    if (path === '/api/config/max-concurrent' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { maxConcurrent } = body;
+
+      if (typeof maxConcurrent !== 'number' || maxConcurrent < 1 || maxConcurrent > 4) {
+        return Response.json({ error: 'maxConcurrent must be 1-4' }, { status: 400, headers: corsHeaders });
+      }
+
+      config.maxConcurrent = maxConcurrent;
+      saveConfig({ maxConcurrent });
+
+      return Response.json({ ok: true, maxConcurrent }, { headers: corsHeaders });
     }
 
     // Set API key
@@ -633,6 +651,30 @@ const server = Bun.serve({
       return Response.json({ task }, { headers: corsHeaders });
     }
 
+    // Delete a task
+    const deleteTaskMatch = path.match(/^\/api\/tasks\/([^/]+)$/);
+    if (deleteTaskMatch && req.method === 'DELETE') {
+      const taskId = deleteTaskMatch[1];
+      try {
+        const result = await buildd!.deleteTask(taskId);
+        if (!result.success) {
+          // Check for auth error
+          if (result.error?.includes('401')) {
+            console.log('API key rejected by server, clearing config');
+            config.apiKey = '';
+            buildd = null;
+            workerManager = null;
+            saveConfig({ apiKey: '' });
+            return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
+          }
+          return Response.json({ error: result.error || 'Failed to delete task' }, { status: 400, headers: corsHeaders });
+        }
+        return Response.json({ success: true }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to delete task' }, { status: 400, headers: corsHeaders });
+      }
+    }
+
     // Takeover an assigned task (force reassign + claim)
     if (path === '/api/takeover' && req.method === 'POST') {
       const body = await parseBody(req);
@@ -669,6 +711,15 @@ const server = Bun.serve({
 
         return Response.json({ worker, reassigned: true }, { headers: corsHeaders });
       } catch (err: any) {
+        // Check for auth error
+        if (err.message?.includes('401')) {
+          console.log('API key rejected by server, clearing config');
+          config.apiKey = '';
+          buildd = null;
+          workerManager = null;
+          saveConfig({ apiKey: '' });
+          return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
+        }
         return Response.json({ error: err.message || 'Failed to take over task' }, { status: 400, headers: corsHeaders });
       }
     }

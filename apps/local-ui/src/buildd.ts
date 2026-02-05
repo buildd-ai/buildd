@@ -183,6 +183,15 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
+  async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
   async getAccountLevel(): Promise<'admin' | 'member' | 'unknown'> {
     try {
       const data = await this.fetch('/api/account/level');
