@@ -636,8 +636,9 @@ export class WorkerManager {
         promptParts.push(`## Workspace Instructions\n${gitConfig.agentInstructions}`);
       }
 
-      // Add git workflow context (if configured)
-      if (isConfigured && gitConfig) {
+      // Add git workflow context (if configured and not 'none' strategy)
+      // 'none' strategy means defer entirely to CLAUDE.md / project conventions
+      if (isConfigured && gitConfig && gitConfig.branchingStrategy !== 'none') {
         const gitContext: string[] = ['## Git Workflow'];
         gitContext.push(`- Default branch: ${gitConfig.defaultBranch}`);
 
@@ -784,6 +785,7 @@ export class WorkerManager {
         worker.error = 'Agent authentication failed';
         worker.currentAction = 'Auth failed';
         worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
       } else {
@@ -792,6 +794,7 @@ export class WorkerManager {
         worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, { status: 'completed' });
         this.emit({ type: 'worker_update', worker });
 
@@ -817,6 +820,7 @@ export class WorkerManager {
       worker.status = 'error';
       worker.error = error instanceof Error ? error.message : 'Unknown error';
       worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
       await this.buildd.updateWorker(worker.id, {
         status: 'failed',
         error: worker.error
@@ -924,6 +928,18 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName === 'AskUserQuestion') {
+            // Agent is asking a question - set waiting status
+            const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
+            const firstQuestion = questions?.[0];
+            worker.status = 'waiting';
+            worker.waitingFor = {
+              type: 'question',
+              prompt: firstQuestion?.question || 'Awaiting input',
+              options: firstQuestion?.options,
+            };
+            worker.currentAction = firstQuestion?.header || 'Question';
+            this.addMilestone(worker, `User: ${firstQuestion?.header || 'Question'}...`);
           }
         }
       }
@@ -1085,11 +1101,90 @@ export class WorkerManager {
         return false;
       }
 
-      // Reconstruct task for startSession
+      // Build context-preserving prompt that includes original task + full conversation history
+      const contextParts: string[] = [];
+
+      // Add original task description
+      if (worker.taskDescription) {
+        contextParts.push(`## Original Task\n${worker.taskDescription}`);
+      }
+
+      // Extract files explored from tool calls (critical context)
+      const filesExplored = new Set<string>();
+      const filesModified = new Set<string>();
+      for (const tc of worker.toolCalls) {
+        const filePath = tc.input?.file_path as string;
+        if (tc.name === 'Read' && filePath) {
+          filesExplored.add(filePath);
+        } else if ((tc.name === 'Edit' || tc.name === 'Write') && filePath) {
+          filesModified.add(filePath);
+        }
+      }
+
+      // Add files context so agent knows what was already explored
+      if (filesExplored.size > 0 || filesModified.size > 0) {
+        const filesContext: string[] = ['## Files Context'];
+        if (filesExplored.size > 0) {
+          filesContext.push(`Files read: ${Array.from(filesExplored).slice(-20).join(', ')}`);
+        }
+        if (filesModified.size > 0) {
+          filesContext.push(`Files modified: ${Array.from(filesModified).join(', ')}`);
+        }
+        contextParts.push(filesContext.join('\n'));
+      }
+
+      // Add full conversation history (preserve questions and full responses)
+      // Limit to last 30 messages but keep them complete
+      const recentMessages = worker.messages.slice(-30);
+      if (recentMessages.length > 0) {
+        const historyLines: string[] = ['## Previous Conversation'];
+        for (const msg of recentMessages) {
+          if (msg.type === 'text') {
+            // Keep full agent responses - they contain important context/analysis
+            historyLines.push(`**Agent:** ${msg.content}`);
+          } else if (msg.type === 'user') {
+            // Always keep full user messages (questions/answers are critical)
+            historyLines.push(`**User:** ${msg.content}`);
+          } else if (msg.type === 'tool_use') {
+            // Include tool context for understanding what was done
+            const input = msg.input || {};
+            if (msg.name === 'Read') {
+              historyLines.push(`*Read: ${input.file_path}*`);
+            } else if (msg.name === 'Edit' || msg.name === 'Write') {
+              historyLines.push(`*${msg.name}: ${input.file_path}*`);
+            } else if (msg.name === 'Bash') {
+              const cmd = (input.command as string || '').slice(0, 100);
+              historyLines.push(`*Bash: ${cmd}${cmd.length >= 100 ? '...' : ''}*`);
+            } else if (msg.name === 'Grep' || msg.name === 'Glob') {
+              historyLines.push(`*${msg.name}: ${input.pattern}*`);
+            } else {
+              historyLines.push(`*${msg.name}*`);
+            }
+          }
+        }
+        contextParts.push(historyLines.join('\n'));
+      }
+
+      // Add milestones as work summary
+      if (worker.milestones.length > 0) {
+        const milestoneLabels = worker.milestones
+          .filter(m => !['Session started', 'Task completed'].includes(m.label))
+          .map(m => `- ${m.label}`);
+        if (milestoneLabels.length > 0) {
+          contextParts.push(`## Work Completed\n${milestoneLabels.join('\n')}`);
+        }
+      }
+
+      // Add follow-up message
+      contextParts.push(`## Follow-up Request\n${message}`);
+
+      const contextDescription = contextParts.join('\n\n');
+
+      // Reconstruct task for startSession with preserved context
       const task = {
         id: worker.taskId,
         title: worker.taskTitle,
-        description: message, // Use follow-up message as new description
+        description: contextDescription,
         workspaceId: worker.workspaceId,
         workspace: {
           name: worker.workspaceName,
@@ -1098,7 +1193,7 @@ export class WorkerManager {
         priority: 1,
       };
 
-      // Start new session with follow-up message
+      // Start new session with context-rich prompt
       this.startSession(worker, workspacePath, task as any).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
       });
@@ -1106,8 +1201,8 @@ export class WorkerManager {
       return true;
     }
 
-    // Normal case - active session
-    if (!session || worker.status !== 'working') {
+    // Normal case - active session (also handle 'waiting' status)
+    if (!session || !['working', 'waiting'].includes(worker.status)) {
       return false;
     }
 
@@ -1116,6 +1211,12 @@ export class WorkerManager {
       session.inputStream.enqueue(buildUserMessage(message));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
+      // Clear waiting state if answering a question
+      if (worker.status === 'waiting') {
+        worker.status = 'working';
+        worker.waitingFor = undefined;
+        worker.currentAction = 'Processing response...';
+      }
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
       this.emit({ type: 'worker_update', worker });

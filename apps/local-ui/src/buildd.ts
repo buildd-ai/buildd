@@ -81,7 +81,7 @@ export class BuilddClient {
   async getWorkspaceConfig(workspaceId: string): Promise<{
     gitConfig?: {
       defaultBranch: string;
-      branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+      branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
       branchPrefix?: string;
       useBuildBranch?: boolean;
       commitStyle: 'conventional' | 'freeform' | 'custom';
