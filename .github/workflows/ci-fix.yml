@@ -1,0 +1,36 @@
+name: CI Auto-Fix
+
+on:
+  workflow_run:
+    workflows: ["Build & Test"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == 'dev' &&
+      !contains(github.event.workflow_run.head_commit.message, 'autofix:')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            The CI build failed on the dev branch. Investigate the failure:
+            1. Use CI tools to download and read the failed job logs
+            2. Identify the root cause (type error, test failure, build error, migration issue)
+            3. Fix the issue
+            4. Commit with prefix "autofix:" so this workflow doesn't loop
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 15"
