@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface Installation {
   id: string;
@@ -19,6 +20,8 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [disconnecting, setDisconnecting] = useState<{ id: string; login: string } | null>(null);
+  const [disconnectLoading, setDisconnectLoading] = useState(false);
 
   useEffect(() => {
     loadInstallations();
@@ -60,18 +63,18 @@ export default function SettingsPage() {
     }
   }
 
-  async function disconnect(installationId: string, accountLogin: string) {
-    if (!confirm(`Disconnect ${accountLogin}? This will remove all synced repos from buildd (not from GitHub).`)) {
-      return;
-    }
+  async function handleDisconnect() {
+    if (!disconnecting) return;
 
+    setDisconnectLoading(true);
     setMessage(null);
     try {
-      const res = await fetch(`/api/github/installations/${installationId}`, {
+      const res = await fetch(`/api/github/installations/${disconnecting.id}`, {
         method: 'DELETE',
       });
       if (res.ok) {
-        setMessage({ type: 'success', text: `Disconnected ${accountLogin}` });
+        setMessage({ type: 'success', text: `Disconnected ${disconnecting.login}` });
+        setDisconnecting(null);
         loadInstallations();
       } else {
         const err = await res.json();
@@ -79,6 +82,8 @@ export default function SettingsPage() {
       }
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to disconnect' });
+    } finally {
+      setDisconnectLoading(false);
     }
   }
 
@@ -161,7 +166,7 @@ export default function SettingsPage() {
                         {syncing === inst.id ? 'Syncing...' : 'Sync'}
                       </button>
                       <button
-                        onClick={() => disconnect(inst.id, inst.accountLogin)}
+                        onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
                         className="px-3 py-1.5 text-sm text-red-600 border border-red-300 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
                       >
                         Disconnect
@@ -199,6 +204,17 @@ export default function SettingsPage() {
           </div>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={!!disconnecting}
+        title={`Disconnect ${disconnecting?.login}?`}
+        message="This will remove all synced repos from buildd (not from GitHub)."
+        confirmLabel="Disconnect"
+        variant="warning"
+        loading={disconnectLoading}
+        onConfirm={handleDisconnect}
+        onCancel={() => setDisconnecting(null)}
+      />
     </main>
   );
 }

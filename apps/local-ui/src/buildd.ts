@@ -173,6 +173,36 @@ export class BuilddClient {
     }
   }
 
+  async getMemorySummary(workspaceId: string): Promise<{
+    total: number;
+    recentGotchas: Array<{ id: string; title: string; content: string }>;
+  }> {
+    try {
+      // Get total count and recent gotchas for minimal context injection
+      const searchData = await this.fetch(`/api/workspaces/${workspaceId}/observations/search?type=gotcha&limit=3`);
+      const total = searchData.total || 0;
+      const gotchaIds = (searchData.results || []).map((r: { id: string }) => r.id);
+
+      if (gotchaIds.length === 0) {
+        // No gotchas, just get total count
+        const allData = await this.fetch(`/api/workspaces/${workspaceId}/observations/search?limit=1`);
+        return { total: allData.total || 0, recentGotchas: [] };
+      }
+
+      // Get full content for gotchas
+      const batchData = await this.fetch(`/api/workspaces/${workspaceId}/observations/batch?ids=${gotchaIds.join(',')}`);
+      const recentGotchas = (batchData.observations || []).map((o: { id: string; title: string; content: string }) => ({
+        id: o.id,
+        title: o.title,
+        content: o.content.slice(0, 200), // Truncate to keep context small
+      }));
+
+      return { total, recentGotchas };
+    } catch {
+      return { total: 0, recentGotchas: [] };
+    }
+  }
+
   async reassignTask(taskId: string, force = false): Promise<{
     reassigned: boolean;
     reason?: string;

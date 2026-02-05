@@ -313,6 +313,82 @@ const baseTools = [
       required: ["workerId", "title", "head"],
     },
   },
+  {
+    name: "buildd_search_memory",
+    description: "Search workspace memory for relevant observations. Returns compact index (id, title, type, files) - use buildd_get_memory for full details. Use this to find context from previous tasks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Text search query to find relevant observations",
+        },
+        type: {
+          type: "string",
+          description: "Filter by type: gotcha, pattern, decision, discovery, architecture, summary",
+          enum: ["gotcha", "pattern", "decision", "discovery", "architecture", "summary"],
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by file paths (matches observations referencing these files)",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return (default: 10, max: 50)",
+          default: 10,
+        },
+      },
+    },
+  },
+  {
+    name: "buildd_get_memory",
+    description: "Get full details for specific observations by ID. Use after searching to retrieve complete content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Observation IDs from search results",
+        },
+      },
+      required: ["ids"],
+    },
+  },
+  {
+    name: "buildd_save_memory",
+    description: "Save an observation to workspace memory. Use for gotchas, patterns, decisions, or discoveries worth remembering for future tasks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          description: "Type of observation",
+          enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+        },
+        title: {
+          type: "string",
+          description: "Short descriptive title",
+        },
+        content: {
+          type: "string",
+          description: "Full observation content with details",
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Related file paths",
+        },
+        concepts: {
+          type: "array",
+          items: { type: "string" },
+          description: "Related concepts/tags for categorization",
+        },
+      },
+      required: ["type", "title", "content"],
+    },
+  },
 ];
 
 // Admin-only tools
@@ -713,6 +789,136 @@ export BUILDD_SERVER=${SERVER_URL}`;
             {
               type: "text",
               text: `Instruction queued for worker ${args.workerId}. They will receive it on their next progress update.`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_search_memory": {
+        const workspaceId = await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Run from a git repo linked to a workspace or set BUILDD_WORKSPACE_ID.");
+        }
+
+        const params = new URLSearchParams();
+        if (args?.query) params.set("query", args.query);
+        if (args?.type) params.set("type", args.type);
+        if (args?.files && Array.isArray(args.files) && args.files.length > 0) {
+          params.set("files", args.files.join(","));
+        }
+        params.set("limit", String(Math.min(args?.limit || 10, 50)));
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/observations/search?${params}`);
+
+        if (!data.results || data.results.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No observations found${args?.query ? ` matching "${args.query}"` : ""}. Use buildd_save_memory to record observations.`,
+              },
+            ],
+          };
+        }
+
+        const summary = data.results.map((obs: { id: string; title: string; type: string; files: string[]; createdAt: string }) =>
+          `- **${obs.type}**: ${obs.title}\n  ID: ${obs.id}\n  Files: ${obs.files?.slice(0, 3).join(", ") || "none"}`
+        ).join("\n\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Found ${data.total} observation(s)${data.total > data.results.length ? ` (showing ${data.results.length})` : ""}:\n\n${summary}\n\nUse buildd_get_memory with IDs for full details.`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_get_memory": {
+        const workspaceId = await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Run from a git repo linked to a workspace or set BUILDD_WORKSPACE_ID.");
+        }
+
+        if (!args?.ids || !Array.isArray(args.ids) || args.ids.length === 0) {
+          throw new Error("ids array is required");
+        }
+
+        if (args.ids.length > 20) {
+          throw new Error("Maximum 20 IDs per request");
+        }
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/observations/batch?ids=${args.ids.join(",")}`);
+
+        if (!data.observations || data.observations.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No observations found for the provided IDs.",
+              },
+            ],
+          };
+        }
+
+        const details = data.observations.map((obs: { id: string; type: string; title: string; content: string; files: string[]; concepts: string[]; createdAt: string }) =>
+          `## ${obs.type}: ${obs.title}\n**ID:** ${obs.id}\n**Files:** ${obs.files?.join(", ") || "none"}\n**Concepts:** ${obs.concepts?.join(", ") || "none"}\n\n${obs.content}`
+        ).join("\n\n---\n\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: details,
+            },
+          ],
+        };
+      }
+
+      case "buildd_save_memory": {
+        const workspaceId = await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Run from a git repo linked to a workspace or set BUILDD_WORKSPACE_ID.");
+        }
+
+        if (!args?.type || !args?.title || !args?.content) {
+          throw new Error("type, title, and content are required");
+        }
+
+        const validTypes = ["gotcha", "pattern", "decision", "discovery", "architecture"];
+        if (!validTypes.includes(args.type)) {
+          throw new Error(`Invalid type. Must be one of: ${validTypes.join(", ")}`);
+        }
+
+        const body: Record<string, unknown> = {
+          type: args.type,
+          title: args.title,
+          content: args.content,
+        };
+
+        if (args.files && Array.isArray(args.files)) {
+          body.files = args.files;
+        }
+        if (args.concepts && Array.isArray(args.concepts)) {
+          body.concepts = args.concepts;
+        }
+
+        // Include worker context if available
+        if (WORKER_ID) {
+          body.workerId = WORKER_ID;
+        }
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/observations`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Observation saved: "${data.observation.title}" (${data.observation.type})\nID: ${data.observation.id}`,
             },
           ],
         };
