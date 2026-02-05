@@ -45,6 +45,9 @@ export default async function WorkspaceMemoryPage({
     .orderBy(desc(observations.createdAt))
     .limit(50);
 
+  // Count total observations for display
+  const totalCount = initialObservations.length;
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -55,7 +58,7 @@ export default async function WorkspaceMemoryPage({
         <div className="flex justify-between items-start mb-8">
           <div>
             <h1 className="text-3xl font-bold">Memory</h1>
-            <p className="text-gray-500 mt-1">{initialObservations.length} observations</p>
+            <p className="text-gray-500 mt-1">{totalCount} observations</p>
           </div>
         </div>
 

@@ -625,8 +625,8 @@ export class WorkerManager {
         }
       }
 
-      // Fetch workspace observations for context
-      const observationsData = await this.buildd.getCompactObservations(task.workspaceId);
+      // Fetch minimal workspace memory context (progressive disclosure approach)
+      const memorySummary = await this.buildd.getMemorySummary(task.workspaceId);
 
       // Build prompt with workspace context
       const promptParts: string[] = [];
@@ -662,9 +662,23 @@ export class WorkerManager {
         promptParts.push(gitContext.join('\n'));
       }
 
-      // Add workspace memory (observations from prior tasks)
-      if (observationsData.count > 0) {
-        promptParts.push(observationsData.markdown);
+      // Add minimal workspace memory context (progressive disclosure)
+      // Workers can use buildd_search_memory and buildd_get_memory MCP tools for more context
+      if (memorySummary.total > 0) {
+        const memoryContext: string[] = ['## Workspace Memory'];
+        memoryContext.push(`This workspace has ${memorySummary.total} observation(s) from previous tasks.`);
+        memoryContext.push(`Use \`buildd_search_memory\` to find relevant context and \`buildd_get_memory\` for full details.`);
+
+        // Include recent gotchas directly since they're critical warnings
+        if (memorySummary.recentGotchas.length > 0) {
+          memoryContext.push('');
+          memoryContext.push('**Recent Gotchas (important warnings):**');
+          for (const gotcha of memorySummary.recentGotchas) {
+            memoryContext.push(`- **${gotcha.title}**: ${gotcha.content}${gotcha.content.length >= 200 ? '...' : ''}`);
+          }
+        }
+
+        promptParts.push(memoryContext.join('\n'));
       }
 
       // Add task description
