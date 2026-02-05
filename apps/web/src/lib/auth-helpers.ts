@@ -16,8 +16,26 @@ export type CurrentUser = {
  * Returns null if not authenticated.
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
-  // Dev mode returns mock user
+  // Dev mode - allow masquerading as real user via DEV_USER_EMAIL env var
   if (process.env.NODE_ENV === 'development') {
+    // If DEV_USER_EMAIL is set, authenticate as that real user from the database
+    if (process.env.DEV_USER_EMAIL) {
+      const realUser = await db.query.users.findFirst({
+        where: eq(users.email, process.env.DEV_USER_EMAIL),
+      });
+      if (realUser) {
+        return {
+          id: realUser.id,
+          googleId: realUser.googleId,
+          email: realUser.email,
+          name: realUser.name,
+          image: realUser.image,
+        };
+      }
+      console.warn(`[auth-helpers] DEV_USER_EMAIL=${process.env.DEV_USER_EMAIL} not found in database, falling back to mock user`);
+    }
+
+    // Fallback to mock user
     return {
       id: 'dev-user-id',
       googleId: 'dev-google-id',
