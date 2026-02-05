@@ -156,6 +156,7 @@ export async function POST(req: NextRequest) {
 
     // Generate branch name based on workspace gitConfig
     const gitConfig = task.workspace?.gitConfig as {
+      branchingStrategy?: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
       branchPrefix?: string;
       useBuildBranch?: boolean;
       defaultBranch?: string;
@@ -168,7 +169,11 @@ export async function POST(req: NextRequest) {
     const taskIdShort = task.id.substring(0, 8);
 
     let branch: string;
-    if (gitConfig?.useBuildBranch) {
+    if (gitConfig?.branchingStrategy === 'none') {
+      // 'none' strategy: defer entirely to project conventions / CLAUDE.md
+      // Use a placeholder - actual branching is determined by agent/CLAUDE.md
+      branch = `task-${taskIdShort}`;
+    } else if (gitConfig?.useBuildBranch) {
       // Explicitly opted into buildd branch naming
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
     } else if (gitConfig?.branchPrefix) {

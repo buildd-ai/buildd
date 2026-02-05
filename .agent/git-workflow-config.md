@@ -15,7 +15,7 @@ Added to `workspaces` table:
 ```typescript
 interface WorkspaceGitConfig {
   defaultBranch: string;              // 'main', 'dev', etc.
-  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;              // 'feature/', null for none
   useBuildBranch?: boolean;          // Use buildd/task-id naming
   commitStyle: 'conventional' | 'freeform' | 'custom';
