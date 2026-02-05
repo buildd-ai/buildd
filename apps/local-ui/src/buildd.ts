@@ -45,6 +45,7 @@ export class BuilddClient {
     localUiUrl?: string;
     currentAction?: string;
     milestones?: Array<{ label: string; timestamp: number }>;
+    waitingFor?: { type: string; prompt: string; options?: string[] } | null;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
