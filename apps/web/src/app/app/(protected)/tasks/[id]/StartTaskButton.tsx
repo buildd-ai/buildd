@@ -29,6 +29,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed'>('idle');
   const [countdown, setCountdown] = useState(0);
   const [error, setError] = useState('');
+  const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -65,7 +66,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     };
   }, []);
 
-  const pollTaskStatus = useCallback(async (startTime: number) => {
+  const pollTaskStatus = useCallback(async (startTime: number, targetLocalUiUrl: string) => {
     try {
       const res = await fetch(`/api/tasks/${taskId}`);
       if (!res.ok) return;
@@ -74,15 +75,31 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
 
       if (task.status !== 'pending') {
         // Task was claimed
-        setStatus('accepted');
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
         }
-        // Refresh page to show active worker
-        setTimeout(() => {
-          router.refresh();
-          setShowModal(false);
-        }, 500);
+
+        // Get the worker that claimed this task
+        try {
+          const workerRes = await fetch(`/api/tasks/${taskId}/workers`);
+          if (workerRes.ok) {
+            const workerData = await workerRes.json();
+            const worker = workerData.workers?.[0];
+            if (worker) {
+              setClaimedWorker({
+                id: worker.id,
+                localUiUrl: worker.localUiUrl || targetLocalUiUrl,
+              });
+            }
+          }
+        } catch {
+          // If we can't get worker details, use the target URL
+          if (targetLocalUiUrl) {
+            setClaimedWorker({ id: '', localUiUrl: targetLocalUiUrl });
+          }
+        }
+
+        setStatus('accepted');
         return;
       }
 
@@ -102,7 +119,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     } catch {
       // Ignore polling errors
     }
-  }, [taskId, router]);
+  }, [taskId]);
 
   const handleStart = async () => {
     setLoading(true);
@@ -127,13 +144,14 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       setStatus('waiting');
       setCountdown(Math.ceil(ASSIGNMENT_TIMEOUT_MS / 1000));
       const startTime = Date.now();
+      const targetUrl = selectedLocalUi;
 
       pollIntervalRef.current = setInterval(() => {
-        pollTaskStatus(startTime);
+        pollTaskStatus(startTime, targetUrl);
       }, 1000);
 
       // Initial poll
-      pollTaskStatus(startTime);
+      pollTaskStatus(startTime, targetUrl);
     } catch (err: any) {
       setError(err.message);
       setStatus('failed');
@@ -151,6 +169,12 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setStatus('idle');
     setError('');
     setSelectedLocalUi('');
+    setClaimedWorker(null);
+  };
+
+  const handleViewInDashboard = () => {
+    router.refresh();
+    setShowModal(false);
   };
 
   const handleRetry = () => {
@@ -184,15 +208,41 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                 </p>
               </div>
             ) : status === 'accepted' ? (
-              <div className="p-6 text-center">
-                <div className="w-8 h-8 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
+              <div className="p-6">
+                <div className="text-center mb-4">
+                  <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <p className="text-gray-700 dark:text-gray-300 font-medium">
+                    Task started!
+                  </p>
+                  <p className="text-sm text-gray-500 mt-1">
+                    A worker has picked up your task
+                  </p>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300">
-                  Task started successfully
-                </p>
+                <div className="space-y-2">
+                  {claimedWorker?.localUiUrl && claimedWorker.id && (
+                    <a
+                      href={`${claimedWorker.localUiUrl}/worker/${claimedWorker.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-gradient-to-r from-purple-600 to-cyan-600 text-white rounded-lg hover:opacity-90 transition-opacity"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      Open in Local UI
+                    </a>
+                  )}
+                  <button
+                    onClick={handleViewInDashboard}
+                    className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    View in Dashboard
+                  </button>
+                </div>
               </div>
             ) : status === 'failed' ? (
               <div className="p-6">

@@ -44,6 +44,8 @@ export default function QuickCreateModal({
   const [assignmentStatus, setAssignmentStatus] = useState<'idle' | 'waiting' | 'accepted' | 'reassigned'>('idle');
   const [countdown, setCountdown] = useState(0);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
+  const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -105,7 +107,7 @@ export default function QuickCreateModal({
     setPastedImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const pollTaskStatus = useCallback(async (taskId: string, startTime: number) => {
+  const pollTaskStatus = useCallback(async (taskId: string, startTime: number, targetLocalUiUrl: string) => {
     try {
       const res = await fetch(`/api/tasks?id=${taskId}`);
       if (!res.ok) return;
@@ -114,12 +116,31 @@ export default function QuickCreateModal({
       const task = data.tasks?.find((t: any) => t.id === taskId);
 
       if (task && task.status !== 'pending') {
-        // Task was claimed
-        setAssignmentStatus('accepted');
+        // Task was claimed - fetch worker details
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
         }
-        onCreated(taskId);
+
+        // Get the worker that claimed this task
+        try {
+          const workerRes = await fetch(`/api/tasks/${taskId}/workers`);
+          if (workerRes.ok) {
+            const workerData = await workerRes.json();
+            const worker = workerData.workers?.[0];
+            if (worker) {
+              setClaimedWorker({
+                id: worker.id,
+                localUiUrl: worker.localUiUrl || targetLocalUiUrl,
+              });
+            }
+          }
+        } catch {
+          // If we can't get worker details, use the target URL we assigned to
+          setClaimedWorker({ id: '', localUiUrl: targetLocalUiUrl });
+        }
+
+        setCreatedTaskId(taskId);
+        setAssignmentStatus('accepted');
         return;
       }
 
@@ -134,19 +155,15 @@ export default function QuickCreateModal({
           clearInterval(pollIntervalRef.current);
         }
         setAssignmentStatus('reassigned');
+        setCreatedTaskId(taskId);
 
         // Call reassign endpoint
         await fetch(`/api/tasks/${taskId}/reassign`, { method: 'POST' });
-
-        // Give it a moment then complete
-        setTimeout(() => {
-          onCreated(taskId);
-        }, 500);
       }
     } catch {
       // Ignore polling errors
     }
-  }, [onCreated]);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,15 +199,17 @@ export default function QuickCreateModal({
       if (selectedLocalUi) {
         setAssignmentStatus('waiting');
         setCountdown(Math.ceil(ASSIGNMENT_TIMEOUT_MS / 1000));
+        setCreatedTaskId(task.id);
         const startTime = Date.now();
+        const targetUrl = selectedLocalUi;
 
         // Start polling every second
         pollIntervalRef.current = setInterval(() => {
-          pollTaskStatus(task.id, startTime);
+          pollTaskStatus(task.id, startTime, targetUrl);
         }, 1000);
 
         // Initial poll
-        pollTaskStatus(task.id, startTime);
+        pollTaskStatus(task.id, startTime, targetUrl);
       } else {
         // No specific assignment, just complete
         onCreated(task.id);
@@ -225,17 +244,74 @@ export default function QuickCreateModal({
               Auto-reassigning in {countdown}s
             </p>
           </div>
-        ) : assignmentStatus === 'reassigned' ? (
-          // Task reassigned
-          <div className="p-6 text-center">
-            <div className="w-8 h-8 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+        ) : assignmentStatus === 'accepted' ? (
+          // Task accepted by worker
+          <div className="p-6">
+            <div className="text-center mb-4">
+              <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <p className="text-gray-700 dark:text-gray-300 font-medium">
+                Task started!
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                A worker has picked up your task
+              </p>
             </div>
-            <p className="text-gray-700 dark:text-gray-300">
-              Reassigned to available workers
-            </p>
+            <div className="space-y-2">
+              {claimedWorker?.localUiUrl && claimedWorker.id && (
+                <a
+                  href={`${claimedWorker.localUiUrl}/worker/${claimedWorker.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-gradient-to-r from-purple-600 to-cyan-600 text-white rounded-lg hover:opacity-90 transition-opacity"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  Open in Local UI
+                </a>
+              )}
+              {createdTaskId && (
+                <button
+                  onClick={() => {
+                    onCreated(createdTaskId);
+                  }}
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  View in Dashboard
+                </button>
+              )}
+            </div>
+          </div>
+        ) : assignmentStatus === 'reassigned' ? (
+          // Task reassigned to any worker
+          <div className="p-6">
+            <div className="text-center mb-4">
+              <div className="w-10 h-10 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <p className="text-gray-700 dark:text-gray-300 font-medium">
+                Queued for any worker
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                The specific worker didn&apos;t respond, task is now available to all workers
+              </p>
+            </div>
+            {createdTaskId && (
+              <button
+                onClick={() => {
+                  onCreated(createdTaskId);
+                }}
+                className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                View in Dashboard
+              </button>
+            )}
           </div>
         ) : (
           // Normal form
