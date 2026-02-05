@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
+import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import MarkdownContent from '@/components/MarkdownContent';
 
@@ -92,6 +93,7 @@ export default async function TaskDetailPage({
   }> | undefined;
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
+  const canStart = task.status === 'pending';
 
   return (
     <div className="p-8 overflow-auto h-full">
@@ -119,6 +121,7 @@ export default async function TaskDetailPage({
               }}
             />
             <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
+            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
             {canReassign && <ReassignButton taskId={task.id} />}
             {task.externalUrl && (
               <a
@@ -326,10 +329,11 @@ export default async function TaskDetailPage({
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (
           <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-            <p className="text-gray-500 mb-2">Waiting for a worker to claim this task</p>
-            <p className="text-sm text-gray-400">
-              Workers will appear here once they start working on this task
+            <p className="text-gray-500 mb-2">This task is waiting to be started</p>
+            <p className="text-sm text-gray-400 mb-4">
+              Click &quot;Start Task&quot; above to assign it to a worker, or wait for a worker to claim it automatically.
             </p>
+            <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />
           </div>
         )}
       </div>
