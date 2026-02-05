@@ -126,10 +126,10 @@ if (serverlessBtn) {
       if (res.ok) {
         window.location.reload();
       } else {
-        alert('Failed to enable serverless mode');
+        showToast('Failed to enable serverless mode', 'error');
       }
     } catch (err) {
-      alert('Error: ' + err.message);
+      showToast('Error: ' + err.message, 'error');
     } finally {
       serverlessBtn.disabled = false;
       serverlessBtn.textContent = 'Use Local Only (no server)';
@@ -594,6 +594,23 @@ function renderWorkerDetail(worker) {
       </div>`;
   }
 
+  // Error indicator for failed/aborted workers
+  if (worker.status === 'error') {
+    timelineEl.innerHTML += `
+      <div class="chat-error-prompt">
+        <div class="chat-error-header">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          Task stopped
+        </div>
+        <div class="chat-error-text">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
+        <div class="chat-error-hint">Send a message below to restart with new instructions</div>
+      </div>`;
+  }
+
   // Restore scroll position (only auto-scroll if was at bottom)
   if (scrollPos !== null) {
     if (wasAtBottom) {
@@ -606,14 +623,17 @@ function renderWorkerDetail(worker) {
   }
 
   // Show/hide message input based on status
+  // Allow input for working, done, waiting, AND error (to restart/continue)
   const messageInputEl = document.querySelector('.modal-input');
-  if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting') {
+  if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting' || worker.status === 'error') {
     messageInputEl.classList.remove('hidden');
     let placeholder = 'Send a message to the agent...';
     if (worker.status === 'done') {
       placeholder = 'Give the agent a follow-up task...';
     } else if (worker.status === 'waiting') {
       placeholder = 'Type your answer or click an option above...';
+    } else if (worker.status === 'error') {
+      placeholder = 'Send a message to restart the task...';
     }
     document.getElementById('messageInput').placeholder = placeholder;
   } else {
@@ -779,13 +799,13 @@ async function handleModelChange() {
     if (res.ok) {
       config.model = model;
       // Show success feedback
-      showToast(`Model updated to ${getModelDisplayName(model)}. New workers will use this model.`);
+      showToast(`Model updated to ${getModelDisplayName(model)}. New workers will use this model.`, 'success');
     } else {
-      alert('Failed to update model');
+      showToast('Failed to update model', 'error');
     }
   } catch (err) {
     console.error('Failed to update model:', err);
-    alert('Failed to update model');
+    showToast('Failed to update model', 'error');
   }
 }
 
@@ -804,15 +824,15 @@ async function handleBypassChange() {
       config.bypassPermissions = enabled;
       showToast(enabled
         ? 'Permission bypass enabled. New workers will skip permission prompts.'
-        : 'Permission bypass disabled. New workers will use standard permissions.');
+        : 'Permission bypass disabled. New workers will use standard permissions.', 'success');
     } else {
       bypassCheckbox.checked = !enabled; // Revert
-      alert('Failed to update bypass permissions');
+      showToast('Failed to update bypass permissions', 'error');
     }
   } catch (err) {
     console.error('Failed to update bypass permissions:', err);
     bypassCheckbox.checked = !enabled; // Revert
-    alert('Failed to update bypass permissions');
+    showToast('Failed to update bypass permissions', 'error');
   }
 }
 
@@ -831,15 +851,15 @@ async function handleAcceptRemoteChange() {
       config.acceptRemoteTasks = enabled;
       showToast(enabled
         ? 'Remote task assignments enabled. Dashboard can push tasks to this worker.'
-        : 'Remote task assignments disabled. Tasks will only run when started locally.');
+        : 'Remote task assignments disabled. Tasks will only run when started locally.', 'success');
     } else {
       acceptRemoteCheckbox.checked = !enabled; // Revert
-      alert('Failed to update remote task setting');
+      showToast('Failed to update remote task setting', 'error');
     }
   } catch (err) {
     console.error('Failed to update remote task setting:', err);
     acceptRemoteCheckbox.checked = !enabled; // Revert
-    alert('Failed to update remote task setting');
+    showToast('Failed to update remote task setting', 'error');
   }
 }
 
@@ -858,15 +878,15 @@ async function handleOpenBrowserChange() {
       config.openBrowser = enabled;
       showToast(enabled
         ? 'Auto-open browser enabled. Browser will open on next startup.'
-        : 'Auto-open browser disabled.');
+        : 'Auto-open browser disabled.', 'success');
     } else {
       openBrowserCheckbox.checked = !enabled; // Revert
-      alert('Failed to update browser setting');
+      showToast('Failed to update browser setting', 'error');
     }
   } catch (err) {
     console.error('Failed to update browser setting:', err);
     openBrowserCheckbox.checked = !enabled; // Revert
-    alert('Failed to update browser setting');
+    showToast('Failed to update browser setting', 'error');
   }
 }
 
@@ -879,24 +899,41 @@ function getModelDisplayName(model) {
   return names[model] || model;
 }
 
-function showToast(message) {
+function showToast(message, type = 'info') {
   // Remove existing toast
   const existing = document.querySelector('.toast');
   if (existing) existing.remove();
 
+  const icons = {
+    success: '✓',
+    error: '✕',
+    warning: '⚠',
+    info: 'ℹ'
+  };
+
   const toast = document.createElement('div');
-  toast.className = 'toast';
-  toast.textContent = message;
+  toast.className = `toast toast-${type}`;
+
+  const icon = document.createElement('span');
+  icon.className = 'toast-icon';
+  icon.textContent = icons[type] || icons.info;
+  toast.appendChild(icon);
+
+  const text = document.createElement('span');
+  text.textContent = message;
+  toast.appendChild(text);
+
   document.body.appendChild(toast);
 
   // Animate in
   requestAnimationFrame(() => toast.classList.add('show'));
 
-  // Remove after 3s
+  // Remove after delay (longer for errors)
+  const duration = type === 'error' ? 5000 : 3000;
   setTimeout(() => {
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  }, duration);
 }
 
 // API calls
@@ -1267,15 +1304,16 @@ async function cloneWorkspace(workspaceId, repoUrl) {
 
     if (!res.ok) {
       const err = await res.json();
-      alert(`Clone failed: ${err.error}`);
+      showToast(`Clone failed: ${err.error}`, 'error');
       return;
     }
 
     // Refresh
     await renderWorkspaceModal();
     await loadWorkspaces();
+    showToast('Workspace cloned successfully', 'success');
   } catch (err) {
-    alert('Clone failed: ' + err.message);
+    showToast('Clone failed: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Clone';
@@ -1296,15 +1334,16 @@ async function syncWorkspace(localPath, name) {
 
     if (!res.ok) {
       const err = await res.json();
-      alert(`Sync failed: ${err.error}`);
+      showToast(`Sync failed: ${err.error}`, 'error');
       return;
     }
 
     // Refresh
     await renderWorkspaceModal();
     await loadWorkspaces();
+    showToast('Workspace synced successfully', 'success');
   } catch (err) {
-    alert('Sync failed: ' + err.message);
+    showToast('Sync failed: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Sync';
@@ -1320,13 +1359,14 @@ async function claimTask(taskId) {
     });
     const data = await res.json();
     if (data.worker) {
+      showToast('Task claimed successfully', 'success');
       loadTasks();
     } else {
-      alert(data.error || 'Failed to claim task');
+      showToast(data.error || 'Failed to claim task', 'error');
     }
   } catch (err) {
     console.error('Failed to claim task:', err);
-    alert('Failed to claim task');
+    showToast('Failed to claim task', 'error');
   }
 }
 
@@ -1347,19 +1387,19 @@ async function takeoverTask(taskId, btn) {
     const data = await res.json();
 
     if (data.worker) {
-      showToast('Task taken over successfully');
+      showToast('Task taken over successfully', 'success');
       loadTasks();
     } else {
       const errorMsg = data.error || 'Failed to take over task';
       if (data.canTakeover === false) {
-        alert(`${errorMsg}\n\nYou can only take over tasks that are:\n- Stale (expired)\n- In a workspace you own`);
+        showToast(`${errorMsg}. Only stale tasks in your workspace can be taken over.`, 'error');
       } else {
-        alert(errorMsg);
+        showToast(errorMsg, 'error');
       }
     }
   } catch (err) {
     console.error('Failed to take over task:', err);
-    alert('Failed to take over task');
+    showToast('Failed to take over task', 'error');
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -1435,7 +1475,7 @@ async function createTask() {
   const description = document.getElementById('taskDescription').value.trim();
 
   if (!workspaceId || !title) {
-    alert('Please select a workspace and fill in the title');
+    showToast('Please select a workspace and fill in the title', 'warning');
     return;
   }
 
@@ -1458,10 +1498,11 @@ async function createTask() {
     });
 
     closeTaskModal();
+    showToast('Task created successfully', 'success');
     loadTasks();
   } catch (err) {
     console.error('Failed to create task:', err);
-    alert('Failed to create task');
+    showToast('Failed to create task', 'error');
   }
 }
 

@@ -973,10 +973,26 @@ export class WorkerManager {
 
     // Check for identical consecutive tool calls (same tool + same input)
     const lastCalls = recentCalls.slice(-MAX_IDENTICAL_TOOL_CALLS);
-    const lastCallKey = JSON.stringify({ name: lastCalls[0].name, input: lastCalls[0].input });
-    const allIdentical = lastCalls.every(
-      tc => JSON.stringify({ name: tc.name, input: tc.input }) === lastCallKey
-    );
+
+    // For Read operations, normalize the key to exclude offset/limit since reading
+    // different sections of the same file is legitimate behavior
+    const normalizeCallKey = (tc: { name: string; input?: Record<string, unknown> }) => {
+      if (tc.name === 'Read') {
+        // For Read, include offset+limit in the key so different sections are distinct
+        // If offset/limit differ, these are different reads
+        return JSON.stringify({
+          name: tc.name,
+          file_path: tc.input?.file_path,
+          offset: tc.input?.offset,
+          limit: tc.input?.limit,
+        });
+      }
+      return JSON.stringify({ name: tc.name, input: tc.input });
+    };
+
+    const lastCallKey = normalizeCallKey(lastCalls[0]);
+    const allIdentical = lastCalls.every(tc => normalizeCallKey(tc) === lastCallKey);
+
     if (allIdentical) {
       return {
         isRepetitive: true,
@@ -1073,12 +1089,13 @@ export class WorkerManager {
 
     const session = this.sessions.get(workerId);
 
-    // If worker is done but session ended, restart it
-    if (worker.status === 'done' && !session) {
+    // If worker is done or errored but session ended, restart it
+    if ((worker.status === 'done' || worker.status === 'error') && !session) {
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
 
-      // Update worker status
+      // Update worker status (clear any previous error)
       worker.status = 'working';
+      worker.error = undefined;
       worker.currentAction = 'Processing follow-up...';
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
