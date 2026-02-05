@@ -566,11 +566,11 @@ const server = Bun.serve({
         // Allow combined-workspaces and local-repos in serverless
         if (path === '/api/combined-workspaces' || path === '/api/local-repos') {
           // Will be handled below
-        } else if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        } else if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Server features not available in local-only mode', serverless: true }, { status: 400, headers: corsHeaders });
         }
       } else {
-        if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
       }
@@ -630,6 +630,12 @@ const server = Bun.serve({
     if (path === '/api/abort' && req.method === 'POST') {
       const body = await parseBody(req);
       await workerManager!.abort(body.workerId);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (path === '/api/retry' && req.method === 'POST') {
+      const body = await parseBody(req);
+      await workerManager!.retry(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
