@@ -356,6 +356,7 @@ async function parseBody(req: Request) {
 // Handle requests
 const server = Bun.serve({
   port: PORT,
+  development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
   idleTimeout: 120, // 2 minutes for long-running requests
   async fetch(req) {
     const url = new URL(req.url);
@@ -1157,6 +1158,14 @@ const server = Bun.serve({
     }
 
     return new Response('Not found', { status: 404 });
+  },
+  error(err) {
+    // Return JSON errors instead of Bun's HTML error overlay
+    console.error('Unhandled server error:', err.message);
+    return Response.json(
+      { error: err.message || 'Internal server error' },
+      { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } },
+    );
   },
 });
 
