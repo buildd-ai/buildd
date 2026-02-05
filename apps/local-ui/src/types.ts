@@ -1,5 +1,15 @@
 // Worker status
-export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale';
+export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
+
+// Waiting for user input (question/permission)
+export interface WaitingFor {
+  type: 'question';
+  prompt: string;
+  options?: Array<{
+    label: string;
+    description?: string;
+  }>;
+}
 
 // Milestone for progress tracking
 export interface Milestone {
@@ -33,6 +43,7 @@ export interface LocalWorker {
   status: WorkerStatus;
   hasNewActivity: boolean;  // Blue dot
   lastActivity: number;
+  completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;
   commits: Array<{ sha: string; message: string }>;
@@ -41,6 +52,7 @@ export interface LocalWorker {
   messages: ChatMessage[];  // Unified chronological timeline
   sessionId?: string;
   error?: string;
+  waitingFor?: WaitingFor;  // Set when agent asks a question
 }
 
 // Task mode
@@ -74,7 +86,7 @@ export interface BuilddTask {
 export interface WorkspaceGitConfig {
   // Branching
   defaultBranch: string;
-  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;
   useBuildBranch?: boolean;
 

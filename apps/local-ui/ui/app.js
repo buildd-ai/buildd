@@ -253,16 +253,35 @@ function handleEvent(event) {
   }
 }
 
+// Time formatting helpers
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return '';
+  const now = Date.now();
+  const diff = now - timestamp;
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+
+  if (seconds < 60) return `${seconds}s ago`;
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 // Render functions
 function renderWorkers() {
   const active = workers.filter(w => ['working', 'stale'].includes(w.status));
+  const waiting = workers.filter(w => w.status === 'waiting');
   const completed = workers.filter(w => ['done', 'error'].includes(w.status));
 
-  // Render active workers
-  if (active.length === 0) {
+  // Render active workers (including waiting at the top)
+  const allActive = [...waiting, ...active];
+  if (allActive.length === 0) {
     workersEl.innerHTML = '<div class="empty">No active workers</div>';
   } else {
-    workersEl.innerHTML = active.map(w => renderWorkerCard(w)).join('');
+    workersEl.innerHTML = allActive.map(w =>
+      w.status === 'waiting' ? renderWaitingCard(w) : renderWorkerCard(w)
+    ).join('');
     workersEl.querySelectorAll('.worker-card').forEach(card => {
       card.onclick = () => openWorkerModal(card.dataset.id);
     });
@@ -290,6 +309,23 @@ function renderWorkerCard(w) {
   `;
 }
 
+function renderWaitingCard(w) {
+  const question = w.waitingFor?.prompt || 'Awaiting input';
+  const truncatedQuestion = question.length > 100 ? question.slice(0, 100) + '...' : question;
+  return `
+    <div class="worker-card waiting-card" data-id="${w.id}">
+      <div class="card-header">
+        <div class="status-dot waiting"></div>
+        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
+        <div class="card-badge waiting">needs input</div>
+      </div>
+      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
+      <div class="card-question">${escapeHtml(truncatedQuestion)}</div>
+      <div class="card-action">Click to respond</div>
+    </div>
+  `;
+}
+
 function renderCompletedSection(completed) {
   if (completed.length === 0) {
     completedSectionEl.classList.add('hidden');
@@ -298,7 +334,13 @@ function renderCompletedSection(completed) {
   }
 
   completedSectionEl.classList.remove('hidden');
-  const recent = completed.slice(0, 10); // Show last 10
+  // Sort by completedAt descending (most recent first), fallback to lastActivity
+  const sorted = [...completed].sort((a, b) => {
+    const aTime = a.completedAt || a.lastActivity || 0;
+    const bTime = b.completedAt || b.lastActivity || 0;
+    return bTime - aTime;
+  });
+  const recent = sorted.slice(0, 10); // Show last 10
 
   completedEl.innerHTML = `
     <div class="section-header-collapsible ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
@@ -319,6 +361,7 @@ function renderCompletedSection(completed) {
 }
 
 function renderCompletedCard(w) {
+  const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
   return `
     <div class="worker-card completed-card" data-id="${w.id}">
       <div class="card-header">
@@ -326,7 +369,7 @@ function renderCompletedCard(w) {
         <div class="card-title">${escapeHtml(w.taskTitle)}</div>
         <div class="card-badge">${w.status}</div>
       </div>
-      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones</div>
+      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
     </div>
   `;
 }
@@ -335,6 +378,22 @@ function toggleCompleted() {
   completedCollapsed = !completedCollapsed;
   const completed = workers.filter(w => ['done', 'error'].includes(w.status));
   renderCompletedSection(completed);
+}
+
+function toggleDescription(btn) {
+  const card = btn.closest('.task-description-card');
+  const isCollapsed = card.classList.contains('collapsed');
+  card.classList.toggle('collapsed', !isCollapsed);
+  card.classList.toggle('expanded', isCollapsed);
+  btn.querySelector('.expand-text').textContent = isCollapsed ? 'Show less' : 'Show more';
+}
+
+function toggleAgentMessage(btn) {
+  const msg = btn.closest('.chat-agent');
+  const isCollapsed = msg.classList.contains('collapsed');
+  msg.classList.toggle('collapsed', !isCollapsed);
+  msg.classList.toggle('expanded', isCollapsed);
+  btn.querySelector('.expand-text').textContent = isCollapsed ? 'Show less' : 'Show more';
 }
 
 function getStatusClass(worker) {
@@ -427,13 +486,22 @@ function renderWorkerDetail(worker) {
     <span class="meta-tag status-${worker.status}">${worker.status}</span>
   `;
 
-  // Render description with markdown support
+  // Render description with markdown support (collapsible if long)
   const descriptionEl = document.getElementById('modalDescription');
   if (worker.taskDescription) {
+    const isLongDescription = worker.taskDescription.length > 300 || worker.taskDescription.split('\n').length > 6;
     descriptionEl.innerHTML = `
-      <div class="task-description-card">
+      <div class="task-description-card ${isLongDescription ? 'collapsed' : ''}">
         <div class="task-description-header">Task</div>
         <div class="markdown-content">${marked.parse(worker.taskDescription)}</div>
+        ${isLongDescription ? `
+          <button class="expand-btn" onclick="toggleDescription(this)">
+            <span class="expand-text">Show more</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+        ` : ''}
       </div>
     `;
   } else {
@@ -456,10 +524,20 @@ function renderWorkerDetail(worker) {
     const grouped = groupMessages(messages);
     timelineEl.innerHTML = grouped.map(group => {
       if (group.type === 'text') {
+        const combinedContent = group.items.map(m => m.content).join('\n\n');
+        const isLong = combinedContent.length > 800 || combinedContent.split('\n').length > 15;
         return `
-          <div class="chat-msg chat-agent">
+          <div class="chat-msg chat-agent ${isLong ? 'collapsed' : ''}">
             <div class="chat-msg-content">
-              <div class="markdown-content">${marked.parse(group.items.map(m => m.content).join('\n\n'))}</div>
+              <div class="markdown-content">${marked.parse(combinedContent)}</div>
+              ${isLong ? `
+                <button class="expand-msg-btn" onclick="toggleAgentMessage(this)">
+                  <span class="expand-text">Show more</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </button>
+              ` : ''}
             </div>
           </div>`;
       }
@@ -495,6 +573,27 @@ function renderWorkerDetail(worker) {
       </div>`;
   }
 
+  // Question prompt for waiting workers
+  if (worker.status === 'waiting' && worker.waitingFor) {
+    const options = worker.waitingFor.options || [];
+    timelineEl.innerHTML += `
+      <div class="chat-question-prompt">
+        <div class="chat-question-header">Agent is asking:</div>
+        <div class="chat-question-text">${escapeHtml(worker.waitingFor.prompt)}</div>
+        ${options.length > 0 ? `
+          <div class="chat-question-options">
+            ${options.map((opt, i) => `
+              <button class="btn btn-option" data-option="${i}"
+                onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
+                ${escapeHtml(opt.label)}
+                ${opt.description ? `<span class="option-desc">${escapeHtml(opt.description)}</span>` : ''}
+              </button>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>`;
+  }
+
   // Restore scroll position (only auto-scroll if was at bottom)
   if (scrollPos !== null) {
     if (wasAtBottom) {
@@ -508,11 +607,14 @@ function renderWorkerDetail(worker) {
 
   // Show/hide message input based on status
   const messageInputEl = document.querySelector('.modal-input');
-  if (worker.status === 'working' || worker.status === 'done') {
+  if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting') {
     messageInputEl.classList.remove('hidden');
-    const placeholder = worker.status === 'done'
-      ? 'Give the agent a follow-up task...'
-      : 'Send a message to the agent...';
+    let placeholder = 'Send a message to the agent...';
+    if (worker.status === 'done') {
+      placeholder = 'Give the agent a follow-up task...';
+    } else if (worker.status === 'waiting') {
+      placeholder = 'Type your answer or click an option above...';
+    }
     document.getElementById('messageInput').placeholder = placeholder;
   } else {
     messageInputEl.classList.add('hidden');
@@ -1309,6 +1411,21 @@ async function sendMessage() {
     input.value = '';
   } catch (err) {
     console.error('Failed to send message:', err);
+  }
+}
+
+// Send a predefined answer from question options
+async function sendQuestionAnswer(answer) {
+  if (!currentWorkerId) return;
+
+  try {
+    await fetch(`/api/workers/${currentWorkerId}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: answer })
+    });
+  } catch (err) {
+    console.error('Failed to send answer:', err);
   }
 }
 
