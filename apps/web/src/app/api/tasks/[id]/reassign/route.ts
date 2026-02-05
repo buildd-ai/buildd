@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { accounts, tasks, workers } from '@buildd/core/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
+
+async function authenticateApiKey(apiKey: string | null) {
+  if (!apiKey) return null;
+  const account = await db.query.accounts.findFirst({
+    where: eq(accounts.apiKey, apiKey),
+  });
+  return account || null;
+}
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -20,9 +28,16 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getCurrentUser();
-  if (!user) {
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const apiAccount = await authenticateApiKey(apiKey);
+
+  if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  // Use the authenticated account ID for ownership checks
+  const authUserId = user?.id || apiAccount?.id;
 
   const { id: taskId } = await params;
   const url = new URL(req.url);
@@ -40,7 +55,7 @@ export async function POST(
     }
 
     // Check if user owns the workspace (admin access)
-    const isWorkspaceOwner = task.workspace?.ownerId === user.id;
+    const isWorkspaceOwner = task.workspace?.ownerId === authUserId;
 
     // Check if task is stale (expiresAt is in the past)
     const isStale = task.expiresAt && new Date(task.expiresAt) < new Date();
