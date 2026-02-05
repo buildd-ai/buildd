@@ -9,18 +9,18 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
-<body>
+<body class="bg-zinc-950 text-zinc-50 min-h-screen min-h-dvh overflow-x-hidden">
   <!-- Setup screen (shown when not configured) -->
-  <div id="setup" class="setup hidden">
-    <div class="setup-content">
-      <div class="setup-logo">
-        <img src="/icon.png" alt="buildd" class="logo-img large">
-        <h1>buildd</h1>
+  <div id="setup" class="setup hidden min-h-screen flex items-center justify-center p-5">
+    <div class="max-w-[400px] w-full text-center">
+      <div class="mb-2">
+        <img src="/icon.png" alt="buildd" class="w-16 h-16 rounded-lg mb-4 inline-block">
+        <h1 class="text-[32px] font-semibold">buildd</h1>
       </div>
-      <p class="setup-subtitle">Local task runner for AI agents</p>
+      <p class="text-zinc-400 mb-8">Local task runner for AI agents</p>
 
-      <div class="setup-options">
-        <a href="/auth/login" class="btn btn-primary btn-large">
+      <div class="flex flex-col gap-4">
+        <a href="/auth/login" class="btn bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-3.5 px-6 text-base rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-2.5 no-underline hover:bg-gradient-primary-hover active:bg-gradient-primary-hover active:scale-[0.98]">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
             <polyline points="10 17 15 12 10 7"/>
@@ -28,66 +28,66 @@
           </svg>
           Login with buildd
         </a>
-        <div class="setup-divider">
+        <div class="setup-divider flex items-center gap-4 text-zinc-400">
           <span>or</span>
         </div>
-        <button class="btn btn-secondary" id="manualKeyBtn">
+        <button class="btn bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="manualKeyBtn">
           Enter API Key Manually
         </button>
-        <div class="setup-divider">
+        <div class="setup-divider flex items-center gap-4 text-zinc-400">
           <span>or</span>
         </div>
-        <button class="btn btn-ghost" id="serverlessBtn">
+        <button class="btn bg-transparent border border-zinc-700 text-zinc-400 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-zinc-900 hover:text-zinc-50" id="serverlessBtn">
           Use Local Only (no server)
         </button>
       </div>
 
-      <div id="manualKeyForm" class="manual-key-form hidden">
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="apiKeyInput" class="input" placeholder="bld_xxxxxx...">
+      <div id="manualKeyForm" class="hidden mt-6 text-left">
+        <div class="mb-4">
+          <label class="block text-sm mb-2 text-zinc-400">API Key</label>
+          <input type="password" id="apiKeyInput" class="input w-full bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500" placeholder="bld_xxxxxx...">
         </div>
-        <div class="form-actions">
-          <button class="btn btn-secondary" id="cancelKeyBtn">Cancel</button>
-          <button class="btn btn-primary" id="saveKeyBtn">Save</button>
+        <div class="flex gap-3">
+          <button class="btn bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex-1" id="cancelKeyBtn">Cancel</button>
+          <button class="btn bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex-1 hover:bg-gradient-primary-hover" id="saveKeyBtn">Save</button>
         </div>
-        <p class="setup-hint">Get your API key from the <a href="https://app.buildd.dev" target="_blank">buildd dashboard</a></p>
+        <p class="mt-4 text-[13px] text-zinc-400">Get your API key from the <a href="https://app.buildd.dev" target="_blank" class="text-fuchsia-500 no-underline hover:underline">buildd dashboard</a></p>
       </div>
 
-      <p id="setupError" class="setup-error hidden"></p>
+      <p id="setupError" class="hidden mt-4 p-3 bg-red-500/10 border border-red-500 rounded-lg text-red-500 text-sm"></p>
 
-      <p class="setup-oss">Built with <a href="https://github.com/anthropics/anthropic-sdk-python/tree/main/src/anthropic/experimental/claude_agent" target="_blank">Claude Agent SDK</a>, <a href="https://bun.sh" target="_blank">Bun</a>, and <a href="https://pusher.com" target="_blank">Pusher</a></p>
+      <p class="mt-8 text-xs text-zinc-400">Built with <a href="https://github.com/anthropics/anthropic-sdk-python/tree/main/src/anthropic/experimental/claude_agent" target="_blank" class="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-50 hover:decoration-zinc-400">Claude Agent SDK</a>, <a href="https://bun.sh" target="_blank" class="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-50 hover:decoration-zinc-400">Bun</a>, and <a href="https://pusher.com" target="_blank" class="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-50 hover:decoration-zinc-400">Pusher</a></p>
     </div>
   </div>
 
   <div id="app" class="hidden">
     <!-- Header -->
-    <header class="header">
-      <div class="logo">
-        <img src="/icon.png" alt="buildd" class="logo-img">
+    <header class="flex items-center justify-between p-4 border-b border-zinc-700 sticky top-0 bg-zinc-950 z-[100] md:px-6">
+      <div class="flex items-center gap-2.5 font-semibold text-lg">
+        <img src="/icon.png" alt="buildd" class="w-8 h-8 rounded-lg">
         <span>buildd</span>
       </div>
-      <div class="header-actions">
-        <button class="btn-icon hidden" id="outboxBtn" title="Pending sync" onclick="handleOutboxFlush()" style="position: relative;">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <div class="flex gap-2">
+        <button class="hidden w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="outboxBtn" title="Pending sync" onclick="handleOutboxFlush()" style="position: relative;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 2v10l4 2"/>
             <circle cx="12" cy="12" r="10"/>
           </svg>
-          <span id="outboxBadge" style="position: absolute; top: -2px; right: -2px; background: var(--warning, #f59e0b); color: #000; font-size: 10px; font-weight: 700; min-width: 16px; height: 16px; border-radius: 8px; display: flex; align-items: center; justify-content: center; padding: 0 4px;">0</span>
+          <span id="outboxBadge" style="position: absolute; top: -2px; right: -2px; background: #f59e0b; color: #000; font-size: 10px; font-weight: 700; min-width: 16px; height: 16px; border-radius: 8px; display: flex; align-items: center; justify-content: center; padding: 0 4px;">0</span>
         </button>
-        <button class="btn-icon" id="refreshBtn" title="Refresh">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="refreshBtn" title="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
             <path d="M21 3v5h-5"/>
           </svg>
         </button>
-        <button class="btn-icon" id="addBtn" title="New Task">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="addBtn" title="New Task">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 5v14M5 12h14"/>
           </svg>
         </button>
-        <button class="btn-icon" id="settingsBtn" title="Settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="settingsBtn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
             <circle cx="12" cy="12" r="3"/>
           </svg>
@@ -96,35 +96,35 @@
     </header>
 
     <!-- Main content -->
-    <main class="main">
+    <main class="p-4 md:max-w-[800px] md:mx-auto md:p-6">
       <!-- Stats bar -->
-      <div class="stats-bar" id="statsBar">
-        <div class="stat-item">
-          <span class="stat-value" id="statActive">0</span>
-          <span class="stat-label">Active</span>
+      <div class="flex items-center justify-center p-3 px-4 bg-zinc-900 rounded-xl mb-5" id="statsBar">
+        <div class="flex flex-col items-center flex-1 gap-0.5">
+          <span class="text-xl font-bold text-zinc-50 leading-none" id="statActive">0</span>
+          <span class="text-[11px] text-zinc-400 uppercase tracking-wide font-medium">Active</span>
         </div>
-        <div class="stat-divider"></div>
-        <div class="stat-item">
-          <span class="stat-value" id="statPending">0</span>
-          <span class="stat-label">Pending</span>
+        <div class="w-px h-7 bg-zinc-700"></div>
+        <div class="flex flex-col items-center flex-1 gap-0.5">
+          <span class="text-xl font-bold text-zinc-50 leading-none" id="statPending">0</span>
+          <span class="text-[11px] text-zinc-400 uppercase tracking-wide font-medium">Pending</span>
         </div>
-        <div class="stat-divider"></div>
-        <div class="stat-item">
-          <span class="stat-value" id="statCompleted">0</span>
-          <span class="stat-label">Done</span>
+        <div class="w-px h-7 bg-zinc-700"></div>
+        <div class="flex flex-col items-center flex-1 gap-0.5">
+          <span class="text-xl font-bold text-zinc-50 leading-none" id="statCompleted">0</span>
+          <span class="text-[11px] text-zinc-400 uppercase tracking-wide font-medium">Done</span>
         </div>
       </div>
 
       <!-- Empty state hero (shown when no workers and no tasks) -->
-      <div id="emptyHero" class="empty-hero hidden">
-        <div class="empty-hero-icon">
+      <div id="emptyHero" class="hidden flex flex-col items-center justify-center pt-12 pb-16 px-6 text-center">
+        <div class="w-20 h-20 rounded-full bg-gradient-to-br from-fuchsia-500/15 to-cyan-400/10 flex items-center justify-center mb-5 text-fuchsia-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
             <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
           </svg>
         </div>
-        <h2 class="empty-hero-title">Ready to build</h2>
-        <p class="empty-hero-subtitle">Create a task and an AI agent will start working on it</p>
-        <button class="btn btn-primary btn-large" id="heroCreateBtn">
+        <h2 class="text-[22px] font-semibold text-zinc-50 mb-2">Ready to build</h2>
+        <p class="text-[15px] text-zinc-400 mb-7 max-w-[280px] leading-relaxed">Create a task and an AI agent will start working on it</p>
+        <button class="btn bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-3.5 px-7 text-[15px] rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-gradient-primary-hover active:bg-gradient-primary-hover active:scale-[0.98]" id="heroCreateBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
             <path d="M12 5v14M5 12h14"/>
           </svg>
@@ -135,208 +135,208 @@
       <!-- Content sections (hidden when empty hero is shown) -->
       <div id="contentSections">
         <!-- Waiting workers (needs attention) -->
-        <section class="section" id="waitingSection">
-          <div id="waiting" class="worker-list"></div>
+        <section class="mb-6" id="waitingSection">
+          <div id="waiting" class="flex flex-col gap-3"></div>
         </section>
 
         <!-- Active workers -->
-        <section class="section" id="activeSection">
-          <h2 class="section-title">Active</h2>
-          <div id="workers" class="worker-list"></div>
+        <section class="mb-6" id="activeSection">
+          <h2 class="text-[13px] font-semibold text-zinc-400 uppercase tracking-wide mb-3">Active</h2>
+          <div id="workers" class="flex flex-col gap-3"></div>
         </section>
 
         <!-- Pending tasks -->
-        <section class="section" id="pendingSection">
-          <div class="section-title-row">
-            <h2 class="section-title">Pending</h2>
-            <button class="btn-text" id="inlineAddBtn">+ New</button>
+        <section class="mb-6" id="pendingSection">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-[13px] font-semibold text-zinc-400 uppercase tracking-wide">Pending</h2>
+            <button class="bg-none border-none text-fuchsia-500 text-[13px] font-medium cursor-pointer py-1 px-2 rounded transition-colors duration-150 hover:bg-fuchsia-500/10" id="inlineAddBtn">+ New</button>
           </div>
-          <div id="tasks" class="task-list"></div>
+          <div id="tasks" class="flex flex-col gap-3"></div>
         </section>
 
         <!-- Completed workers section -->
-        <section class="section" id="completedSection">
+        <section class="mb-6" id="completedSection">
           <div id="completed"></div>
         </section>
       </div>
     </main>
 
     <!-- Worker detail modal -->
-    <div id="workerModal" class="modal hidden">
-      <div class="modal-content">
-        <header class="modal-header">
-          <button class="btn-icon" id="modalBack">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div id="workerModal" class="modal hidden fixed inset-0 bg-zinc-950 z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+      <div class="modal-content flex flex-col h-full sm:bg-zinc-950 sm:rounded-xl sm:border sm:border-zinc-700 sm:max-h-[90vh] sm:w-full sm:max-w-[640px] sm:shadow-[0_16px_48px_rgba(0,0,0,0.5)] sm:h-[80vh]">
+        <header class="flex items-center gap-3 p-4 border-b border-zinc-700">
+          <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="modalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
-          <h2 id="modalTitle">Worker</h2>
-          <button class="btn-icon" id="modalClose">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <h2 class="flex-1 text-[17px] font-semibold" id="modalTitle">Worker</h2>
+          <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="modalClose">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M18 6L6 18M6 6l12 12"/>
             </svg>
           </button>
         </header>
-        <div class="modal-body">
-          <div class="worker-meta" id="modalMeta"></div>
-          <div class="worker-description" id="modalDescription"></div>
-          <div class="chat-timeline" id="chatTimeline"></div>
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+          <div class="flex flex-wrap gap-2 mb-4" id="modalMeta"></div>
+          <div class="mb-4 shrink-0 max-h-[40vh] overflow-y-auto" id="modalDescription"></div>
+          <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
         </div>
-        <div class="modal-input">
-          <input type="text" id="messageInput" class="input" placeholder="Send a message to the agent...">
-          <button class="btn btn-primary" id="sendMessageBtn">Send</button>
+        <div class="flex gap-2 py-3 px-4 border-t border-zinc-700 bg-zinc-900">
+          <input type="text" id="messageInput" class="input flex-1 w-full bg-zinc-900 border border-zinc-700 rounded-lg py-2.5 px-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500" placeholder="Send a message to the agent...">
+          <button class="btn bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-2.5 px-4 rounded-lg font-medium cursor-pointer transition-all duration-200 shrink-0 hover:bg-gradient-primary-hover" id="sendMessageBtn">Send</button>
         </div>
-        <footer class="modal-footer" id="modalFooter">
-          <button class="btn btn-danger-outline" id="modalAbortBtn">
+        <footer class="flex gap-3 p-4 border-t border-zinc-700" id="modalFooter">
+          <button class="btn flex-1 bg-transparent text-red-500 border border-red-500/30 rounded-lg py-3 px-6 font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-1.5 hover:bg-red-500/10 hover:border-red-500/50" id="modalAbortBtn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
               <rect x="3" y="3" width="18" height="18" rx="2"/>
             </svg>
             Stop Task
           </button>
-          <button class="btn btn-primary" id="modalDoneBtn">Mark Done</button>
+          <button class="btn flex-1 bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-gradient-primary-hover" id="modalDoneBtn">Mark Done</button>
         </footer>
       </div>
     </div>
 
     <!-- New task modal -->
-    <div id="taskModal" class="modal hidden">
-      <div class="modal-content">
-        <header class="modal-header">
-          <button class="btn-icon" id="taskModalBack">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div id="taskModal" class="modal hidden fixed inset-0 bg-zinc-950 z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+      <div class="modal-content flex flex-col h-full sm:bg-zinc-950 sm:rounded-xl sm:border sm:border-zinc-700 sm:max-h-[90vh] sm:w-full sm:max-w-[520px] sm:shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+        <header class="flex items-center gap-3 p-4 border-b border-zinc-700">
+          <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="taskModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
-          <h2>New Task</h2>
+          <h2 class="flex-1 text-[17px] font-semibold">New Task</h2>
           <div></div>
         </header>
-        <div class="modal-body">
-          <div class="form-group">
-            <label>Workspace</label>
-            <div class="workspace-select-row">
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+          <div class="mb-4">
+            <label class="block text-[13px] font-medium text-zinc-400 mb-2">Workspace</label>
+            <div class="flex gap-2 items-center">
               <div class="custom-select flex-1" id="workspaceSelect">
-                <button type="button" class="custom-select-trigger" id="workspaceSelectTrigger">
-                  <span class="custom-select-value">Select workspace...</span>
-                  <svg class="custom-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-50 text-sm cursor-pointer transition-all duration-150 hover:border-zinc-400" id="workspaceSelectTrigger">
+                  <span class="custom-select-value flex-1 text-left whitespace-nowrap overflow-hidden text-ellipsis placeholder text-zinc-400">Select workspace...</span>
+                  <svg class="custom-select-arrow shrink-0 ml-2 text-zinc-400 transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                     <polyline points="6 9 12 15 18 9"/>
                   </svg>
                 </button>
                 <div class="custom-select-dropdown hidden" id="workspaceSelectDropdown">
-                  <div class="custom-select-options" id="workspaceSelectOptions"></div>
+                  <div class="custom-select-options p-2" id="workspaceSelectOptions"></div>
                 </div>
               </div>
-              <button type="button" class="btn btn-secondary btn-icon-text" id="manageWorkspacesBtn">
+              <button type="button" class="btn bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="manageWorkspacesBtn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
                 Manage
               </button>
             </div>
-            <p id="workspaceHint" class="form-hint hidden"></p>
+            <p id="workspaceHint" class="hidden text-xs text-orange-500 mt-1.5"></p>
             <input type="hidden" id="taskWorkspace" value="">
           </div>
-          <div class="form-group">
-            <label>Title</label>
-            <input type="text" id="taskTitle" class="input" placeholder="Fix the bug...">
+          <div class="mb-4">
+            <label class="block text-[13px] font-medium text-zinc-400 mb-2">Title</label>
+            <input type="text" id="taskTitle" class="input w-full bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500" placeholder="Fix the bug...">
           </div>
-          <div class="form-group">
-            <label>Description</label>
-            <textarea id="taskDescription" class="input textarea" placeholder="Describe the task..."></textarea>
+          <div class="mb-4">
+            <label class="block text-[13px] font-medium text-zinc-400 mb-2">Description</label>
+            <textarea id="taskDescription" class="input w-full bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500 min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
           </div>
-          <div class="form-group">
-            <label>Attachments</label>
-            <div class="attachments" id="attachments">
-              <label class="attachment-add">
+          <div class="mb-4">
+            <label class="block text-[13px] font-medium text-zinc-400 mb-2">Attachments</label>
+            <div class="flex flex-wrap gap-3" id="attachments">
+              <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-zinc-900 border-2 border-dashed border-zinc-700 flex items-center justify-center cursor-pointer">
                 <input type="file" id="fileInput" accept="image/*" multiple hidden>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 text-zinc-400">
                   <path d="M12 5v14M5 12h14"/>
                 </svg>
               </label>
             </div>
           </div>
         </div>
-        <footer class="modal-footer">
-          <button class="btn btn-secondary" id="taskModalCancel">Cancel</button>
-          <button class="btn btn-secondary" id="taskModalCreate">Create</button>
-          <button class="btn btn-primary" id="taskModalStart">Start Task</button>
+        <footer class="flex gap-3 p-4 border-t border-zinc-700">
+          <button class="btn flex-1 bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="taskModalCancel">Cancel</button>
+          <button class="btn flex-1 bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="taskModalCreate">Create</button>
+          <button class="btn flex-[1.5] bg-gradient-primary text-white shadow-[0_4px_14px_rgba(217,70,239,0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-gradient-primary-hover" id="taskModalStart">Start Task</button>
         </footer>
       </div>
     </div>
 
     <!-- Settings modal -->
-    <div id="settingsModal" class="modal hidden">
-      <div class="modal-content">
-        <header class="modal-header">
-          <button class="btn-icon" id="settingsModalBack">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div id="settingsModal" class="modal hidden fixed inset-0 bg-zinc-950 z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+      <div class="modal-content flex flex-col h-full sm:bg-zinc-950 sm:rounded-xl sm:border sm:border-zinc-700 sm:max-h-[90vh] sm:w-full sm:max-w-[420px] sm:shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+        <header class="flex items-center gap-3 p-4 border-b border-zinc-700">
+          <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="settingsModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
-          <h2>Settings</h2>
+          <h2 class="flex-1 text-[17px] font-semibold">Settings</h2>
           <div></div>
         </header>
-        <div class="modal-body">
-          <div class="form-group">
-            <label>Projects Root</label>
-            <input type="text" id="settingsRoot" class="input" readonly>
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+          <div class="mb-5">
+            <label class="block text-sm font-medium text-zinc-50 mb-2">Projects Root</label>
+            <input type="text" id="settingsRoot" class="input w-full bg-zinc-950 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-400 outline-none cursor-default" readonly>
           </div>
-          <div class="form-group">
-            <label>buildd Server</label>
+          <div class="mb-5">
+            <label class="block text-sm font-medium text-zinc-50 mb-2">buildd Server</label>
             <div style="display: flex; gap: 8px; align-items: center;">
-              <input type="text" id="settingsServer" class="input" placeholder="https://app.buildd.dev" style="flex: 1;">
-              <button id="settingsServerSave" class="btn btn-small btn-primary" onclick="handleServerUrlChange()" style="display: none;">Save</button>
+              <input type="text" id="settingsServer" class="input w-full bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500" placeholder="https://app.buildd.dev" style="flex: 1;">
+              <button id="settingsServerSave" class="btn bg-gradient-primary text-white py-1.5 px-3 text-[13px] rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()" style="display: none;">Save</button>
             </div>
-            <p class="form-hint" id="settingsServerHint">Reinitializes connection when changed</p>
+            <p class="text-xs text-zinc-400 mt-1.5" id="settingsServerHint">Reinitializes connection when changed</p>
           </div>
-          <div class="form-group">
-            <label>Model</label>
-            <select id="settingsModel" class="input">
+          <div class="mb-5">
+            <label class="block text-sm font-medium text-zinc-50 mb-2">Model</label>
+            <select id="settingsModel" class="input w-full bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-[15px] text-zinc-50 outline-none transition-colors duration-200 focus:border-fuchsia-500">
               <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Best quality)</option>
               <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5 (Fast & capable)</option>
               <option value="claude-haiku-4-20250514">Claude Haiku 4 (Fastest)</option>
             </select>
-            <p class="form-hint">New workers will use the selected model</p>
+            <p class="text-xs text-zinc-400 mt-1.5">New workers will use the selected model</p>
           </div>
-          <div class="form-group">
-            <label>Max Concurrent</label>
-            <div class="segmented-control" id="settingsMax"></div>
+          <div class="mb-5">
+            <label class="block text-sm font-medium text-zinc-50 mb-2">Max Concurrent</label>
+            <div class="segmented-control inline-flex bg-zinc-900 rounded-lg p-1 gap-1" id="settingsMax"></div>
           </div>
-          <div class="form-group">
+          <div class="mb-5">
             <div class="flex items-center gap-2">
-              <input type="checkbox" id="settingsAcceptRemote" checked>
-              <label for="settingsAcceptRemote">Accept remote task assignments</label>
+              <input type="checkbox" id="settingsAcceptRemote" checked class="w-[18px] h-[18px] accent-fuchsia-500 cursor-pointer">
+              <label for="settingsAcceptRemote" class="!mb-0 cursor-pointer !text-zinc-50">Accept remote task assignments</label>
             </div>
-            <p class="form-hint">Allow the dashboard to push tasks directly to this worker</p>
+            <p class="text-xs text-zinc-400 mt-1.5">Allow the dashboard to push tasks directly to this worker</p>
           </div>
-          <div class="form-group">
+          <div class="mb-5">
             <div class="flex items-center gap-2">
-              <input type="checkbox" id="settingsBypass">
-              <label for="settingsBypass">Bypass permission prompts</label>
+              <input type="checkbox" id="settingsBypass" class="w-[18px] h-[18px] accent-fuchsia-500 cursor-pointer">
+              <label for="settingsBypass" class="!mb-0 cursor-pointer !text-zinc-50">Bypass permission prompts</label>
             </div>
-            <p class="form-hint">Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.</p>
+            <p class="text-xs text-zinc-400 mt-1.5">Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.</p>
           </div>
-          <div class="form-group">
+          <div class="mb-5">
             <div class="flex items-center gap-2">
-              <input type="checkbox" id="settingsOpenBrowser" checked>
-              <label for="settingsOpenBrowser">Auto-open browser on startup</label>
+              <input type="checkbox" id="settingsOpenBrowser" checked class="w-[18px] h-[18px] accent-fuchsia-500 cursor-pointer">
+              <label for="settingsOpenBrowser" class="!mb-0 cursor-pointer !text-zinc-50">Auto-open browser on startup</label>
             </div>
-            <p class="form-hint">Automatically open the buildd UI in your browser when starting the server.</p>
+            <p class="text-xs text-zinc-400 mt-1.5">Automatically open the buildd UI in your browser when starting the server.</p>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Workspace management modal -->
-    <div id="workspaceModal" class="modal hidden">
-      <div class="modal-content modal-large">
-        <header class="modal-header">
-          <button class="btn-icon" id="workspaceModalBack">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div id="workspaceModal" class="modal hidden fixed inset-0 bg-zinc-950 z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+      <div class="modal-content flex flex-col h-full sm:bg-zinc-950 sm:rounded-xl sm:border sm:border-zinc-700 sm:max-h-[90vh] sm:w-full sm:max-w-[560px] sm:shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+        <header class="flex items-center gap-3 p-4 border-b border-zinc-700">
+          <button class="w-10 h-10 border-none bg-zinc-900 rounded-lg text-zinc-50 flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-zinc-800 hover:bg-zinc-800" id="workspaceModalBack">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
-          <h2>Manage Workspaces</h2>
-          <button class="btn btn-secondary btn-icon-text" id="rescanBtn" title="Rescan local repositories">
+          <h2 class="flex-1 text-[17px] font-semibold">Manage Workspaces</h2>
+          <button class="btn bg-zinc-800 text-zinc-50 py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="rescanBtn" title="Rescan local repositories">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
               <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
               <path d="M21 3v5h-5"/>
@@ -344,31 +344,31 @@
             Rescan
           </button>
         </header>
-        <div class="modal-body">
-          <div class="workspace-sections">
-            <section class="workspace-section">
-              <h3 class="section-label">
-                <span class="status-dot status-ready"></span>
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+          <div class="flex flex-col gap-6">
+            <section class="pb-4 border-b border-zinc-700">
+              <h3 class="flex items-center gap-2 text-sm font-semibold mb-3 text-zinc-50">
+                <span class="status-dot w-2.5 h-2.5 rounded-full shrink-0 status-ready"></span>
                 Ready to Use
               </h3>
-              <div id="workspacesReady" class="workspace-list"></div>
+              <div id="workspacesReady" class="flex flex-col gap-2"></div>
             </section>
 
-            <section class="workspace-section">
-              <h3 class="section-label">
-                <span class="status-dot status-clone"></span>
+            <section class="pb-4 border-b border-zinc-700">
+              <h3 class="flex items-center gap-2 text-sm font-semibold mb-3 text-zinc-50">
+                <span class="status-dot w-2.5 h-2.5 rounded-full shrink-0 status-clone"></span>
                 Needs Clone
               </h3>
-              <div id="workspacesNeedsClone" class="workspace-list"></div>
+              <div id="workspacesNeedsClone" class="flex flex-col gap-2"></div>
             </section>
 
-            <section class="workspace-section">
-              <h3 class="section-label">
-                <span class="status-dot status-local"></span>
+            <section class="pb-4">
+              <h3 class="flex items-center gap-2 text-sm font-semibold mb-3 text-zinc-50">
+                <span class="status-dot w-2.5 h-2.5 rounded-full shrink-0 status-local"></span>
                 Local Only
               </h3>
-              <p class="section-hint">These repos can be synced to buildd server</p>
-              <div id="workspacesLocalOnly" class="workspace-list"></div>
+              <p class="text-xs text-zinc-400 -mt-2 mb-3">These repos can be synced to buildd server</p>
+              <div id="workspacesLocalOnly" class="flex flex-col gap-2"></div>
             </section>
           </div>
         </div>
@@ -376,22 +376,22 @@
     </div>
   </div>
   <!-- Confirm dialog -->
-  <div id="confirmDialog" class="confirm-overlay hidden">
-    <div class="confirm-dialog">
-      <div class="confirm-body">
-        <div class="confirm-icon confirm-icon-danger">
+  <div id="confirmDialog" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-xl w-full max-w-[380px] mx-4 overflow-hidden">
+      <div class="p-6 flex gap-4 items-start">
+        <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-red-500/10 text-red-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
             <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
           </svg>
         </div>
-        <div class="confirm-text">
-          <h3 id="confirmTitle">Stop this task?</h3>
-          <p id="confirmMessage">The agent will be terminated and the task will be marked as failed. You can restart it later by sending a new message.</p>
+        <div>
+          <h3 class="text-base font-semibold text-zinc-50 mb-2" id="confirmTitle">Stop this task?</h3>
+          <p class="text-sm text-zinc-400 leading-relaxed" id="confirmMessage">The agent will be terminated and the task will be marked as failed. You can restart it later by sending a new message.</p>
         </div>
       </div>
-      <div class="confirm-actions">
-        <button class="btn btn-secondary" id="confirmCancel">Cancel</button>
-        <button class="btn btn-danger" id="confirmAction">Stop Task</button>
+      <div class="flex gap-3 py-4 px-6 bg-zinc-800 border-t border-zinc-700 justify-end">
+        <button class="btn bg-zinc-800 text-zinc-50 py-2 px-4 text-sm rounded-lg font-medium cursor-pointer transition-all duration-200" id="confirmCancel">Cancel</button>
+        <button class="btn bg-red-500 text-white py-2 px-4 text-sm rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-red-600" id="confirmAction">Stop Task</button>
       </div>
     </div>
   </div>
