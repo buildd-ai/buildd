@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -26,6 +26,7 @@ export default async function TasksLayout({
       title: string;
       status: string;
       updatedAt: Date;
+      waitingFor?: { type: string; prompt: string; options?: string[] } | null;
     }>;
   }> = [];
 
@@ -52,8 +53,20 @@ export default async function TasksLayout({
           orderBy: [desc(tasks.priority), desc(tasks.updatedAt)],
         });
 
+        // Query workers with waiting_input status to get waitingFor data
+        const waitingWorkers = await db.query.workers.findMany({
+          where: eq(workers.status, 'waiting_input'),
+          columns: { taskId: true, waitingFor: true },
+        });
+        const waitingForByTaskId = new Map<string, { type: string; prompt: string; options?: string[] } | null>();
+        for (const w of waitingWorkers) {
+          if (w.taskId && w.waitingFor) {
+            waitingForByTaskId.set(w.taskId, w.waitingFor as any);
+          }
+        }
+
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; status: string; updatedAt: Date };
+        type TaskSummary = { id: string; title: string; status: string; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           acc[task.workspaceId].push({
@@ -61,6 +74,7 @@ export default async function TasksLayout({
             title: task.title,
             status: task.status,
             updatedAt: task.updatedAt,
+            waitingFor: waitingForByTaskId.get(task.id) || null,
           });
           return acc;
         }, {} as Record<string, TaskSummary[]>);

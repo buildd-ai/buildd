@@ -84,6 +84,7 @@ export async function PATCH(
   const body = await req.json();
   const {
     status, progress, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    waitingFor,
     // Token usage
     inputTokens, outputTokens,
     // Git stats
@@ -110,6 +111,10 @@ export async function PATCH(
   if (typeof filesChanged === 'number') updates.filesChanged = filesChanged;
   if (typeof linesAdded === 'number') updates.linesAdded = linesAdded;
   if (typeof linesRemoved === 'number') updates.linesRemoved = linesRemoved;
+  // Waiting state
+  if (waitingFor !== undefined) updates.waitingFor = waitingFor;
+  // Auto-clear waitingFor when worker resumes running
+  if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
 
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {

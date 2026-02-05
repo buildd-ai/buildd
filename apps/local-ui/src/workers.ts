@@ -349,14 +349,22 @@ export class WorkerManager {
   // Sync all worker states to server
   private async syncToServer() {
     for (const worker of this.workers.values()) {
-      if (worker.status === 'working' || worker.status === 'stale') {
+      if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
         try {
-          await this.buildd.updateWorker(worker.id, {
-            status: 'running',
+          const update: Parameters<BuilddClient['updateWorker']>[1] = {
+            status: worker.status === 'waiting' ? 'waiting_input' : 'running',
             currentAction: worker.currentAction,
             milestones: worker.milestones.map(m => ({ label: m.label, timestamp: m.timestamp || Date.now() })),
             localUiUrl: this.config.localUiUrl,
-          });
+          };
+          if (worker.status === 'waiting' && worker.waitingFor) {
+            update.waitingFor = {
+              type: worker.waitingFor.type,
+              prompt: worker.waitingFor.prompt,
+              options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+            };
+          }
+          await this.buildd.updateWorker(worker.id, update);
         } catch (err) {
           // Silently ignore sync errors
         }
@@ -954,6 +962,16 @@ export class WorkerManager {
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, `User: ${firstQuestion?.header || 'Question'}...`);
+            // Immediately sync waiting state to server (don't wait for 10s interval)
+            this.buildd.updateWorker(worker.id, {
+              status: 'waiting_input',
+              currentAction: worker.currentAction,
+              waitingFor: {
+                type: 'question',
+                prompt: firstQuestion?.question || 'Awaiting input',
+                options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+              },
+            }).catch(() => {});
           }
         }
       }
@@ -1342,6 +1360,7 @@ export class WorkerManager {
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
       // Clear waiting/stale state
+      const wasWaiting = worker.status === 'waiting';
       if (worker.status === 'waiting') {
         worker.status = 'working';
         worker.waitingFor = undefined;
@@ -1353,6 +1372,14 @@ export class WorkerManager {
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
       this.emit({ type: 'worker_update', worker });
+      // Immediately sync cleared waiting state to server
+      if (wasWaiting) {
+        this.buildd.updateWorker(worker.id, {
+          status: 'running',
+          currentAction: 'Processing response...',
+          waitingFor: null,
+        }).catch(() => {});
+      }
       return true;
     } catch (err) {
       console.error('Failed to send message:', err);

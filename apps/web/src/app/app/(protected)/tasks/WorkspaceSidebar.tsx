@@ -17,6 +17,7 @@ interface Task {
   title: string;
   status: string;
   updatedAt: Date;
+  waitingFor?: { type: string; prompt: string; options?: string[] } | null;
 }
 
 interface Workspace {
@@ -64,6 +65,14 @@ function getStatusIndicator(status: string): React.ReactNode {
           />
         </svg>
       );
+    case 'waiting_input':
+      // Waiting for user input - pulsing purple
+      return (
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+        </span>
+      );
     case 'failed':
       // Failed - red circle
       return <span className="h-2 w-2 rounded-full bg-red-500" />;
@@ -78,6 +87,7 @@ interface WorkerUpdate {
   taskId: string | null;
   status: string;
   workspaceId: string;
+  waitingFor?: { type: string; prompt: string; options?: string[] } | null;
 }
 
 // Task type from Pusher events
@@ -115,14 +125,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     // Map worker status to task status
     const taskStatus = worker.status === 'completed' ? 'completed'
       : worker.status === 'failed' ? 'failed'
+      : worker.status === 'waiting_input' ? 'waiting_input'
       : worker.status === 'running' ? 'running'
       : 'assigned';
+
+    const waitingFor = worker.status === 'waiting_input' ? worker.waitingFor : null;
 
     setWorkspaces(prev => prev.map(ws => ({
       ...ws,
       tasks: ws.tasks.map(task =>
         task.id === worker.taskId
-          ? { ...task, status: taskStatus, updatedAt: new Date() }
+          ? { ...task, status: taskStatus, updatedAt: new Date(), waitingFor }
           : task
       )
     })));
@@ -234,6 +247,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     switch (status) {
       case 'running':
       case 'assigned':
+      case 'waiting_input':
         return 0; // Highest priority
       case 'pending':
         return 1;
@@ -258,8 +272,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     })
   })).sort((a, b) => {
-    const aHasActive = a.tasks.some(t => t.status === 'running' || t.status === 'assigned');
-    const bHasActive = b.tasks.some(t => t.status === 'running' || t.status === 'assigned');
+    const aHasActive = a.tasks.some(t => ['running', 'assigned', 'waiting_input'].includes(t.status));
+    const bHasActive = b.tasks.some(t => ['running', 'assigned', 'waiting_input'].includes(t.status));
     if (aHasActive && !bHasActive) return -1;
     if (!aHasActive && bHasActive) return 1;
     return 0;
@@ -309,7 +323,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                   : ws.tasks.slice(0, TASKS_PER_WORKSPACE);
                 const hasMore = ws.tasks.length > TASKS_PER_WORKSPACE;
                 const activeCount = ws.tasks.filter(
-                  t => t.status === 'running' || t.status === 'assigned'
+                  t => ['running', 'assigned', 'waiting_input'].includes(t.status)
                 ).length;
 
                 return (
@@ -353,7 +367,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                     {!isCollapsed && (() => {
                       // Split tasks into active/pending vs completed/failed
                       const activeTasks = visibleTasks.filter(t =>
-                        ['running', 'assigned', 'pending'].includes(t.status)
+                        ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
                       );
                       const completedTasks = visibleTasks.filter(t =>
                         ['completed', 'failed'].includes(t.status)
@@ -377,14 +391,23 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 <Link
                                   key={task.id}
                                   href={`/app/tasks/${task.id}`}
-                                  className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${
+                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${
                                     selectedTaskId === task.id
                                       ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
                                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
                                   }`}
                                 >
-                                  {getStatusIndicator(task.status)}
-                                  <span className="truncate flex-1">{task.title}</span>
+                                  <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
+                                  <span className="flex-1 min-w-0">
+                                    <span className="truncate block">{task.title}</span>
+                                    {task.waitingFor?.prompt && (
+                                      <span className="text-xs text-purple-600 dark:text-purple-400 truncate block">
+                                        {task.waitingFor.prompt.length > 60
+                                          ? task.waitingFor.prompt.slice(0, 60) + '...'
+                                          : task.waitingFor.prompt}
+                                      </span>
+                                    )}
+                                  </span>
                                 </Link>
                               ))}
 
@@ -419,7 +442,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                               {hasMore && (() => {
                                 // Count active tasks in ALL tasks (not just visible)
                                 const totalActiveTasks = ws.tasks.filter(t =>
-                                  ['running', 'assigned', 'pending'].includes(t.status)
+                                  ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
                                 ).length;
                                 // Show "See all" if not showing all and there's more content
                                 // Show "Show less" only if:
