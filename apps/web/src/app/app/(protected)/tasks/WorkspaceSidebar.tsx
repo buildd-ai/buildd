@@ -9,6 +9,7 @@ import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client'
 const COLLAPSED_STATE_KEY = 'buildd:workspaceCollapsed';
 const SHOW_ALL_KEY = 'buildd:workspaceShowAll';
 const COMPLETED_COLLAPSED_KEY = 'buildd:completedCollapsed';
+const HIDDEN_WORKSPACES_KEY = 'buildd:hiddenWorkspaces';
 const TASKS_PER_WORKSPACE = 5;
 
 interface Task {
@@ -97,6 +98,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [completedCollapsed, setCompletedCollapsed] = useState<Record<string, boolean>>({});
+  const [hiddenWorkspaces, setHiddenWorkspaces] = useState<Record<string, boolean>>({});
+  const [showHiddenSection, setShowHiddenSection] = useState(false);
   const [quickCreateWorkspaceId, setQuickCreateWorkspaceId] = useState<string | null>(null);
 
   // Update workspaces when props change (e.g., after navigation)
@@ -184,6 +187,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       if (savedShowAll) setShowAll(JSON.parse(savedShowAll));
       const savedCompletedCollapsed = localStorage.getItem(COMPLETED_COLLAPSED_KEY);
       if (savedCompletedCollapsed) setCompletedCollapsed(JSON.parse(savedCompletedCollapsed));
+      const savedHidden = localStorage.getItem(HIDDEN_WORKSPACES_KEY);
+      if (savedHidden) setHiddenWorkspaces(JSON.parse(savedHidden));
     } catch {
       // ignore
     }
@@ -205,6 +210,12 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     const newState = { ...completedCollapsed, [wsId]: !completedCollapsed[wsId] };
     setCompletedCollapsed(newState);
     localStorage.setItem(COMPLETED_COLLAPSED_KEY, JSON.stringify(newState));
+  };
+
+  const toggleHideWorkspace = (wsId: string) => {
+    const newState = { ...hiddenWorkspaces, [wsId]: !hiddenWorkspaces[wsId] };
+    setHiddenWorkspaces(newState);
+    localStorage.setItem(HIDDEN_WORKSPACES_KEY, JSON.stringify(newState));
   };
 
   // Get selected task ID from pathname
@@ -236,7 +247,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   };
 
   // Sort workspaces: those with active tasks first, then sort tasks within each workspace
-  const sortedWorkspaces = [...workspaces].map(ws => ({
+  const allSortedWorkspaces = [...workspaces].map(ws => ({
     ...ws,
     tasks: [...ws.tasks].sort((a, b) => {
       // First sort by status priority
@@ -253,6 +264,11 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     if (!aHasActive && bHasActive) return 1;
     return 0;
   });
+
+  // Split into visible and hidden workspaces
+  const sortedWorkspaces = allSortedWorkspaces.filter(ws => !hiddenWorkspaces[ws.id]);
+  const hiddenWorkspacesList = allSortedWorkspaces.filter(ws => hiddenWorkspaces[ws.id]);
+  const hiddenCount = hiddenWorkspacesList.length;
 
   return (
     <>
@@ -275,9 +291,13 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
         {/* Workspace list */}
         <nav className="flex-1 overflow-y-auto p-2">
-          {sortedWorkspaces.length === 0 ? (
+          {sortedWorkspaces.length === 0 && hiddenCount === 0 ? (
             <div className="text-sm text-gray-500 p-4 text-center">
               No workspaces yet
+            </div>
+          ) : sortedWorkspaces.length === 0 ? (
+            <div className="text-sm text-gray-500 p-4 text-center">
+              All workspaces hidden
             </div>
           ) : (
             <div className="space-y-1">
@@ -319,6 +339,13 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                         title="Quick create task"
                       >
                         +
+                      </button>
+                      <button
+                        onClick={() => toggleHideWorkspace(ws.id)}
+                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        title="Hide workspace"
+                      >
+                        hide
                       </button>
                     </div>
 
@@ -388,16 +415,34 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 </>
                               )}
 
-                              {hasMore && (
-                                <button
-                                  onClick={() => toggleShowAll(ws.id)}
-                                  className="px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                                >
-                                  {isShowingAll
-                                    ? 'Show less'
-                                    : `See all (${ws.tasks.length})`}
-                                </button>
-                              )}
+                              {/* Show toggle only when it would change visible content */}
+                              {hasMore && (() => {
+                                // Count active tasks in ALL tasks (not just visible)
+                                const totalActiveTasks = ws.tasks.filter(t =>
+                                  ['running', 'assigned', 'pending'].includes(t.status)
+                                ).length;
+                                // Show "See all" if not showing all and there's more content
+                                // Show "Show less" only if:
+                                // - there are more than 5 active tasks, OR
+                                // - completed section is expanded
+                                const shouldShowLess = isShowingAll && (
+                                  totalActiveTasks > TASKS_PER_WORKSPACE || !isCompletedHidden
+                                );
+                                const shouldShowMore = !isShowingAll;
+
+                                if (!shouldShowLess && !shouldShowMore) return null;
+
+                                return (
+                                  <button
+                                    onClick={() => toggleShowAll(ws.id)}
+                                    className="px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                  >
+                                    {shouldShowLess
+                                      ? 'Show less'
+                                      : `See all (${ws.tasks.length})`}
+                                  </button>
+                                );
+                              })()}
                             </>
                           )}
                         </div>
@@ -406,6 +451,37 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Hidden workspaces section */}
+          {hiddenCount > 0 && (
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+              <button
+                onClick={() => setShowHiddenSection(!showHiddenSection)}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
+              >
+                <span className="w-3 text-[10px]">{showHiddenSection ? '▼' : '›'}</span>
+                <span>Hidden ({hiddenCount})</span>
+              </button>
+              {showHiddenSection && (
+                <div className="mt-1 space-y-1">
+                  {hiddenWorkspacesList.map((ws) => (
+                    <div key={ws.id} className="flex items-center gap-1 group">
+                      <span className="px-2 py-1.5 text-sm text-gray-400 truncate flex-1">
+                        {ws.name}
+                      </span>
+                      <button
+                        onClick={() => toggleHideWorkspace(ws.id)}
+                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        title="Show workspace"
+                      >
+                        show
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </nav>
