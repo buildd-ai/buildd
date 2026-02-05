@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { observations, accounts } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { hashApiKey } from '@/lib/api-auth';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -10,7 +11,7 @@ async function authenticateRequest(req: NextRequest) {
 
     if (apiKey) {
         const account = await db.query.accounts.findFirst({
-            where: eq(accounts.apiKey, apiKey),
+            where: eq(accounts.apiKey, hashApiKey(apiKey)),
         });
         if (account) return { type: 'api' as const, account };
     }

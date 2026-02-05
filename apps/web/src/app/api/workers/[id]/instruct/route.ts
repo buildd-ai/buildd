@@ -1,18 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 // POST /api/workers/[id]/instruct - Send instructions to a worker (admin only)
 // Instructions are delivered on the worker's next progress update

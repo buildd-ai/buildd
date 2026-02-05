@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, workers } from '@buildd/core/db/schema';
+import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 // POST /api/workers/[id]/activity - Report tool usage from Claude Code hooks
 // This allows MCP workers to get automatic visibility via hooks

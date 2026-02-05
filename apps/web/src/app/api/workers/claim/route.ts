@@ -3,16 +3,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');

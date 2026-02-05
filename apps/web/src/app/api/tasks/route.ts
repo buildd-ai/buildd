@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workspaces, accountWorkspaces, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
+import { authenticateApiKey } from '@/lib/api-auth';
 
 /**
  * Dispatch task to external webhook (e.g., OpenClaw)
@@ -51,14 +52,6 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.buildd.d
     console.error('Webhook dispatch error:', error);
     return false;
   }
-}
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-  return account || null;
 }
 
 export async function GET(req: NextRequest) {
