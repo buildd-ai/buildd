@@ -212,7 +212,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     ? pathname.split('/app/tasks/')[1]?.split('/')[0]
     : null;
 
-  const handleTaskCreated = (taskId: string) => {
+  const handleQuickCreateComplete = (taskId: string) => {
     setQuickCreateWorkspaceId(null);
     router.push(`/app/tasks/${taskId}`);
     router.refresh();
@@ -417,7 +417,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
           workspaceId={quickCreateWorkspaceId}
           workspaceName={workspaces.find(w => w.id === quickCreateWorkspaceId)?.name || ''}
           onClose={() => setQuickCreateWorkspaceId(null)}
-          onCreated={handleTaskCreated}
+          onCreated={handleQuickCreateComplete}
         />
       )}
     </>
