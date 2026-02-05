@@ -151,10 +151,10 @@ export async function DELETE(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Only allow deleting pending tasks
-    if (task.status !== 'pending') {
+    // Only allow deleting pending, assigned, or failed tasks (not running or completed)
+    if (!['pending', 'assigned', 'failed'].includes(task.status)) {
       return NextResponse.json(
-        { error: 'Can only delete pending tasks. Use reassign to reset running/assigned tasks.' },
+        { error: `Cannot delete ${task.status} tasks. Wait for completion or use reassign.` },
         { status: 400 }
       );
     }

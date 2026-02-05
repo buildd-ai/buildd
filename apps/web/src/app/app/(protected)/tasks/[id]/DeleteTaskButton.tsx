@@ -14,8 +14,8 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Only allow deleting pending tasks
-  const canDelete = taskStatus === 'pending';
+  // Allow deleting pending, assigned, or failed tasks (not running or completed)
+  const canDelete = ['pending', 'assigned', 'failed'].includes(taskStatus);
 
   const handleDelete = async () => {
     setLoading(true);
