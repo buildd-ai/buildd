@@ -74,6 +74,32 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 - **Account limits** differ by `authType` - see claim route
 - Use transactions for multi-step DB operations (currently missing in places)
 
+## Testing
+
+### Dev Mode Auth
+Use `DEV_USER_EMAIL` to test as a real user locally:
+```bash
+DEV_USER_EMAIL=your@email.com bun dev
+```
+
+### Seed Scripts
+Create test data without manual setup:
+```bash
+bun run seed:waiting-input  # Creates task with worker in waiting_input state
+bun run seed:reset          # Cleans up seeded data
+```
+
+### UI Fixtures
+View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?state=waiting-input`
+
+### data-testid Conventions
+Key components have `data-testid` attributes for E2E testing:
+- `task-header-status` - Task detail page status badge
+- `sidebar-task-item` - Sidebar task links (includes `data-status`)
+- `worker-needs-input-banner` - "Needs Input" banner
+
+See `.agent/testing.md` for details.
+
 ## Local Docs
 
 See `.agent/` for architecture deep-dives.
