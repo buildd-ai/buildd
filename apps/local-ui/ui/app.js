@@ -55,6 +55,7 @@ async function checkConfig() {
     config.openBrowser = data.openBrowser !== false; // default true
     config.model = data.model || config.model;
     config.maxConcurrent = data.maxConcurrent || 3;
+    updateOutboxBadge(data.outboxCount || 0);
 
     if (isConfigured || isServerless) {
       showApp();
@@ -892,7 +893,15 @@ function closeSettingsModal() {
 
 function updateSettings() {
   document.getElementById('settingsRoot').value = config.projectsRoot || '';
-  document.getElementById('settingsServer').value = config.builddServer || '';
+  const serverInput = document.getElementById('settingsServer');
+  serverInput.value = config.builddServer || '';
+
+  // Show save button when server URL is modified
+  const serverSaveBtn = document.getElementById('settingsServerSave');
+  serverInput.oninput = () => {
+    const changed = serverInput.value.trim() !== (config.builddServer || '');
+    serverSaveBtn.style.display = changed ? '' : 'none';
+  };
 
   const modelSelect = document.getElementById('settingsModel');
   if (modelSelect && config.model) {
@@ -924,6 +933,91 @@ function updateSettings() {
     openBrowserCheckbox.checked = config.openBrowser !== false;
   }
 }
+
+// Handle server URL change
+async function handleServerUrlChange() {
+  const serverInput = document.getElementById('settingsServer');
+  const serverSaveBtn = document.getElementById('settingsServerSave');
+  const hint = document.getElementById('settingsServerHint');
+  const server = serverInput.value.trim();
+
+  if (!server) return;
+
+  serverSaveBtn.disabled = true;
+  serverSaveBtn.textContent = 'Saving...';
+
+  try {
+    const res = await fetch('/api/config/server', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      config.builddServer = data.builddServer;
+      serverSaveBtn.style.display = 'none';
+      hint.textContent = 'Server URL updated. Connection reinitialized.';
+      hint.style.color = 'var(--success)';
+      setTimeout(() => {
+        hint.textContent = 'Reinitializes connection when changed';
+        hint.style.color = '';
+      }, 3000);
+      // Refresh workspaces with new server
+      await loadWorkspaces();
+    } else {
+      hint.textContent = data.error || 'Failed to update server URL';
+      hint.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    hint.textContent = 'Failed to save server URL';
+    hint.style.color = 'var(--danger)';
+  } finally {
+    serverSaveBtn.disabled = false;
+    serverSaveBtn.textContent = 'Save';
+  }
+}
+
+// Outbox badge UI
+function updateOutboxBadge(count) {
+  const btn = document.getElementById('outboxBtn');
+  const badge = document.getElementById('outboxBadge');
+  if (!btn || !badge) return;
+  if (count > 0) {
+    btn.classList.remove('hidden');
+    badge.textContent = count > 99 ? '99+' : count;
+    btn.title = `${count} pending sync item(s) - click to flush`;
+  } else {
+    btn.classList.add('hidden');
+  }
+}
+
+async function handleOutboxFlush() {
+  const btn = document.getElementById('outboxBtn');
+  btn.style.opacity = '0.5';
+  btn.style.pointerEvents = 'none';
+  try {
+    const res = await fetch('/api/outbox/flush', { method: 'POST' });
+    const data = await res.json();
+    updateOutboxBadge(data.remaining || 0);
+    if (data.flushed > 0) {
+      console.log(`Outbox: synced ${data.flushed} items`);
+    }
+  } catch (err) {
+    console.error('Outbox flush failed:', err);
+  } finally {
+    btn.style.opacity = '';
+    btn.style.pointerEvents = '';
+  }
+}
+
+// Poll outbox status periodically (picks up changes from background flushes)
+setInterval(async () => {
+  try {
+    const res = await fetch('/api/outbox');
+    const data = await res.json();
+    updateOutboxBadge(data.count || 0);
+  } catch { /* ignore */ }
+}, 30000);
 
 // Handle model selection change
 async function handleModelChange() {
@@ -1291,6 +1385,7 @@ async function loadWorkspaces() {
     const res = await fetch('/api/combined-workspaces');
     const data = await res.json();
     combinedWorkspaces = data.workspaces || [];
+    const serverError = data.serverError || null;
 
     const hint = document.getElementById('workspaceHint');
     const hiddenInput = document.getElementById('taskWorkspace');
@@ -1304,35 +1399,47 @@ async function loadWorkspaces() {
       }, { searchable: true });
     }
 
-    // Only show ready workspaces in dropdown
+    // Show ready workspaces, or local-only when server is unreachable
     const ready = combinedWorkspaces.filter(w => w.status === 'ready');
     const needsClone = combinedWorkspaces.filter(w => w.status === 'needs-clone');
     const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
 
+    // When server is unreachable, treat local-only repos as usable workspaces
+    const usable = ready.length > 0 ? ready : (serverError ? localOnly : []);
+
     let options = [];
 
-    if (ready.length > 0) {
-      options = ready.map(w => ({
-        value: w.id,
+    if (usable.length > 0) {
+      options = usable.map(w => ({
+        value: w.id || w.localPath, // Use localPath as ID fallback for local-only
         label: w.name,
         hint: w.localPath?.split('/').pop() || '',
       }));
-      hint.classList.add('hidden');
 
-      // Default to last used workspace if available and still ready
+      if (serverError) {
+        hint.textContent = `Server unreachable - showing ${usable.length} local workspace(s). Change server URL in Settings.`;
+        hint.classList.remove('hidden');
+      } else {
+        hint.classList.add('hidden');
+      }
+
+      // Default to last used workspace if available
       const lastWorkspaceId = getLastWorkspace();
-      const lastWorkspace = lastWorkspaceId ? ready.find(w => w.id === lastWorkspaceId) : null;
-      const defaultWorkspace = lastWorkspace || ready[0];
+      const lastWorkspace = lastWorkspaceId ? usable.find(w => (w.id || w.localPath) === lastWorkspaceId) : null;
+      const defaultWorkspace = lastWorkspace || usable[0];
 
       if (!selectedWorkspaceId && defaultWorkspace) {
-        selectedWorkspaceId = defaultWorkspace.id;
-        hiddenInput.value = defaultWorkspace.id;
-        workspaceSelect.setValue(defaultWorkspace.id, defaultWorkspace.name);
+        selectedWorkspaceId = defaultWorkspace.id || defaultWorkspace.localPath;
+        hiddenInput.value = selectedWorkspaceId;
+        workspaceSelect.setValue(selectedWorkspaceId, defaultWorkspace.name);
       }
     } else {
       options = [{ value: '', label: 'No workspaces ready', disabled: true }];
 
-      if (needsClone.length > 0) {
+      if (serverError) {
+        hint.textContent = `Server unreachable. Check connection or change server URL in Settings.`;
+        hint.classList.remove('hidden');
+      } else if (needsClone.length > 0) {
         hint.textContent = `${needsClone.length} workspace(s) need to be cloned locally. Click Manage.`;
         hint.classList.remove('hidden');
       } else if (localOnly.length > 0) {
