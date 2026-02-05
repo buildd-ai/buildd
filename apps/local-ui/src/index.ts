@@ -5,6 +5,7 @@ import type { LocalUIConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
+import { Outbox } from './outbox';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -34,6 +35,7 @@ interface SavedConfig {
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
+  builddServer?: string; // Server URL override
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -48,6 +50,7 @@ function loadSavedConfig(): SavedConfig {
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
+        builddServer: data.builddServer,
       };
     }
   } catch (err) {
@@ -208,7 +211,7 @@ function getRepos(forceRescan = false): CachedRepo[] {
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
-  builddServer: process.env.BUILDD_SERVER || 'https://app.buildd.dev',
+  builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://app.buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || savedConfig.model || 'claude-opus-4-5-20251101',
@@ -231,6 +234,39 @@ const resolver = createWorkspaceResolver(projectRoots);
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
 
+// Offline outbox for queuing failed mutations (not used in permanent serverless)
+const outbox = new Outbox();
+
+function attachOutbox(client: BuilddClient | null) {
+  if (client && !config.serverless) {
+    client.setOutbox(outbox);
+    // Set up flush handler to replay entries via raw fetch
+    outbox.setFlushHandler(async (entry) => {
+      try {
+        const res = await fetch(`${config.builddServer}${entry.endpoint}`, {
+          method: entry.method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${config.apiKey}`,
+          },
+          body: entry.body,
+        });
+        // 2xx or 409 (already completed) = success
+        return res.ok || res.status === 409;
+      } catch {
+        return false;
+      }
+    });
+  }
+}
+
+attachOutbox(buildd);
+
+// Try flushing outbox on startup if connected
+if (buildd && outbox.count() > 0) {
+  setTimeout(() => outbox.flush(), 5_000);
+}
+
 // Current account info (fetched when clients initialize)
 let currentAccountId: string | null = null;
 
@@ -249,10 +285,15 @@ async function fetchAccountInfo() {
 async function initializeClients() {
   if (config.apiKey) {
     buildd = new BuilddClient(config);
+    attachOutbox(buildd);
     workerManager = new WorkerManager(config, resolver);
     workerManager.onEvent(broadcast);
     console.log('API key configured, clients initialized');
     await fetchAccountInfo();
+    // Flush any queued mutations now that we're connected
+    if (outbox.count() > 0) {
+      outbox.flush();
+    }
   }
 }
 
@@ -348,25 +389,71 @@ const server = Bun.serve({
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
         accountId: currentAccountId,
+        outboxCount: outbox.count(),
       }, { headers: corsHeaders });
     }
 
-    // Enable serverless mode (local-only, no server)
+    // Enable serverless mode (local-only, no server) - preserves API key for easy reconnect
     if (path === '/api/config/serverless' && req.method === 'POST') {
       config.serverless = true;
-      config.apiKey = ''; // Clear API key
       buildd = null;
+      workerManager = null;
       saveConfig({ serverless: true });
 
       return Response.json({ ok: true, serverless: true }, { headers: corsHeaders });
     }
 
-    // Disable serverless mode
+    // Disable serverless mode - reconnect to server if API key is available
     if (path === '/api/config/serverless' && req.method === 'DELETE') {
       config.serverless = false;
       saveConfig({ serverless: false });
 
-      return Response.json({ ok: true, serverless: false }, { headers: corsHeaders });
+      // Restore server connection if API key exists
+      if (config.apiKey) {
+        buildd = new BuilddClient(config);
+        attachOutbox(buildd);
+        workerManager = new WorkerManager(config, resolver);
+        console.log('Server connection restored');
+        // Flush any queued mutations from when server was unreachable
+        if (outbox.count() > 0) {
+          outbox.flush();
+        }
+      }
+
+      return Response.json({ ok: true, serverless: false, connected: !!config.apiKey }, { headers: corsHeaders });
+    }
+
+    // Update server URL
+    if (path === '/api/config/server' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { server } = body;
+
+      if (!server || typeof server !== 'string') {
+        return Response.json({ error: 'server URL required' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Basic URL validation
+      const trimmed = server.trim().replace(/\/+$/, ''); // Remove trailing slashes
+      if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+        return Response.json({ error: 'Server URL must start with http:// or https://' }, { status: 400, headers: corsHeaders });
+      }
+
+      config.builddServer = trimmed;
+      saveConfig({ builddServer: trimmed });
+
+      // Reinitialize clients with new server URL
+      if (config.apiKey) {
+        buildd = new BuilddClient(config);
+        attachOutbox(buildd);
+        workerManager = new WorkerManager(config, resolver);
+        // Flush queued mutations to the new server
+        if (outbox.count() > 0) {
+          outbox.flush();
+        }
+      }
+
+      console.log(`Server URL updated to: ${trimmed}`);
+      return Response.json({ ok: true, builddServer: trimmed }, { headers: corsHeaders });
     }
 
     // Update model setting
@@ -799,6 +886,29 @@ const server = Bun.serve({
       return Response.json({ ok: true, action }, { headers: corsHeaders });
     }
 
+    // Outbox status (pending sync items)
+    if (path === '/api/outbox' && req.method === 'GET') {
+      return Response.json({
+        count: outbox.count(),
+        entries: outbox.getEntries(),
+      }, { headers: corsHeaders });
+    }
+
+    // Manual outbox flush
+    if (path === '/api/outbox/flush' && req.method === 'POST') {
+      if (outbox.count() === 0) {
+        return Response.json({ flushed: 0, failed: 0, remaining: 0 }, { headers: corsHeaders });
+      }
+      const result = await outbox.flush();
+      return Response.json(result, { headers: corsHeaders });
+    }
+
+    // Clear outbox
+    if (path === '/api/outbox' && req.method === 'DELETE') {
+      outbox.clear();
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
     // Rescan local repos
     if (path === '/api/rescan' && req.method === 'POST') {
       const repos = getRepos(true); // Force rescan
@@ -808,7 +918,16 @@ const server = Bun.serve({
     // Combined workspaces endpoint - merges server workspaces with local repos
     if (path === '/api/combined-workspaces' && req.method === 'GET') {
       const localRepos = getRepos(); // Use cached
-      const serverWorkspaces = buildd ? await buildd.listWorkspaces() : [];
+      let serverWorkspaces: any[] = [];
+      let serverError: string | null = null;
+      if (buildd) {
+        try {
+          serverWorkspaces = await buildd.listWorkspaces();
+        } catch (err: any) {
+          serverError = err.message || 'Server unreachable';
+          console.error('Failed to fetch server workspaces:', serverError);
+        }
+      }
       const isServerless = config.serverless || !config.apiKey;
 
       // Normalize git URL for comparison
@@ -873,9 +992,9 @@ const server = Bun.serve({
         if (!matchedLocalPaths.has(repo.path) && repo.normalizedUrl) {
           const owner = getOwner(repo.remoteUrl);
 
-          // In serverless mode, show all local repos
-          // In server mode, only show repos from matching orgs
-          const shouldInclude = isServerless || serverOwners.size === 0 || (owner && serverOwners.has(owner));
+          // Show all local repos when serverless, server unreachable, or no server workspaces
+          // In server mode with workspaces, only show repos from matching orgs
+          const shouldInclude = isServerless || serverError || serverOwners.size === 0 || (owner && serverOwners.has(owner));
 
           if (shouldInclude) {
             combined.push({
@@ -899,6 +1018,7 @@ const server = Bun.serve({
         workspaces: combined,
         serverless: isServerless,
         serverOwners: Array.from(serverOwners),
+        ...(serverError ? { serverError } : {}),
       }, { headers: corsHeaders });
     }
 

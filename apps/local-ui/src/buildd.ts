@@ -1,28 +1,54 @@
 import type { BuilddTask, LocalUIConfig } from './types';
+import type { Outbox } from './outbox';
 
 export class BuilddClient {
   private config: LocalUIConfig;
+  private outbox: Outbox | null = null;
 
   constructor(config: LocalUIConfig) {
     this.config = config;
   }
 
+  /** Attach an outbox for queuing failed mutations when server is unreachable */
+  setOutbox(outbox: Outbox) {
+    this.outbox = outbox;
+  }
+
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
-    const res = await fetch(`${this.config.builddServer}${endpoint}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-        ...options.headers,
-      },
-    });
+    const method = options.method || 'GET';
 
-    if (!res.ok && !allowedErrors.includes(res.status)) {
-      const error = await res.text();
-      throw new Error(`API error: ${res.status} - ${error}`);
+    try {
+      const res = await fetch(`${this.config.builddServer}${endpoint}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          ...options.headers,
+        },
+      });
+
+      if (!res.ok && !allowedErrors.includes(res.status)) {
+        const error = await res.text();
+        throw new Error(`API error: ${res.status} - ${error}`);
+      }
+
+      return res.json();
+    } catch (err: any) {
+      // Network errors (server unreachable) - queue if outbox is attached
+      const isNetworkError = err instanceof TypeError ||
+        err.message?.includes('fetch failed') ||
+        err.message?.includes('ECONNREFUSED') ||
+        err.message?.includes('ENOTFOUND') ||
+        err.message?.includes('ETIMEDOUT') ||
+        err.code === 'ECONNREFUSED';
+
+      if (isNetworkError && this.outbox && this.outbox.shouldQueue(method, endpoint)) {
+        this.outbox.enqueue(method, endpoint, options.body as string | undefined);
+        return {}; // Return empty response for queued mutations
+      }
+
+      throw err;
     }
-
-    return res.json();
   }
 
   async listTasks(): Promise<BuilddTask[]> {
