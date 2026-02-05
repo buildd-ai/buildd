@@ -1,6 +1,15 @@
 "use client";
 
+import { useState } from "react";
+
 export default function LandingPage() {
+  const [platform, setPlatform] = useState<"unix" | "windows">("unix");
+
+  const installCommand =
+    platform === "unix"
+      ? "curl -fsSL https://buildd.dev/install.sh | bash"
+      : "irm buildd.dev/install.ps1 | iex";
+
   return (
     <main className="min-h-screen bg-[#2a2d3a] text-white">
       {/* Hero Section */}
@@ -61,22 +70,49 @@ export default function LandingPage() {
       <div className="max-w-4xl mx-auto px-6 pb-12">
         <div className="bg-[#1a1c24] rounded-xl border border-white/10 overflow-hidden">
           {/* Terminal header */}
-          <div className="flex items-center gap-2 px-4 py-3 bg-white/5 border-b border-white/10">
-            <div className="w-3 h-3 rounded-full bg-red-500/80" />
-            <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
-            <div className="w-3 h-3 rounded-full bg-green-500/80" />
-            <span className="ml-2 text-sm text-gray-500">Terminal</span>
+          <div className="flex items-center justify-between px-4 py-3 bg-white/5 border-b border-white/10">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500/80" />
+              <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
+              <div className="w-3 h-3 rounded-full bg-green-500/80" />
+              <span className="ml-2 text-sm text-gray-500">Terminal</span>
+            </div>
+            {/* Platform toggle */}
+            <div className="flex items-center gap-1 text-xs">
+              <button
+                onClick={() => setPlatform("unix")}
+                className={`px-2 py-1 rounded transition-colors ${
+                  platform === "unix"
+                    ? "bg-white/10 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                macOS/Linux
+              </button>
+              <button
+                onClick={() => setPlatform("windows")}
+                className={`px-2 py-1 rounded transition-colors ${
+                  platform === "windows"
+                    ? "bg-white/10 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                Windows
+              </button>
+            </div>
           </div>
           {/* Install command */}
           <div className="p-6">
             <div className="flex items-center gap-3">
-              <span className="text-gray-500 select-none">$</span>
+              <span className="text-gray-500 select-none">
+                {platform === "unix" ? "$" : ">"}
+              </span>
               <code className="text-gray-200 font-mono text-sm md:text-base flex-1">
-                curl -fsSL https://buildd.dev/install.sh | bash
+                {installCommand}
               </code>
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText('curl -fsSL https://buildd.dev/install.sh | bash');
+                  navigator.clipboard.writeText(installCommand);
                 }}
                 className="p-2 hover:bg-white/10 rounded-lg transition-colors text-gray-400 hover:text-white"
                 title="Copy to clipboard"
