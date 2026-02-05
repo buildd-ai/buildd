@@ -1230,6 +1230,39 @@ select.input {
   font-weight: 400;
 }
 
+/* Error prompt for failed/aborted workers */
+.chat-error-prompt {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.05));
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.chat-error-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--danger);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.chat-error-text {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.chat-error-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Markdown content styles */
 .markdown-content {
   font-size: 14px;
@@ -1628,9 +1661,36 @@ select.input {
   z-index: 1000;
   opacity: 0;
   transition: transform 0.3s ease, opacity 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 90vw;
+  max-width: min(500px, 90vw);
 }
 
 .toast.show {
   transform: translateX(-50%) translateY(0);
   opacity: 1;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.toast.toast-success {
+  border-left: 3px solid var(--success);
+}
+
+.toast.toast-error {
+  border-left: 3px solid var(--danger);
+}
+
+.toast.toast-warning {
+  border-left: 3px solid var(--warning);
+}
+
+.toast.toast-info {
+  border-left: 3px solid var(--info);
 }
