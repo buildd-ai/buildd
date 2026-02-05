@@ -171,8 +171,8 @@ export class WorkerManager {
     // Check for stale workers every 30s
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
 
-    // Sync worker state to server every 10s
-    this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
+    // Sync worker state to server every 3s
+    this.syncInterval = setInterval(() => this.syncToServer(), 3_000);
 
     // Initialize Pusher if configured
     if (config.pusherKey && config.pusherCluster) {
@@ -346,28 +346,33 @@ export class WorkerManager {
     }
   }
 
+  // Sync a single worker's state to server
+  private async syncWorkerToServer(worker: LocalWorker) {
+    try {
+      const update: Parameters<BuilddClient['updateWorker']>[1] = {
+        status: worker.status === 'waiting' ? 'waiting_input' : 'running',
+        currentAction: worker.currentAction,
+        milestones: worker.milestones.map(m => ({ label: m.label, timestamp: m.timestamp || Date.now() })),
+        localUiUrl: this.config.localUiUrl,
+      };
+      if (worker.status === 'waiting' && worker.waitingFor) {
+        update.waitingFor = {
+          type: worker.waitingFor.type,
+          prompt: worker.waitingFor.prompt,
+          options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+        };
+      }
+      await this.buildd.updateWorker(worker.id, update);
+    } catch (err) {
+      // Silently ignore sync errors
+    }
+  }
+
   // Sync all worker states to server
   private async syncToServer() {
     for (const worker of this.workers.values()) {
       if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
-        try {
-          const update: Parameters<BuilddClient['updateWorker']>[1] = {
-            status: worker.status === 'waiting' ? 'waiting_input' : 'running',
-            currentAction: worker.currentAction,
-            milestones: worker.milestones.map(m => ({ label: m.label, timestamp: m.timestamp || Date.now() })),
-            localUiUrl: this.config.localUiUrl,
-          };
-          if (worker.status === 'waiting' && worker.waitingFor) {
-            update.waitingFor = {
-              type: worker.waitingFor.type,
-              prompt: worker.waitingFor.prompt,
-              options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-            };
-          }
-          await this.buildd.updateWorker(worker.id, update);
-        } catch (err) {
-          // Silently ignore sync errors
-        }
+        await this.syncWorkerToServer(worker);
       }
     }
   }
@@ -1073,6 +1078,11 @@ export class WorkerManager {
       worker.milestones.shift();
     }
     this.emit({ type: 'milestone', workerId: worker.id, milestone });
+
+    // Sync this worker immediately so web dashboard sees milestones right away
+    if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+      this.syncWorkerToServer(worker).catch(() => {});
+    }
   }
 
   async abort(workerId: string, reason?: string) {

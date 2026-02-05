@@ -413,7 +413,9 @@ const server = Bun.serve({
         buildd = new BuilddClient(config);
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
+        workerManager.onEvent(broadcast);
         console.log('Server connection restored');
+        await fetchAccountInfo();
         // Flush any queued mutations from when server was unreachable
         if (outbox.count() > 0) {
           outbox.flush();
@@ -446,6 +448,8 @@ const server = Bun.serve({
         buildd = new BuilddClient(config);
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
+        workerManager.onEvent(broadcast);
+        await fetchAccountInfo();
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
           outbox.flush();
@@ -519,8 +523,8 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { maxConcurrent } = body;
 
-      if (typeof maxConcurrent !== 'number' || maxConcurrent < 1 || maxConcurrent > 4) {
-        return Response.json({ error: 'maxConcurrent must be 1-4' }, { status: 400, headers: corsHeaders });
+      if (typeof maxConcurrent !== 'number' || maxConcurrent < 1 || maxConcurrent > 20) {
+        return Response.json({ error: 'maxConcurrent must be 1-20' }, { status: 400, headers: corsHeaders });
       }
 
       config.maxConcurrent = maxConcurrent;
@@ -678,7 +682,8 @@ const server = Bun.serve({
           saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
-        throw err;
+        console.error('Failed to list tasks:', err.message);
+        return Response.json({ error: err.message || 'Failed to load tasks', tasks: [] }, { status: 502, headers: corsHeaders });
       }
     }
 
@@ -740,8 +745,13 @@ const server = Bun.serve({
 
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
-      const task = await buildd!.createTask(body);
-      return Response.json({ task }, { headers: corsHeaders });
+      try {
+        const task = await buildd!.createTask(body);
+        return Response.json({ task }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to create task:', err.message);
+        return Response.json({ error: err.message || 'Failed to create task' }, { status: 502, headers: corsHeaders });
+      }
     }
 
     // Delete a task
