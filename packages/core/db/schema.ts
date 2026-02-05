@@ -67,7 +67,7 @@ export const accountWorkspaces = pgTable('account_workspaces', {
 export interface WorkspaceGitConfig {
   // Branching
   defaultBranch: string;              // 'main', 'master', 'dev'
-  branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+  branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;              // 'feature/', 'buildd/', null for none
   useBuildBranch?: boolean;          // Use buildd/task-id naming
 

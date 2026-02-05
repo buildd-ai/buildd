@@ -9,14 +9,6 @@ NC='\033[0m'
 
 echo -e "${GREEN}Installing buildd local-ui...${NC}"
 
-# Detect OS
-OS="$(uname -s)"
-case "$OS" in
-  Darwin) PLATFORM="macos" ;;
-  Linux) PLATFORM="linux" ;;
-  *) echo -e "${RED}Unsupported OS: $OS${NC}"; exit 1 ;;
-esac
-
 # Check for bun
 if ! command -v bun &> /dev/null; then
   echo -e "${YELLOW}Bun not found. Installing...${NC}"
@@ -32,8 +24,17 @@ BIN_DIR="$HOME/.local/bin"
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
-  # Reset any local changes (this is an install dir, not a dev dir)
+
+  # Update sparse checkout config (in case it changed)
+  cat > .git/info/sparse-checkout << 'SPARSE'
+apps/local-ui/
+packages/shared/
+package.json
+SPARSE
+
+  # Fetch and apply updates
   git fetch origin dev
+  git read-tree -mu HEAD  # Re-apply sparse checkout to get new paths
   git reset --hard origin/dev
 else
   echo "Cloning buildd (local-ui only)..."
@@ -48,8 +49,12 @@ else
   git remote add origin https://github.com/buildd-ai/buildd.git
   git config core.sparseCheckout true
 
-  # Only checkout local-ui app
-  echo "apps/local-ui/" > .git/info/sparse-checkout
+  # Checkout local-ui app, shared package, and root package.json (for workspaces)
+  cat > .git/info/sparse-checkout << 'SPARSE'
+apps/local-ui/
+packages/shared/
+package.json
+SPARSE
 
   # Fetch and checkout
   git fetch --depth 1 origin dev
@@ -62,18 +67,6 @@ bun install
 
 # Create bin directory
 mkdir -p "$BIN_DIR"
-
-# Migrate: remove old .buildd.env if it only contains API key
-# Config is now stored in ~/.buildd/config.json
-if [ -f "$HOME/.buildd.env" ]; then
-  # Check if .env only has BUILDD_API_KEY lines
-  if grep -qvE '^(export\s+)?BUILDD_API_KEY=|^#|^\s*$' "$HOME/.buildd.env" 2>/dev/null; then
-    echo -e "${YELLOW}Note: ~/.buildd.env has custom settings, keeping it${NC}"
-  else
-    echo -e "${YELLOW}Migrating: API key now stored in ~/.buildd/config.json${NC}"
-    rm -f "$HOME/.buildd.env"
-  fi
-fi
 
 # Create launcher script
 cat > "$BIN_DIR/buildd" << 'LAUNCHER'

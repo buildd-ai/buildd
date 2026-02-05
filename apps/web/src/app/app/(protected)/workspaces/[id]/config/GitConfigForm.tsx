@@ -5,7 +5,7 @@ import Link from 'next/link';
 
 interface GitConfig {
     defaultBranch: string;
-    branchingStrategy: 'trunk' | 'gitflow' | 'feature' | 'custom';
+    branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
     branchPrefix?: string;
     useBuildBranch?: boolean;
     commitStyle: 'conventional' | 'freeform' | 'custom';
@@ -120,6 +120,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             onChange={(e) => setBranchingStrategy(e.target.value as GitConfig['branchingStrategy'])}
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                         >
+                            <option value="none">None (use CLAUDE.md / project conventions)</option>
                             <option value="trunk">Trunk-based (commit directly to default branch)</option>
                             <option value="feature">Feature branches</option>
                             <option value="gitflow">GitFlow (develop + feature branches)</option>
