@@ -125,9 +125,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     // Map worker status to task status
     const taskStatus = worker.status === 'completed' ? 'completed'
       : worker.status === 'failed' ? 'failed'
-      : worker.status === 'waiting_input' ? 'waiting_input'
-      : worker.status === 'running' ? 'running'
-      : 'assigned';
+        : worker.status === 'waiting_input' ? 'waiting_input'
+          : worker.status === 'running' ? 'running'
+            : 'assigned';
 
     const waitingFor = worker.status === 'waiting_input' ? worker.waitingFor : null;
 
@@ -391,17 +391,19 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 <Link
                                   key={task.id}
                                   href={`/app/tasks/${task.id}`}
-                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${
-                                    selectedTaskId === task.id
+                                  data-testid="sidebar-task-item"
+                                  data-task-id={task.id}
+                                  data-status={task.status}
+                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
                                       ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
                                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-                                  }`}
+                                    }`}
                                 >
                                   <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
                                   <span className="flex-1 min-w-0">
                                     <span className="truncate block">{task.title}</span>
                                     {task.waitingFor?.prompt && (
-                                      <span className="text-xs text-purple-600 dark:text-purple-400 truncate block">
+                                      <span data-testid="sidebar-task-question" className="text-xs text-purple-600 dark:text-purple-400 truncate block">
                                         {task.waitingFor.prompt.length > 60
                                           ? task.waitingFor.prompt.slice(0, 60) + '...'
                                           : task.waitingFor.prompt}
@@ -425,11 +427,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                     <Link
                                       key={task.id}
                                       href={`/app/tasks/${task.id}`}
-                                      className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${
-                                        selectedTaskId === task.id
+                                      className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
                                           ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
                                           : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-                                      }`}
+                                        }`}
                                     >
                                       {getStatusIndicator(task.status)}
                                       <span className="truncate flex-1">{task.title}</span>

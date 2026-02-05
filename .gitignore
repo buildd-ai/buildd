@@ -14,3 +14,4 @@ coverage/
 .mcp.json
 .env*.local
 .plan
+scripts/seed/.last-seed.json
