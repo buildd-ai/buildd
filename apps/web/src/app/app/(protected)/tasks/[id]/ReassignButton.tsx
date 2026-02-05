@@ -11,7 +11,7 @@ export default function ReassignButton({ taskId }: { taskId: string }) {
   async function handleReassign() {
     setLoading(true);
     try {
-      const res = await fetch(`/api/tasks/${taskId}/reassign`, {
+      const res = await fetch(`/api/tasks/${taskId}/reassign?force=true`, {
         method: 'POST',
       });
 
