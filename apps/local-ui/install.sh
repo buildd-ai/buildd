@@ -34,6 +34,7 @@ SPARSE
 
   # Fetch and apply updates
   git fetch origin dev
+  git checkout -- bun.lock 2>/dev/null || true  # Discard local lockfile changes
   git read-tree -mu HEAD  # Re-apply sparse checkout to get new paths
   git reset --hard origin/dev
 else
