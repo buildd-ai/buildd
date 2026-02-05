@@ -31,7 +31,7 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
         throw new Error(data.error || 'Failed to delete task');
       }
 
-      router.push('/tasks');
+      router.push('/app/tasks');
       router.refresh();
     } catch (err: any) {
       setError(err.message);
