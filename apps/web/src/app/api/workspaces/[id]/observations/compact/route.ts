@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { observations, accounts } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
+import { hashApiKey } from '@/lib/api-auth';
 
 // GET /api/workspaces/[id]/observations/compact
 // Returns observations formatted as markdown for prompt injection
@@ -17,7 +18,7 @@ export async function GET(
 
     if (apiKey) {
         const account = await db.query.accounts.findFirst({
-            where: eq(accounts.apiKey, apiKey),
+            where: eq(accounts.apiKey, hashApiKey(apiKey)),
         });
         if (!account) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

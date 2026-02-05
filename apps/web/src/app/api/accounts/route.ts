@@ -4,6 +4,7 @@ import { accounts } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
     }
 
-    const apiKey = generateApiKey();
+    const plaintextKey = generateApiKey();
 
     const [account] = await db
       .insert(accounts)
@@ -63,13 +64,15 @@ export async function POST(req: NextRequest) {
         type: type as 'user' | 'service' | 'action',
         level: level as 'worker' | 'admin' || 'worker',
         authType: authType as 'api' | 'oauth' || 'oauth',
-        apiKey,
+        apiKey: hashApiKey(plaintextKey),
+        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
         maxConcurrentWorkers: maxConcurrentWorkers || 3,
         ownerId: user.id,
       })
       .returning();
 
-    return NextResponse.json(account);
+    // Return plaintext key once - it won't be retrievable after this
+    return NextResponse.json({ ...account, apiKey: plaintextKey });
   } catch (error) {
     console.error('Create account error:', error);
     return NextResponse.json({ error: 'Failed to create account' }, { status: 500 });
