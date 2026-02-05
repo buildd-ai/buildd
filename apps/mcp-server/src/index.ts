@@ -156,6 +156,28 @@ const server = new Server(
     capabilities: {
       tools: {},
     },
+    instructions: `Buildd is a task coordination system for AI coding agents. Use these tools to manage your work.
+
+**Worker workflow:**
+1. List tasks → claim a task → checkout the returned branch name → do the work
+2. Report progress at meaningful milestones (25%, 50%, 75%) with git stats
+3. When done: push commits → create PR via buildd_create_pr → complete the task
+4. If blocked or unable to finish: fail the task with a clear error message
+
+**Admin workflow:**
+- Create tasks when the user describes work to be done or wants to break a project into units
+- Monitor workers and send instructions to redirect their work
+- Reassign stuck tasks that aren't making progress
+
+**Memory workflow:**
+- At the START of a new task, search memory for relevant observations about the files/concepts you'll work with
+- AFTER encountering gotchas, making architectural decisions, or discovering patterns, save them as observations for future workers
+
+**When to proactively use tools:**
+- User says "pick up a task", "what's available", "get to work" → list then claim
+- User describes work to be done or says "create a task" → buildd_create_task
+- Starting work on unfamiliar code → buildd_search_memory first
+- Hit a non-obvious bug or learned something important → buildd_save_memory`,
   }
 );
 
@@ -163,7 +185,7 @@ const server = new Server(
 const baseTools = [
   {
     name: "buildd_list_tasks",
-    description: "List pending tasks available to claim. Call with offset to see more.",
+    description: "List available tasks from buildd that can be claimed. Use when the user asks about work, says 'what's available', or before claiming a task. Call with offset to see more.",
     inputSchema: {
       type: "object",
       properties: {
@@ -177,7 +199,7 @@ const baseTools = [
   },
   {
     name: "buildd_claim_task",
-    description: "Claim a task from buildd to work on. Returns worker info with task details.",
+    description: "Claim a task from buildd to work on. Returns worker info with task details. Use after listing tasks, or when user says 'pick up a task' or 'get to work'. After claiming, checkout the returned branch name before starting work.",
     inputSchema: {
       type: "object",
       properties: {
@@ -245,7 +267,7 @@ const baseTools = [
   },
   {
     name: "buildd_complete_task",
-    description: "Mark a task as completed",
+    description: "Mark a task as completed. Call after finishing all work, committing changes, and creating a PR. Include a summary of what was done.",
     inputSchema: {
       type: "object",
       properties: {
@@ -263,7 +285,7 @@ const baseTools = [
   },
   {
     name: "buildd_fail_task",
-    description: "Mark a task as failed",
+    description: "Mark a task as failed. Use when blocked, unable to complete the work, or the task is invalid. Provide a clear error message explaining what went wrong.",
     inputSchema: {
       type: "object",
       properties: {
@@ -281,7 +303,7 @@ const baseTools = [
   },
   {
     name: "buildd_create_pr",
-    description: "Create a GitHub pull request for a worker's branch. Requires workspace to be linked to a GitHub repo.",
+    description: "Create a GitHub pull request for a worker's branch. Requires workspace to be linked to a GitHub repo. Call after pushing commits and before completing the task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -315,7 +337,7 @@ const baseTools = [
   },
   {
     name: "buildd_search_memory",
-    description: "Search workspace memory for relevant observations. Returns compact index (id, title, type, files) - use buildd_get_memory for full details. Use this to find context from previous tasks.",
+    description: "Search workspace memory for relevant observations. Returns compact index (id, title, type, files) - use buildd_get_memory for full details. Search at the start of a task for relevant context about the files and concepts you'll be working with.",
     inputSchema: {
       type: "object",
       properties: {
@@ -358,7 +380,7 @@ const baseTools = [
   },
   {
     name: "buildd_save_memory",
-    description: "Save an observation to workspace memory. Use for gotchas, patterns, decisions, or discoveries worth remembering for future tasks.",
+    description: "Save an observation to workspace memory. Use after encountering gotchas, making architectural decisions, discovering non-obvious patterns, or learning something that would help future workers. Include related file paths and concepts for searchability.",
     inputSchema: {
       type: "object",
       properties: {
@@ -395,7 +417,7 @@ const baseTools = [
 const adminTools = [
   {
     name: "buildd_create_task",
-    description: "Create a new task in buildd",
+    description: "Create a new task in buildd. Use when the user describes work to be done, asks to create/add a task, or wants to break a project into trackable units. Workspace is auto-detected from git remote.",
     inputSchema: {
       type: "object",
       properties: {
