@@ -1,0 +1,190 @@
+/**
+ * Config & Connectivity Integration Tests
+ *
+ * Verifies server URL changes, reconnection, and error handling
+ * without needing Claude credentials or real task execution.
+ *
+ * Requires: local-ui running on port 8766
+ *
+ * Run: bun test:integration-config
+ */
+
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+
+const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
+
+// --- Helpers ---
+
+async function api(path: string, method = 'GET', body?: any): Promise<Response> {
+  return fetch(`${BASE_URL}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+async function apiJson<T = any>(path: string, method = 'GET', body?: any): Promise<T> {
+  const res = await api(path, method, body);
+  return res.json();
+}
+
+// --- Setup & Teardown ---
+
+let originalServer: string;
+
+beforeAll(async () => {
+  // Verify server is running
+  try {
+    const config = await apiJson<{ builddServer: string }>('/api/config');
+    originalServer = config.builddServer;
+    console.log(`Original server URL: ${originalServer}`);
+  } catch (err: any) {
+    if (err.message?.includes('fetch failed')) {
+      throw new Error(`Local-UI not running at ${BASE_URL}. Start with: bun run dev`);
+    }
+    throw err;
+  }
+});
+
+afterAll(async () => {
+  // Restore original server URL
+  if (originalServer) {
+    const res = await api('/api/config/server', 'POST', { server: originalServer });
+    const data = await res.json();
+    console.log(`Restored server URL to: ${data.builddServer}`);
+    expect(data.ok).toBe(true);
+  }
+});
+
+// --- Tests ---
+
+describe('Config & Connectivity', () => {
+  describe('Server URL Change', () => {
+    test('POST /api/config/server updates the server URL', async () => {
+      const newUrl = 'http://localhost:1';
+      const res = await api('/api/config/server', 'POST', { server: newUrl });
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.ok).toBe(true);
+      expect(data.builddServer).toBe(newUrl);
+    });
+
+    test('GET /api/config reflects the new server URL', async () => {
+      const config = await apiJson<{ builddServer: string }>('/api/config');
+      expect(config.builddServer).toBe('http://localhost:1');
+    });
+
+    test('GET /api/tasks returns JSON (not HTML) when server is unreachable', async () => {
+      const res = await api('/api/tasks');
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+
+      const data = await res.json();
+      expect(Array.isArray(data.tasks)).toBe(true);
+    });
+  });
+
+  describe('Error Handling Returns JSON', () => {
+    test('GET /api/tasks returns 502 with empty tasks when server is unreachable', async () => {
+      // Ensure we're pointed at an unreachable server
+      await api('/api/config/server', 'POST', { server: 'http://localhost:1' });
+
+      const res = await api('/api/tasks');
+      const data = await res.json();
+
+      expect(res.status).toBe(502);
+      expect(data.error).toBeTruthy();
+      expect(data.tasks).toEqual([]);
+    });
+
+    test('POST /api/tasks returns JSON error when server is unreachable', async () => {
+      const res = await api('/api/tasks', 'POST', {
+        title: 'Test Task',
+        description: 'Should fail gracefully',
+        workspaceId: 'fake-workspace',
+      });
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+      expect(res.status).toBe(502);
+
+      const data = await res.json();
+      expect(data.error).toBeTruthy();
+    });
+  });
+
+  describe('Server URL Validation', () => {
+    test('rejects missing server URL', async () => {
+      const res = await api('/api/config/server', 'POST', {});
+      expect(res.status).toBe(400);
+
+      const data = await res.json();
+      expect(data.error).toContain('server URL required');
+    });
+
+    test('rejects invalid protocol', async () => {
+      const res = await api('/api/config/server', 'POST', { server: 'ftp://example.com' });
+      expect(res.status).toBe(400);
+
+      const data = await res.json();
+      expect(data.error).toContain('http');
+    });
+  });
+
+  describe('SSE Reconnection', () => {
+    test('GET /api/events returns event-stream content type', async () => {
+      const res = await api('/api/events');
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('text/event-stream');
+
+      // Clean up the SSE connection
+      // Read just enough to verify we get an init event
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const text = new TextDecoder().decode(value);
+
+      expect(text).toContain('"type":"init"');
+      reader.cancel();
+    });
+
+    test('SSE works after server URL change', async () => {
+      // Change to a bogus URL first
+      await api('/api/config/server', 'POST', { server: 'http://localhost:1' });
+
+      // SSE should still connect and send an init event
+      const res = await api('/api/events');
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const text = new TextDecoder().decode(value);
+
+      expect(text).toContain('"type":"init"');
+
+      // Verify the init event reflects the changed server
+      const match = text.match(/data: (.+)\n/);
+      expect(match).toBeTruthy();
+      const initData = JSON.parse(match![1]);
+      expect(initData.config.builddServer).toBe('http://localhost:1');
+
+      reader.cancel();
+    });
+  });
+
+  describe('Restore & Round-trip', () => {
+    test('restoring original URL works', async () => {
+      const res = await api('/api/config/server', 'POST', { server: originalServer });
+      const data = await res.json();
+
+      expect(data.ok).toBe(true);
+      expect(data.builddServer).toBe(originalServer);
+
+      // Verify config reflects restoration
+      const config = await apiJson<{ builddServer: string }>('/api/config');
+      expect(config.builddServer).toBe(originalServer);
+    });
+  });
+});
