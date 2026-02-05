@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { observations, workspaces, accounts } from '@buildd/core/db/schema';
 import { eq, and, desc, or, ilike } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { hashApiKey } from '@/lib/api-auth';
 
 const VALID_TYPES = ['discovery', 'decision', 'gotcha', 'pattern', 'architecture', 'summary'] as const;
 
@@ -12,7 +13,7 @@ async function authenticateRequest(req: NextRequest) {
 
     if (apiKey) {
         const account = await db.query.accounts.findFirst({
-            where: eq(accounts.apiKey, apiKey),
+            where: eq(accounts.apiKey, hashApiKey(apiKey)),
         });
         if (account) return { type: 'api' as const, account };
     }

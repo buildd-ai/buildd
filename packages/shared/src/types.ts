@@ -108,6 +108,7 @@ export interface Account {
   type: AccountTypeValue;
   name: string;
   apiKey: string;
+  apiKeyPrefix: string | null;
   githubId: string | null;
 
   // Authentication type

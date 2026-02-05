@@ -87,7 +87,7 @@ export default async function AccountsPage() {
 
                 <div className="bg-gray-100 dark:bg-gray-800 rounded p-3 font-mono text-sm break-all">
                   <div className="text-xs text-gray-500 mb-1">API Key</div>
-                  <code>{account.apiKey}</code>
+                  <code>{account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : '(hashed)'}</code>
                 </div>
 
                 <div className="mt-3 flex justify-between items-center">

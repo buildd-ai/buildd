@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, workers, artifacts, tasks } from '@buildd/core/db/schema';
+import { workers, artifacts, tasks } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ArtifactType } from '@buildd/shared';
-
-async function authenticateApiKey(apiKey: string | null) {
-  if (!apiKey) return null;
-  const account = await db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, apiKey),
-  });
-  return account || null;
-}
+import { authenticateApiKey } from '@/lib/api-auth';
 
 // POST /api/workers/[id]/plan/approve - Approve the plan and continue to execution
 export async function POST(
