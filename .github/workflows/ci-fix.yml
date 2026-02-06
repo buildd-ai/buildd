@@ -34,4 +34,4 @@ jobs:
             3. Fix the issue
             4. Commit with prefix "autofix:" so this workflow doesn't loop
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 15 --allowedTools "Bash(gh:*),Bash(bun:*),Bash(bunx:*),Bash(git:*),Bash(cd:*),Bash(cat:*),Bash(ls:*),Edit,Read,Write"'
+          claude_args: '--max-turns 25 --allowedTools "Bash(gh:*),Bash(bun:*),Bash(bunx:*),Bash(npx:*),Bash(git:*),Bash(cd:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Edit,Read,Write,Glob,Grep"'
