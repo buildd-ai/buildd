@@ -235,6 +235,10 @@ function handleEvent(event) {
       if (currentWorkerId === event.worker.id) {
         renderWorkerDetail(event.worker);
       }
+      // When a worker reaches terminal state, refresh tasks to remove it from "Assigned Elsewhere"
+      if (['done', 'error'].includes(event.worker.status)) {
+        loadTasks();
+      }
       break;
 
     case 'workers':
@@ -458,7 +462,10 @@ function renderMilestoneBoxes(milestones) {
 function renderTasks() {
   const pending = tasks.filter(t => t.status === 'pending');
   // Only show tasks assigned to OTHER accounts (not our own)
-  const assigned = tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId);
+  // If currentAccountId is unknown, don't show any as "assigned elsewhere" (avoid false positives)
+  const assigned = currentAccountId
+    ? tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId)
+    : [];
 
   // Update stats when tasks change
   const active = workers.filter(w => ['working', 'stale', 'waiting'].includes(w.status));
