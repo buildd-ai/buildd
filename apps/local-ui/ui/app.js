@@ -78,18 +78,18 @@ function showClaudeAuthWarning() {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'claudeAuthBanner';
-    banner.className = 'auth-warning-banner';
+    banner.className = 'bg-red-500/10 border border-red-500/30 rounded-lg py-3 px-4 mb-4';
     banner.innerHTML = `
-      <div class="auth-warning-content">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+      <div class="flex items-center gap-3 text-red-500 text-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" class="shrink-0">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        <span>Claude credentials not found. Run <code>claude login</code> in terminal, then restart buildd.</span>
+        <span>Claude credentials not found. Run <code class="bg-black/30 py-0.5 px-1.5 rounded font-mono text-[13px]">claude login</code> in terminal, then restart buildd.</span>
       </div>
     `;
-    document.querySelector('.main')?.prepend(banner);
+    document.querySelector('main')?.prepend(banner);
   }
   banner.classList.remove('hidden');
 }
@@ -214,13 +214,15 @@ function handleEvent(event) {
   switch (event.type) {
     case 'init':
       workers = event.workers || [];
-      config = event.config || {};
+      // Merge SSE config into existing config (don't overwrite fields from /api/config)
+      config = { ...config, ...(event.config || {}) };
       // Check if configured from SSE init
       if (event.configured === false) {
         showSetup();
         return;
       }
       renderWorkers();
+      loadTasks(); // Refresh tasks on SSE (re)connect
       updateSettings();
       break;
 
@@ -234,6 +236,10 @@ function handleEvent(event) {
       renderWorkers();
       if (currentWorkerId === event.worker.id) {
         renderWorkerDetail(event.worker);
+      }
+      // When a worker reaches terminal state, refresh tasks to remove it from "Assigned Elsewhere"
+      if (['done', 'error'].includes(event.worker.status)) {
+        loadTasks();
       }
       break;
 
@@ -339,18 +345,18 @@ function updateStats(activeCount, pendingCount, completedCount) {
 
 function renderWorkerCard(w) {
   return `
-    <div class="worker-card" data-id="${w.id}">
-      <div class="card-header">
-        <div class="status-dot ${getStatusClass(w)}"></div>
-        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
-        <div class="card-badge">${w.status}</div>
+    <div class="worker-card bg-zinc-900 rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-zinc-800 hover:bg-zinc-800" data-id="${w.id}">
+      <div class="flex items-start gap-3 mb-2">
+        <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${getStatusClass(w)}"></div>
+        <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
+        <div class="text-xs text-zinc-400 bg-zinc-800 py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
-      <div class="milestones">
+      <div class="text-[13px] text-zinc-400 mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
+      <div class="flex gap-1 mb-2">
         ${renderMilestoneBoxes(w.milestones)}
-        <span class="milestone-count">${w.milestones.length}</span>
+        <span class="text-xs text-zinc-400 ml-2">${w.milestones.length}</span>
       </div>
-      <div class="card-action">${escapeHtml(w.currentAction)}</div>
+      <div class="text-[13px] text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.currentAction)}</div>
     </div>
   `;
 }
@@ -359,13 +365,13 @@ function renderWaitingCard(w) {
   const question = w.waitingFor?.prompt || 'Awaiting input';
   const truncatedQuestion = question.length > 120 ? question.slice(0, 120) + '...' : question;
   return `
-    <div class="waiting-banner" data-id="${w.id}">
-      <div class="waiting-banner-top">
-        <div class="status-dot waiting"></div>
-        <div class="waiting-banner-title">${escapeHtml(w.taskTitle)}</div>
-        <div class="waiting-badge">needs input</div>
+    <div class="waiting-banner bg-gradient-to-br from-orange-500/[0.12] to-orange-500/[0.04] border border-orange-500/30 rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98] hover:border-orange-500" data-id="${w.id}">
+      <div class="flex items-center gap-2.5 mb-1.5">
+        <div class="status-dot w-2.5 h-2.5 rounded-full shrink-0 waiting"></div>
+        <div class="flex-1 text-[15px] font-medium text-zinc-50">${escapeHtml(w.taskTitle)}</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wide text-orange-500 bg-orange-500/15 py-0.5 px-2 rounded">${'needs input'}</div>
       </div>
-      <div class="waiting-banner-question">${escapeHtml(truncatedQuestion)}</div>
+      <div class="text-[13px] text-zinc-400 pl-5 leading-relaxed">${escapeHtml(truncatedQuestion)}</div>
     </div>
   `;
 }
@@ -387,13 +393,13 @@ function renderCompletedSection(completed) {
   const recent = sorted.slice(0, 10); // Show last 10
 
   completedEl.innerHTML = `
-    <div class="section-header-collapsible ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
-      <span class="section-title">Completed (${completed.length})</span>
-      <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+    <div class="section-header-collapsible flex items-center justify-between py-2 cursor-pointer select-none hover:opacity-80 ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
+      <span class="text-[13px] font-semibold text-zinc-400 uppercase tracking-wide">Completed (${completed.length})</span>
+      <svg class="chevron text-zinc-400 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
     </div>
-    <div class="completed-list ${completedCollapsed ? 'hidden' : ''}">
+    <div class="flex flex-col gap-2 mt-2 ${completedCollapsed ? 'hidden' : ''}">
       ${recent.map(w => renderCompletedCard(w)).join('')}
     </div>
   `;
@@ -407,13 +413,13 @@ function renderCompletedSection(completed) {
 function renderCompletedCard(w) {
   const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
   return `
-    <div class="worker-card completed-card" data-id="${w.id}">
-      <div class="card-header">
-        <div class="status-dot ${w.status}"></div>
-        <div class="card-title">${escapeHtml(w.taskTitle)}</div>
-        <div class="card-badge">${w.status}</div>
+    <div class="worker-card bg-zinc-900 rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
+      <div class="flex items-start gap-3 mb-1">
+        <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${w.status}"></div>
+        <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
+        <div class="text-xs text-zinc-400 bg-zinc-800 py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="card-meta">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
+      <div class="text-[13px] text-zinc-400">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
     </div>
   `;
 }
@@ -450,7 +456,7 @@ function renderMilestoneBoxes(milestones) {
   const completed = Math.min(milestones.length, max);
   let html = '';
   for (let i = 0; i < max; i++) {
-    html += `<div class="milestone-box ${i < completed ? 'completed' : ''}"></div>`;
+    html += `<div class="w-6 h-2 rounded-sm ${i < completed ? 'bg-fuchsia-500' : 'bg-zinc-800'}"></div>`;
   }
   return html;
 }
@@ -458,7 +464,10 @@ function renderMilestoneBoxes(milestones) {
 function renderTasks() {
   const pending = tasks.filter(t => t.status === 'pending');
   // Only show tasks assigned to OTHER accounts (not our own)
-  const assigned = tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId);
+  // If currentAccountId is unknown, don't show any as "assigned elsewhere" (avoid false positives)
+  const assigned = currentAccountId
+    ? tasks.filter(t => t.status === 'assigned' && t.claimedBy !== currentAccountId)
+    : [];
 
   // Update stats when tasks change
   const active = workers.filter(w => ['working', 'stale', 'waiting'].includes(w.status));
@@ -497,19 +506,19 @@ function renderTasks() {
     // Only assigned, no pending - skip empty message
   } else {
     html += pending.map(t => `
-      <div class="task-card-enhanced" data-id="${t.id}">
-        <div class="task-card-top">
-          <div class="status-dot pending"></div>
-          <div class="task-card-body">
-            <div class="task-card-title">${escapeHtml(t.title)}</div>
-            <div class="task-card-workspace">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <div class="bg-zinc-900 rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 relative border border-transparent hover:bg-zinc-800 hover:border-zinc-700 active:scale-[0.98]" data-id="${t.id}">
+        <div class="flex items-start gap-2.5">
+          <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 pending"></div>
+          <div class="flex-1 min-w-0">
+            <div class="text-[15px] font-medium leading-relaxed text-zinc-50 mb-1">${escapeHtml(t.title)}</div>
+            <div class="text-xs text-zinc-400 flex items-center gap-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 opacity-60">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
               ${escapeHtml(t.workspace?.name || 'Unknown')}
             </div>
           </div>
-          <button class="task-card-start" data-id="${t.id}">Start</button>
+          <button class="task-card-start shrink-0 py-1.5 px-3.5 text-[13px] font-medium bg-gradient-primary text-white border-none rounded-md cursor-pointer transition-all duration-150 whitespace-nowrap hover:opacity-90 active:scale-95" data-id="${t.id}">Start</button>
         </div>
       </div>
     `).join('');
@@ -518,24 +527,24 @@ function renderTasks() {
   // Assigned tasks section
   if (assigned.length > 0) {
     html += `
-      <div class="assigned-section">
-        <div class="section-label">Assigned Elsewhere (${assigned.length})</div>
+      <div class="mt-6 pt-4 border-t border-zinc-700">
+        <div class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-3">Assigned Elsewhere (${assigned.length})</div>
         ${assigned.map(t => {
           const isStale = t.expiresAt && new Date(t.expiresAt) < new Date();
-          const staleLabel = isStale ? '<span class="badge badge-warning">Stale</span>' : '';
+          const staleLabel = isStale ? '<span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-amber-400/15 text-orange-500">Stale</span>' : '';
           return `
-            <div class="task-card assigned-card" data-id="${t.id}" data-stale="${isStale}">
-              <div class="card-header">
-                <div class="status-dot assigned"></div>
-                <div class="card-title">${escapeHtml(t.title)}</div>
+            <div class="bg-zinc-900 rounded-xl p-4 cursor-default opacity-80 hover:opacity-100" data-id="${t.id}" data-stale="${isStale}">
+              <div class="flex items-start gap-3 mb-2">
+                <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 assigned"></div>
+                <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(t.title)}</div>
                 ${staleLabel}
               </div>
-              <div class="card-meta">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
-              <div class="card-actions">
-                <button class="btn btn-small btn-secondary takeover-btn" data-id="${t.id}" data-stale="${isStale}">
+              <div class="text-[13px] text-zinc-400">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
+              <div class="mt-3 flex gap-2">
+                <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200 takeover-btn" data-id="${t.id}" data-stale="${isStale}">
                   Take Over
                 </button>
-                <button class="btn btn-small btn-danger delete-btn" data-id="${t.id}" title="Delete task">
+                <button class="btn py-1.5 px-3 text-[13px] bg-red-500 text-white rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-red-600 delete-btn" data-id="${t.id}" title="Delete task">
                   Delete
                 </button>
               </div>
@@ -557,7 +566,8 @@ function renderTasks() {
   });
 
   // Add click handler for card body (also starts)
-  tasksEl.querySelectorAll('.task-card-enhanced').forEach(card => {
+  tasksEl.querySelectorAll('[data-id]:not(.takeover-btn):not(.delete-btn):not(.task-card-start)').forEach(card => {
+    if (card.closest('.mt-6')) return; // Skip assigned cards
     card.onclick = () => claimTask(card.dataset.id);
   });
 
@@ -582,9 +592,9 @@ function renderWorkerDetail(worker) {
   document.getElementById('modalTitle').textContent = worker.taskTitle;
 
   document.getElementById('modalMeta').innerHTML = `
-    <span class="meta-tag">${worker.workspaceName}</span>
-    <span class="meta-tag">${worker.branch}</span>
-    <span class="meta-tag status-${worker.status}">${worker.status}</span>
+    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400">${worker.workspaceName}</span>
+    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400">${worker.branch}</span>
+    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400 meta-tag status-${worker.status}">${worker.status}</span>
   `;
 
   // Render description with markdown support (collapsible if long)
@@ -592,13 +602,13 @@ function renderWorkerDetail(worker) {
   if (worker.taskDescription) {
     const isLongDescription = worker.taskDescription.length > 300 || worker.taskDescription.split('\n').length > 6;
     descriptionEl.innerHTML = `
-      <div class="task-description-card ${isLongDescription ? 'collapsed' : ''}">
-        <div class="task-description-header">Task</div>
-        <div class="markdown-content">${marked.parse(worker.taskDescription)}</div>
+      <div class="task-description-card bg-zinc-900 rounded-lg py-3 px-3.5 mb-2 border-l-[3px] border-l-fuchsia-500 relative ${isLongDescription ? 'collapsed' : ''}">
+        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide mb-1.5">Task</div>
+        <div class="markdown-content text-[13px] leading-normal">${marked.parse(worker.taskDescription)}</div>
         ${isLongDescription ? `
-          <button class="expand-btn" onclick="toggleDescription(this)">
+          <button class="expand-btn hidden items-center justify-center gap-1 w-full pt-1.5 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleDescription(this)">
             <span class="expand-text">Show more</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
               <polyline points="6 9 12 15 18 9"/>
             </svg>
           </button>
@@ -628,13 +638,13 @@ function renderWorkerDetail(worker) {
         const combinedContent = group.items.map(m => m.content).join('\n\n');
         const isLong = combinedContent.length > 800 || combinedContent.split('\n').length > 15;
         return `
-          <div class="chat-msg chat-agent ${isLong ? 'collapsed' : ''}">
-            <div class="chat-msg-content">
-              <div class="markdown-content">${marked.parse(combinedContent)}</div>
+          <div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start ${isLong ? 'collapsed' : ''}">
+            <div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative">
+              <div class="markdown-content text-sm">${marked.parse(combinedContent)}</div>
               ${isLong ? `
-                <button class="expand-msg-btn" onclick="toggleAgentMessage(this)">
+                <button class="expand-msg-btn hidden items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleAgentMessage(this)">
                   <span class="expand-text">Show more</span>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
                     <polyline points="6 9 12 15 18 9"/>
                   </svg>
                 </button>
@@ -644,14 +654,14 @@ function renderWorkerDetail(worker) {
       }
       if (group.type === 'user') {
         return group.items.map(m => `
-          <div class="chat-msg chat-user">
-            <div class="chat-msg-label">You</div>
-            <div class="chat-msg-content">${escapeHtml(m.content)}</div>
+          <div class="chat-msg max-w-[90%] animate-chat-fade-in self-end">
+            <div class="text-[11px] text-zinc-400 mb-1 text-right">You</div>
+            <div class="bg-fuchsia-500 bg-gradient-to-br from-fuchsia-500/25 to-cyan-400/15 border border-fuchsia-500/30 rounded-tl-lg rounded-tr-sm rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-normal text-zinc-50">${escapeHtml(m.content)}</div>
           </div>`).join('');
       }
       if (group.type === 'tool_use') {
         return `
-          <div class="chat-tool-group">
+          <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
             ${group.items.map(m => renderToolCallInline(m)).join('')}
           </div>`;
       }
@@ -660,16 +670,16 @@ function renderWorkerDetail(worker) {
   } else {
     // Fallback: render from old output/toolCalls arrays for backwards compat
     const fallbackHtml = worker.output.length > 0
-      ? `<div class="chat-msg chat-agent"><div class="chat-msg-content"><div class="output-box">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
-      : '<div class="chat-empty">Waiting for agent output...</div>';
+      ? `<div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start"><div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative"><div class="bg-zinc-900 rounded-lg p-3 font-mono text-[13px] leading-normal max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
+      : '<div class="text-center py-8 text-zinc-400 text-sm">Waiting for agent output...</div>';
     timelineEl.innerHTML = fallbackHtml;
   }
 
   // Status indicator at bottom
   if (worker.status === 'working') {
     timelineEl.innerHTML += `
-      <div class="chat-status">
-        <div class="chat-status-dot"></div>
+      <div class="flex items-center gap-2 py-2 text-[13px] text-zinc-400">
+        <div class="w-2 h-2 rounded-full bg-fuchsia-500 animate-pulse-fast shrink-0"></div>
         <span>${escapeHtml(worker.currentAction)}</span>
       </div>`;
   }
@@ -677,8 +687,8 @@ function renderWorkerDetail(worker) {
   // Stale worker indicator
   if (worker.status === 'stale') {
     timelineEl.innerHTML += `
-      <div class="chat-error-prompt" style="border-color: var(--warning-color, #f59e0b);">
-        <div class="chat-error-header" style="color: var(--warning-color, #f59e0b);">
+      <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="8" x2="12" y2="12"/>
@@ -686,9 +696,9 @@ function renderWorkerDetail(worker) {
           </svg>
           Agent appears stuck
         </div>
-        <div class="chat-error-text">No activity for over 2 minutes. Last action: ${escapeHtml(worker.currentAction)}</div>
-        <div class="chat-error-hint">Send a message below to nudge the agent, or use Retry to restart the session</div>
-        <button class="btn btn-small btn-secondary" onclick="retryWorker()" style="margin-top: 8px;">Retry</button>
+        <div class="text-sm text-zinc-50 leading-normal mb-2">No activity for over 2 minutes. Last action: ${escapeHtml(worker.currentAction)}</div>
+        <div class="text-xs text-zinc-400">Send a message below to nudge the agent, or use Retry to restart the session</div>
+        <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200 mt-2" onclick="retryWorker()">Retry</button>
       </div>`;
   }
 
@@ -696,16 +706,16 @@ function renderWorkerDetail(worker) {
   if (worker.status === 'waiting' && worker.waitingFor) {
     const options = worker.waitingFor.options || [];
     timelineEl.innerHTML += `
-      <div class="chat-question-prompt">
-        <div class="chat-question-header">Agent is asking:</div>
-        <div class="chat-question-text">${escapeHtml(worker.waitingFor.prompt)}</div>
+      <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
+        <div class="text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">Agent is asking:</div>
+        <div class="text-sm text-zinc-50 leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
         ${options.length > 0 ? `
-          <div class="chat-question-options">
+          <div class="flex flex-wrap gap-2">
             ${options.map((opt, i) => `
-              <button class="btn btn-option" data-option="${i}"
+              <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-zinc-900 hover:border-orange-500" data-option="${i}"
                 onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
                 ${escapeHtml(opt.label)}
-                ${opt.description ? `<span class="option-desc">${escapeHtml(opt.description)}</span>` : ''}
+                ${opt.description ? `<span class="text-[11px] text-zinc-400 font-normal">${escapeHtml(opt.description)}</span>` : ''}
               </button>
             `).join('')}
           </div>
@@ -716,8 +726,8 @@ function renderWorkerDetail(worker) {
   // Error indicator for failed/aborted workers
   if (worker.status === 'error') {
     timelineEl.innerHTML += `
-      <div class="chat-error-prompt">
-        <div class="chat-error-header">
+      <div class="bg-gradient-to-br from-red-500/15 to-red-500/5 border border-red-500 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-red-500 font-semibold uppercase tracking-wide mb-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="8" x2="12" y2="12"/>
@@ -725,8 +735,29 @@ function renderWorkerDetail(worker) {
           </svg>
           Task stopped
         </div>
-        <div class="chat-error-text">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
-        <div class="chat-error-hint">Send a message below to restart with new instructions</div>
+        <div class="text-sm text-zinc-50 leading-normal mb-2">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
+        <div class="text-xs text-zinc-400">Send a message below to restart with new instructions</div>
+      </div>`;
+  }
+
+  // Deliverables strip for completed workers
+  if (worker.status === 'done' && worker.commits.length > 0) {
+    const commitCount = worker.commits.length;
+    const commitMsgs = worker.commits.slice(-3).map(c => escapeHtml(c.message)).join(', ');
+    timelineEl.innerHTML += `
+      <div class="bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border border-emerald-500/50 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-emerald-400 font-semibold uppercase tracking-wide mb-2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          Delivered
+        </div>
+        <div class="flex items-center gap-3 text-sm text-zinc-300 flex-wrap">
+          <span class="text-xs bg-zinc-800 py-1 px-2 rounded font-mono">${escapeHtml(worker.branch)}</span>
+          <span>${commitCount} commit${commitCount !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="text-xs text-zinc-500 mt-2">${commitMsgs}</div>
       </div>`;
   }
 
@@ -743,7 +774,7 @@ function renderWorkerDetail(worker) {
 
   // Show/hide message input based on status
   // Allow input for working, done, waiting, stale, AND error (to restart/continue)
-  const messageInputEl = document.querySelector('.modal-input');
+  const messageInputEl = workerModal.querySelector('.border-t.bg-zinc-900');
   if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting' || worker.status === 'error' || worker.status === 'stale') {
     messageInputEl.classList.remove('hidden');
     let placeholder = 'Send a message to the agent...';
@@ -825,10 +856,10 @@ function renderToolCallInline(tc) {
   }
 
   return `
-    <div class="chat-tool-call">
-      <span class="chat-tool-icon">${icon}</span>
-      <span class="chat-tool-name">${escapeHtml(name)}</span>
-      ${detail ? `<span class="chat-tool-detail">${escapeHtml(detail)}</span>` : ''}
+    <div class="flex items-center gap-1.5 py-1 px-2.5 bg-zinc-900 border-l-2 border-l-zinc-800 rounded-r text-xs text-zinc-400 overflow-hidden">
+      <span class="shrink-0 flex items-center text-zinc-400 opacity-70">${icon}</span>
+      <span class="font-semibold text-fuchsia-500 text-xs shrink-0">${escapeHtml(name)}</span>
+      ${detail ? `<span class="font-mono text-[11px] text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis min-w-0">${escapeHtml(detail)}</span>` : ''}
     </div>`;
 }
 
@@ -909,14 +940,20 @@ function updateSettings() {
   }
 
   const maxEl = document.getElementById('settingsMax');
-  maxEl.innerHTML = [1, 2, 3, 4].map(n => `
-    <button class="segment ${n === config.maxConcurrent ? 'active' : ''}" data-value="${n}">${n}</button>
-  `).join('');
+  maxEl.innerHTML = `
+    <input type="number" min="1" max="20" value="${config.maxConcurrent || 3}"
+      class="bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-sm text-zinc-50 w-20 focus:outline-none focus:border-fuchsia-500"
+      id="settingsMaxInput">
+  `;
 
-  // Add click handlers for max concurrent
-  maxEl.querySelectorAll('.segment').forEach(btn => {
-    btn.onclick = () => handleMaxConcurrentChange(parseInt(btn.dataset.value));
-  });
+  const maxInput = document.getElementById('settingsMaxInput');
+  let maxDebounce = null;
+  maxInput.onchange = () => {
+    const val = Math.max(1, Math.min(20, parseInt(maxInput.value) || 1));
+    maxInput.value = val;
+    clearTimeout(maxDebounce);
+    maxDebounce = setTimeout(() => handleMaxConcurrentChange(val), 300);
+  };
 
   const bypassCheckbox = document.getElementById('settingsBypass');
   if (bypassCheckbox) {
@@ -956,21 +993,23 @@ async function handleServerUrlChange() {
     if (data.ok) {
       config.builddServer = data.builddServer;
       serverSaveBtn.style.display = 'none';
+      hint.textContent = 'Server URL updated. Reconnecting...';
+      hint.style.color = '#22c55e';
+      // Reconnect SSE and reload all data
+      connectSSE();
+      await Promise.all([loadTasks(), loadWorkspaces()]);
       hint.textContent = 'Server URL updated. Connection reinitialized.';
-      hint.style.color = 'var(--success)';
       setTimeout(() => {
         hint.textContent = 'Reinitializes connection when changed';
         hint.style.color = '';
       }, 3000);
-      // Refresh workspaces with new server
-      await loadWorkspaces();
     } else {
       hint.textContent = data.error || 'Failed to update server URL';
-      hint.style.color = 'var(--danger)';
+      hint.style.color = '#ef4444';
     }
   } catch (err) {
     hint.textContent = 'Failed to save server URL';
-    hint.style.color = 'var(--danger)';
+    hint.style.color = '#ef4444';
   } finally {
     serverSaveBtn.disabled = false;
     serverSaveBtn.textContent = 'Save';
@@ -1161,17 +1200,24 @@ function showToast(message, type = 'info') {
   if (existing) existing.remove();
 
   const icons = {
-    success: '✓',
-    error: '✕',
-    warning: '⚠',
-    info: 'ℹ'
+    success: '\u2713',
+    error: '\u2715',
+    warning: '\u26a0',
+    info: '\u2139'
+  };
+
+  const borderColors = {
+    success: 'border-l-green-500',
+    error: 'border-l-red-500',
+    warning: 'border-l-orange-500',
+    info: 'border-l-blue-500',
   };
 
   const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
+  toast.className = `toast fixed bottom-6 left-1/2 bg-zinc-800 text-zinc-50 py-3 px-5 rounded-lg shadow-[0_4px_20px_rgba(0,0,0,0.4)] text-sm z-[1000] flex items-center gap-2.5 max-w-[min(500px,90vw)] border-l-[3px] ${borderColors[type] || borderColors.info}`;
 
   const icon = document.createElement('span');
-  icon.className = 'toast-icon';
+  icon.className = 'shrink-0 w-[18px] h-[18px]';
   icon.textContent = icons[type] || icons.info;
   toast.appendChild(icon);
 
@@ -1331,10 +1377,10 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
     setOptions: (opts) => {
       allOptions = opts;
       optionsContainer.innerHTML = opts.map(o => `
-        <div class="custom-select-option ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
-          ${o.icon ? `<span class="option-icon">${o.icon}</span>` : ''}
-          <span class="option-label">${escapeHtml(o.label)}</span>
-          ${o.hint ? `<span class="option-hint">${escapeHtml(o.hint)}</span>` : ''}
+        <div class="custom-select-option flex items-center gap-2.5 py-2.5 px-3 rounded-lg cursor-pointer transition-all duration-100 mb-0.5 ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
+          ${o.icon ? `<span class="shrink-0 w-5 h-5 flex items-center justify-center">${o.icon}</span>` : ''}
+          <span class="option-label flex-1 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(o.label)}</span>
+          ${o.hint ? `<span class="option-hint text-xs text-zinc-400 whitespace-nowrap">${escapeHtml(o.hint)}</span>` : ''}
         </div>
       `).join('');
     },
@@ -1349,6 +1395,7 @@ function selectOption(container, value, label) {
   trigger.dataset.value = value;
   valueEl.textContent = label;
   valueEl.classList.toggle('placeholder', !value);
+  valueEl.classList.toggle('text-zinc-400', !value);
 }
 
 function closeAllDropdowns() {
@@ -1525,38 +1572,38 @@ async function renderWorkspaceModal() {
   const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
 
   document.getElementById('workspacesReady').innerHTML = ready.length ? ready.map(w => `
-    <div class="workspace-item">
-      <div class="workspace-info">
-        <div class="workspace-name">${escapeHtml(w.name)}</div>
-        <div class="workspace-path">${escapeHtml(w.localPath)}</div>
+    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
+        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.localPath)}</div>
       </div>
-      <span class="badge badge-success">Ready</span>
+      <span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-green-500/15 text-green-500">Ready</span>
     </div>
-  `).join('') : '<div class="empty-small">None</div>';
+  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
 
   document.getElementById('workspacesNeedsClone').innerHTML = needsClone.length ? needsClone.map(w => `
-    <div class="workspace-item">
-      <div class="workspace-info">
-        <div class="workspace-name">${escapeHtml(w.name)}</div>
-        <div class="workspace-repo">${escapeHtml(w.repo || '')}</div>
+    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
+        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.repo || '')}</div>
       </div>
-      <button class="btn btn-small btn-primary" onclick="cloneWorkspace('${w.id}', '${escapeHtml(w.repo)}')">
+      <button class="btn py-1.5 px-3 text-[13px] bg-gradient-primary text-white rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="cloneWorkspace('${w.id}', '${escapeHtml(w.repo)}')">
         Clone
       </button>
     </div>
-  `).join('') : '<div class="empty-small">None</div>';
+  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
 
   document.getElementById('workspacesLocalOnly').innerHTML = localOnly.length ? localOnly.map(w => `
-    <div class="workspace-item">
-      <div class="workspace-info">
-        <div class="workspace-name">${escapeHtml(w.name)}</div>
-        <div class="workspace-repo">${escapeHtml(w.normalizedUrl || '')}</div>
+    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
+        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.normalizedUrl || '')}</div>
       </div>
-      <button class="btn btn-small btn-secondary" onclick="syncWorkspace('${escapeHtml(w.localPath)}', '${escapeHtml(w.name)}')">
+      <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="syncWorkspace('${escapeHtml(w.localPath)}', '${escapeHtml(w.name)}')">
         Sync
       </button>
     </div>
-  `).join('') : '<div class="empty-small">None</div>';
+  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
 }
 
 async function cloneWorkspace(workspaceId, repoUrl) {
@@ -1620,6 +1667,32 @@ async function syncWorkspace(localPath, name) {
 }
 
 async function claimTask(taskId) {
+  // Find the task being claimed for optimistic UI
+  const task = tasks.find(t => t.id === taskId);
+
+  // Optimistic: move task to active section immediately
+  if (task) {
+    tasks = tasks.filter(t => t.id !== taskId);
+    const optimisticWorker = {
+      id: `claiming-${taskId}`,
+      taskTitle: task.title,
+      workspaceName: task.workspace?.name || 'Unknown',
+      branch: '',
+      status: 'working',
+      hasNewActivity: false,
+      lastActivity: Date.now(),
+      milestones: [],
+      currentAction: 'Starting...',
+      _optimistic: true,
+    };
+    workers.push(optimisticWorker);
+    renderTasks();
+    renderWorkers();
+  }
+
+  // Disable all start buttons to prevent double-click
+  tasksEl.querySelectorAll('.task-card-start').forEach(btn => { btn.disabled = true; });
+
   try {
     const res = await fetch('/api/claim', {
       method: 'POST',
@@ -1628,13 +1701,26 @@ async function claimTask(taskId) {
     });
     const data = await res.json();
     if (data.worker) {
-      showToast('Task claimed successfully', 'success');
+      // Remove optimistic worker (real one comes via SSE)
+      workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+      renderWorkers();
+      showToast('Task started', 'success');
       loadTasks();
     } else {
+      // Failed - restore task to pending
+      workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+      if (task) tasks.unshift(task);
+      renderTasks();
+      renderWorkers();
       showToast(data.error || 'Failed to claim task', 'error');
     }
   } catch (err) {
     console.error('Failed to claim task:', err);
+    // Restore on error
+    workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+    if (task) tasks.unshift(task);
+    renderTasks();
+    renderWorkers();
     showToast('Failed to claim task', 'error');
   }
 }
@@ -1724,11 +1810,15 @@ async function abortWorker() {
     abortBtn.textContent = 'Stopping...';
   }
   try {
-    await fetch('/api/abort', {
+    const res = await fetch('/api/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to stop task', 'error');
+    }
     hideConfirmDialog();
     closeWorkerModal();
   } catch (err) {
@@ -1775,11 +1865,16 @@ function confirmAbort() {
 async function retryWorker() {
   if (!currentWorkerId) return;
   try {
-    await fetch('/api/retry', {
+    const res = await fetch('/api/retry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to retry task', 'error');
+      return;
+    }
     showToast('Retrying task...', 'success');
   } catch (err) {
     console.error('Failed to retry:', err);
@@ -1790,14 +1885,20 @@ async function retryWorker() {
 async function markDone() {
   if (!currentWorkerId) return;
   try {
-    await fetch('/api/done', {
+    const res = await fetch('/api/done', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to mark done', 'error');
+      return;
+    }
     closeWorkerModal();
   } catch (err) {
     console.error('Failed to mark done:', err);
+    showToast('Failed to mark done', 'error');
   }
 }
 
@@ -1808,14 +1909,20 @@ async function sendMessage() {
   if (!message) return;
 
   try {
-    await fetch(`/api/workers/${currentWorkerId}/send`, {
+    const res = await fetch(`/api/workers/${currentWorkerId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Message not delivered', 'error');
+      return;
+    }
     input.value = '';
   } catch (err) {
     console.error('Failed to send message:', err);
+    showToast('Failed to send message', 'error');
   }
 }
 
@@ -1844,29 +1951,56 @@ async function createTask() {
     return;
   }
 
-  try {
-    const payload = {
-      workspaceId,
-      title,
-      description,
-      attachments: attachments.map(a => ({
-        data: a.data,
-        mimeType: a.mimeType,
-        filename: a.filename
-      }))
-    };
+  // Find workspace name for optimistic rendering
+  const workspace = combinedWorkspaces.find(w => (w.id || w.localPath) === workspaceId);
+  const workspaceName = workspace?.name || 'Unknown';
 
-    await fetch('/api/tasks', {
+  const payload = {
+    workspaceId,
+    title,
+    description,
+    attachments: attachments.map(a => ({
+      data: a.data,
+      mimeType: a.mimeType,
+      filename: a.filename
+    }))
+  };
+
+  // Optimistic: add temp task, close modal, show toast immediately
+  const tempId = `temp-${Date.now()}`;
+  const optimisticTask = {
+    id: tempId,
+    title,
+    description,
+    workspaceId,
+    status: 'pending',
+    workspace: { name: workspaceName },
+    _optimistic: true,
+  };
+  tasks.unshift(optimisticTask);
+  renderTasks();
+  closeTaskModal();
+  showToast('Task created', 'success');
+
+  // Background POST
+  try {
+    const res = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
-    closeTaskModal();
-    showToast('Task created successfully', 'success');
-    loadTasks();
+    const data = await res.json();
+    if (data.task) {
+      tasks = tasks.map(t => t.id === tempId ? { ...data.task, workspace: data.task.workspace || { name: workspaceName } } : t);
+    } else {
+      tasks = tasks.filter(t => t.id !== tempId);
+      showToast('Failed to create task', 'error');
+    }
+    renderTasks();
   } catch (err) {
     console.error('Failed to create task:', err);
+    tasks = tasks.filter(t => t.id !== tempId);
+    renderTasks();
     showToast('Failed to create task', 'error');
   }
 }
@@ -1881,37 +2015,80 @@ async function createAndStartTask() {
     return;
   }
 
-  try {
-    const payload = {
-      workspaceId,
-      title,
-      description,
-      attachments: attachments.map(a => ({
-        data: a.data,
-        mimeType: a.mimeType,
-        filename: a.filename
-      }))
-    };
+  // Find workspace name for optimistic rendering
+  const workspace = combinedWorkspaces.find(w => (w.id || w.localPath) === workspaceId);
+  const workspaceName = workspace?.name || 'Unknown';
 
+  const payload = {
+    workspaceId,
+    title,
+    description,
+    attachments: attachments.map(a => ({
+      data: a.data,
+      mimeType: a.mimeType,
+      filename: a.filename
+    }))
+  };
+
+  // Optimistic: show task as "Starting..." in active section immediately
+  const tempId = `temp-${Date.now()}`;
+  const optimisticWorker = {
+    id: tempId,
+    taskTitle: title,
+    workspaceName,
+    branch: '',
+    status: 'working',
+    hasNewActivity: false,
+    lastActivity: Date.now(),
+    milestones: [],
+    currentAction: 'Starting...',
+    _optimistic: true,
+  };
+  workers.push(optimisticWorker);
+  renderWorkers();
+  closeTaskModal();
+  showToast('Task created, starting...', 'success');
+
+  // Background: create task then claim it
+  try {
     const res = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
     const data = await res.json();
-    closeTaskModal();
 
     if (data.task?.id) {
-      showToast('Task created, starting...', 'success');
-      // Immediately claim the task to start it
-      await claimTask(data.task.id);
+      // Claim the task - SSE worker_update will replace optimistic worker
+      const claimRes = await fetch('/api/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: data.task.id })
+      });
+      const claimData = await claimRes.json();
+
+      if (claimData.worker) {
+        // Remove optimistic worker (real one comes via SSE)
+        workers = workers.filter(w => w.id !== tempId);
+        renderWorkers();
+        loadTasks();
+      } else {
+        // Claim failed - remove optimistic worker, show error
+        workers = workers.filter(w => w.id !== tempId);
+        renderWorkers();
+        showToast(claimData.error || 'Failed to start task', 'error');
+        loadTasks();
+      }
     } else {
-      showToast('Task created', 'success');
-      loadTasks();
+      // Create failed
+      workers = workers.filter(w => w.id !== tempId);
+      renderWorkers();
+      showToast('Failed to create task', 'error');
     }
   } catch (err) {
     console.error('Failed to create and start task:', err);
+    workers = workers.filter(w => w.id !== tempId);
+    renderWorkers();
     showToast('Failed to create task', 'error');
   }
 }
@@ -1939,14 +2116,14 @@ function handleFileSelect(e) {
 function renderAttachments() {
   const container = document.getElementById('attachments');
   container.innerHTML = attachments.map((a, i) => `
-    <div class="attachment-preview">
-      <img src="${a.data}" alt="${a.filename}">
-      <div class="remove" data-index="${i}">&times;</div>
+    <div class="w-20 h-20 rounded-lg overflow-hidden relative">
+      <img src="${a.data}" alt="${a.filename}" class="w-full h-full object-cover">
+      <div class="remove absolute top-1 right-1 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-sm cursor-pointer" data-index="${i}">&times;</div>
     </div>
   `).join('') + `
-    <label class="attachment-add">
+    <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-zinc-900 border-2 border-dashed border-zinc-700 flex items-center justify-center cursor-pointer">
       <input type="file" id="fileInput" accept="image/*" multiple hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 text-zinc-400">
         <path d="M12 5v14M5 12h14"/>
       </svg>
     </label>
@@ -1966,6 +2143,8 @@ function renderAttachments() {
 function clearTaskForm() {
   document.getElementById('taskTitle').value = '';
   document.getElementById('taskDescription').value = '';
+  document.getElementById('taskWorkspace').value = '';
+  selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();
 }
@@ -1976,7 +2155,8 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // Event listeners
@@ -2036,13 +2216,13 @@ function handleRoute() {
   const workerMatch = path.match(/^\/worker\/([^/]+)$/);
   if (workerMatch) {
     const workerId = workerMatch[1];
-    // Wait for workers to load, then open modal
+    // Wait for workers to load, then open modal (max 10 retries = 5s)
+    let retries = 0;
     const checkAndOpen = () => {
       const worker = workers.find(w => w.id === workerId);
       if (worker) {
         openWorkerModal(workerId);
-      } else {
-        // Worker not loaded yet, retry
+      } else if (retries++ < 10) {
         setTimeout(checkAndOpen, 500);
       }
     };

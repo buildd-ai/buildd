@@ -103,6 +103,19 @@ export interface WorkspaceWebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+// Task result/deliverable snapshot - populated when worker completes
+export interface TaskResult {
+  summary?: string;
+  branch?: string;
+  commits?: number;
+  sha?: string;
+  files?: number;
+  added?: number;
+  removed?: number;
+  prUrl?: string;
+  prNumber?: number;
+}
+
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
@@ -167,6 +180,8 @@ export const tasks = pgTable('tasks', {
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // Deliverable snapshot - populated on worker completion
+  result: jsonb('result').$type<TaskResult | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -186,6 +201,7 @@ export const workers = pgTable('workers', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
   name: text('name').notNull(),
+  runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   worktreePath: text('worktree_path'),
   status: text('status').default('idle').notNull(),

@@ -1,14 +1,19 @@
 {
   "name": "buildd",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
     "test": "bun test",
     "test:run": "bun test",
     "agent": "bun run --filter @buildd/agent start",
-    "agent:build": "bun run --filter @buildd/agent build"
+    "agent:build": "bun run --filter @buildd/agent build",
+    "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
+    "seed:reset": "bun run scripts/seed/reset.ts"
   },
   "dependencies": {
     "next": "^15.1.0",

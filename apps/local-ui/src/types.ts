@@ -80,6 +80,18 @@ export interface BuilddTask {
   claimedBy?: string | null;
   claimedAt?: string | null;
   expiresAt?: string | null;
+  // Deliverable snapshot
+  result?: {
+    summary?: string;
+    branch?: string;
+    commits?: number;
+    sha?: string;
+    files?: number;
+    added?: number;
+    removed?: number;
+    prUrl?: string;
+    prNumber?: number;
+  } | null;
 }
 
 // Git workflow configuration (matches server schema)
