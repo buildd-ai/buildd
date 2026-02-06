@@ -18,8 +18,8 @@ const SERVER = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
 const API_KEY = process.env.BUILDD_API_KEY;
 
 if (!API_KEY) {
-  console.error('BUILDD_API_KEY is required. Set it in env or .env file.');
-  process.exit(1);
+  console.log('⏭️  Skipping integration test: BUILDD_API_KEY not set (this is expected in CI)');
+  process.exit(0);
 }
 
 // Track resources for cleanup
