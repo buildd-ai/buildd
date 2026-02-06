@@ -25,13 +25,37 @@ jobs:
           ref: dev
           fetch-depth: 0
 
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Get failed job logs
+        id: logs
+        run: |
+          RUN_ID=${{ github.event.workflow_run.id }}
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          gh run view $RUN_ID --log-failed 2>&1 | tail -100 > /tmp/ci-failure.log
+          echo "## Failed CI logs (last 100 lines):" > /tmp/ci-context.txt
+          cat /tmp/ci-failure.log >> /tmp/ci-context.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: anthropics/claude-code-action@v1
         with:
           prompt: |
-            The CI build failed on the dev branch. Investigate the failure:
-            1. Use CI tools to download and read the failed job logs
-            2. Identify the root cause (type error, test failure, build error, migration issue)
-            3. Fix the issue
-            4. Commit with prefix "autofix:" so this workflow doesn't loop
+            The CI build failed on the dev branch. Here are the failed job logs:
+
+            $(cat /tmp/ci-context.txt)
+
+            Dependencies are already installed. Fix the issue directly:
+            1. Read the error messages above to identify the root cause
+            2. Fix the source files (the codebase is already checked out)
+            3. If schema changed, run: cd packages/core && bun db:generate
+            4. Verify your fix: cd apps/web && bunx tsc --noEmit
+            5. Commit and push with prefix "autofix:" so this workflow doesn't loop
+
+            IMPORTANT: Do NOT spend turns downloading CI logs - they are provided above.
+            Use `git push origin dev` to push your fix.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 25 --allowedTools "Bash(gh:*),Bash(bun:*),Bash(bunx:*),Bash(npx:*),Bash(git:*),Bash(cd:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Edit,Read,Write,Glob,Grep"'
+          claude_args: '--max-turns 30 --allowedTools "Bash(gh:*),Bash(bun:*),Bash(bunx:*),Bash(npx:*),Bash(git:*),Bash(cd:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Edit,Read,Write,Glob,Grep"'
