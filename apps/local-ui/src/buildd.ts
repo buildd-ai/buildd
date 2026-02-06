@@ -72,6 +72,12 @@ export class BuilddClient {
     currentAction?: string;
     milestones?: Array<{ label: string; timestamp: number }>;
     waitingFor?: { type: string; prompt: string; options?: string[] } | null;
+    // Git stats
+    lastCommitSha?: string;
+    commitCount?: number;
+    filesChanged?: number;
+    linesAdded?: number;
+    linesRemoved?: number;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
@@ -200,6 +206,29 @@ export class BuilddClient {
     }
   }
 
+  async searchObservations(workspaceId: string, query: string, limit = 5): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
+    try {
+      const data = await this.fetch(
+        `/api/workspaces/${workspaceId}/observations/search?query=${encodeURIComponent(query)}&limit=${limit}`
+      );
+      return data.results || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getBatchObservations(workspaceId: string, ids: string[]): Promise<Array<{ id: string; title: string; type: string; content: string; files?: string[]; concepts?: string[] }>> {
+    if (ids.length === 0) return [];
+    try {
+      const data = await this.fetch(
+        `/api/workspaces/${workspaceId}/observations/batch?ids=${ids.join(',')}`
+      );
+      return data.observations || [];
+    } catch {
+      return [];
+    }
+  }
+
   async getMemorySummary(workspaceId: string): Promise<{
     total: number;
     recentGotchas: Array<{ id: string; title: string; content: string }>;
@@ -238,6 +267,10 @@ export class BuilddClient {
   }> {
     const url = force ? `/api/tasks/${taskId}/reassign?force=true` : `/api/tasks/${taskId}/reassign`;
     return this.fetch(url, { method: 'POST' }, [403]);
+  }
+
+  async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {
+    return this.fetch('/api/tasks/cleanup', { method: 'POST' });
   }
 
   async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {

@@ -740,6 +740,27 @@ function renderWorkerDetail(worker) {
       </div>`;
   }
 
+  // Deliverables strip for completed workers
+  if (worker.status === 'done' && worker.commits.length > 0) {
+    const commitCount = worker.commits.length;
+    const commitMsgs = worker.commits.slice(-3).map(c => escapeHtml(c.message)).join(', ');
+    timelineEl.innerHTML += `
+      <div class="bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border border-emerald-500/50 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-emerald-400 font-semibold uppercase tracking-wide mb-2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          Delivered
+        </div>
+        <div class="flex items-center gap-3 text-sm text-zinc-300 flex-wrap">
+          <span class="text-xs bg-zinc-800 py-1 px-2 rounded font-mono">${escapeHtml(worker.branch)}</span>
+          <span>${commitCount} commit${commitCount !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="text-xs text-zinc-500 mt-2">${commitMsgs}</div>
+      </div>`;
+  }
+
   // Restore scroll position (only auto-scroll if was at bottom)
   if (scrollPos !== null) {
     if (wasAtBottom) {

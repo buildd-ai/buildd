@@ -116,14 +116,31 @@ export async function PATCH(
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();
 
-    // Update task status
+    // Update task status + snapshot deliverables
     if (worker.taskId) {
+      const taskUpdate: Record<string, unknown> = {
+        status: status === 'completed' ? 'completed' : 'failed',
+        updatedAt: new Date(),
+      };
+
+      // Snapshot worker stats into task.result on completion
+      if (status === 'completed') {
+        taskUpdate.result = {
+          summary: body.summary || undefined,
+          branch: worker.branch,
+          commits: commitCount ?? worker.commitCount ?? 0,
+          sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,
+          files: filesChanged ?? worker.filesChanged ?? 0,
+          added: linesAdded ?? worker.linesAdded ?? 0,
+          removed: linesRemoved ?? worker.linesRemoved ?? 0,
+          prUrl: worker.prUrl ?? undefined,
+          prNumber: worker.prNumber ?? undefined,
+        };
+      }
+
       await db
         .update(tasks)
-        .set({
-          status: status === 'completed' ? 'completed' : 'failed',
-          updatedAt: new Date(),
-        })
+        .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
     }
   }

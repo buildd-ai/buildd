@@ -169,9 +169,11 @@ const server = new Server(
 - Monitor workers and send instructions to redirect their work
 - Reassign stuck tasks that aren't making progress
 
-**Memory workflow:**
-- At the START of a new task, search memory for relevant observations about the files/concepts you'll work with
-- AFTER encountering gotchas, making architectural decisions, or discovering patterns, save them as observations for future workers
+**Memory (REQUIRED):**
+- When you claim a task, relevant memory is included automatically. READ IT before starting work.
+- BEFORE touching unfamiliar files, call \`buildd_search_memory\` with keywords about the files/concepts
+- AFTER encountering a gotcha, pattern, or decision, call \`buildd_save_memory\` IMMEDIATELY — don't wait until the end
+- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices with rationale), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)
 
 **When to proactively use tools:**
 - User says "pick up a task", "what's available", "get to work" → list then claim
@@ -379,6 +381,24 @@ const baseTools = [
     },
   },
   {
+    name: "buildd_submit_plan",
+    description: "Submit an implementation plan for review. Use when an admin requests a plan or when working on a planning-mode task. The plan will be reviewed by the task author before implementation begins.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workerId: {
+          type: "string",
+          description: "The worker ID from claim_task",
+        },
+        plan: {
+          type: "string",
+          description: "Implementation plan in markdown format",
+        },
+      },
+      required: ["workerId", "plan"],
+    },
+  },
+  {
     name: "buildd_save_memory",
     description: "Save an observation to workspace memory. Use after encountering gotchas, making architectural decisions, discovering non-obvious patterns, or learning something that would help future workers. Include related file paths and concepts for searchability.",
     inputSchema: {
@@ -474,6 +494,28 @@ const adminTools = [
       required: ["workerId", "message"],
     },
   },
+  {
+    name: "buildd_run_cleanup",
+    description: "Clean up stale workers and orphaned tasks. Marks timed-out workers as failed, resets orphaned tasks to pending, and expires old plan approvals.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "buildd_decompose_task",
+    description: "Decompose a large task into subtasks by creating a special decomposition task. A worker will claim this task, investigate the codebase, and create 3-7 implementable subtasks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: {
+          type: "string",
+          description: "The task ID to decompose",
+        },
+      },
+      required: ["taskId"],
+    },
+  },
 ];
 
 // List available tools (dynamically based on account level)
@@ -561,11 +603,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 export BUILDD_WORKER_ID=${firstWorker.id}
 export BUILDD_SERVER=${SERVER_URL}`;
 
+        // Proactively fetch relevant memory for the claimed task
+        let memorySection = '';
+        try {
+          const firstTask = firstWorker.task;
+          const resolvedWsId = workspaceId || firstWorker.task?.workspaceId;
+          if (resolvedWsId && firstTask.title) {
+            const searchData = await apiCall(
+              `/api/workspaces/${resolvedWsId}/observations/search?query=${encodeURIComponent(firstTask.title)}&limit=5`
+            );
+            const results = searchData.results || [];
+            if (results.length > 0) {
+              const ids = results.map((r: { id: string }) => r.id).join(',');
+              const batchData = await apiCall(
+                `/api/workspaces/${resolvedWsId}/observations/batch?ids=${ids}`
+              );
+              const observations = batchData.observations || [];
+              if (observations.length > 0) {
+                const memoryLines = observations.map((o: { type: string; title: string; content: string }) => {
+                  const truncContent = o.content.length > 200 ? o.content.slice(0, 200) + '...' : o.content;
+                  return `- **[${o.type}] ${o.title}**: ${truncContent}`;
+                });
+                memorySection = `\n\n## Relevant Memory\nREAD these observations before starting work:\n${memoryLines.join('\n')}\n\nUse \`buildd_search_memory\` for more context.`;
+              }
+            }
+          }
+        } catch {
+          // Memory fetch is non-fatal — don't block the claim
+        }
+
         return {
           content: [
             {
               type: "text",
-              text: `Claimed ${workers.length} task(s):\n\n${claimed}\n\nUse the worker ID to report progress and completion.\n\n---\n${envExports}`,
+              text: `Claimed ${workers.length} task(s):\n\n${claimed}${memorySection}\n\nUse the worker ID to report progress and completion.\n\n---\n${envExports}`,
             },
           ],
         };
@@ -615,7 +686,19 @@ export BUILDD_SERVER=${SERVER_URL}`;
         let resultText = `Progress updated: ${args.progress}%${args.message ? ` - ${args.message}` : ""}`;
 
         if (instructions) {
-          resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
+          // Check if this is a structured instruction (e.g., request_plan)
+          let parsedInstruction: { type?: string; message?: string } | null = null;
+          try {
+            parsedInstruction = JSON.parse(instructions);
+          } catch {
+            // Not JSON - treat as plain text instruction
+          }
+
+          if (parsedInstruction?.type === 'request_plan') {
+            resultText += `\n\n**PLAN REQUESTED:** Please pause implementation. Investigate the codebase, then call buildd_submit_plan with your implementation plan in markdown format. ${parsedInstruction.message || ''}`;
+          } else {
+            resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
+          }
         }
 
         return {
@@ -638,6 +721,7 @@ export BUILDD_SERVER=${SERVER_URL}`;
             method: "PATCH",
             body: JSON.stringify({
               status: "completed",
+              ...(args.summary ? { summary: args.summary } : {}),
             }),
           });
         } catch (err: any) {
@@ -811,6 +895,97 @@ export BUILDD_SERVER=${SERVER_URL}`;
             {
               type: "text",
               text: `Instruction queued for worker ${args.workerId}. They will receive it on their next progress update.`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_run_cleanup": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        const data = await apiCall("/api/tasks/cleanup", {
+          method: "POST",
+        });
+
+        const cleaned = data.cleaned || {};
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Cleanup completed:\n- Stalled workers marked failed: ${cleaned.stalledWorkers || 0}\n- Orphaned tasks reset to pending: ${cleaned.orphanedTasks || 0}\n- Expired plan approvals failed: ${cleaned.expiredPlans || 0}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_decompose_task": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.taskId) {
+          throw new Error("taskId is required");
+        }
+
+        // Fetch the parent task details
+        const taskData = await apiCall(`/api/tasks/${args.taskId}`);
+        const parentTask = taskData;
+
+        if (!parentTask || !parentTask.id) {
+          throw new Error(`Task ${args.taskId} not found`);
+        }
+
+        // Use provided workspace or detect from git
+        const workspaceId = parentTask.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace.");
+        }
+
+        // Create a decomposition task
+        const decompTask = await apiCall("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify({
+            workspaceId,
+            title: `Decompose: ${parentTask.title}`,
+            description: `Investigate the codebase and break down the parent task into 3-7 implementable subtasks.\n\n## Parent Task\n**${parentTask.title}**\n\n${parentTask.description || 'No description'}\n\n## Instructions\nFor each subtask, create it via the \`buildd_create_task\` tool. Focus on making subtasks independently implementable and well-scoped.\n\nAfter creating all subtasks, complete this task with a summary of what was created.`,
+            priority: parentTask.priority || 5,
+            parentTaskId: parentTask.id,
+            creationSource: 'mcp',
+            mode: 'execution',
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Decomposition task created: "${decompTask.title}" (ID: ${decompTask.id})\nParent: ${parentTask.title} (${parentTask.id})\n\nA worker will claim this task and create subtasks for the parent.`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_submit_plan": {
+        if (!args?.workerId || !args?.plan) {
+          throw new Error("workerId and plan are required");
+        }
+
+        await apiCall(`/api/workers/${args.workerId}/plan`, {
+          method: "POST",
+          body: JSON.stringify({ plan: args.plan }),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.",
             },
           ],
         };
