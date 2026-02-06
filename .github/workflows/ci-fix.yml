@@ -35,18 +35,23 @@ jobs:
         run: |
           RUN_ID=${{ github.event.workflow_run.id }}
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-          gh run view $RUN_ID --log-failed 2>&1 | tail -100 > /tmp/ci-failure.log
-          echo "## Failed CI logs (last 100 lines):" > /tmp/ci-context.txt
-          cat /tmp/ci-failure.log >> /tmp/ci-context.txt
+          LOGS=$(gh run view $RUN_ID --log-failed 2>&1 | tail -100)
+          {
+            echo 'CI_FAILURE_LOGS<<EOFLOG'
+            echo "$LOGS"
+            echo 'EOFLOG'
+          } >> $GITHUB_ENV
         env:
           GH_TOKEN: ${{ github.token }}
 
       - uses: anthropics/claude-code-action@v1
         with:
           prompt: |
-            The CI build failed on the dev branch. Here are the failed job logs:
+            The CI build failed on the dev branch. Here are the last 100 lines of the failed job logs:
 
-            $(cat /tmp/ci-context.txt)
+            ```
+            ${{ env.CI_FAILURE_LOGS }}
+            ```
 
             Dependencies are already installed. Fix the issue directly:
             1. Read the error messages above to identify the root cause
@@ -55,7 +60,7 @@ jobs:
             4. Verify your fix: cd apps/web && bunx tsc --noEmit
             5. Commit and push with prefix "autofix:" so this workflow doesn't loop
 
-            IMPORTANT: Do NOT spend turns downloading CI logs - they are provided above.
+            IMPORTANT: Do NOT spend turns downloading or re-reading CI logs - they are provided above.
             Use `git push origin dev` to push your fix.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 30 --allowedTools "Bash(gh:*),Bash(bun:*),Bash(bunx:*),Bash(npx:*),Bash(git:*),Bash(cd:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Edit,Read,Write,Glob,Grep"'
+          claude_args: '--max-turns 30 --allowedTools "Bash(*),Edit,Read,Write,Glob,Grep"'
