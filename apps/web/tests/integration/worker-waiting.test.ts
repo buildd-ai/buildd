@@ -94,7 +94,7 @@ async function run() {
   console.log('\nStep 3: Claim task...');
   const { workers } = await api('/api/workers/claim', {
     method: 'POST',
-    body: JSON.stringify({ maxTasks: 1, workspaceId }),
+    body: JSON.stringify({ maxTasks: 1, workspaceId, runner: 'test' }),
   });
   assert(workers.length > 0, 'Claimed a worker');
   // The claim might pick a different task if others are pending - find ours or use whatever was claimed

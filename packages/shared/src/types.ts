@@ -221,6 +221,7 @@ export interface Worker {
   workspaceId: string;
   accountId: string | null;
   name: string;
+  runner: string;
   branch: string;
   worktreePath: string | null;
   status: WorkerStatusType;
@@ -377,6 +378,7 @@ export interface ClaimTasksInput {
   workspaceId?: string;
   capabilities?: string[];
   maxTasks?: number;
+  runner: string;
 }
 
 export interface ClaimTasksResponse {

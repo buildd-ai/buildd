@@ -201,6 +201,7 @@ export const workers = pgTable('workers', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
   name: text('name').notNull(),
+  runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   worktreePath: text('worktree_path'),
   status: text('status').default('idle').notNull(),

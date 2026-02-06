@@ -6,10 +6,27 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { execSync } from "child_process";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 
-const SERVER_URL = process.env.BUILDD_SERVER || "https://app.buildd.dev";
-const API_KEY = process.env.BUILDD_API_KEY || "";
-const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || "";
+/**
+ * Load ~/.buildd/config.json as fallback for env vars
+ */
+function loadBuilddConfig(): { apiKey?: string; builddServer?: string } {
+  try {
+    const configPath = join(homedir(), ".buildd", "config.json");
+    const raw = readFileSync(configPath, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+const config = loadBuilddConfig();
+const SERVER_URL = process.env.BUILDD_SERVER || config.builddServer || "https://app.buildd.dev";
+const API_KEY = process.env.BUILDD_API_KEY || config.apiKey || "";
+const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || process.env.BUILDD_WORKSPACE || "";
 const WORKER_ID = process.env.BUILDD_WORKER_ID || "";
 
 // Cache for workspace lookup and account info
@@ -577,6 +594,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           body: JSON.stringify({
             maxTasks: args?.maxTasks || 1,
             workspaceId,
+            runner: "mcp",
           }),
         });
 
