@@ -100,6 +100,7 @@ function buildUserMessage(content: string | Array<{ type: string; text?: string;
 interface WorkerSession {
   inputStream: MessageStream;
   abortController: AbortController;
+  cwd: string;
 }
 
 // Constants for repetition detection
@@ -161,6 +162,7 @@ export class WorkerManager {
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
   private planSubmissionCallbacks = new Map<string, PlanSubmissionCallback>();
+  private cleanupInterval?: Timer;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -173,6 +175,9 @@ export class WorkerManager {
 
     // Sync worker state to server every 3s
     this.syncInterval = setInterval(() => this.syncToServer(), 3_000);
+
+    // Run cleanup every 30 minutes
+    this.cleanupInterval = setInterval(() => this.runCleanup(), 30 * 60 * 1000);
 
     // Initialize Pusher if configured
     if (config.pusherKey && config.pusherCluster) {
@@ -362,7 +367,26 @@ export class WorkerManager {
           options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
         };
       }
-      await this.buildd.updateWorker(worker.id, update);
+      const response = await this.buildd.updateWorker(worker.id, update);
+
+      // Process any pending instructions from sync response
+      if (response?.instructions) {
+        let parsed: { type?: string; message?: string } | null = null;
+        try {
+          parsed = JSON.parse(response.instructions);
+        } catch {
+          // Not JSON - plain instruction
+        }
+
+        if (parsed?.type === 'request_plan') {
+          // Inject planning prompt as a follow-up message
+          const planMessage = `**PLAN REQUESTED:** Please pause implementation and submit a plan for review. Investigate the codebase, then call the \`submit_plan\` MCP tool with your implementation plan in markdown format. ${parsed.message || ''}`;
+          await this.sendMessage(worker.id, planMessage);
+        } else if (response.instructions) {
+          // Regular instruction - inject as message
+          await this.sendMessage(worker.id, response.instructions);
+        }
+      }
     } catch (err) {
       // Silently ignore sync errors
     }
@@ -387,6 +411,15 @@ export class WorkerManager {
   private emit(event: any) {
     for (const handler of this.eventHandlers) {
       handler(event);
+    }
+  }
+
+  // Periodically call the cleanup API to handle stale workers/tasks
+  private async runCleanup() {
+    try {
+      await this.buildd.runCleanup();
+    } catch {
+      // Non-fatal - cleanup is best-effort
     }
   }
 
@@ -602,7 +635,7 @@ export class WorkerManager {
     const abortController = new AbortController();
 
     // Store session state for sendMessage and abort
-    this.sessions.set(worker.id, { inputStream, abortController });
+    this.sessions.set(worker.id, { inputStream, abortController, cwd });
 
     try {
       // Fetch workspace git config from server
@@ -638,8 +671,11 @@ export class WorkerManager {
         }
       }
 
-      // Fetch minimal workspace memory context (progressive disclosure approach)
-      const memorySummary = await this.buildd.getMemorySummary(task.workspaceId);
+      // Fetch workspace memory context in parallel: full digest + task-specific matches
+      const [compactResult, taskSearchResults] = await Promise.all([
+        this.buildd.getCompactObservations(task.workspaceId),
+        this.buildd.searchObservations(task.workspaceId, task.title, 5),
+      ]);
 
       // Build prompt with workspace context
       const promptParts: string[] = [];
@@ -675,22 +711,38 @@ export class WorkerManager {
         promptParts.push(gitContext.join('\n'));
       }
 
-      // Add minimal workspace memory context (progressive disclosure)
-      // Workers can use buildd_search_memory and buildd_get_memory MCP tools for more context
-      if (memorySummary.total > 0) {
+      // Add rich workspace memory context
+      const MAX_MEMORY_BYTES = 4096;
+      if (compactResult.count > 0 || taskSearchResults.length > 0) {
         const memoryContext: string[] = ['## Workspace Memory'];
-        memoryContext.push(`This workspace has ${memorySummary.total} observation(s) from previous tasks.`);
-        memoryContext.push(`Use \`buildd_search_memory\` to find relevant context and \`buildd_get_memory\` for full details.`);
 
-        // Include recent gotchas directly since they're critical warnings
-        if (memorySummary.recentGotchas.length > 0) {
-          memoryContext.push('');
-          memoryContext.push('**Recent Gotchas (important warnings):**');
-          for (const gotcha of memorySummary.recentGotchas) {
-            memoryContext.push(`- **${gotcha.title}**: ${gotcha.content}${gotcha.content.length >= 200 ? '...' : ''}`);
+        // Inject compact workspace digest (capped to prevent prompt bloat)
+        if (compactResult.markdown) {
+          let digest = compactResult.markdown;
+          if (digest.length > MAX_MEMORY_BYTES) {
+            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `buildd_search_memory` for more)*';
+          }
+          memoryContext.push(digest);
+        }
+
+        // Fetch full content for task-specific matches and add as subsection
+        if (taskSearchResults.length > 0) {
+          const fullObservations = await this.buildd.getBatchObservations(
+            task.workspaceId,
+            taskSearchResults.map(r => r.id),
+          );
+          if (fullObservations.length > 0) {
+            memoryContext.push('### Relevant to This Task');
+            for (const obs of fullObservations) {
+              const truncContent = obs.content.length > 300
+                ? obs.content.slice(0, 300) + '...'
+                : obs.content;
+              memoryContext.push(`- **[${obs.type}] ${obs.title}**: ${truncContent}`);
+            }
           }
         }
 
+        memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
         promptParts.push(memoryContext.join('\n'));
       }
 
@@ -816,24 +868,41 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
       } else {
-        // Actually completed
+        // Actually completed - collect git stats before reporting
+        const gitStats = await this.collectGitStats(worker.id, worker.branch);
         this.addMilestone(worker, 'Task completed');
         worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        await this.buildd.updateWorker(worker.id, { status: 'completed' });
+        await this.buildd.updateWorker(worker.id, {
+          status: 'completed',
+          ...gitStats,
+        });
         this.emit({ type: 'worker_update', worker });
 
         // Capture summary observation (non-fatal)
         try {
           const summary = this.buildSessionSummary(worker);
           const files = this.extractFilesFromToolCalls(worker.toolCalls);
+
+          // Extract concepts from task title + commit messages for better searchability
+          const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it', 'be', 'as', 'by', 'with', 'from', 'this', 'that', 'not', 'are', 'was', 'has', 'have', 'do', 'does', 'did', 'will', 'would', 'can', 'could', 'should', 'task']);
+          const conceptSource = [task.title, ...worker.commits.map(c => c.message)].join(' ');
+          const concepts = [...new Set(
+            conceptSource
+              .toLowerCase()
+              .replace(/[^a-z0-9\s-]/g, ' ')
+              .split(/\s+/)
+              .filter(w => w.length > 2 && !STOPWORDS.has(w))
+          )].slice(0, 15);
+
           await this.buildd.createObservation(task.workspaceId, {
             type: 'summary',
             title: `Task: ${task.title}`,
             content: summary,
             files,
+            concepts,
             workerId: worker.id,
             taskId: task.id,
           });
@@ -1400,43 +1469,35 @@ export class WorkerManager {
   private buildSessionSummary(worker: LocalWorker): string {
     const parts: string[] = [];
 
-    // Milestones summary
-    const milestones = worker.milestones
-      .filter(m => m.label !== 'Session started' && m.label !== 'Task completed')
-      .map(m => m.label);
-    if (milestones.length > 0) {
-      parts.push(`Milestones: ${milestones.slice(-10).join(', ')}`);
-    }
-
-    // Commits summary
+    // Commits first (most useful for future workers)
     if (worker.commits.length > 0) {
       const commitMsgs = worker.commits.map(c => c.message).slice(-5);
       parts.push(`Commits: ${commitMsgs.join('; ')}`);
     }
 
-    // Tool usage stats
-    const toolCounts: Record<string, number> = {};
-    for (const tc of worker.toolCalls) {
-      toolCounts[tc.name] = (toolCounts[tc.name] || 0) + 1;
-    }
-    const toolSummary = Object.entries(toolCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([name, count]) => `${name}(${count})`)
-      .join(', ');
-    if (toolSummary) {
-      parts.push(`Tools used: ${toolSummary}`);
+    // Files modified
+    const files = this.extractFilesFromToolCalls(worker.toolCalls);
+    if (files.length > 0) {
+      parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
     }
 
-    // Last output lines as context
+    // Outcome from last output
     const lastOutput = worker.output.slice(-3).join(' ').trim();
     if (lastOutput) {
-      const truncated = lastOutput.length > 200 ? lastOutput.slice(0, 200) + '...' : lastOutput;
-      parts.push(`Result: ${truncated}`);
+      const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
+      parts.push(`Outcome: ${truncated}`);
+    }
+
+    // Milestones (filtered: skip noise like "Reading..." entries)
+    const milestones = worker.milestones
+      .filter(m => m.label !== 'Session started' && m.label !== 'Task completed' && !m.label.startsWith('Reading'))
+      .map(m => m.label);
+    if (milestones.length > 0) {
+      parts.push(`Milestones: ${milestones.slice(-10).join(', ')}`);
     }
 
     const summary = parts.join('\n');
-    return summary.length > 500 ? summary.slice(0, 500) + '...' : summary;
+    return summary.length > 600 ? summary.slice(0, 600) + '...' : summary;
   }
 
   private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {
@@ -1449,12 +1510,60 @@ export class WorkerManager {
     return Array.from(files).slice(0, 20);
   }
 
+  /** Collect git stats by running git commands in the worker's cwd */
+  private async collectGitStats(workerId: string, branch: string): Promise<{
+    commitCount?: number;
+    filesChanged?: number;
+    linesAdded?: number;
+    linesRemoved?: number;
+    lastCommitSha?: string;
+  }> {
+    const session = this.sessions.get(workerId);
+    if (!session?.cwd) return {};
+
+    const { execSync } = await import('child_process');
+    const opts = { cwd: session.cwd, timeout: 5000, encoding: 'utf-8' as const };
+    const stats: Record<string, number | string | undefined> = {};
+
+    try {
+      stats.lastCommitSha = execSync('git rev-parse HEAD', opts).trim();
+    } catch {}
+    try {
+      // Count commits on this branch vs default branch
+      const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
+      const count = execSync(`git rev-list --count HEAD ^origin/${defaultBranch}`, opts).trim();
+      stats.commitCount = parseInt(count, 10) || 0;
+    } catch {
+      // Fallback: use locally tracked commits
+      const worker = this.workers.get(workerId);
+      if (worker) stats.commitCount = worker.commits.length;
+    }
+    try {
+      const numstat = execSync('git diff --numstat HEAD~1 2>/dev/null || true', opts).trim();
+      if (numstat) {
+        let added = 0, removed = 0, files = 0;
+        for (const line of numstat.split('\n')) {
+          const [a, r] = line.split('\t');
+          if (a !== '-') { added += parseInt(a, 10) || 0; removed += parseInt(r, 10) || 0; files++; }
+        }
+        stats.filesChanged = files;
+        stats.linesAdded = added;
+        stats.linesRemoved = removed;
+      }
+    } catch {}
+
+    return stats;
+  }
+
   destroy() {
     if (this.staleCheckInterval) {
       clearInterval(this.staleCheckInterval);
     }
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
+    }
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {

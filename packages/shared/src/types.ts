@@ -167,6 +167,18 @@ export interface Source {
   createdAt: Date;
 }
 
+export interface TaskResult {
+  summary?: string;
+  branch?: string;
+  commits?: number;
+  sha?: string;
+  files?: number;
+  added?: number;
+  removed?: number;
+  prUrl?: string;
+  prNumber?: number;
+}
+
 export interface Task {
   id: string;
   workspaceId: string;
@@ -189,6 +201,7 @@ export interface Task {
   createdByWorkerId: string | null;
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
+  result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
