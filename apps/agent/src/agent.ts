@@ -61,6 +61,7 @@ export class BuilddAgent {
       const input: ClaimTasksInput = {
         workspaceId: this.config.workspaceId,
         maxTasks: availableSlots,
+        runner: 'cli',
       };
 
       const response = await this.claimTasks(input);

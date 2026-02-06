@@ -428,3 +428,41 @@ describe('Tool Call Limit', () => {
     expect(toolCalls[199].name).toBe('tool-299');
   });
 });
+
+// --- escapeHtml ---
+// Mirrors escapeHtml in app.js - used in onclick attributes with single-quoted strings
+
+function escapeHtml(str: string): string {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+describe('escapeHtml', () => {
+  test('escapes HTML entities', () => {
+    expect(escapeHtml('<script>alert("xss")</script>')).toBe('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+  });
+
+  test('escapes single quotes for onclick safety', () => {
+    // Single quotes are used in onclick="fn('${escapeHtml(value)}')"
+    // Without escaping, a value like "My Project's Repo" breaks the JS string
+    expect(escapeHtml("My Project's Repo")).toBe("My Project&#39;s Repo");
+  });
+
+  test('escapes ampersands', () => {
+    expect(escapeHtml('Build & Deploy')).toBe('Build &amp; Deploy');
+  });
+
+  test('handles empty and null-ish input', () => {
+    expect(escapeHtml('')).toBe('');
+    expect(escapeHtml(null as any)).toBe('');
+    expect(escapeHtml(undefined as any)).toBe('');
+  });
+
+  test('combined special characters', () => {
+    expect(escapeHtml(`<a href="x" onclick='y'>&`)).toBe('&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;');
+  });
+});

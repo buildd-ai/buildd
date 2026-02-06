@@ -95,6 +95,7 @@ export async function claimTask(options?: {
     body: JSON.stringify({
       maxTasks: 1,
       workspaceId: options?.workspaceId,
+      runner: 'openclaw',
     }),
   });
 

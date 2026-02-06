@@ -5,6 +5,7 @@ import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client'
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
+import PlanReviewPanel from './PlanReviewPanel';
 
 interface Worker {
   id: string;
@@ -27,6 +28,7 @@ interface Worker {
   linesAdded: number | null;
   linesRemoved: number | null;
   lastCommitSha: string | null;
+  waitingFor: { type: string; prompt: string; options?: string[] } | null;
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
   pendingInstructions: string | null;
   account?: { authType: string } | null;
@@ -35,6 +37,54 @@ interface Worker {
 interface Props {
   initialWorker: Worker;
   statusColors: Record<string, string>;
+}
+
+function RequestPlanButton({ workerId }: { workerId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  async function handleRequestPlan() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/workers/${workerId}/instruct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'request_plan',
+          message: 'Please pause implementation and submit a plan for review before continuing.',
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to request plan');
+      }
+      setSent(true);
+      setTimeout(() => setSent(false), 5000);
+    } catch (err) {
+      console.error('Failed to request plan:', err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (sent) {
+    return (
+      <span className="px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+        Plan requested
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleRequestPlan}
+      disabled={loading}
+      className="px-3 py-2 text-xs border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-50 whitespace-nowrap"
+      title="Ask the worker to pause and submit a plan for review"
+    >
+      {loading ? '...' : 'Request Plan'}
+    </button>
+  );
 }
 
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
@@ -76,6 +126,15 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       channel.bind('worker:progress', handleUpdate);
       channel.bind('worker:completed', handleUpdate);
       channel.bind('worker:failed', handleUpdate);
+      channel.bind('worker:plan_approved', handleUpdate);
+      channel.bind('worker:plan_revision_requested', handleUpdate);
+
+      // Auto-show plan panel when plan is submitted
+      const handlePlanSubmitted = (data: { worker: Worker }) => {
+        console.log('[RealTimeWorkerView] Plan submitted:', data.worker?.status);
+        setWorker(data.worker);
+      };
+      channel.bind('worker:plan_submitted', handlePlanSubmitted);
 
       // Log all events for debugging
       channel.bind_global((eventName: string, data: unknown) => {
@@ -86,6 +145,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         channel.unbind('worker:progress', handleUpdate);
         channel.unbind('worker:completed', handleUpdate);
         channel.unbind('worker:failed', handleUpdate);
+        channel.unbind('worker:plan_approved', handleUpdate);
+        channel.unbind('worker:plan_revision_requested', handleUpdate);
+        channel.unbind('worker:plan_submitted', handlePlanSubmitted);
         unsubscribeFromChannel(channelName);
       };
     } else {
@@ -101,7 +163,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   };
 
-  const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
+  const isActive = ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(worker.status);
 
   return (
     <div className="border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded-lg p-4">
@@ -145,6 +207,37 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           <span className="w-2 h-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
           <p className="text-sm text-gray-600 dark:text-gray-400">{worker.currentAction}</p>
         </div>
+      )}
+
+      {/* Waiting for input banner */}
+      {worker.status === 'waiting_input' && worker.waitingFor && (
+        <div
+          data-testid="worker-needs-input-banner"
+          className="mb-3 border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 rounded-lg p-3"
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+            </span>
+            <span data-testid="worker-needs-input-label" className="text-xs font-medium text-purple-700 dark:text-purple-300 uppercase">Needs input</span>
+          </div>
+          <p data-testid="worker-needs-input-prompt" className="text-sm text-gray-800 dark:text-gray-200">{worker.waitingFor.prompt}</p>
+          {worker.waitingFor.options && worker.waitingFor.options.length > 0 && (
+            <div data-testid="worker-needs-input-options" className="flex flex-wrap gap-2 mt-2">
+              {worker.waitingFor.options.map((opt, i) => (
+                <span key={i} className="px-2 py-1 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 rounded">
+                  {opt}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Plan review panel */}
+      {worker.status === 'awaiting_plan_approval' && (
+        <PlanReviewPanel workerId={worker.id} />
       )}
 
       {/* Terminal-style output box */}
@@ -248,10 +341,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             history={worker.instructionHistory || []}
             pendingInstruction={worker.pendingInstructions}
           />
-          <InstructWorkerForm
-            workerId={worker.id}
-            pendingInstructions={null}
-          />
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <InstructWorkerForm
+                workerId={worker.id}
+                pendingInstructions={null}
+              />
+            </div>
+            {worker.status === 'running' && (
+              <div className="mt-4 pt-4 border-t border-transparent">
+                <RequestPlanButton workerId={worker.id} />
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

@@ -65,13 +65,22 @@ export default async function TaskDetailPage({
 
   // Get the active worker (if any)
   const activeWorker = taskWorkers.find(w =>
-    ['running', 'starting', 'waiting_input'].includes(w.status)
+    ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(w.status)
   );
+
+  // Override task status for UI if worker is waiting or awaiting plan
+  const displayStatus = activeWorker?.status === 'waiting_input'
+    ? 'waiting_input'
+    : activeWorker?.status === 'awaiting_plan_approval'
+      ? 'awaiting_plan_approval'
+      : task.status;
 
   const statusColors: Record<string, string> = {
     pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
     assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
     running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+    waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
+    awaiting_plan_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
     completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   };
@@ -81,6 +90,7 @@ export default async function TaskDetailPage({
     starting: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
     running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
     waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
+    awaiting_plan_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
     completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   };
@@ -103,8 +113,12 @@ export default async function TaskDetailPage({
           <div className="flex-1">
             <div className="flex items-center gap-3 mb-2">
               <h1 className="text-2xl font-bold">{task.title}</h1>
-              <span className={`px-3 py-1 text-sm rounded-full ${statusColors[task.status] || statusColors.pending}`}>
-                {task.status}
+              <span
+                data-testid="task-header-status"
+                data-status={displayStatus}
+                className={`px-3 py-1 text-sm rounded-full ${statusColors[displayStatus] || statusColors.pending}`}
+              >
+                {displayStatus}
               </span>
             </div>
             <p className="text-gray-500 text-sm">
@@ -260,6 +274,7 @@ export default async function TaskDetailPage({
                 linesAdded: activeWorker.linesAdded,
                 linesRemoved: activeWorker.linesRemoved,
                 lastCommitSha: activeWorker.lastCommitSha,
+                waitingFor: activeWorker.waitingFor as any,
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
@@ -267,6 +282,55 @@ export default async function TaskDetailPage({
               statusColors={workerStatusColors}
             />
           </div>
+        )}
+
+        {/* Deliverables */}
+        {(task.result as any) && (
+          (() => {
+            const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number };
+            return (
+              <div className="mb-8 p-4 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg">
+                <h2 className="text-sm font-medium text-green-700 dark:text-green-400 mb-2">Deliverables</h2>
+                <div className="flex items-center gap-3 text-sm flex-wrap">
+                  {result.branch && (
+                    <code className="px-2 py-0.5 bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300 rounded text-xs">
+                      {result.branch}
+                    </code>
+                  )}
+                  {(result.commits ?? 0) > 0 && (
+                    <span className="text-gray-600 dark:text-gray-400 text-xs">
+                      {result.commits} commit{result.commits !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
+                    <span className="text-xs">
+                      <span className="text-green-600">+{result.added}</span>
+                      <span className="text-red-500">/{'-'}{result.removed}</span>
+                    </span>
+                  )}
+                  {(result.files ?? 0) > 0 && (
+                    <span className="text-xs text-gray-500">{result.files} files</span>
+                  )}
+                  {result.sha && (
+                    <code className="text-xs text-gray-400">{result.sha.slice(0, 7)}</code>
+                  )}
+                  {result.prUrl && (
+                    <a
+                      href={result.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-0.5 text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-800"
+                    >
+                      PR #{result.prNumber}
+                    </a>
+                  )}
+                </div>
+                {result.summary && (
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">{result.summary}</p>
+                )}
+              </div>
+            );
+          })()
         )}
 
         {/* Worker History */}

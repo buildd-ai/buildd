@@ -60,7 +60,7 @@ export default function LandingPage() {
               Task Queue for AI Agents
             </p>
             <p className="text-lg text-gray-400">
-              Create tasks. Agents work. Code ships.
+              Create tasks. Agents work. Each one smarter than the last.
             </p>
           </div>
         </div>
@@ -159,9 +159,37 @@ export default function LandingPage() {
         </div>
       </div>
 
+      {/* How It Works */}
+      <div className="max-w-4xl mx-auto px-6 py-16">
+        <h2 className="text-2xl font-bold text-center mb-12">How it works</h2>
+        <div className="grid md:grid-cols-3 gap-6">
+          <div className="text-center">
+            <div className="w-10 h-10 rounded-full bg-fuchsia-500/20 border border-fuchsia-500/30 flex items-center justify-center mx-auto mb-4">
+              <span className="text-fuchsia-400 font-semibold">1</span>
+            </div>
+            <h3 className="font-semibold mb-2">Create tasks</h3>
+            <p className="text-sm text-gray-400">From the dashboard, CLI, or API. Describe what you need built.</p>
+          </div>
+          <div className="text-center">
+            <div className="w-10 h-10 rounded-full bg-violet-500/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-4">
+              <span className="text-violet-400 font-semibold">2</span>
+            </div>
+            <h3 className="font-semibold mb-2">Agents build</h3>
+            <p className="text-sm text-gray-400">Workers claim tasks, branch, code, and open PRs. You review and merge.</p>
+          </div>
+          <div className="text-center">
+            <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center mx-auto mb-4">
+              <span className="text-amber-400 font-semibold">3</span>
+            </div>
+            <h3 className="font-semibold mb-2">Knowledge compounds</h3>
+            <p className="text-sm text-gray-400">Agents record gotchas, patterns, and decisions. The next agent starts where the last one left off.</p>
+          </div>
+        </div>
+      </div>
+
       {/* Features Section */}
       <div className="max-w-6xl mx-auto px-6 py-16">
-        <div className="grid md:grid-cols-3 gap-8">
+        <div className="grid md:grid-cols-2 gap-8">
           <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
             <div className="w-12 h-12 bg-fuchsia-500/20 rounded-lg flex items-center justify-center mb-4">
               <svg
@@ -182,6 +210,29 @@ export default function LandingPage() {
             <p className="text-gray-400">
               Run Claude agents on laptops, VMs, or GitHub Actions.
               One dashboard controls them all.
+            </p>
+          </div>
+
+          <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
+            <div className="w-12 h-12 bg-amber-500/20 rounded-lg flex items-center justify-center mb-4">
+              <svg
+                className="w-6 h-6 text-amber-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                />
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold mb-2">Shared Memory</h3>
+            <p className="text-gray-400">
+              Agents record gotchas, patterns, and decisions as they work.
+              Future agents read them automatically &mdash; so your 10th task avoids the mistakes of your first.
             </p>
           </div>
 
@@ -226,7 +277,7 @@ export default function LandingPage() {
             </div>
             <h3 className="text-xl font-semibold mb-2">Real-Time Control</h3>
             <p className="text-gray-400">
-              Monitor progress, costs, and send instructions to running agents mid-task.
+              Monitor progress, send instructions to running agents mid-task, and request plan approval before code is written.
             </p>
           </div>
         </div>

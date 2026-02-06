@@ -124,10 +124,26 @@ export class WorkerRunner extends EventEmitter {
       });
 
       if (worker?.taskId) {
-        await db.update(tasks).set({
+        const taskUpdate: Record<string, unknown> = {
           status: resultMsg.is_error ? 'failed' : 'completed',
           updatedAt: new Date(),
-        }).where(eq(tasks.id, worker.taskId));
+        };
+
+        // Snapshot deliverables on completion
+        if (!resultMsg.is_error) {
+          taskUpdate.result = {
+            branch: worker.branch,
+            commits: worker.commitCount ?? 0,
+            sha: worker.lastCommitSha ?? undefined,
+            files: worker.filesChanged ?? 0,
+            added: worker.linesAdded ?? 0,
+            removed: worker.linesRemoved ?? 0,
+            prUrl: worker.prUrl ?? undefined,
+            prNumber: worker.prNumber ?? undefined,
+          };
+        }
+
+        await db.update(tasks).set(taskUpdate).where(eq(tasks.id, worker.taskId));
       }
 
       // Update account stats based on auth type

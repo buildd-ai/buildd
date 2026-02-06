@@ -356,6 +356,7 @@ async function parseBody(req: Request) {
 // Handle requests
 const server = Bun.serve({
   port: PORT,
+  development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
   idleTimeout: 120, // 2 minutes for long-running requests
   async fetch(req) {
     const url = new URL(req.url);
@@ -413,7 +414,9 @@ const server = Bun.serve({
         buildd = new BuilddClient(config);
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
+        workerManager.onEvent(broadcast);
         console.log('Server connection restored');
+        await fetchAccountInfo();
         // Flush any queued mutations from when server was unreachable
         if (outbox.count() > 0) {
           outbox.flush();
@@ -446,6 +449,8 @@ const server = Bun.serve({
         buildd = new BuilddClient(config);
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
+        workerManager.onEvent(broadcast);
+        await fetchAccountInfo();
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
           outbox.flush();
@@ -519,8 +524,8 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { maxConcurrent } = body;
 
-      if (typeof maxConcurrent !== 'number' || maxConcurrent < 1 || maxConcurrent > 4) {
-        return Response.json({ error: 'maxConcurrent must be 1-4' }, { status: 400, headers: corsHeaders });
+      if (typeof maxConcurrent !== 'number' || maxConcurrent < 1 || maxConcurrent > 20) {
+        return Response.json({ error: 'maxConcurrent must be 1-20' }, { status: 400, headers: corsHeaders });
       }
 
       config.maxConcurrent = maxConcurrent;
@@ -618,7 +623,7 @@ const server = Bun.serve({
         start(controller) {
           sseClients.add(controller);
 
-          // Send initial state
+          // Send initial state (must include all config fields that the frontend uses)
           const init = {
             type: 'init',
             configured: !!config.apiKey,
@@ -627,12 +632,16 @@ const server = Bun.serve({
               projectsRoot: config.projectsRoot,
               builddServer: config.builddServer,
               maxConcurrent: config.maxConcurrent,
+              model: config.model,
+              bypassPermissions: config.bypassPermissions || false,
+              acceptRemoteTasks: config.acceptRemoteTasks !== false,
+              openBrowser: savedConfig.openBrowser !== false,
             },
           };
           controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(init)}\n\n`));
         },
         cancel() {
-          // Client disconnected
+          sseClients.delete(controller);
         },
       });
 
@@ -678,7 +687,8 @@ const server = Bun.serve({
           saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
-        throw err;
+        console.error('Failed to list tasks:', err.message);
+        return Response.json({ error: err.message || 'Failed to load tasks', tasks: [] }, { status: 502, headers: corsHeaders });
       }
     }
 
@@ -740,8 +750,13 @@ const server = Bun.serve({
 
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
-      const task = await buildd!.createTask(body);
-      return Response.json({ task }, { headers: corsHeaders });
+      try {
+        const task = await buildd!.createTask(body);
+        return Response.json({ task }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to create task:', err.message);
+        return Response.json({ error: err.message || 'Failed to create task' }, { status: 502, headers: corsHeaders });
+      }
     }
 
     // Delete a task
@@ -1147,6 +1162,14 @@ const server = Bun.serve({
     }
 
     return new Response('Not found', { status: 404 });
+  },
+  error(err) {
+    // Return JSON errors instead of Bun's HTML error overlay
+    console.error('Unhandled server error:', err.message);
+    return Response.json(
+      { error: err.message || 'Internal server error' },
+      { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } },
+    );
   },
 });
 

@@ -15,7 +15,11 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  const { workspaceId, capabilities = [], maxTasks = 3 } = body;
+  const { workspaceId, capabilities = [], maxTasks = 3, runner } = body;
+
+  if (!runner) {
+    return NextResponse.json({ error: 'runner is required' }, { status: 400 });
+  }
 
   // Check current active workers
   const activeWorkers = await db.query.workers.findMany({
@@ -182,6 +186,7 @@ export async function POST(req: NextRequest) {
         workspaceId: task.workspaceId,
         accountId: account.id,
         name: `${account.name}-${task.id.substring(0, 8)}`,
+        runner,
         branch,
         status: 'idle',
       })
