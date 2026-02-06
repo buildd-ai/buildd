@@ -74,6 +74,7 @@ async function seedWaitingInput() {
         },
         body: JSON.stringify({
             workspaceIds: [workspace.id],
+            runner: 'seed',
         }),
     });
 

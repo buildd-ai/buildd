@@ -59,7 +59,7 @@ export class BuilddClient {
   async claimTask(maxTasks = 1, workspaceId?: string) {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',
-      body: JSON.stringify({ maxTasks, workspaceId }),
+      body: JSON.stringify({ maxTasks, workspaceId, runner: 'local-ui' }),
     });
     return data.workers || [];
   }
