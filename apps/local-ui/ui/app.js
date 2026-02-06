@@ -214,13 +214,15 @@ function handleEvent(event) {
   switch (event.type) {
     case 'init':
       workers = event.workers || [];
-      config = event.config || {};
+      // Merge SSE config into existing config (don't overwrite fields from /api/config)
+      config = { ...config, ...(event.config || {}) };
       // Check if configured from SSE init
       if (event.configured === false) {
         showSetup();
         return;
       }
       renderWorkers();
+      loadTasks(); // Refresh tasks on SSE (re)connect
       updateSettings();
       break;
 
@@ -1787,11 +1789,15 @@ async function abortWorker() {
     abortBtn.textContent = 'Stopping...';
   }
   try {
-    await fetch('/api/abort', {
+    const res = await fetch('/api/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to stop task', 'error');
+    }
     hideConfirmDialog();
     closeWorkerModal();
   } catch (err) {
@@ -1838,11 +1844,16 @@ function confirmAbort() {
 async function retryWorker() {
   if (!currentWorkerId) return;
   try {
-    await fetch('/api/retry', {
+    const res = await fetch('/api/retry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to retry task', 'error');
+      return;
+    }
     showToast('Retrying task...', 'success');
   } catch (err) {
     console.error('Failed to retry:', err);
@@ -1853,14 +1864,20 @@ async function retryWorker() {
 async function markDone() {
   if (!currentWorkerId) return;
   try {
-    await fetch('/api/done', {
+    const res = await fetch('/api/done', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to mark done', 'error');
+      return;
+    }
     closeWorkerModal();
   } catch (err) {
     console.error('Failed to mark done:', err);
+    showToast('Failed to mark done', 'error');
   }
 }
 
@@ -1871,14 +1888,20 @@ async function sendMessage() {
   if (!message) return;
 
   try {
-    await fetch(`/api/workers/${currentWorkerId}/send`, {
+    const res = await fetch(`/api/workers/${currentWorkerId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Message not delivered', 'error');
+      return;
+    }
     input.value = '';
   } catch (err) {
     console.error('Failed to send message:', err);
+    showToast('Failed to send message', 'error');
   }
 }
 
@@ -2099,6 +2122,8 @@ function renderAttachments() {
 function clearTaskForm() {
   document.getElementById('taskTitle').value = '';
   document.getElementById('taskDescription').value = '';
+  document.getElementById('taskWorkspace').value = '';
+  selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();
 }
@@ -2109,7 +2134,8 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // Event listeners
@@ -2169,13 +2195,13 @@ function handleRoute() {
   const workerMatch = path.match(/^\/worker\/([^/]+)$/);
   if (workerMatch) {
     const workerId = workerMatch[1];
-    // Wait for workers to load, then open modal
+    // Wait for workers to load, then open modal (max 10 retries = 5s)
+    let retries = 0;
     const checkAndOpen = () => {
       const worker = workers.find(w => w.id === workerId);
       if (worker) {
         openWorkerModal(workerId);
-      } else {
-        // Worker not loaded yet, retry
+      } else if (retries++ < 10) {
         setTimeout(checkAndOpen, 500);
       }
     };

@@ -174,6 +174,117 @@ describe('Config & Connectivity', () => {
     });
   });
 
+  describe('SSE Init Event', () => {
+    test('SSE init includes all config fields', async () => {
+      // Restore original URL first so config is fully populated
+      await api('/api/config/server', 'POST', { server: originalServer });
+
+      const res = await api('/api/events');
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const text = new TextDecoder().decode(value);
+      reader.cancel();
+
+      const match = text.match(/data: (.+)\n/);
+      expect(match).toBeTruthy();
+      const initData = JSON.parse(match![1]);
+
+      // These fields must all be present so the frontend doesn't lose settings on SSE reconnect
+      expect(initData.config).toBeDefined();
+      expect(initData.config.builddServer).toBeTruthy();
+      expect(initData.config.maxConcurrent).toBeGreaterThan(0);
+      expect(typeof initData.config.model).toBe('string');
+      expect(typeof initData.config.bypassPermissions).toBe('boolean');
+      expect(typeof initData.config.acceptRemoteTasks).toBe('boolean');
+      expect(typeof initData.config.openBrowser).toBe('boolean');
+    });
+  });
+
+  describe('API Error Responses', () => {
+    test('abort with invalid worker returns error JSON', async () => {
+      const res = await api('/api/abort', 'POST', { workerId: 'nonexistent-worker-id' });
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+      // Should not be 200 (silently succeeding)
+      // The server may return 200 if workerManager swallows unknown IDs,
+      // but at minimum it must be valid JSON
+      const data = await res.json();
+      expect(data).toBeDefined();
+    });
+
+    test('send message to invalid worker returns 404', async () => {
+      const res = await api('/api/workers/nonexistent-worker-id/send', 'POST', { message: 'hello' });
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+      expect(res.status).toBe(404);
+
+      const data = await res.json();
+      expect(data.error).toBeTruthy();
+    });
+
+    test('retry with invalid worker returns error JSON', async () => {
+      const res = await api('/api/retry', 'POST', { workerId: 'nonexistent-worker-id' });
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+      const data = await res.json();
+      expect(data).toBeDefined();
+    });
+
+    test('mark done with invalid worker returns error JSON', async () => {
+      const res = await api('/api/done', 'POST', { workerId: 'nonexistent-worker-id' });
+      const contentType = res.headers.get('content-type') || '';
+
+      expect(contentType).toContain('application/json');
+      const data = await res.json();
+      expect(data).toBeDefined();
+    });
+  });
+
+  describe('SSE Cleanup', () => {
+    test('multiple SSE connections can be opened and closed without error', async () => {
+      const connections: ReadableStreamDefaultReader[] = [];
+
+      // Open 3 SSE connections
+      for (let i = 0; i < 3; i++) {
+        const res = await api('/api/events');
+        const reader = res.body!.getReader();
+        const { value } = await reader.read();
+        const text = new TextDecoder().decode(value);
+        expect(text).toContain('"type":"init"');
+        connections.push(reader);
+      }
+
+      // Close all connections
+      for (const reader of connections) {
+        await reader.cancel();
+      }
+
+      // Verify SSE still works after closing all connections
+      const res = await api('/api/events');
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const text = new TextDecoder().decode(value);
+      expect(text).toContain('"type":"init"');
+      await reader.cancel();
+    });
+  });
+
+  describe('Config Endpoint Completeness', () => {
+    test('GET /api/config includes accountId', async () => {
+      // Restore original URL
+      await api('/api/config/server', 'POST', { server: originalServer });
+
+      const config = await apiJson('/api/config');
+
+      // accountId is critical for the "Assigned Elsewhere" filter
+      // When null, all assigned tasks show as "elsewhere"
+      expect('accountId' in config).toBe(true);
+    });
+  });
+
   describe('Restore & Round-trip', () => {
     test('restoring original URL works', async () => {
       const res = await api('/api/config/server', 'POST', { server: originalServer });

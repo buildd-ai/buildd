@@ -623,7 +623,7 @@ const server = Bun.serve({
         start(controller) {
           sseClients.add(controller);
 
-          // Send initial state
+          // Send initial state (must include all config fields that the frontend uses)
           const init = {
             type: 'init',
             configured: !!config.apiKey,
@@ -632,12 +632,16 @@ const server = Bun.serve({
               projectsRoot: config.projectsRoot,
               builddServer: config.builddServer,
               maxConcurrent: config.maxConcurrent,
+              model: config.model,
+              bypassPermissions: config.bypassPermissions || false,
+              acceptRemoteTasks: config.acceptRemoteTasks !== false,
+              openBrowser: savedConfig.openBrowser !== false,
             },
           };
           controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(init)}\n\n`));
         },
         cancel() {
-          // Client disconnected
+          sseClients.delete(controller);
         },
       });
 
