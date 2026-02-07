@@ -199,7 +199,13 @@
     -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
   }
 
-  .chat-agent.collapsed .expand-msg-btn {
+  .expand-msg-btn,
+  .expand-btn {
+    display: none;
+  }
+
+  .chat-agent.collapsed .expand-msg-btn,
+  .chat-agent.expanded .expand-msg-btn {
     display: flex;
   }
 
@@ -214,7 +220,8 @@
     -webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
   }
 
-  .task-description-card.collapsed .expand-btn {
+  .task-description-card.collapsed .expand-btn,
+  .task-description-card.expanded .expand-btn {
     display: flex;
   }
 
