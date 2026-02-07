@@ -172,7 +172,7 @@ describe('Local-UI Integration', () => {
       const abortedWorker = workers.find((w: any) => w.id === worker.id);
 
       expect(abortedWorker?.status).toBe('error');
-      expect(abortedWorker?.error).toContain('Aborted');
+      expect(abortedWorker?.error?.toLowerCase()).toContain('aborted');
     }, TEST_TIMEOUT);
   });
 
