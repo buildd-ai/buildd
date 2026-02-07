@@ -274,6 +274,21 @@ describe('POST /api/tasks', () => {
     expect(data.error).toContain('Workspace and title are required');
   });
 
+  it('returns 400 when workspace not found', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'non-existent', title: 'Test Task' },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toContain('Workspace not found');
+  });
+
   it('creates task with API key auth', async () => {
     const createdTask = {
       id: 'task-123',
@@ -292,7 +307,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null); // No webhook config
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' }); // Workspace exists, no webhook
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -328,7 +343,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'dashboard',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -361,7 +376,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -396,7 +411,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -437,7 +452,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -472,7 +487,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -508,7 +523,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -544,7 +559,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: 'parent-task-1',
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -585,7 +600,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: 'parent-task-1', // Derived from worker's current task
     });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
