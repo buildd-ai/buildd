@@ -317,6 +317,23 @@ export const observations = pgTable('observations', {
   taskIdx: index('observations_task_idx').on(t.taskId),
 }));
 
+// Worker heartbeats - tracks local-ui instance availability independent of worker records
+export const workerHeartbeats = pgTable('worker_heartbeats', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  localUiUrl: text('local_ui_url').notNull(),
+  workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
+  maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  activeWorkerCount: integer('active_worker_count').default(0).notNull(),
+  lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  accountIdx: index('worker_heartbeats_account_idx').on(t.accountId),
+  localUiUrlIdx: uniqueIndex('worker_heartbeats_local_ui_url_idx').on(t.accountId, t.localUiUrl),
+  heartbeatIdx: index('worker_heartbeats_heartbeat_idx').on(t.lastHeartbeatAt),
+}));
+
 // GitHub App Integration
 export const githubInstallations = pgTable('github_installations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -368,6 +385,7 @@ export const accountsRelations = relations(accounts, ({ one, many }) => ({
   tasks: many(tasks),
   workers: many(workers),
   createdTasks: many(tasks, { relationName: 'createdTasks' }),
+  heartbeats: many(workerHeartbeats),
 }));
 
 export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one }) => ({
@@ -438,6 +456,10 @@ export const observationsRelations = relations(observations, ({ one }) => ({
   workspace: one(workspaces, { fields: [observations.workspaceId], references: [workspaces.id] }),
   worker: one(workers, { fields: [observations.workerId], references: [workers.id] }),
   task: one(tasks, { fields: [observations.taskId], references: [tasks.id] }),
+}));
+
+export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({
+  account: one(accounts, { fields: [workerHeartbeats.accountId], references: [accounts.id] }),
 }));
 
 export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({

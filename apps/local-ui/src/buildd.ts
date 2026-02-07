@@ -38,9 +38,12 @@ export class BuilddClient {
       const isNetworkError = err instanceof TypeError ||
         err.message?.includes('fetch failed') ||
         err.message?.includes('ECONNREFUSED') ||
+        err.message?.includes('ECONNRESET') ||
         err.message?.includes('ENOTFOUND') ||
         err.message?.includes('ETIMEDOUT') ||
-        err.code === 'ECONNREFUSED';
+        err.message?.includes('socket connection was closed') ||
+        err.code === 'ECONNREFUSED' ||
+        err.code === 'ECONNRESET';
 
       if (isNetworkError && this.outbox && this.outbox.shouldQueue(method, endpoint)) {
         this.outbox.enqueue(method, endpoint, options.body as string | undefined);
@@ -267,6 +270,13 @@ export class BuilddClient {
   }> {
     const url = force ? `/api/tasks/${taskId}/reassign?force=true` : `/api/tasks/${taskId}/reassign`;
     return this.fetch(url, { method: 'POST' }, [403]);
+  }
+
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number): Promise<void> {
+    await this.fetch('/api/workers/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ localUiUrl, activeWorkerCount }),
+    });
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

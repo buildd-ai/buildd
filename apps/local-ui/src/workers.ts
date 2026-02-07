@@ -163,6 +163,7 @@ export class WorkerManager {
   private workspaceChannels = new Map<string, any>();
   private planSubmissionCallbacks = new Map<string, PlanSubmissionCallback>();
   private cleanupInterval?: Timer;
+  private heartbeatInterval?: Timer;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -178,6 +179,12 @@ export class WorkerManager {
 
     // Run cleanup every 30 minutes
     this.cleanupInterval = setInterval(() => this.runCleanup(), 30 * 60 * 1000);
+
+    // Send heartbeat every 30s to announce availability (also send immediately)
+    if (!config.serverless) {
+      this.sendHeartbeat();
+      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 30_000);
+    }
 
     // Initialize Pusher if configured
     if (config.pusherKey && config.pusherCluster) {
@@ -394,10 +401,14 @@ export class WorkerManager {
 
   // Sync all worker states to server
   private async syncToServer() {
-    for (const worker of this.workers.values()) {
-      if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
-        await this.syncWorkerToServer(worker);
+    try {
+      for (const worker of this.workers.values()) {
+        if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+          await this.syncWorkerToServer(worker);
+        }
       }
+    } catch {
+      // Silently ignore sync errors - server may be temporarily unreachable
     }
   }
 
@@ -411,6 +422,19 @@ export class WorkerManager {
   private emit(event: any) {
     for (const handler of this.eventHandlers) {
       handler(event);
+    }
+  }
+
+  // Send heartbeat to server announcing this local-ui instance is alive and ready
+  private async sendHeartbeat() {
+    if (!this.config.localUiUrl) return;
+    try {
+      const activeCount = Array.from(this.workers.values()).filter(
+        w => w.status === 'working' || w.status === 'waiting'
+      ).length;
+      await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount);
+    } catch {
+      // Non-fatal - heartbeat is best-effort
     }
   }
 
@@ -1564,6 +1588,9 @@ export class WorkerManager {
     }
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+    }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {
