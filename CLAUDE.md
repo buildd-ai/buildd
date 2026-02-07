@@ -72,7 +72,7 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 - **API changes** → update types in `packages/shared`
 - **Worker status changes** → trigger Pusher events (check `lib/pusher.ts`)
 - **Account limits** differ by `authType` - see claim route
-- Use transactions for multi-step DB operations (currently missing in places)
+- **Do NOT use `db.transaction()`** with interactive logic — neon-http driver doesn't support it. Use atomic `UPDATE...WHERE` with `.returning()` for optimistic locking instead.
 
 ## Testing
 
