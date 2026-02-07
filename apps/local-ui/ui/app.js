@@ -191,13 +191,41 @@ function showSetupError(msg) {
 
 // SSE connection
 let eventSource = null;
+let sseRetryDelay = 1000;
+let sseRetryTimer = null;
+let sseConnected = false;
+
+function showConnectionStatus(connected) {
+  sseConnected = connected;
+  let banner = document.getElementById('connectionBanner');
+  if (connected) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'connectionBanner';
+    banner.className = 'fixed top-0 left-0 right-0 z-[9999] bg-amber-500/90 text-black text-center py-1.5 text-xs font-medium backdrop-blur-sm';
+    banner.textContent = 'Connection lost. Reconnecting...';
+    document.body.prepend(banner);
+  }
+}
 
 function connectSSE() {
+  if (sseRetryTimer) {
+    clearTimeout(sseRetryTimer);
+    sseRetryTimer = null;
+  }
   if (eventSource) {
     eventSource.close();
   }
 
   eventSource = new EventSource('/api/events');
+
+  eventSource.onopen = () => {
+    sseRetryDelay = 1000; // Reset backoff on successful connect
+    showConnectionStatus(true);
+  };
 
   eventSource.onmessage = (e) => {
     const event = JSON.parse(e.data);
@@ -205,8 +233,12 @@ function connectSSE() {
   };
 
   eventSource.onerror = () => {
-    console.error('SSE connection error, reconnecting...');
-    setTimeout(connectSSE, 3000);
+    // Close immediately to prevent browser auto-reconnect racing with ours
+    eventSource.close();
+    showConnectionStatus(false);
+    console.error(`SSE connection error, reconnecting in ${sseRetryDelay / 1000}s...`);
+    sseRetryTimer = setTimeout(connectSSE, sseRetryDelay);
+    sseRetryDelay = Math.min(sseRetryDelay * 2, 30000); // Backoff up to 30s
   };
 }
 
@@ -606,7 +638,7 @@ function renderWorkerDetail(worker) {
         <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide mb-1.5">Task</div>
         <div class="markdown-content text-[13px] leading-normal">${marked.parse(worker.taskDescription)}</div>
         ${isLongDescription ? `
-          <button class="expand-btn hidden items-center justify-center gap-1 w-full pt-1.5 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleDescription(this)">
+          <button class="expand-btn items-center justify-center gap-1 w-full pt-1.5 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleDescription(this)">
             <span class="expand-text">Show more</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
               <polyline points="6 9 12 15 18 9"/>
@@ -642,7 +674,7 @@ function renderWorkerDetail(worker) {
             <div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative">
               <div class="markdown-content text-sm">${marked.parse(combinedContent)}</div>
               ${isLong ? `
-                <button class="expand-msg-btn hidden items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleAgentMessage(this)">
+                <button class="expand-msg-btn items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleAgentMessage(this)">
                   <span class="expand-text">Show more</span>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
                     <polyline points="6 9 12 15 18 9"/>
@@ -669,7 +701,7 @@ function renderWorkerDetail(worker) {
     }).join('');
   } else {
     // Fallback: render from old output/toolCalls arrays for backwards compat
-    const fallbackHtml = worker.output.length > 0
+    const fallbackHtml = (worker.output || []).length > 0
       ? `<div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start"><div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative"><div class="bg-zinc-900 rounded-lg p-3 font-mono text-[13px] leading-normal max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
       : '<div class="text-center py-8 text-zinc-400 text-sm">Waiting for agent output...</div>';
     timelineEl.innerHTML = fallbackHtml;

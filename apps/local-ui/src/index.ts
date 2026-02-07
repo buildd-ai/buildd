@@ -10,6 +10,7 @@ import { Outbox } from './outbox';
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
 const REPOS_CACHE_FILE = join(homedir(), '.buildd', 'repos-cache.json');
+const BROWSER_OPEN_FILE = join(homedir(), '.buildd', '.last-browser-open');
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
@@ -469,7 +470,7 @@ const server = Bun.serve({
       const validModels = [
         'claude-opus-4-5-20251101',
         'claude-sonnet-4-5-20250929',
-        'claude-haiku-4-20250514',
+        'claude-haiku-4-5-20251001',
       ];
 
       if (!model || !validModels.includes(model)) {
@@ -619,8 +620,10 @@ const server = Bun.serve({
 
     // SSE endpoint
     if (path === '/api/events') {
+      let sseController: ReadableStreamDefaultController | null = null;
       const stream = new ReadableStream({
         start(controller) {
+          sseController = controller;
           sseClients.add(controller);
 
           // Send initial state (must include all config fields that the frontend uses)
@@ -641,7 +644,7 @@ const server = Bun.serve({
           controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(init)}\n\n`));
         },
         cancel() {
-          sseClients.delete(controller);
+          if (sseController) sseClients.delete(sseController);
         },
       });
 
@@ -693,8 +696,13 @@ const server = Bun.serve({
     }
 
     if (path === '/api/workspaces' && req.method === 'GET') {
-      const workspaces = await buildd!.listWorkspaces();
-      return Response.json({ workspaces }, { headers: corsHeaders });
+      try {
+        const workspaces = await buildd!.listWorkspaces();
+        return Response.json({ workspaces }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to list workspaces:', err.message);
+        return Response.json({ error: err.message || 'Failed to load workspaces', workspaces: [] }, { status: 502, headers: corsHeaders });
+      }
     }
 
     if (path === '/api/workers' && req.method === 'GET') {
@@ -1194,7 +1202,23 @@ if (!config.apiKey && !config.serverless) {
   console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
 }
 
-// Handle browser auto-open preference
+// Handle browser auto-open preference (debounce to avoid re-opening on crash-restart)
+function shouldOpenBrowser(): boolean {
+  try {
+    if (existsSync(BROWSER_OPEN_FILE)) {
+      const lastOpen = parseInt(readFileSync(BROWSER_OPEN_FILE, 'utf-8').trim(), 10);
+      if (Date.now() - lastOpen < 60_000) return false; // Skip if opened within last 60s
+    }
+  } catch {}
+  return true;
+}
+
+function markBrowserOpened() {
+  try {
+    writeFileSync(BROWSER_OPEN_FILE, String(Date.now()));
+  } catch {}
+}
+
 (async () => {
   // Check if this is first run (openBrowser preference not set)
   if (savedConfig.openBrowser === undefined) {
@@ -1202,12 +1226,14 @@ if (!config.apiKey && !config.serverless) {
     const shouldOpen = await promptYesNo('Auto-open browser on startup?');
     saveConfig({ openBrowser: shouldOpen });
 
-    if (shouldOpen) {
+    if (shouldOpen && shouldOpenBrowser()) {
       console.log('Opening browser...');
       Bun.spawn(['open', localUrl]);
+      markBrowserOpened();
     }
     console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
-  } else if (savedConfig.openBrowser) {
+  } else if (savedConfig.openBrowser && shouldOpenBrowser()) {
     Bun.spawn(['open', localUrl]);
+    markBrowserOpened();
   }
 })();
