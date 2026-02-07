@@ -286,7 +286,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
   return (
     <>
-      <aside className="w-64 border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex flex-col h-full">
+      <aside className="w-64 border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 flex flex-col h-full">
         {/* Header */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-800">
           <div className="flex items-center justify-between">
