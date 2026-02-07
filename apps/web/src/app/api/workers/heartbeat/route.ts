@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, accountWorkspaces } from '@buildd/core/db/schema';
+import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { randomBytes } from 'crypto';
@@ -36,12 +36,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'localUiUrl is required' }, { status: 400 });
     }
 
-    // Get workspace IDs this account has access to
+    // Get workspace IDs this account has access to (explicit links + open workspaces)
     const accountWs = await db.query.accountWorkspaces.findMany({
       where: eq(accountWorkspaces.accountId, account.id),
       columns: { workspaceId: true },
     });
-    const workspaceIds = accountWs.map(aw => aw.workspaceId);
+    const openWs = await db.query.workspaces.findMany({
+      where: eq(workspaces.accessMode, 'open'),
+      columns: { id: true },
+    });
+    const workspaceIds = [...new Set([
+      ...accountWs.map(aw => aw.workspaceId),
+      ...openWs.map(w => w.id),
+    ])];
 
     const now = new Date();
 

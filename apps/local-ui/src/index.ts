@@ -219,7 +219,7 @@ const config: LocalUIConfig = {
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
-  localUiUrl: process.env.LOCAL_UI_URL,
+  localUiUrl: process.env.LOCAL_UI_URL || `http://localhost:${PORT}`,
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY,
   pusherCluster: process.env.PUSHER_CLUSTER,
