@@ -13,7 +13,8 @@
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
-    "seed:reset": "bun run scripts/seed/reset.ts"
+    "seed:reset": "bun run scripts/seed/reset.ts",
+    "test:e2e": "bun test --env-file tests/e2e/.env tests/e2e/"
   },
   "dependencies": {
     "next": "^15.1.0",
