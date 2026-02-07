@@ -374,6 +374,19 @@ const server = Bun.serve({
       return new Response(null, { headers: corsHeaders });
     }
 
+    // viewerToken auth for remote access to worker data endpoints
+    // Localhost requests bypass auth; remote requests need ?token= or Authorization header
+    const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+    const viewerProtectedPaths = ['/api/workers', '/api/events'];
+    const needsViewerAuth = !isLocalhost && viewerProtectedPaths.some(p => path === p || path.startsWith(p + '/'));
+    if (needsViewerAuth) {
+      const expectedToken = workerManager?.getViewerToken();
+      const providedToken = url.searchParams.get('token') || req.headers.get('authorization')?.replace('Bearer ', '');
+      if (!expectedToken || providedToken !== expectedToken) {
+        return Response.json({ error: 'Unauthorized - invalid viewer token' }, { status: 401, headers: corsHeaders });
+      }
+    }
+
     // Auth & Config endpoints (work without API key)
 
     // Check if configured

@@ -12,7 +12,6 @@ interface Worker {
   name: string;
   branch: string;
   status: string;
-  progress: number;
   currentAction: string | null;
   milestones: Array<{ label: string; timestamp: number }>;
   turns: number;
@@ -119,7 +118,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
     if (channel) {
       const handleUpdate = (data: { worker: Worker }) => {
-        console.log('[RealTimeWorkerView] Received update:', data.worker?.status, data.worker?.progress);
+        console.log('[RealTimeWorkerView] Received update:', data.worker?.status);
         setWorker(data.worker);
       };
 
@@ -188,18 +187,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           )}
         </div>
       </div>
-
-      {/* Progress bar */}
-      {worker.progress > 0 && (
-        <div className="mb-3">
-          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-green-500 transition-all"
-              style={{ width: `${worker.progress}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Current action */}
       {worker.currentAction && (

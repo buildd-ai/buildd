@@ -59,17 +59,16 @@ export class BuilddClient {
     return data.tasks || [];
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string) {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string) {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',
-      body: JSON.stringify({ maxTasks, workspaceId, runner: 'local-ui' }),
+      body: JSON.stringify({ maxTasks, workspaceId, runner: runner || 'local-ui' }),
     });
     return data.workers || [];
   }
 
   async updateWorker(workerId: string, update: {
     status?: string;
-    progress?: number;
     error?: string;
     localUiUrl?: string;
     currentAction?: string;
@@ -272,11 +271,12 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number): Promise<void> {
-    await this.fetch('/api/workers/heartbeat', {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number): Promise<{ viewerToken?: string }> {
+    const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ localUiUrl, activeWorkerCount }),
     });
+    return { viewerToken: data.viewerToken };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

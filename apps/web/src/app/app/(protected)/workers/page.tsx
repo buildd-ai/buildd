@@ -86,14 +86,6 @@ export default async function WorkersPage() {
                         <span>Turns: {worker.turns}</span>
                         <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
                       </div>
-                      {worker.progress > 0 && (
-                        <div className="mt-2 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-green-500 transition-all"
-                            style={{ width: `${worker.progress}%` }}
-                          />
-                        </div>
-                      )}
                     </div>
                     <span className={`px-2 py-1 text-xs rounded-full ml-4 ${statusColors[worker.status] || statusColors.idle}`}>
                       {worker.status}

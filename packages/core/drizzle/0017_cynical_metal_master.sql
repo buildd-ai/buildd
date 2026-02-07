@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "workers_account_status_idx" ON "workers" ("account_id","status");

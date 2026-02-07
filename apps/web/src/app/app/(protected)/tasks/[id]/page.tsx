@@ -258,7 +258,6 @@ export default async function TaskDetailPage({
                 name: activeWorker.name,
                 branch: activeWorker.branch,
                 status: activeWorker.status,
-                progress: activeWorker.progress,
                 currentAction: activeWorker.currentAction,
                 milestones: (activeWorker.milestones as any[]) || [],
                 turns: activeWorker.turns,

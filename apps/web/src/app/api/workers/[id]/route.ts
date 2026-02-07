@@ -76,7 +76,7 @@ export async function PATCH(
 
   const body = await req.json();
   const {
-    status, progress, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -89,7 +89,6 @@ export async function PATCH(
   };
 
   if (status) updates.status = status;
-  if (typeof progress === 'number') updates.progress = progress;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
