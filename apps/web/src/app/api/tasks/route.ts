@@ -159,12 +159,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
     }
 
-    // Validate workspace exists
-    const workspace = await db.query.workspaces.findFirst({
+    // Validate workspace exists and fetch webhook config in one query
+    const targetWorkspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
-      columns: { id: true },
     });
-    if (!workspace) {
+    if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
     }
 
@@ -228,13 +227,8 @@ export async function POST(req: NextRequest) {
     // Check if workspace has webhook config for external dispatch (e.g., OpenClaw)
     // Only dispatch if not already assigned to a specific local-ui
     if (!assignToLocalUiUrl) {
-      const workspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
-        columns: { webhookConfig: true },
-      });
-
-      if (workspace?.webhookConfig) {
-        const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
+      if (targetWorkspace?.webhookConfig) {
+        const webhookConfig = targetWorkspace.webhookConfig as WorkspaceWebhookConfig;
         // Check runner preference filter
         const shouldDispatch = !webhookConfig.runnerPreference ||
           webhookConfig.runnerPreference === 'any' ||
