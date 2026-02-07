@@ -1,7 +1,7 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import { db } from '../db/client';
-import { workers, messages, tasks } from '../db/schema';
+import { workers, tasks } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { config } from '../config';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
@@ -78,7 +78,7 @@ export class WorkerRunner extends EventEmitter {
 
   private async handleMessage(msg: SDKMessage): Promise<void> {
     if (msg.type === 'system' && 'session_id' in msg) {
-      await db.update(workers).set({ sdkSessionId: (msg as any).session_id }).where(eq(workers.id, this.workerId));
+      // Session ID tracked in-memory only, no longer persisted to DB
       return;
     }
 
@@ -253,20 +253,13 @@ export class WorkerRunner extends EventEmitter {
   }
 
   private async updateProgress(): Promise<void> {
-    const progress = Math.min(95, Math.round((this.turns / config.maxTurns) * 100));
-    await db.update(workers).set({ progress, turns: this.turns, costUsd: this.costUsd.toString() }).where(eq(workers.id, this.workerId));
-    this.emitEvent('worker:progress', { progress, turns: this.turns });
+    await db.update(workers).set({ turns: this.turns, costUsd: this.costUsd.toString() }).where(eq(workers.id, this.workerId));
+    this.emitEvent('worker:progress', { turns: this.turns });
   }
 
   private async storeMessage(role: string, content: string | null, toolName?: string, toolInput?: Record<string, unknown>): Promise<void> {
-    const [msg] = await db.insert(messages).values({
-      workerId: this.workerId,
-      role,
-      content,
-      toolName: toolName || null,
-      toolInput: toolInput || null,
-    }).returning();
-    this.emitEvent('worker:message', { message: msg });
+    // Messages are no longer persisted to DB - they live in local-UI memory only
+    this.emitEvent('worker:message', { role, content, toolName });
   }
 
   private emitEvent(type: string, data: unknown): void {

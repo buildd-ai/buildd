@@ -46,7 +46,6 @@ export async function GET(
         name: true,
         branch: true,
         status: true,
-        progress: true,
         currentAction: true,
         localUiUrl: true,
         prUrl: true,

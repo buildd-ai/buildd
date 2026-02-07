@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
 
         return {
           localUiUrl: hb.localUiUrl,
+          viewerToken: hb.viewerToken,
           accountId: hb.accountId,
           accountName: hb.account?.name || 'Unknown',
           maxConcurrent: hb.maxConcurrentWorkers,

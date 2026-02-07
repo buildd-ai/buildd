@@ -133,82 +133,85 @@ export async function POST(req: NextRequest) {
     return reqCaps.every((cap) => capabilities.includes(cap));
   });
 
-  // Claim tasks and create workers
-  const claimedWorkers: ClaimTasksResponse['workers'] = [];
+  // Claim tasks and create workers inside a transaction to prevent double-assignment
+  const claimedWorkers: ClaimTasksResponse['workers'] = await db.transaction(async (tx) => {
+    const claimed: ClaimTasksResponse['workers'] = [];
 
-  for (const task of filteredTasks) {
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    for (const task of filteredTasks) {
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-    await db
-      .update(tasks)
-      .set({
-        claimedBy: account.id,
-        claimedAt: now,
-        expiresAt,
-        status: 'assigned',
-      })
-      .where(eq(tasks.id, task.id));
+      // Only claim if still pending (prevents race with concurrent requests)
+      const updated = await tx
+        .update(tasks)
+        .set({
+          claimedBy: account.id,
+          claimedAt: now,
+          expiresAt,
+          status: 'assigned',
+        })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
+        .returning({ id: tasks.id });
 
-    // Generate branch name based on workspace gitConfig
-    const gitConfig = task.workspace?.gitConfig as {
-      branchingStrategy?: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
-      branchPrefix?: string;
-      useBuildBranch?: boolean;
-      defaultBranch?: string;
-    } | null;
+      if (updated.length === 0) continue; // Already claimed by another request
 
-    const sanitizedTitle = task.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .substring(0, 30);
-    const taskIdShort = task.id.substring(0, 8);
+      // Generate branch name based on workspace gitConfig
+      const gitConfig = task.workspace?.gitConfig as {
+        branchingStrategy?: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
+        branchPrefix?: string;
+        useBuildBranch?: boolean;
+        defaultBranch?: string;
+      } | null;
 
-    let branch: string;
-    if (gitConfig?.branchingStrategy === 'none') {
-      // 'none' strategy: defer entirely to project conventions / CLAUDE.md
-      // Use a placeholder - actual branching is determined by agent/CLAUDE.md
-      branch = `task-${taskIdShort}`;
-    } else if (gitConfig?.useBuildBranch) {
-      // Explicitly opted into buildd branch naming
-      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
-    } else if (gitConfig?.branchPrefix) {
-      // Use configured prefix
-      branch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
-    } else {
-      // Default: use buildd/ prefix (backwards compatible, agent can choose differently)
-      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+      const sanitizedTitle = task.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .substring(0, 30);
+      const taskIdShort = task.id.substring(0, 8);
+
+      let branch: string;
+      if (gitConfig?.branchingStrategy === 'none') {
+        branch = `task-${taskIdShort}`;
+      } else if (gitConfig?.useBuildBranch) {
+        branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+      } else if (gitConfig?.branchPrefix) {
+        branch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
+      } else {
+        branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+      }
+
+      const [worker] = await tx
+        .insert(workers)
+        .values({
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          accountId: account.id,
+          name: `${account.name}-${task.id.substring(0, 8)}`,
+          runner,
+          branch,
+          status: 'idle',
+        })
+        .returning();
+
+      claimed.push({
+        id: worker.id,
+        taskId: task.id,
+        branch,
+        task: task as any,
+      });
     }
 
-    const [worker] = await db
-      .insert(workers)
-      .values({
-        taskId: task.id,
-        workspaceId: task.workspaceId,
-        accountId: account.id,
-        name: `${account.name}-${task.id.substring(0, 8)}`,
-        runner,
-        branch,
-        status: 'idle',
-      })
-      .returning();
+    // Increment active sessions for OAuth accounts
+    if (account.authType === 'oauth' && claimed.length > 0) {
+      await tx
+        .update(accounts)
+        .set({
+          activeSessions: sql`${accounts.activeSessions} + ${claimed.length}`,
+        })
+        .where(eq(accounts.id, account.id));
+    }
 
-    claimedWorkers.push({
-      id: worker.id,
-      taskId: task.id,
-      branch,
-      task: task as any,
-    });
-  }
-
-  // Increment active sessions for OAuth accounts
-  if (account.authType === 'oauth' && claimedWorkers.length > 0) {
-    await db
-      .update(accounts)
-      .set({
-        activeSessions: sql`${accounts.activeSessions} + ${claimedWorkers.length}`,
-      })
-      .where(eq(accounts.id, account.id));
-  }
+    return claimed;
+  });
 
   return NextResponse.json({ workers: claimedWorkers });
 }

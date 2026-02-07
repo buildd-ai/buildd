@@ -164,6 +164,9 @@ export class WorkerManager {
   private planSubmissionCallbacks = new Map<string, PlanSubmissionCallback>();
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
+  private evictionInterval?: Timer;
+  private viewerToken?: string;
+  private dirtyWorkers = new Set<string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -174,11 +177,14 @@ export class WorkerManager {
     // Check for stale workers every 30s
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
 
-    // Sync worker state to server every 3s
-    this.syncInterval = setInterval(() => this.syncToServer(), 3_000);
+    // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
+    this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
 
     // Run cleanup every 30 minutes
     this.cleanupInterval = setInterval(() => this.runCleanup(), 30 * 60 * 1000);
+
+    // Evict completed workers from memory every 5 minutes to prevent unbounded growth
+    this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
 
     // Send heartbeat every 30s to announce availability (also send immediately)
     if (!config.serverless) {
@@ -302,6 +308,10 @@ export class WorkerManager {
     return { hasCredentials: this.hasCredentials };
   }
 
+  getViewerToken(): string | undefined {
+    return this.viewerToken;
+  }
+
   // Subscribe to commands from server
   onCommand(handler: CommandHandler) {
     this.commandHandlers.push(handler);
@@ -399,11 +409,20 @@ export class WorkerManager {
     }
   }
 
-  // Sync all worker states to server
+  // Mark a worker as needing sync on next interval
+  private markDirty(workerId: string) {
+    this.dirtyWorkers.add(workerId);
+  }
+
+  // Sync only dirty worker states to server
   private async syncToServer() {
+    if (this.dirtyWorkers.size === 0) return;
+    const toSync = new Set(this.dirtyWorkers);
+    this.dirtyWorkers.clear();
     try {
-      for (const worker of this.workers.values()) {
-        if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+      for (const workerId of toSync) {
+        const worker = this.workers.get(workerId);
+        if (worker && (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) {
           await this.syncWorkerToServer(worker);
         }
       }
@@ -420,6 +439,10 @@ export class WorkerManager {
   }
 
   private emit(event: any) {
+    // Auto-mark workers dirty for server sync when their state changes
+    if (event.type === 'worker_update' && event.worker?.id) {
+      this.dirtyWorkers.add(event.worker.id);
+    }
     for (const handler of this.eventHandlers) {
       handler(event);
     }
@@ -432,7 +455,10 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount);
+      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount);
+      if (viewerToken) {
+        this.viewerToken = viewerToken;
+      }
     } catch {
       // Non-fatal - heartbeat is best-effort
     }
@@ -444,6 +470,22 @@ export class WorkerManager {
       await this.buildd.runCleanup();
     } catch {
       // Non-fatal - cleanup is best-effort
+    }
+  }
+
+  // Evict completed/failed workers from in-memory Map after 10 minutes
+  // to prevent unbounded memory growth during long-running sessions
+  private evictCompletedWorkers() {
+    const RETENTION_MS = 10 * 60 * 1000;
+    const now = Date.now();
+    for (const [id, worker] of this.workers.entries()) {
+      if (
+        (worker.status === 'done' || worker.status === 'error') &&
+        now - worker.lastActivity > RETENTION_MS
+      ) {
+        this.workers.delete(id);
+        this.sessions.delete(id);
+      }
     }
   }
 
@@ -492,7 +534,7 @@ export class WorkerManager {
     }
 
     // Claim from buildd
-    const claimed = await this.buildd.claimTask(1, task.workspaceId);
+    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl);
     if (claimed.length === 0) {
       console.log('No tasks claimed');
       return null;
@@ -1591,6 +1633,9 @@ export class WorkerManager {
     }
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
+    }
+    if (this.evictionInterval) {
+      clearInterval(this.evictionInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {

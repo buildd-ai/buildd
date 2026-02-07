@@ -57,11 +57,16 @@ export async function POST(
     timestamp: now,
   };
 
-  // Update worker with new milestone and current action
+  // Update worker with new milestone and current action (cap at 50 to prevent JSONB bloat)
+  const updatedMilestones = [...currentMilestones, newMilestone];
+  if (updatedMilestones.length > 50) {
+    updatedMilestones.splice(0, updatedMilestones.length - 50);
+  }
+
   await db
     .update(workers)
     .set({
-      milestones: [...currentMilestones, newMilestone],
+      milestones: updatedMilestones,
       currentAction: milestoneLabel,
       updatedAt: new Date(),
     })

@@ -120,6 +120,34 @@
       "when": 1770429743370,
       "tag": "0016_perfect_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1770476754778,
+      "tag": "0017_cynical_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1770478304091,
+      "tag": "0018_talented_lockjaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1770478492347,
+      "tag": "0019_last_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1770478624660,
+      "tag": "0020_magenta_eternals",
+      "breakpoints": true
     }
   ]
 }

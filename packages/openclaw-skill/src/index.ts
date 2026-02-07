@@ -124,7 +124,6 @@ export async function reportProgress(
     method: 'PATCH',
     body: JSON.stringify({
       status: 'running',
-      progress: Math.min(100, Math.max(0, progress)),
       ...(message && { currentAction: message }),
     }),
   });

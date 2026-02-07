@@ -223,11 +223,8 @@ export interface Worker {
   name: string;
   runner: string;
   branch: string;
-  worktreePath: string | null;
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
-  progress: number;
-  sdkSessionId: string | null;
   costUsd: number;
   turns: number;
   startedAt: Date | null;
@@ -257,46 +254,6 @@ export interface Artifact {
   metadata: Record<string, unknown>;
   createdAt: Date;
   url?: string;
-  comments?: Comment[];
-}
-
-export interface Comment {
-  id: string;
-  artifactId: string | null;
-  workerId: string | null;
-  content: string;
-  selection: SelectionRange | null;
-  resolved: boolean;
-  createdAt: Date;
-}
-
-export interface SelectionRange {
-  start: number;
-  end: number;
-  text?: string;
-}
-
-export interface Message {
-  id: string;
-  workerId: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string | null;
-  toolName: string | null;
-  toolInput: Record<string, unknown> | null;
-  toolOutput: string | null;
-  costUsd: number | null;
-  createdAt: Date;
-  attachments?: Attachment[];
-}
-
-export interface Attachment {
-  id: string;
-  messageId: string;
-  filename: string;
-  mimeType: string;
-  storageKey: string;
-  url?: string;
-  createdAt: Date;
 }
 
 export interface Observation {

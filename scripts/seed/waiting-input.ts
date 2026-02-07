@@ -96,7 +96,6 @@ async function seedWaitingInput() {
         },
         body: JSON.stringify({
             status: 'waiting_input',
-            progress: 40,
             currentAction: 'Waiting for auth method selection',
             waitingFor: {
                 type: 'question',

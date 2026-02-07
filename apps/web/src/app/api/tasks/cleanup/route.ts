@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks } from '@buildd/core/db/schema';
+import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -102,11 +102,19 @@ export async function POST(req: NextRequest) {
     expiredPlans++;
   }
 
+  // 4. Delete stale heartbeats (no ping for > 10 minutes)
+  const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+  const deletedHeartbeats = await db
+    .delete(workerHeartbeats)
+    .where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo))
+    .returning({ id: workerHeartbeats.id });
+
   return NextResponse.json({
     cleaned: {
       stalledWorkers,
       orphanedTasks,
       expiredPlans,
+      staleHeartbeats: deletedHeartbeats.length,
     },
   });
 }

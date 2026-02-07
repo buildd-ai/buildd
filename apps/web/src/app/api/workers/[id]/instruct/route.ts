@@ -83,11 +83,17 @@ export async function POST(
     timestamp: Date.now(),
   };
 
+  // Cap history at 30 entries to prevent JSONB bloat
+  const updatedHistory = [...currentHistory, newHistoryEntry];
+  if (updatedHistory.length > 30) {
+    updatedHistory.splice(0, updatedHistory.length - 30);
+  }
+
   const [updated] = await db
     .update(workers)
     .set({
       pendingInstructions: pendingPayload,
-      instructionHistory: [...currentHistory, newHistoryEntry],
+      instructionHistory: updatedHistory,
       updatedAt: new Date(),
     })
     .where(eq(workers.id, id))
