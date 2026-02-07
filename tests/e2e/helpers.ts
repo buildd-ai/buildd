@@ -206,7 +206,8 @@ export async function pollUntil<T>(
 let localUIProc: Subprocess | null = null;
 
 /**
- * Start local-ui as a subprocess from ~/.buildd/apps/local-ui/.
+ * Start local-ui as a subprocess.
+ * Prefers the repo's apps/local-ui/ (latest code), falls back to ~/.buildd/apps/local-ui/.
  * Waits for the health-check endpoint before returning.
  */
 export async function startLocalUI(localUIUrl: string): Promise<void> {
@@ -215,9 +216,13 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
     return;
   }
 
-  const localUIDir = join(homedir(), '.buildd', 'apps', 'local-ui');
+  // Prefer repo version (has latest code), fall back to installed version
+  const repoDir = join(import.meta.dir, '..', '..', 'apps', 'local-ui');
+  const installedDir = join(homedir(), '.buildd', 'apps', 'local-ui');
+  const localUIDir = existsSync(join(repoDir, 'package.json')) ? repoDir : installedDir;
+
   if (!existsSync(join(localUIDir, 'package.json'))) {
-    throw new Error(`local-ui not found at ${localUIDir}. Install buildd first.`);
+    throw new Error(`local-ui not found at ${repoDir} or ${installedDir}`);
   }
 
   console.log(`  Starting local-ui from ${localUIDir} ...`);
@@ -229,6 +234,7 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
     env: {
       ...process.env,
       PORT: new URL(localUIUrl).port || '8766',
+      PROJECTS_ROOT: process.env.PROJECTS_ROOT || join(homedir(), 'buildd'),
     },
   });
 
