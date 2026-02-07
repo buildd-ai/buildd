@@ -533,8 +533,8 @@ export class WorkerManager {
       return null;
     }
 
-    // Claim from buildd
-    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl);
+    // Claim from buildd (pass taskId for targeted claiming)
+    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
     if (claimed.length === 0) {
       console.log('No tasks claimed');
       return null;

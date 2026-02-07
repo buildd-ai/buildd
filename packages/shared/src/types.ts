@@ -333,6 +333,7 @@ export interface CreateAccountInput {
 
 export interface ClaimTasksInput {
   workspaceId?: string;
+  taskId?: string;
   capabilities?: string[];
   maxTasks?: number;
   runner: string;
