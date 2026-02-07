@@ -159,6 +159,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
     }
 
+    // Validate workspace exists
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { id: true },
+    });
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
+    }
+
     // Resolve creator context using the service
     const creatorContext = await resolveCreatorContext({
       apiAccount,
