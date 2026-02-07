@@ -319,14 +319,19 @@ describe('dogfood', () => {
     const task = await createTask(
       workspaceId,
       '[DOGFOOD] Abort test',
-      'Wait for further instructions before doing anything. Do not take any action yet.',
+      'Read every file in packages/core/db/ one by one using the Read tool. For each file, write a detailed summary. Take your time and be thorough.',
     );
     expect(task.id).toBeTruthy();
 
     const workerId = await triggerClaim(task.id);
 
-    // Give the worker a moment to start
-    await sleep(5_000);
+    // Wait for the worker to actually start running before aborting
+    const startWait = Date.now();
+    while (Date.now() - startWait < 30_000) {
+      const status = await getLocalWorkerStatus(workerId);
+      if (status?.status === 'working') break;
+      await sleep(500);
+    }
 
     // Abort via local-ui
     const abortRes = await fetch(`${LOCAL_UI}/api/abort`, {
