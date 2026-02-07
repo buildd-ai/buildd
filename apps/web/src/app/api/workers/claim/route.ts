@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  const { workspaceId, capabilities = [], maxTasks = 3, runner } = body;
+  const { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
 
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
@@ -111,6 +111,11 @@ export async function POST(req: NextRequest) {
     eq(tasks.status, 'pending'),
     or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now)),
   ];
+
+  // If a specific taskId was requested, only claim that task
+  if (taskId) {
+    claimableConditions.push(eq(tasks.id, taskId));
+  }
 
   if (account.type !== 'user') {
     claimableConditions.push(

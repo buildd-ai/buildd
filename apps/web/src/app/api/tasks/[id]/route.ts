@@ -29,7 +29,7 @@ export async function GET(
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),
-      with: { workspace: true },
+      with: { workspace: true, workers: true },
     });
 
     if (!task) {

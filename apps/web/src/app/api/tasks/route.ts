@@ -227,6 +227,7 @@ export async function POST(req: NextRequest) {
     // Check if workspace has webhook config for external dispatch (e.g., OpenClaw)
     // Only dispatch if not already assigned to a specific local-ui
     if (!assignToLocalUiUrl) {
+      let dispatched = false;
       if (targetWorkspace?.webhookConfig) {
         const webhookConfig = targetWorkspace.webhookConfig as WorkspaceWebhookConfig;
         // Check runner preference filter
@@ -235,8 +236,17 @@ export async function POST(req: NextRequest) {
           webhookConfig.runnerPreference === (runnerPreference || 'any');
 
         if (shouldDispatch) {
-          await dispatchToWebhook(webhookConfig, task);
+          dispatched = await dispatchToWebhook(webhookConfig, task);
         }
+      }
+
+      // If no webhook handled it, broadcast TASK_ASSIGNED so any connected worker can claim
+      if (!dispatched) {
+        await triggerEvent(
+          channels.workspace(workspaceId),
+          events.TASK_ASSIGNED,
+          { task, targetLocalUiUrl: null }
+        );
       }
     }
 
