@@ -82,6 +82,19 @@ function assert(condition: boolean, msg: string) {
   console.log(`  ✓ ${msg}`);
 }
 
+// --- Pre-flight: check for live workers ---
+
+const { activeLocalUis } = await api('/api/workers/active');
+const totalCapacity = (activeLocalUis || []).reduce((sum: number, ui: any) => sum + ui.capacity, 0);
+const totalActive = (activeLocalUis || []).reduce((sum: number, ui: any) => sum + ui.activeWorkers, 0);
+
+if (!activeLocalUis?.length) {
+  console.log('⏭️  Skipping dogfood tests: no live workers found. Start local-ui first.');
+  process.exit(0);
+}
+
+console.log(`🟢 ${activeLocalUis.length} local-ui instance(s) alive — ${totalActive} active workers, ${totalCapacity} capacity remaining`);
+
 // --- Helpers ---
 
 async function findWorkspace(): Promise<string> {
@@ -131,24 +144,17 @@ async function triggerClaim(taskId: string): Promise<string | null> {
 }
 
 /**
- * Wait for a worker to complete by polling the server's worker endpoint.
- * If workerId is known (from triggerClaim), polls that directly.
- * Otherwise, polls the task status.
+ * Wait for a worker to complete by polling the task status endpoint.
+ * We always poll via task (not worker) because the worker may belong to
+ * a different account (local-ui's API key) than the dogfood test's API key.
  */
-async function waitForWorkerCompletion(taskId: string, workerId?: string | null): Promise<any> {
+async function waitForWorkerCompletion(taskId: string, _workerId?: string | null): Promise<any> {
   const start = Date.now();
 
   while (Date.now() - start < TIMEOUT) {
-    if (workerId) {
-      const worker = await api(`/api/workers/${workerId}`);
-      if (worker.status === 'completed' || worker.status === 'failed') {
-        return worker;
-      }
-    } else {
-      const task = await api(`/api/tasks/${taskId}`);
-      if (task.status === 'completed' || task.status === 'failed') {
-        return { status: task.status, summary: task.result?.summary || '' };
-      }
+    const task = await api(`/api/tasks/${taskId}`);
+    if (task.status === 'completed' || task.status === 'failed') {
+      return { status: task.status, summary: task.result?.summary || '' };
     }
 
     await sleep(POLL_INTERVAL);
@@ -297,17 +303,24 @@ async function testFailHandling(workspaceId: string) {
   const confirmedWorkerId = await waitForClaim(task.id, workerId);
   assert(!!confirmedWorkerId, `Worker claimed the task: ${confirmedWorkerId}`);
 
-  // Force-fail the worker
-  console.log('  Marking worker as failed...');
-  const failed = await api(`/api/workers/${confirmedWorkerId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'failed', error: 'Dogfood test: intentional abort' }),
+  // Force-fail via local-ui's abort endpoint (avoids 403 from cross-account worker ownership)
+  console.log('  Aborting worker via local-ui...');
+  const abortRes = await fetch(`${LOCAL_UI}/api/abort`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workerId: confirmedWorkerId }),
   });
-  assert(failed.status === 'failed', 'Worker status is failed');
+  assert(abortRes.ok, `Abort request succeeded (status: ${abortRes.status})`);
 
-  // Verify task reflects it
-  console.log('  Verifying task status...');
-  const updatedTask = await api(`/api/tasks/${task.id}`);
+  // Wait for task to reflect the failure
+  console.log('  Waiting for task status to update...');
+  const start = Date.now();
+  let updatedTask: any;
+  while (Date.now() - start < 15_000) {
+    updatedTask = await api(`/api/tasks/${task.id}`);
+    if (updatedTask.status === 'failed' || updatedTask.status === 'pending') break;
+    await sleep(1_000);
+  }
   assert(
     updatedTask.status === 'failed' || updatedTask.status === 'pending',
     `Task status updated: ${updatedTask.status}`,

@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, workspaces } from '@buildd/core/db/schema';
-import { eq, gt, and, sql } from 'drizzle-orm';
+import { accountWorkspaces, accounts, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { eq, gt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { hashApiKey } from '@/lib/api-auth';
 
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
 
 /**
  * GET /api/workers/active
  *
- * Returns active local-ui instances with capacity for the current user.
- * Uses the workerHeartbeats table - instances that have pinged within
- * the last 2 minutes are considered alive.
+ * Returns active local-ui instances with capacity.
+ * Supports dual auth: API key (Bearer) or session cookie.
  *
  * Response includes:
  * - localUiUrl: The URL to access the local-ui
@@ -20,18 +20,50 @@ const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
  * - capacity: Remaining capacity (maxConcurrent - activeWorkers)
  * - workspaceIds: Workspaces this local-ui can work on
  */
-export async function GET(req: NextRequest) {
+
+async function authenticateRequest(req: NextRequest) {
+  // Try API key first
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  if (apiKey) {
+    const account = await db.query.accounts.findFirst({
+      where: eq(accounts.apiKey, hashApiKey(apiKey)),
+    });
+    if (account) return { type: 'api' as const, account };
+  }
+
+  // Fall back to session
   const user = await getCurrentUser();
-  if (!user) {
+  if (user) return { type: 'session' as const, user };
+
+  return null;
+}
+
+async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>) {
+  if (auth.type === 'api') {
+    // API key auth: get workspaces via accountWorkspaces join table
+    const aw = await db.query.accountWorkspaces.findMany({
+      where: eq(accountWorkspaces.accountId, auth.account.id),
+      with: { workspace: { columns: { id: true, name: true } } },
+    });
+    return aw.map(a => ({ id: a.workspace.id, name: a.workspace.name }));
+  }
+  // Session auth: get workspaces owned by user
+  return db.query.workspaces.findMany({
+    where: eq(workspaces.ownerId, auth.user.id),
+    columns: { id: true, name: true },
+  });
+}
+
+export async function GET(req: NextRequest) {
+  const auth = await authenticateRequest(req);
+  if (!auth) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // Get user's workspace IDs
-    const userWorkspaces = await db.query.workspaces.findMany({
-      where: eq(workspaces.ownerId, user.id),
-      columns: { id: true, name: true },
-    });
+    const userWorkspaces = await getWorkspaceIdsAndNames(auth);
     const workspaceIds = userWorkspaces.map(w => w.id);
     const workspaceNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
 
