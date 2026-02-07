@@ -120,6 +120,13 @@ export async function POST(
         return NextResponse.json({ observation }, { status: 201 });
     } catch (error) {
         console.error('Create observation error:', error);
-        return NextResponse.json({ error: 'Failed to create observation' }, { status: 500 });
+        // Provide more helpful error message
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        const isDatabaseError = errorMsg.includes('constraint') || errorMsg.includes('foreign key');
+
+        return NextResponse.json({
+            error: 'Failed to create observation',
+            detail: isDatabaseError ? 'Invalid reference (task or workspace may not exist)' : errorMsg.slice(0, 100)
+        }, { status: 500 });
     }
 }

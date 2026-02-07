@@ -672,7 +672,15 @@ export class WorkerManager {
         }
       }
 
-      return {};
+      // Allow all other tools by default (prevents acceptEdits stall —
+      // no terminal exists for interactive approval)
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse' as const,
+          permissionDecision: 'allow' as const,
+          permissionDecisionReason: 'Allowed by buildd permission hook',
+        },
+      };
     };
   }
 
@@ -973,20 +981,39 @@ export class WorkerManager {
             taskId: task.id,
           });
         } catch (err) {
-          console.error(`[Worker ${worker.id}] Failed to capture summary observation:`, err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[Worker ${worker.id}] Failed to capture summary observation: ${errMsg}`);
+          // Non-fatal - task still completed successfully
         }
       }
 
     } catch (error) {
-      console.error(`Worker ${worker.id} error:`, error);
-      worker.status = 'error';
-      worker.error = error instanceof Error ? error.message : 'Unknown error';
-      worker.hasNewActivity = true;
-      worker.completedAt = Date.now();
-      await this.buildd.updateWorker(worker.id, {
-        status: 'failed',
-        error: worker.error
-      });
+      // Check if this is an expected abort (from loop detection or user)
+      const isAbortError = error instanceof Error &&
+        (error.message.includes('aborted') || error.message.includes('Aborted'));
+
+      if (isAbortError) {
+        // Clean abort - already handled by abort() method which set worker.error
+        console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
+        worker.status = 'error';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: worker.error || 'Session aborted'
+        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
+      } else {
+        // Unexpected error
+        console.error(`Worker ${worker.id} error:`, error);
+        worker.status = 'error';
+        worker.error = error instanceof Error ? error.message : 'Unknown error';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: worker.error
+        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
+      }
       this.emit({ type: 'worker_update', worker });
     } finally {
       // Clean up session
@@ -1056,10 +1083,10 @@ export class WorkerManager {
           // Check for repetitive tool calls (infinite loop detection)
           const repetitionCheck = this.detectRepetitiveToolCalls(worker);
           if (repetitionCheck.isRepetitive) {
-            console.error(`[Worker ${worker.id}] ${repetitionCheck.reason}`);
-            this.addMilestone(worker, `Aborted: ${repetitionCheck.reason}`);
+            console.log(`[Worker ${worker.id}] 🛑 ${repetitionCheck.reason}`);
+            this.addMilestone(worker, `🛑 ${repetitionCheck.reason}`);
             worker.error = repetitionCheck.reason;
-            // Abort the session
+            // Abort the session gracefully
             this.abort(worker.id).catch(err =>
               console.error(`[Worker ${worker.id}] Failed to abort:`, err)
             );

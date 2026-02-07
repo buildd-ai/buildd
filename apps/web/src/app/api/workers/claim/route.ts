@@ -21,7 +21,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
 
-  // Check current active workers
+  // Auto-expire stale workers (no update in 15+ minutes)
+  const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+  const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
+
+  const staleWorkers = await db.query.workers.findMany({
+    where: and(
+      eq(workers.accountId, account.id),
+      inArray(workers.status, ['running', 'starting', 'waiting_input']),
+      lt(workers.updatedAt, staleThreshold)
+    ),
+    columns: { id: true, taskId: true },
+  });
+
+  if (staleWorkers.length > 0) {
+    const staleWorkerIds = staleWorkers.map(w => w.id);
+    const staleTaskIds = staleWorkers.map(w => w.taskId).filter(Boolean) as string[];
+
+    await db
+      .update(workers)
+      .set({
+        status: 'failed',
+        error: 'Stale worker expired (no update for 15+ minutes)',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(inArray(workers.id, staleWorkerIds));
+
+    if (staleTaskIds.length > 0) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          updatedAt: new Date(),
+        })
+        .where(inArray(tasks.id, staleTaskIds));
+    }
+  }
+
+  // Check current active workers (after expiring stale ones)
   const activeWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, account.id),

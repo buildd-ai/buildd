@@ -42,12 +42,24 @@ async function authenticateRequest(req: NextRequest) {
 
 async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>) {
   if (auth.type === 'api') {
-    // API key auth: get workspaces via accountWorkspaces join table
+    // API key auth: get workspaces via accountWorkspaces join table + open workspaces
     const aw = await db.query.accountWorkspaces.findMany({
       where: eq(accountWorkspaces.accountId, auth.account.id),
       with: { workspace: { columns: { id: true, name: true } } },
     });
-    return aw.map(a => ({ id: a.workspace.id, name: a.workspace.name }));
+    const openWs = await db.query.workspaces.findMany({
+      where: eq(workspaces.accessMode, 'open'),
+      columns: { id: true, name: true },
+    });
+    const seen = new Set<string>();
+    const result: { id: string; name: string }[] = [];
+    for (const a of aw) {
+      if (!seen.has(a.workspace.id)) { seen.add(a.workspace.id); result.push(a.workspace); }
+    }
+    for (const w of openWs) {
+      if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
+    }
+    return result;
   }
   // Session auth: get workspaces owned by user
   return db.query.workspaces.findMany({
