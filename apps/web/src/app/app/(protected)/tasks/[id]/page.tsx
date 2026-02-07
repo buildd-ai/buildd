@@ -106,13 +106,13 @@ export default async function TaskDetailPage({
   const canStart = task.status === 'pending';
 
   return (
-    <div className="p-8 overflow-auto h-full">
+    <div className="p-4 md:p-8 overflow-auto h-full">
       <div className="max-w-4xl">
         {/* Header */}
-        <div className="flex justify-between items-start mb-6">
-          <div className="flex-1">
-            <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-2xl font-bold">{task.title}</h1>
+        <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-3 mb-6">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
+              <h1 className="text-xl md:text-2xl font-bold break-words">{task.title}</h1>
               <span
                 data-testid="task-header-status"
                 data-status={displayStatus}
@@ -125,7 +125,7 @@ export default async function TaskDetailPage({
               {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <EditTaskButton
               task={{
                 id: task.id,

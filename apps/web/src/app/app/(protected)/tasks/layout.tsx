@@ -4,6 +4,7 @@ import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import WorkspaceSidebar from './WorkspaceSidebar';
+import MobileTasksLayout from './MobileTasksLayout';
 
 export default async function TasksLayout({
   children,
@@ -91,14 +92,8 @@ export default async function TasksLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Sidebar */}
-      <WorkspaceSidebar workspaces={workspacesWithTasks} />
-
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        {children}
-      </main>
-    </div>
+    <MobileTasksLayout sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} />}>
+      {children}
+    </MobileTasksLayout>
   );
 }

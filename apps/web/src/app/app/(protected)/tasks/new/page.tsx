@@ -126,8 +126,8 @@ export default function NewTaskPage() {
   }
 
   return (
-    <div className="p-8 overflow-auto h-full">
-      <div className="max-w-xl">
+    <div className="p-4 md:p-8 overflow-auto h-full">
+      <div className="max-w-xl mx-auto md:mx-0">
         <h1 className="text-2xl font-bold mb-6">New Task</h1>
 
         {workspaces.length === 0 && !loadingWorkspaces ? (

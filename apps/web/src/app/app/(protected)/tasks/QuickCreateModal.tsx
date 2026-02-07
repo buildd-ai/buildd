@@ -228,7 +228,7 @@ export default function QuickCreateModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-start justify-center pt-32 z-50"
+      className="fixed inset-0 bg-black/50 flex items-start justify-center pt-16 md:pt-32 z-50 px-4 md:px-0"
       onClick={(e) => e.target === e.currentTarget && assignmentStatus === 'idle' && onClose()}
       onKeyDown={handleKeyDown}
     >
