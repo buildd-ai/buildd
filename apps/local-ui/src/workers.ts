@@ -639,7 +639,7 @@ export class WorkerManager {
     return false;
   }
 
-  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask) {
+  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -764,6 +764,9 @@ export class WorkerManager {
       }
       promptParts.push(`## Task\n${taskDescription}`);
 
+      // Add communication instruction (Layer 2: keep session alive via AskUserQuestion)
+      promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+
       // Add task metadata
       promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
 
@@ -814,6 +817,8 @@ export class WorkerManager {
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
+        // Resume previous session if provided (loads full conversation history from disk)
+        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
@@ -1349,6 +1354,7 @@ export class WorkerManager {
       worker.currentAction = 'Processing follow-up...';
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
+      worker.completedAt = undefined;
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
       this.emit({ type: 'worker_update', worker });
@@ -1356,7 +1362,7 @@ export class WorkerManager {
       // Update server
       await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Processing follow-up...' });
 
-      // Get workspace path and task
+      // Get workspace path
       const workspacePath = this.resolver.resolve({
         id: worker.workspaceId,
         name: worker.workspaceName,
@@ -1375,102 +1381,45 @@ export class WorkerManager {
         return false;
       }
 
-      // Build context-preserving prompt that includes original task + full conversation history
-      const contextParts: string[] = [];
+      // Layer 1: Try resuming the SDK session (preserves full context from disk)
+      if (worker.sessionId) {
+        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up`);
 
-      // Add original task description
-      if (worker.taskDescription) {
-        contextParts.push(`## Original Task\n${worker.taskDescription}`);
-      }
+        // For resume, the prompt is just the follow-up message — the SDK loads full history
+        const task = {
+          id: worker.taskId,
+          title: worker.taskTitle,
+          description: message,
+          workspaceId: worker.workspaceId,
+          workspace: { name: worker.workspaceName },
+          status: 'assigned',
+          priority: 1,
+        };
 
-      // Extract files explored from tool calls (critical context)
-      const filesExplored = new Set<string>();
-      const filesModified = new Set<string>();
-      for (const tc of worker.toolCalls) {
-        const filePath = tc.input?.file_path as string;
-        if (tc.name === 'Read' && filePath) {
-          filesExplored.add(filePath);
-        } else if ((tc.name === 'Edit' || tc.name === 'Write') && filePath) {
-          filesModified.add(filePath);
-        }
-      }
+        this.startSession(worker, workspacePath, task as any, worker.sessionId).catch(err => {
+          console.error(`[Worker ${worker.id}] Resume failed, falling back to reconstruction:`, err);
 
-      // Add files context so agent knows what was already explored
-      if (filesExplored.size > 0 || filesModified.size > 0) {
-        const filesContext: string[] = ['## Files Context'];
-        if (filesExplored.size > 0) {
-          filesContext.push(`Files read: ${Array.from(filesExplored).slice(-20).join(', ')}`);
-        }
-        if (filesModified.size > 0) {
-          filesContext.push(`Files modified: ${Array.from(filesModified).join(', ')}`);
-        }
-        contextParts.push(filesContext.join('\n'));
-      }
-
-      // Add full conversation history (preserve questions and full responses)
-      // Limit to last 30 messages but keep them complete
-      const recentMessages = worker.messages.slice(-30);
-      if (recentMessages.length > 0) {
-        const historyLines: string[] = ['## Previous Conversation'];
-        for (const msg of recentMessages) {
-          if (msg.type === 'text') {
-            // Keep full agent responses - they contain important context/analysis
-            historyLines.push(`**Agent:** ${msg.content}`);
-          } else if (msg.type === 'user') {
-            // Always keep full user messages (questions/answers are critical)
-            historyLines.push(`**User:** ${msg.content}`);
-          } else if (msg.type === 'tool_use') {
-            // Include tool context for understanding what was done
-            const input = msg.input || {};
-            if (msg.name === 'Read') {
-              historyLines.push(`*Read: ${input.file_path}*`);
-            } else if (msg.name === 'Edit' || msg.name === 'Write') {
-              historyLines.push(`*${msg.name}: ${input.file_path}*`);
-            } else if (msg.name === 'Bash') {
-              const cmd = (input.command as string || '').slice(0, 100);
-              historyLines.push(`*Bash: ${cmd}${cmd.length >= 100 ? '...' : ''}*`);
-            } else if (msg.name === 'Grep' || msg.name === 'Glob') {
-              historyLines.push(`*${msg.name}: ${input.pattern}*`);
-            } else {
-              historyLines.push(`*${msg.name}*`);
+          // Fallback: restart with text-reconstructed context
+          this.restartWithReconstructedContext(worker, workspacePath!, message).catch(err2 => {
+            console.error(`[Worker ${worker.id}] Fallback session error:`, err2);
+            if (worker.status === 'working') {
+              worker.status = 'error';
+              worker.error = err2 instanceof Error ? err2.message : 'Follow-up session failed';
+              worker.currentAction = 'Follow-up failed';
+              worker.hasNewActivity = true;
+              worker.completedAt = Date.now();
+              this.emit({ type: 'worker_update', worker });
             }
-          }
-        }
-        contextParts.push(historyLines.join('\n'));
+          });
+        });
+
+        return true;
       }
 
-      // Add milestones as work summary
-      if (worker.milestones.length > 0) {
-        const milestoneLabels = worker.milestones
-          .filter(m => !['Session started', 'Task completed'].includes(m.label))
-          .map(m => `- ${m.label}`);
-        if (milestoneLabels.length > 0) {
-          contextParts.push(`## Work Completed\n${milestoneLabels.join('\n')}`);
-        }
-      }
-
-      // Add follow-up message
-      contextParts.push(`## Follow-up Request\n${message}`);
-
-      const contextDescription = contextParts.join('\n\n');
-
-      // Reconstruct task for startSession with preserved context
-      const task = {
-        id: worker.taskId,
-        title: worker.taskTitle,
-        description: contextDescription,
-        workspaceId: worker.workspaceId,
-        workspace: {
-          name: worker.workspaceName,
-        },
-        status: 'assigned',
-        priority: 1,
-      };
-
-      // Start new session with context-rich prompt
-      this.startSession(worker, workspacePath, task as any).catch(err => {
+      // Layer 3 fallback: No sessionId available, use text reconstruction
+      console.log(`[Worker ${worker.id}] No sessionId — using reconstructed context`);
+      this.restartWithReconstructedContext(worker, workspacePath, message).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
-        // Ensure worker doesn't stay stuck in 'working' state
         if (worker.status === 'working') {
           worker.status = 'error';
           worker.error = err instanceof Error ? err.message : 'Follow-up session failed';
@@ -1520,6 +1469,103 @@ export class WorkerManager {
       console.error('Failed to send message:', err);
       return false;
     }
+  }
+
+  // Layer 3 fallback: Restart session with text-reconstructed context
+  // Used when resume fails (corrupted session, disk cleanup) or no sessionId available
+  private async restartWithReconstructedContext(worker: LocalWorker, workspacePath: string, message: string) {
+    const contextParts: string[] = [];
+
+    // Preamble: instruct agent not to re-explore
+    contextParts.push(`## IMPORTANT: Continuing a previous conversation\nYou already analyzed this codebase in a previous session. Do NOT re-read files or re-explore the codebase unless the user asks about something new. Act directly on your previous analysis summarized below.`);
+
+    // Add original task description
+    if (worker.taskDescription) {
+      contextParts.push(`## Original Task\n${worker.taskDescription}`);
+    }
+
+    // Extract files explored/modified from tool calls
+    const filesExplored = new Set<string>();
+    const filesModified = new Set<string>();
+    for (const tc of worker.toolCalls) {
+      const filePath = tc.input?.file_path as string;
+      if (tc.name === 'Read' && filePath) {
+        filesExplored.add(filePath);
+      } else if ((tc.name === 'Edit' || tc.name === 'Write') && filePath) {
+        filesModified.add(filePath);
+      }
+    }
+
+    // Collapsed files context (grouped, not one-per-line)
+    if (filesExplored.size > 0 || filesModified.size > 0) {
+      const filesContext: string[] = ['## Files Context'];
+      if (filesExplored.size > 0) {
+        filesContext.push(`Files explored: ${Array.from(filesExplored).slice(-20).join(', ')}`);
+      }
+      if (filesModified.size > 0) {
+        filesContext.push(`Files modified: ${Array.from(filesModified).join(', ')}`);
+      }
+      contextParts.push(filesContext.join('\n'));
+    }
+
+    // Build conversation history with collapsed tool calls
+    const recentMessages = worker.messages.slice(-30);
+    if (recentMessages.length > 0) {
+      const historyLines: string[] = ['## Previous Conversation'];
+
+      // Extract the last agent text response separately
+      let lastAgentResponse: string | null = null;
+      for (let i = recentMessages.length - 1; i >= 0; i--) {
+        if (recentMessages[i].type === 'text') {
+          lastAgentResponse = recentMessages[i].content!;
+          break;
+        }
+      }
+
+      for (const msg of recentMessages) {
+        if (msg.type === 'text') {
+          // Skip the last response here — we add it separately below
+          if (msg.content === lastAgentResponse) continue;
+          historyLines.push(`**Agent:** ${msg.content}`);
+        } else if (msg.type === 'user') {
+          historyLines.push(`**User:** ${msg.content}`);
+        }
+        // Tool calls are omitted — file context above covers them
+      }
+      contextParts.push(historyLines.join('\n'));
+
+      // Add the last agent response as a distinct section (this is what the user is replying to)
+      if (lastAgentResponse) {
+        contextParts.push(`## Your Last Response\n${lastAgentResponse}`);
+      }
+    }
+
+    // Add milestones as work summary
+    if (worker.milestones.length > 0) {
+      const milestoneLabels = worker.milestones
+        .filter(m => !['Session started', 'Task completed'].includes(m.label))
+        .map(m => `- ${m.label}`);
+      if (milestoneLabels.length > 0) {
+        contextParts.push(`## Work Completed\n${milestoneLabels.join('\n')}`);
+      }
+    }
+
+    // Add follow-up message
+    contextParts.push(`## Follow-up Request\n${message}`);
+
+    const contextDescription = contextParts.join('\n\n');
+
+    const task = {
+      id: worker.taskId,
+      title: worker.taskTitle,
+      description: contextDescription,
+      workspaceId: worker.workspaceId,
+      workspace: { name: worker.workspaceName },
+      status: 'assigned',
+      priority: 1,
+    };
+
+    await this.startSession(worker, workspacePath, task as any);
   }
 
   private buildSessionSummary(worker: LocalWorker): string {

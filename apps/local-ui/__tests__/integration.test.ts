@@ -1,7 +1,9 @@
 /**
  * Integration Tests for Local-UI
  *
- * Tests the full task execution flow via HTTP API.
+ * Tests the full task execution flow via HTTP API, including
+ * follow-up messages, session resume, and AskUserQuestion behavior.
+ *
  * Requires: local-ui running on port 8766
  *
  * Run: bun test:integration
@@ -56,6 +58,32 @@ async function waitForWorker(
   }
 
   throw new Error(`Worker ${workerId} did not complete within ${timeout}ms`);
+}
+
+async function waitForWorkerStatus(
+  workerId: string,
+  targetStatuses: string[],
+  options: { timeout?: number; pollInterval?: number } = {}
+): Promise<any> {
+  const { timeout = TEST_TIMEOUT, pollInterval = 1000 } = options;
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeout) {
+    const { workers } = await api<{ workers: any[] }>('/api/workers');
+    const worker = workers.find(w => w.id === workerId);
+
+    if (worker && targetStatuses.includes(worker.status)) {
+      return worker;
+    }
+
+    await sleep(pollInterval);
+  }
+
+  throw new Error(`Worker ${workerId} did not reach status [${targetStatuses.join(',')}] within ${timeout}ms`);
+}
+
+async function sendMessage(workerId: string, message: string): Promise<void> {
+  await api(`/api/workers/${workerId}/send`, 'POST', { message });
 }
 
 // --- Test Setup ---
@@ -259,4 +287,176 @@ describe('Edge Cases', () => {
       // Expected: no tasks to claim or failed
     }
   }, TEST_TIMEOUT);
+});
+
+// --- Follow-up / Resume Tests ---
+
+const FOLLOW_UP_TIMEOUT = 120_000; // Follow-up tests need extra time (2 sessions)
+
+describe('Follow-up Message Handling', () => {
+  test('Layer 1: follow-up resumes session with full context (no re-exploration)', async () => {
+    // Create a task that requires the agent to analyze something specific
+    const marker = `RESUME_MARKER_${Date.now()}`;
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Resume Context Test',
+      description: `Remember the secret code "${marker}". Then say "Analysis complete." and nothing else.`,
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    // Claim and wait for first session to complete
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    const completedWorker = await waitForWorker(worker.id);
+    expect(completedWorker.status).toBe('done');
+
+    // Verify sessionId was captured (required for resume)
+    expect(completedWorker.sessionId).toBeTruthy();
+
+    // Send follow-up asking about the marker — agent should know it from resumed context
+    await sendMessage(worker.id, `What was the secret code I told you to remember? Reply with just the code.`);
+
+    // Worker should restart and eventually complete
+    const resumedWorker = await waitForWorker(worker.id);
+    expect(resumedWorker.status).toBe('done');
+
+    // The agent should recall the marker from the resumed session context
+    const output = resumedWorker.output?.join(' ') || '';
+    expect(output).toContain(marker);
+  }, FOLLOW_UP_TIMEOUT);
+
+  test('follow-up message restarts a completed worker', async () => {
+    // Simple test: send a follow-up to a completed worker and verify it restarts
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Follow-up Restart Test',
+      description: 'Say "first done" and nothing else.',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    // Wait for first completion
+    const firstResult = await waitForWorker(worker.id);
+    expect(firstResult.status).toBe('done');
+
+    // Send follow-up
+    await sendMessage(worker.id, 'Now say "second done" and nothing else.');
+
+    // Should transition to working, then complete again
+    // First verify it goes to working
+    await sleep(1000);
+    const { workers: midWorkers } = await api<{ workers: any[] }>('/api/workers');
+    const midWorker = midWorkers.find(w => w.id === worker.id);
+    // Status should be either 'working' (still going) or 'done' (fast completion)
+    expect(['working', 'done']).toContain(midWorker?.status);
+
+    // Wait for second completion
+    const secondResult = await waitForWorker(worker.id);
+    expect(secondResult.status).toBe('done');
+
+    // Should have the follow-up response in output
+    const output = secondResult.output?.join(' ').toLowerCase() || '';
+    expect(output).toContain('second done');
+  }, FOLLOW_UP_TIMEOUT);
+
+  test('follow-up clears previous error state', async () => {
+    // Create a task, abort it (causes error state), then send follow-up
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Error Recovery Test',
+      description: 'Read every file in this project one at a time.',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    // Wait briefly, then abort
+    await sleep(3000);
+    await api('/api/abort', 'POST', { workerId: worker.id });
+
+    // Verify it's in error state
+    const { workers: errWorkers } = await api<{ workers: any[] }>('/api/workers');
+    const errWorker = errWorkers.find(w => w.id === worker.id);
+    expect(errWorker?.status).toBe('error');
+
+    // Send follow-up — should clear error and restart
+    await sendMessage(worker.id, 'Just say "recovered" and nothing else.');
+
+    const recovered = await waitForWorker(worker.id);
+    expect(recovered.status).toBe('done');
+    expect(recovered.error).toBeFalsy();
+
+    const output = recovered.output?.join(' ').toLowerCase() || '';
+    expect(output).toContain('recovered');
+  }, FOLLOW_UP_TIMEOUT);
+
+  test('Layer 2: AskUserQuestion keeps session alive for follow-up', async () => {
+    // Create a task that should trigger AskUserQuestion (agent asks before proceeding)
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'AskUser Session Test',
+      description: 'Ask the user whether they want option A or option B before proceeding. Use the AskUserQuestion tool to ask. Do NOT proceed without their answer.',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    // Wait for the agent to enter "waiting" status (asked a question)
+    const waitingWorker = await waitForWorkerStatus(worker.id, ['waiting', 'done', 'error']);
+
+    if (waitingWorker.status === 'waiting') {
+      // Session is still alive — send answer through the live input stream
+      expect(waitingWorker.waitingFor).toBeTruthy();
+
+      await sendMessage(worker.id, 'Option A');
+
+      // Worker should continue and complete (no restart needed)
+      const finalWorker = await waitForWorker(worker.id);
+      expect(finalWorker.status).toBe('done');
+
+      // Verify no "Session started" milestone after the question
+      // (which would indicate a restart instead of continuation)
+      const milestones = finalWorker.milestones.map((m: any) => m.label);
+      const sessionStarts = milestones.filter((l: string) => l === 'Session started');
+      expect(sessionStarts.length).toBe(1); // Only one session start = session stayed alive
+    } else {
+      // Agent completed or errored without asking — still valid, just didn't trigger Layer 2
+      console.log('Agent did not use AskUserQuestion — Layer 2 not triggered in this run');
+      expect(waitingWorker.status).toBe('done');
+    }
+  }, FOLLOW_UP_TIMEOUT);
+
+  test('follow-up records user message in chat history', async () => {
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Chat History Test',
+      description: 'Say "hello" and nothing else.',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    await waitForWorker(worker.id);
+
+    // Send follow-up
+    const followUpMsg = 'This is my follow-up message for history test';
+    await sendMessage(worker.id, followUpMsg);
+
+    // Give it a moment to register the message
+    await sleep(1000);
+
+    // Check that the user message appears in the worker's messages
+    const { workers } = await api<{ workers: any[] }>('/api/workers');
+    const w = workers.find((w: any) => w.id === worker.id);
+    const userMessages = w?.messages?.filter((m: any) => m.type === 'user') || [];
+    const hasFollowUp = userMessages.some((m: any) => m.content?.includes(followUpMsg));
+
+    expect(hasFollowUp).toBe(true);
+  }, FOLLOW_UP_TIMEOUT);
 });
