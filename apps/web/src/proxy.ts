@@ -2,28 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export function proxy(request: NextRequest) {
   const hostname = request.headers.get('host') || '';
-  const pathname = request.nextUrl.pathname;
 
-  // app.* subdomain (prod: app.buildd.dev, dev: app.localhost:*)
-  const isAppDomain = hostname.startsWith('app.');
-
-  // API routes work on both domains
-  if (pathname.startsWith('/api/')) {
-    return NextResponse.next();
+  // www.* subdomain → redirect to root domain
+  if (hostname.startsWith('www.')) {
+    const rootDomain = hostname.replace(/^www\./, '');
+    const url = new URL(request.url);
+    url.host = rootDomain;
+    return NextResponse.redirect(url, 301);
   }
-
-  // Static assets - skip
-  if (pathname.startsWith('/_next/') || pathname.includes('.')) {
-    return NextResponse.next();
-  }
-
-  if (isAppDomain) {
-    // Rewrite to /app/* for app subdomain
-    if (!pathname.startsWith('/app')) {
-      return NextResponse.rewrite(new URL(`/app${pathname}`, request.url));
-    }
-  }
-  // Allow /app/* on all domains (subdomain routing optional)
 
   return NextResponse.next();
 }
