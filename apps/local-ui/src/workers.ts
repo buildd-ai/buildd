@@ -167,6 +167,7 @@ export class WorkerManager {
   private evictionInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
+  private cachedModels: Array<{ id: string; name: string; description?: string }> = [];
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -620,6 +621,51 @@ export class WorkerManager {
     });
   }
 
+  // Create MCP server for execution mode with memory tools
+  private createExecutionMcpServer(workspaceId: string): McpSdkServerConfigWithInstance {
+    return createSdkMcpServer({
+      name: 'buildd',
+      version: '1.0.0',
+      tools: [
+        tool(
+          'search_memory',
+          'Search workspace memory for relevant observations, gotchas, and past task summaries. Use this to find context about the codebase, past decisions, and known issues.',
+          { query: z.string().describe('Search query — keywords, file names, concepts, or error messages') },
+          async ({ query: searchQuery }) => {
+            try {
+              const results = await this.buildd.searchObservations(workspaceId, searchQuery, 10);
+              if (results.length === 0) {
+                return { content: [{ type: 'text' as const, text: 'No matching memories found.' }] };
+              }
+              const fullObs = await this.buildd.getBatchObservations(workspaceId, results.map(r => r.id));
+              const text = fullObs.map(o => `### [${o.type}] ${o.title}\n${o.content}`).join('\n\n');
+              return { content: [{ type: 'text' as const, text }] };
+            } catch (err) {
+              return { content: [{ type: 'text' as const, text: `Memory search failed: ${err}` }] };
+            }
+          }
+        ),
+        tool(
+          'save_memory',
+          'Save an observation to workspace memory for future agents. Use this to record gotchas, architectural decisions, debugging insights, or important patterns discovered during the task.',
+          {
+            title: z.string().describe('Short descriptive title'),
+            content: z.string().describe('Detailed observation content'),
+            type: z.string().describe('Type: gotcha, pattern, decision, summary, or note').default('note'),
+          },
+          async ({ title, content, type }) => {
+            try {
+              await this.buildd.createObservation(workspaceId, { type, title, content });
+              return { content: [{ type: 'text' as const, text: `Memory saved: "${title}"` }] };
+            } catch (err) {
+              return { content: [{ type: 'text' as const, text: `Failed to save memory: ${err}` }] };
+            }
+          }
+        ),
+      ],
+    });
+  }
+
   // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
   // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
   // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
@@ -795,7 +841,7 @@ export class WorkerManager {
         if (compactResult.markdown) {
           let digest = compactResult.markdown;
           if (digest.length > MAX_MEMORY_BYTES) {
-            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `buildd_search_memory` for more)*';
+            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `mcp__buildd__search_memory` for more)*';
           }
           memoryContext.push(digest);
         }
@@ -817,7 +863,7 @@ export class WorkerManager {
           }
         }
 
-        memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
+        memoryContext.push('\nUse `mcp__buildd__search_memory` for more context and `mcp__buildd__save_memory` to record learnings.');
         promptParts.push(memoryContext.join('\n'));
       }
 
@@ -863,15 +909,25 @@ export class WorkerManager {
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         cwd,
-        model: this.config.model,
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
         permissionMode,
+        persistSession: false, // Workers are ephemeral, don't litter ~/.claude/projects/
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
       };
+
+      // Only set model if explicitly configured (empty = SDK default, always latest)
+      if (this.config.model) {
+        queryOptions.model = this.config.model;
+      }
+
+      // Required when using bypassPermissions mode — without it SDK falls back to default mode
+      if (permissionMode === 'bypassPermissions') {
+        queryOptions.allowDangerouslySkipPermissions = true;
+      }
 
       // Attach permission hook for execution mode (blocks dangerous commands, allows safe bash)
       if (!isPlanningMode) {
@@ -901,8 +957,11 @@ export class WorkerManager {
         worker.currentAction = 'Investigating codebase...';
         this.emit({ type: 'worker_update', worker });
       } else {
-        // Execution mode: standard claude_code preset
+        // Execution mode: standard claude_code preset + memory MCP tools
         queryOptions.systemPrompt = { type: 'preset', preset: 'claude_code' };
+        queryOptions.mcpServers = {
+          buildd: this.createExecutionMcpServer(task.workspaceId),
+        };
       }
 
       // Start query with full options
@@ -910,6 +969,19 @@ export class WorkerManager {
         prompt: promptText,
         options: queryOptions,
       });
+
+      // Cache supported models from the first query (non-blocking)
+      if (this.cachedModels.length === 0) {
+        queryInstance.supportedModels().then(models => {
+          // SDK 0.2.37 uses `value`/`displayName`, normalize to `id`/`name` for our API
+          this.cachedModels = models.map(m => ({
+            id: (m as any).value || (m as any).id,
+            name: (m as any).displayName || (m as any).name,
+            description: (m as any).description,
+          }));
+          console.log(`Cached ${this.cachedModels.length} supported models`);
+        }).catch(() => { /* non-fatal */ });
+      }
 
       // Stream responses
       for await (const msg of queryInstance) {
@@ -1647,6 +1719,10 @@ export class WorkerManager {
     } catch {}
 
     return stats;
+  }
+
+  getCachedModels(): Array<{ id: string; name: string; description?: string }> {
+    return this.cachedModels;
   }
 
   destroy() {

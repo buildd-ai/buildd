@@ -249,7 +249,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://app.buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || 'claude-opus-4-5-20251101',
+  model: process.env.MODEL || savedConfig.model || '',  // Empty = SDK default (always latest)
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (auto-detected or explicit override)
@@ -529,20 +529,21 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { model } = body;
 
-      const validModels = [
-        'claude-opus-4-5-20251101',
-        'claude-sonnet-4-5-20250929',
-        'claude-haiku-4-5-20251001',
-      ];
-
-      if (!model || !validModels.includes(model)) {
-        return Response.json({ error: 'Invalid model' }, { status: 400, headers: corsHeaders });
+      // Accept empty string (SDK default) or any claude-* model ID
+      if (model !== '' && (typeof model !== 'string' || !model.startsWith('claude-'))) {
+        return Response.json({ error: 'Invalid model — must be empty (default) or a claude-* model ID' }, { status: 400, headers: corsHeaders });
       }
 
       config.model = model;
-      saveConfig({ model });
+      saveConfig({ model: model || undefined }); // Don't persist empty string
 
       return Response.json({ ok: true, model }, { headers: corsHeaders });
+    }
+
+    // Get available models (cached from first worker's supportedModels() call)
+    if (path === '/api/config/models' && req.method === 'GET') {
+      const cached = workerManager?.getCachedModels() || [];
+      return Response.json({ models: cached }, { headers: corsHeaders });
     }
 
     // Toggle accept remote tasks setting
