@@ -64,6 +64,21 @@ SPARSE
   git checkout dev
 fi
 
+# Rewrite root package.json to only reference the sparse-checkout workspaces
+# (the repo's package.json has "apps/*" and "packages/*" which includes workspaces
+# that don't exist in the sparse checkout, causing bun install to hang)
+cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
+{
+  "name": "buildd",
+  "private": true,
+  "workspaces": [
+    "apps/local-ui",
+    "apps/mcp-server",
+    "packages/shared"
+  ]
+}
+PKGJSON
+
 # Install dependencies
 cd "$INSTALL_DIR/apps/local-ui"
 bun install
