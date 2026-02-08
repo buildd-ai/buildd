@@ -4,6 +4,7 @@ import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db
 import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { randomBytes } from 'crypto';
+import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 
 /**
  * POST /api/workers/heartbeat
@@ -41,14 +42,23 @@ export async function POST(req: NextRequest) {
       where: eq(accountWorkspaces.accountId, account.id),
       columns: { workspaceId: true },
     });
-    const openWs = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
-      columns: { id: true },
-      limit: 100, // Limit open workspaces to prevent excessive data transfer
-    });
+
+    // Try Redis cache first for open workspaces (they rarely change)
+    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
+    if (!openWorkspaceIds) {
+      // Cache miss - query DB and cache for 5 minutes
+      const openWs = await db.query.workspaces.findMany({
+        where: eq(workspaces.accessMode, 'open'),
+        columns: { id: true },
+        limit: 100, // Limit open workspaces to prevent excessive data transfer
+      });
+      openWorkspaceIds = openWs.map(w => w.id);
+      await setCachedOpenWorkspaceIds(openWorkspaceIds);
+    }
+
     const workspaceIds = [...new Set([
       ...accountWs.map(aw => aw.workspaceId),
-      ...openWs.map(w => w.id),
+      ...openWorkspaceIds,
     ])];
 
     const now = new Date();

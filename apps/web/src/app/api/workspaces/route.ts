@@ -4,6 +4,7 @@ import { accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -167,6 +168,11 @@ export async function POST(req: NextRequest) {
         ownerId: user.id,
       })
       .returning();
+
+    // Invalidate cache if workspace is open (affects heartbeat queries)
+    if (workspace.accessMode === 'open') {
+      await invalidateOpenWorkspacesCache();
+    }
 
     return NextResponse.json(workspace);
   } catch (error) {
