@@ -165,6 +165,33 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     }));
   }, []);
 
+  // Handler for task claimed (worker picked up the task)
+  const handleTaskClaimed = useCallback((data: { task: { id: string; status: string; workspaceId: string } }) => {
+    const { task } = data;
+    if (!task) return;
+
+    setWorkspaces(prev => prev.map(ws => ({
+      ...ws,
+      tasks: ws.tasks.map(t =>
+        t.id === task.id ? { ...t, status: 'assigned', updatedAt: new Date() } : t
+      ),
+    })));
+  }, []);
+
+  // Handler for task assigned (task start broadcast - update status)
+  const handleTaskAssigned = useCallback((data: { task: { id: string; workspaceId: string } }) => {
+    const { task } = data;
+    if (!task) return;
+
+    // Mark as assigned when start is triggered (will be updated again on claim)
+    setWorkspaces(prev => prev.map(ws => ({
+      ...ws,
+      tasks: ws.tasks.map(t =>
+        t.id === task.id && t.status === 'pending' ? { ...t, status: 'assigned', updatedAt: new Date() } : t
+      ),
+    })));
+  }, []);
+
   // Stable workspace IDs for dependency tracking
   const workspaceIds = workspaces.map(ws => ws.id);
   const workspaceIdsKey = workspaceIds.join(',');
@@ -180,6 +207,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         channel.bind('worker:completed', handleWorkerUpdate);
         channel.bind('worker:failed', handleWorkerUpdate);
         channel.bind('task:created', handleTaskCreated);
+        channel.bind('task:claimed', handleTaskClaimed);
+        channel.bind('task:assigned', handleTaskAssigned);
       }
     }
 
@@ -189,7 +218,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated]);
+  }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated, handleTaskClaimed, handleTaskAssigned]);
 
   // Load collapsed state from localStorage
   useEffect(() => {

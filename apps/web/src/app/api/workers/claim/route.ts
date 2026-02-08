@@ -4,6 +4,7 @@ import { accounts, accountWorkspaces, tasks, workers, workspaces } from '@buildd
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { triggerEvent, channels, events } from '@/lib/pusher';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -243,6 +244,21 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+  }
+
+  // Broadcast claim events so dashboard updates in real-time
+  for (const cw of claimedWorkers) {
+    const claimedTask = filteredTasks.find(t => t.id === cw.taskId);
+    if (claimedTask) {
+      await triggerEvent(
+        channels.workspace(claimedTask.workspaceId),
+        events.TASK_CLAIMED,
+        {
+          task: { id: claimedTask.id, title: claimedTask.title, status: 'assigned', workspaceId: claimedTask.workspaceId },
+          worker: { id: cw.id, name: account.name, status: 'idle' },
+        }
+      );
+    }
   }
 
   // Increment active sessions for OAuth accounts

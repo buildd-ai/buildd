@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalUiHealth } from '../useLocalUiHealth';
+import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 
 interface Props {
   taskId: string;
@@ -23,11 +24,17 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
+  const channelRef = useRef<string | null>(null);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
+      }
+      if (channelRef.current) {
+        unsubscribeFromChannel(channelRef.current);
+        channelRef.current = null;
       }
     };
   }, []);
@@ -112,6 +119,27 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       const startTime = Date.now();
       const targetUrl = selectedLocalUi;
 
+      // Subscribe to Pusher for instant claim notification
+      const channelName = `workspace-${workspaceId}`;
+      channelRef.current = channelName;
+      const channel = subscribeToChannel(channelName);
+      if (channel) {
+        const handleClaimed = (data: { task: { id: string }; worker?: { id: string } }) => {
+          if (data.task?.id === taskId) {
+            // Task was claimed - stop polling
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+            }
+            setClaimedWorker({
+              id: data.worker?.id || '',
+              localUiUrl: targetUrl || null,
+            });
+            setStatus('accepted');
+          }
+        };
+        channel.bind('task:claimed', handleClaimed);
+      }
+
       pollIntervalRef.current = setInterval(() => {
         pollTaskStatus(startTime, targetUrl);
       }, 1000);
@@ -130,6 +158,10 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     if (status === 'waiting') return; // Don't close while waiting
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
+    }
+    if (channelRef.current) {
+      unsubscribeFromChannel(channelRef.current);
+      channelRef.current = null;
     }
     setShowModal(false);
     setStatus('idle');

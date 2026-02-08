@@ -9,6 +9,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
 
 export default async function TaskDetailPage({
@@ -108,6 +109,9 @@ export default async function TaskDetailPage({
   return (
     <div className="p-4 md:p-8 overflow-auto h-full">
       <div className="max-w-4xl">
+        {/* Auto-refresh when worker claims this task */}
+        <TaskAutoRefresh taskId={task.id} workspaceId={task.workspaceId} taskStatus={task.status} />
+
         {/* Header */}
         <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-3 mb-6">
           <div className="flex-1 min-w-0">
