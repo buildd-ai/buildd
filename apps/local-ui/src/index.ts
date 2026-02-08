@@ -37,6 +37,8 @@ interface SavedConfig {
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
   builddServer?: string; // Server URL override
+  pusherKey?: string; // Pusher public key for realtime events
+  pusherCluster?: string; // Pusher cluster (e.g. 'us2')
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -52,6 +54,8 @@ function loadSavedConfig(): SavedConfig {
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
         builddServer: data.builddServer,
+        pusherKey: data.pusherKey,
+        pusherCluster: data.pusherCluster,
       };
     }
   } catch (err) {
