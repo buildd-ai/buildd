@@ -548,7 +548,24 @@ export class WorkerManager {
 
     // Start SDK session (async, runs in background)
     this.startSession(worker, workspacePath, task).catch(err => {
-      console.error(`[Worker ${worker.id}] Session error:`, err);
+      console.error(`[Worker ${worker.id}] Session failed to start:`, err);
+
+      // Critical: notify server that session failed to start
+      // Without this, worker stays "running" forever with 0 turns
+      worker.status = 'error';
+      worker.error = err instanceof Error ? err.message : 'Failed to start session';
+      worker.currentAction = 'Session failed to start';
+      worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
+
+      this.buildd.updateWorker(worker.id, {
+        status: 'failed',
+        error: worker.error,
+      }).catch(updateErr => {
+        console.error(`[Worker ${worker.id}] Failed to report session start failure to server:`, updateErr);
+      });
+
+      this.emit({ type: 'worker_update', worker });
     });
 
     return worker;
