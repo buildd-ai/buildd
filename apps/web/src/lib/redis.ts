@@ -7,15 +7,14 @@ const CACHE_TTL = 5 * 60; // 5 minutes in seconds
 // Upstash Redis client (optional - gracefully degrades if not configured)
 let redis: Redis | null = null;
 
-// Only initialize if env vars are set
-if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
-  redis = new Redis({
-    url: process.env.KV_REST_API_URL,
-    token: process.env.KV_REST_API_TOKEN,
-  });
-  console.log('[Redis] Connected to Upstash');
+// Support both Upstash direct and Vercel KV env var names
+const redisUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+const redisToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+
+if (redisUrl && redisToken) {
+  redis = new Redis({ url: redisUrl, token: redisToken });
 } else {
-  console.log('[Redis] Not configured - caching disabled (will query DB each time)');
+  console.log('[Redis] Not configured - caching disabled');
 }
 
 export async function getCachedOpenWorkspaceIds(): Promise<string[] | null> {
