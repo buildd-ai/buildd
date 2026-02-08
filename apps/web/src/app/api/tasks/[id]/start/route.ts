@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
+import { eq, and, or } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { authenticateApiKey } from '@/lib/api-auth';
 
 /**
  * POST /api/tasks/[id]/start
  *
  * Start a pending task by notifying workers to claim it.
+ * Supports dual auth: API key (Bearer) or session cookie.
  * - Broadcasts TASK_ASSIGNED event to workers
  * - Optionally targets a specific local-ui instance
  *
@@ -19,9 +21,28 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // Dual auth: API key or session
+  let authType: 'api' | 'session';
+  let accountId: string | null = null;
+  let userId: string | null = null;
+
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  if (apiKey) {
+    const account = await authenticateApiKey(apiKey);
+    if (!account) {
+      return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+    }
+    authType = 'api';
+    accountId = account.id;
+  } else {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    authType = 'session';
+    userId = user.id;
   }
 
   const { id: taskId } = await params;
@@ -40,9 +61,26 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Check if user owns the workspace
-    if (task.workspace?.ownerId !== user.id) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    // Authorization check
+    if (authType === 'session') {
+      // Session: user must own the workspace
+      if (task.workspace?.ownerId !== userId) {
+        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+      }
+    } else {
+      // API key: account must have access to workspace (via accountWorkspaces or open)
+      const isOpen = task.workspace?.accessMode === 'open';
+      if (!isOpen) {
+        const link = await db.query.accountWorkspaces.findFirst({
+          where: and(
+            eq(accountWorkspaces.accountId, accountId!),
+            eq(accountWorkspaces.workspaceId, task.workspaceId),
+          ),
+        });
+        if (!link) {
+          return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+        }
+      }
     }
 
     // Only allow starting pending tasks
