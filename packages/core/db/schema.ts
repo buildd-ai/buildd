@@ -103,6 +103,17 @@ export interface WorkspaceWebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+// Task schedule template - defines what task to create on each run
+export interface TaskScheduleTemplate {
+  title: string;
+  description?: string;
+  mode?: 'execution' | 'planning';
+  priority?: number;
+  runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  requiredCapabilities?: string[];
+  context?: Record<string, unknown>;
+}
+
 // Task result/deliverable snapshot - populated when worker completes
 export interface TaskResult {
   summary?: string;
@@ -178,7 +189,7 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Deliverable snapshot - populated on worker completion
   result: jsonb('result').$type<TaskResult | null>(),
@@ -296,6 +307,31 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   heartbeatIdx: index('worker_heartbeats_heartbeat_idx').on(t.lastHeartbeatAt),
 }));
 
+// Task schedules - cron-based automated task creation
+export const taskSchedules = pgTable('task_schedules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  cronExpression: text('cron_expression').notNull(),
+  timezone: text('timezone').default('UTC').notNull(),
+  taskTemplate: jsonb('task_template').notNull().$type<TaskScheduleTemplate>(),
+  enabled: boolean('enabled').default(true).notNull(),
+  nextRunAt: timestamp('next_run_at', { withTimezone: true }),
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+  lastTaskId: uuid('last_task_id'),
+  totalRuns: integer('total_runs').default(0).notNull(),
+  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+  lastError: text('last_error'),
+  maxConcurrentFromSchedule: integer('max_concurrent_from_schedule').default(1).notNull(),
+  pauseAfterFailures: integer('pause_after_failures').default(5).notNull(),
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('task_schedules_workspace_idx').on(t.workspaceId),
+  enabledNextRunIdx: index('task_schedules_enabled_next_run_idx').on(t.enabled, t.nextRunAt),
+}));
+
 // GitHub App Integration
 export const githubInstallations = pgTable('github_installations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -362,6 +398,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
   observations: many(observations),
+  taskSchedules: many(taskSchedules),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
@@ -405,6 +442,11 @@ export const observationsRelations = relations(observations, ({ one }) => ({
 
 export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({
   account: one(accounts, { fields: [workerHeartbeats.accountId], references: [accounts.id] }),
+}));
+
+export const taskSchedulesRelations = relations(taskSchedules, ({ one }) => ({
+  workspace: one(workspaces, { fields: [taskSchedules.workspaceId], references: [workspaces.id] }),
+  createdByUser: one(users, { fields: [taskSchedules.createdByUserId], references: [users.id] }),
 }));
 
 export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({

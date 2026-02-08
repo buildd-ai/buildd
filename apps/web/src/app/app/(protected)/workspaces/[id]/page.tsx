@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, observations } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, observations, taskSchedules } from '@buildd/core/db/schema';
 import { eq, desc, and, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -70,6 +70,12 @@ export default async function WorkspaceDetailPage({
     .where(eq(observations.workspaceId, id));
   const observationCount = Number(obsCount?.count || 0);
 
+  const [schedCount] = await db
+    .select({ count: count() })
+    .from(taskSchedules)
+    .where(eq(taskSchedules.workspaceId, id));
+  const scheduleCount = Number(schedCount?.count || 0);
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -85,6 +91,12 @@ export default async function WorkspaceDetailPage({
             )}
           </div>
           <div className="flex gap-2">
+            <Link
+              href={`/app/workspaces/${workspace.id}/schedules`}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+            >
+              Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
+            </Link>
             <Link
               href={`/app/workspaces/${workspace.id}/memory`}
               className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"

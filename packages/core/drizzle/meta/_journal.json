@@ -148,6 +148,13 @@
       "when": 1770478624660,
       "tag": "0020_magenta_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1770523496303,
+      "tag": "0021_silly_triton",
+      "breakpoints": true
     }
   ]
 }

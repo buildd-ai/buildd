@@ -5,5 +5,8 @@
     "deploymentEnabled": {
       "dev": false
     }
-  }
+  },
+  "crons": [
+    { "path": "/api/cron/schedules", "schedule": "* * * * *" }
+  ]
 }
