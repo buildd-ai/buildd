@@ -5,7 +5,7 @@
  * It can be used as a skill in OpenClaw or imported directly into any TypeScript project.
  */
 
-const SERVER_URL = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
+const SERVER_URL = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const API_KEY = process.env.BUILDD_API_KEY || '';
 
 interface Task {

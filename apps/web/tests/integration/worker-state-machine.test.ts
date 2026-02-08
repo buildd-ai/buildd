@@ -10,11 +10,11 @@
  *
  * Env vars:
  *   BUILDD_API_KEY  - required
- *   BUILDD_SERVER   - defaults to https://app.buildd.dev
+ *   BUILDD_SERVER   - defaults to https://buildd.dev
  *   BUILDD_WORKSPACE_ID - optional, auto-picks first workspace
  */
 
-const SERVER = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
+const SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const API_KEY = process.env.BUILDD_API_KEY;
 
 if (!API_KEY) {

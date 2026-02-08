@@ -24,7 +24,7 @@ function loadBuilddConfig(): { apiKey?: string; builddServer?: string } {
 }
 
 const config = loadBuilddConfig();
-const SERVER_URL = process.env.BUILDD_SERVER || config.builddServer || "https://app.buildd.dev";
+const SERVER_URL = process.env.BUILDD_SERVER || config.builddServer || "https://buildd.dev";
 const API_KEY = process.env.BUILDD_API_KEY || config.apiKey || "";
 const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || process.env.BUILDD_WORKSPACE || "";
 const WORKER_ID = process.env.BUILDD_WORKER_ID || "";

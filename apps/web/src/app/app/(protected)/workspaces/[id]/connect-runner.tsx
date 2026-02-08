@@ -97,7 +97,7 @@ The workflow should:
                 After creating the account, use the API to connect it to this workspace:
               </p>
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://app.buildd.dev/api/workspaces/${workspaceId}/accounts \\
+{`curl -X POST https://buildd.dev/api/workspaces/${workspaceId}/accounts \\
   -H "Content-Type: application/json" \\
   -d '{"accountId": "YOUR_ACCOUNT_ID", "canClaim": true}'`}
               </pre>
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BUILDD_API_KEY: \${{ secrets.BUILDD_API_KEY }}
-      BUILDD_SERVER: https://app.buildd.dev
+      BUILDD_SERVER: https://buildd.dev
     steps:
       - uses: actions/checkout@v4
 
@@ -214,7 +214,7 @@ jobs:
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
 {`cd your-repo
 export BUILDD_API_KEY=bld_xxx
-export BUILDD_SERVER=https://app.buildd.dev
+export BUILDD_SERVER=https://buildd.dev
 export ANTHROPIC_API_KEY=sk-ant-xxx
 
 # Run the agent (loops forever, claiming tasks)
@@ -235,7 +235,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/your-repo
 Environment=BUILDD_API_KEY=bld_xxx
-Environment=BUILDD_SERVER=https://app.buildd.dev
+Environment=BUILDD_SERVER=https://buildd.dev
 Environment=ANTHROPIC_API_KEY=sk-ant-xxx
 ExecStart=/usr/local/bin/bun run /home/ubuntu/buildd/apps/agent/src/index.ts
 Restart=always
@@ -266,7 +266,7 @@ WantedBy=multi-user.target`}
                 Run this command in your terminal:
               </p>
               <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://app.buildd.dev"}}'`}
+{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd.dev"}}'`}
               </pre>
             </div>
 

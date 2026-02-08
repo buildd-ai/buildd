@@ -24,7 +24,7 @@ async function main() {
 
   if (!process.env.BUILDD_API_KEY) {
     console.error('Error: BUILDD_API_KEY environment variable is required');
-    console.error('Get your API key from https://app.buildd.dev/settings');
+    console.error('Get your API key from https://buildd.dev/settings');
     process.exit(1);
   }
 
@@ -124,7 +124,7 @@ Usage:
 
 Environment:
   BUILDD_API_KEY           Your Buildd API key (required)
-  BUILDD_SERVER            Server URL (default: https://app.buildd.dev)
+  BUILDD_SERVER            Server URL (default: https://buildd.dev)
   BUILDD_WORKER_ID         Resume work on a specific worker
 `);
         break;

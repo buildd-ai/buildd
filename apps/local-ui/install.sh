@@ -82,7 +82,7 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 # Env vars override config for CI/Docker use:
 #   BUILDD_API_KEY  - API key (overrides config.json)
 #   PROJECTS_ROOT   - Project directories to scan
-#   BUILDD_SERVER   - Server URL (default: https://app.buildd.dev)
+#   BUILDD_SERVER   - Server URL (default: https://buildd.dev)
 #   PORT            - Local server port (default: 8766)
 # =============================================================================
 

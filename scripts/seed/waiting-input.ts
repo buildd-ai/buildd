@@ -7,7 +7,7 @@
  * Usage: BUILDD_API_KEY=your_key bun run seed:waiting-input
  */
 
-const API_BASE = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
+const API_BASE = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const API_KEY = process.env.BUILDD_API_KEY;
 
 if (!API_KEY) {

@@ -111,7 +111,7 @@ export default async function AccountsPage() {
               Connect Claude Code directly to buildd with one command:
             </p>
             <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://app.buildd.dev"}}'`}
+{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd.dev"}}'`}
             </pre>
             <p className="text-xs text-gray-500 mt-2">
               Or add <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">--scope user</code> to use across all projects
@@ -131,7 +131,7 @@ export default async function AccountsPage() {
       "command": "bun",
       "args": ["run", "~/path/to/buildd/apps/mcp-server/src/index.ts"],
       "env": {
-        "BUILDD_SERVER": "https://app.buildd.dev",
+        "BUILDD_SERVER": "https://buildd.dev",
         "BUILDD_API_KEY": "YOUR_API_KEY"
       }
     }
@@ -147,7 +147,7 @@ export default async function AccountsPage() {
               Or use the API directly to claim tasks:
             </p>
             <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://app.buildd.dev/api/workers/claim \\
+{`curl -X POST https://buildd.dev/api/workers/claim \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"maxTasks": 1}'`}
