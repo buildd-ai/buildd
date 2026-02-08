@@ -10,15 +10,17 @@ interface Installation {
   accountLogin: string;
   accountAvatarUrl: string;
   accountType: string;
-  repoCount: number;
 }
 
 interface Repo {
   id: string;
+  repoId: number;
   fullName: string;
   name: string;
   owner: string;
   private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
   description: string | null;
   hasWorkspace: boolean;
 }
@@ -279,7 +281,7 @@ export default function NewWorkspacePage() {
 
     if (selectedRepo && !useManual) {
       data.repoUrl = selectedRepo.fullName;
-      data.githubRepoId = selectedRepo.id;
+      data.githubRepo = selectedRepo;
       data.githubInstallationId = selectedInstallation;
     } else {
       data.repoUrl = manualRepoUrl;
@@ -347,7 +349,6 @@ export default function NewWorkspacePage() {
                         }`}
                       >
                         {inst.accountLogin}
-                        <span className="text-xs text-gray-500 ml-1">({inst.repoCount})</span>
                       </button>
                     ))}
                   </div>

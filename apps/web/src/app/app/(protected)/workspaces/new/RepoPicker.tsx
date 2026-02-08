@@ -4,10 +4,13 @@ import { useState, useMemo } from 'react';
 
 interface Repo {
   id: string;
+  repoId: number;
   fullName: string;
   name: string;
   owner: string;
   private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
   description: string | null;
   hasWorkspace: boolean;
 }

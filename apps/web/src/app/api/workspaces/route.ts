@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, workspaces } from '@buildd/core/db/schema';
+import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, githubRepoId, githubInstallationId, accessMode } = body;
+    const { name, repoUrl, defaultBranch, githubRepo, githubInstallationId, accessMode } = body;
 
     // Auto-derive name from repoUrl if not provided
     let workspaceName = name;
@@ -156,13 +156,46 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name is required (or provide repoUrl to auto-derive)' }, { status: 400 });
     }
 
+    // If a GitHub repo is selected, persist it on-demand
+    let githubRepoDbId: string | null = null;
+    if (githubRepo && githubInstallationId) {
+      const [upserted] = await db
+        .insert(githubRepos)
+        .values({
+          installationId: githubInstallationId,
+          repoId: parseInt(githubRepo.repoId || githubRepo.id),
+          fullName: githubRepo.fullName,
+          name: githubRepo.name,
+          owner: githubRepo.owner,
+          private: githubRepo.private ?? false,
+          defaultBranch: githubRepo.defaultBranch || 'main',
+          htmlUrl: githubRepo.htmlUrl || null,
+          description: githubRepo.description || null,
+        })
+        .onConflictDoUpdate({
+          target: githubRepos.repoId,
+          set: {
+            fullName: githubRepo.fullName,
+            name: githubRepo.name,
+            owner: githubRepo.owner,
+            private: githubRepo.private ?? false,
+            defaultBranch: githubRepo.defaultBranch || 'main',
+            htmlUrl: githubRepo.htmlUrl || null,
+            description: githubRepo.description || null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      githubRepoDbId = upserted.id;
+    }
+
     const [workspace] = await db
       .insert(workspaces)
       .values({
         name: workspaceName,
         repo: repoUrl || null,
         localPath: defaultBranch || null,
-        githubRepoId: githubRepoId || null,
+        githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
         ownerId: user.id,

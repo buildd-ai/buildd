@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos } from '@buildd/core/db/schema';
+import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { createSign, createPrivateKey } from 'crypto';
 
@@ -136,45 +136,25 @@ export async function githubApi(installationId: number, path: string, options: R
   return response.json();
 }
 
-// List repositories for an installation
+// List repositories for an installation (with pagination)
 export async function listInstallationRepos(installationId: number) {
-  const data = await githubApi(installationId, '/installation/repositories');
-  return data.repositories;
-}
+  const allRepos: Array<Record<string, unknown>> = [];
+  let page = 1;
+  const perPage = 100;
 
-// Sync repositories for an installation to database
-export async function syncInstallationRepos(installationIdUuid: string, ghInstallationId: number) {
-  const repos = await listInstallationRepos(ghInstallationId);
-
-  for (const repo of repos) {
-    const existing = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.repoId, repo.id),
-    });
-
-    const repoData = {
-      installationId: installationIdUuid,
-      repoId: repo.id,
-      fullName: repo.full_name,
-      name: repo.name,
-      owner: repo.owner.login,
-      private: repo.private,
-      defaultBranch: repo.default_branch,
-      htmlUrl: repo.html_url,
-      description: repo.description,
-      updatedAt: new Date(),
-    };
-
-    if (existing) {
-      await db
-        .update(githubRepos)
-        .set(repoData)
-        .where(eq(githubRepos.repoId, repo.id));
-    } else {
-      await db.insert(githubRepos).values(repoData);
+  while (true) {
+    const data = await githubApi(
+      installationId,
+      `/installation/repositories?per_page=${perPage}&page=${page}`
+    );
+    allRepos.push(...data.repositories);
+    if (allRepos.length >= data.total_count || data.repositories.length < perPage) {
+      break;
     }
+    page++;
   }
 
-  return repos.length;
+  return allRepos;
 }
 
 // Verify webhook signature

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, githubRepos } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 
@@ -18,16 +18,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'repo parameter required' }, { status: 400 });
   }
 
-  // Find workspace linked to this repo
-  const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.fullName, repoFullName),
-    with: { workspaces: true },
+  // Find workspace linked to this repo by the repo full name
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.repo, repoFullName),
   });
 
-  if (!repo || repo.workspaces.length === 0) {
-    return NextResponse.json({ workspace: null });
-  }
-
-  // Return the first workspace linked to this repo
-  return NextResponse.json({ workspace: repo.workspaces[0] });
+  return NextResponse.json({ workspace: workspace || null });
 }

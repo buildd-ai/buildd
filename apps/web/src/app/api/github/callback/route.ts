@@ -3,7 +3,6 @@ import { db } from '@buildd/core/db';
 import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
-import { syncInstallationRepos } from '@/lib/github';
 import { createSign, createPrivateKey } from 'crypto';
 
 export async function GET(req: NextRequest) {
@@ -99,15 +98,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(
       new URL(`${returnUrl}?error=db_error&message=${encodeURIComponent(String(dbError))}`, req.url)
     );
-  }
-
-  // Sync repositories
-  try {
-    await syncInstallationRepos(installationDbId, parseInt(installationId));
-    console.log('[GitHub Callback] Repos synced');
-  } catch (error) {
-    console.error('[GitHub Callback] Failed to sync repos:', error);
-    // Don't fail the whole flow, repos can be synced later
   }
 
   console.log('[GitHub Callback] Success, redirecting to:', returnUrl);

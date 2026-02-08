@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos } from '@buildd/core/db/schema';
-import { desc, eq, count } from 'drizzle-orm';
+import { githubInstallations } from '@buildd/core/db/schema';
+import { desc } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { isGitHubAppConfigured } from '@/lib/github';
 
@@ -24,9 +24,6 @@ export async function GET(req: NextRequest) {
   try {
     const installations = await db.query.githubInstallations.findMany({
       orderBy: desc(githubInstallations.createdAt),
-      with: {
-        repos: true,
-      },
     });
 
     return NextResponse.json({
@@ -37,7 +34,6 @@ export async function GET(req: NextRequest) {
         accountLogin: inst.accountLogin,
         accountAvatarUrl: inst.accountAvatarUrl,
         repositorySelection: inst.repositorySelection,
-        repoCount: inst.repos?.length || 0,
         suspendedAt: inst.suspendedAt,
         createdAt: inst.createdAt,
       })),

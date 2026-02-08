@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { verifyWebhookSignature, syncInstallationRepos, type GitHubInstallationEvent, type GitHubIssuesEvent } from '@/lib/github';
+import { verifyWebhookSignature, type GitHubInstallationEvent, type GitHubIssuesEvent } from '@/lib/github';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -52,12 +52,12 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleInstallationEvent(event: GitHubInstallationEvent) {
-  const { action, installation, repositories } = event;
+  const { action, installation } = event;
 
   switch (action) {
     case 'created': {
-      // New installation - save to database
-      const [newInstallation] = await db
+      // New installation - save to database (repos are fetched on-demand)
+      await db
         .insert(githubInstallations)
         .values({
           installationId: installation.id,
@@ -78,25 +78,7 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
             suspendedAt: null,
             updatedAt: new Date(),
           },
-        })
-        .returning();
-
-      // Save initial repositories if provided
-      if (repositories && repositories.length > 0) {
-        for (const repo of repositories) {
-          await db
-            .insert(githubRepos)
-            .values({
-              installationId: newInstallation.id,
-              repoId: repo.id,
-              fullName: repo.full_name,
-              name: repo.name,
-              owner: installation.account.login,
-              private: repo.private,
-            })
-            .onConflictDoNothing();
-        }
-      }
+        });
       break;
     }
 
@@ -129,34 +111,9 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
 async function handleInstallationReposEvent(event: {
   action: 'added' | 'removed';
   installation: { id: number };
-  repositories_added?: Array<{ id: number; full_name: string; name: string; private: boolean }>;
   repositories_removed?: Array<{ id: number }>;
 }) {
-  const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, event.installation.id),
-  });
-
-  if (!installation) {
-    console.error(`Installation ${event.installation.id} not found`);
-    return;
-  }
-
-  if (event.action === 'added' && event.repositories_added) {
-    for (const repo of event.repositories_added) {
-      await db
-        .insert(githubRepos)
-        .values({
-          installationId: installation.id,
-          repoId: repo.id,
-          fullName: repo.full_name,
-          name: repo.name,
-          owner: repo.full_name.split('/')[0],
-          private: repo.private,
-        })
-        .onConflictDoNothing();
-    }
-  }
-
+  // Only handle removals - clean up repos that were persisted when linked to a workspace
   if (event.action === 'removed' && event.repositories_removed) {
     for (const repo of event.repositories_removed) {
       await db
@@ -173,18 +130,15 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 
   const { action, issue, repository } = event;
 
-  // Find the workspace linked to this repo
-  const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.repoId, repository.id),
-    with: { workspaces: true },
+  // Find the workspace linked to this repo by full name
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.repo, repository.full_name),
   });
 
-  if (!repo || !repo.workspaces || repo.workspaces.length === 0) {
+  if (!workspace) {
     // No workspace linked to this repo
     return;
   }
-
-  const workspace = repo.workspaces[0];
 
   switch (action) {
     case 'opened': {
