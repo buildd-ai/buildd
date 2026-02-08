@@ -478,6 +478,18 @@ function toggleAgentMessage(btn) {
   btn.querySelector('.expand-text').textContent = isCollapsed ? 'Show less' : 'Show more';
 }
 
+function toggleToolGroup(groupId, btn) {
+  const el = document.getElementById(groupId);
+  const isHidden = el.classList.contains('hidden');
+  el.classList.toggle('hidden', !isHidden);
+  const svg = btn.querySelector('svg');
+  svg.style.transform = isHidden ? 'rotate(90deg)' : '';
+  const count = el.children.length;
+  btn.querySelector('span').textContent = isHidden
+    ? `${count} fewer tool call${count > 1 ? 's' : ''}`
+    : `${count} more tool call${count > 1 ? 's' : ''}`;
+}
+
 function getStatusClass(worker) {
   if (worker.hasNewActivity) return 'new';
   return worker.status;
@@ -692,9 +704,30 @@ function renderWorkerDetail(worker) {
           </div>`).join('');
       }
       if (group.type === 'tool_use') {
+        const TOOL_COLLAPSE_THRESHOLD = 2;
+        const items = group.items;
+        if (items.length <= TOOL_COLLAPSE_THRESHOLD) {
+          return `
+            <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
+              ${items.map(m => renderToolCallInline(m)).join('')}
+            </div>`;
+        }
+        // Show first 2, collapse the rest
+        const visible = items.slice(0, TOOL_COLLAPSE_THRESHOLD);
+        const hidden = items.slice(TOOL_COLLAPSE_THRESHOLD);
+        const groupId = 'tg-' + Math.random().toString(36).slice(2, 8);
         return `
           <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
-            ${group.items.map(m => renderToolCallInline(m)).join('')}
+            ${visible.map(m => renderToolCallInline(m)).join('')}
+            <button class="flex items-center gap-1.5 py-1 px-2.5 bg-zinc-900/50 rounded text-[11px] text-zinc-500 cursor-pointer transition-colors hover:text-zinc-300 border-none" onclick="toggleToolGroup('${groupId}', this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 transition-transform duration-200">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+              <span>${hidden.length} more tool call${hidden.length > 1 ? 's' : ''}</span>
+            </button>
+            <div id="${groupId}" class="hidden flex flex-col gap-0.5">
+              ${hidden.map(m => renderToolCallInline(m)).join('')}
+            </div>
           </div>`;
       }
       return '';

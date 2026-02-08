@@ -861,11 +861,13 @@ export class WorkerManager {
       }
 
       // Check if session actually did work or just errored
-      const outputText = worker.output.join('\n').toLowerCase();
-      const isAuthError = outputText.includes('invalid api key') ||
-        outputText.includes('please run /login') ||
-        outputText.includes('authentication') ||
-        outputText.includes('unauthorized');
+      // Only check early output (first 500 chars) to avoid false positives
+      // from agent responses that discuss auth topics
+      const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
+      const isAuthError = earlyOutput.includes('invalid api key') ||
+        earlyOutput.includes('please run /login') ||
+        earlyOutput.includes('api key is required') ||
+        earlyOutput.includes('401 unauthorized');
 
       if (isAuthError) {
         // Auth error - mark as failed, not completed
@@ -1042,8 +1044,12 @@ export class WorkerManager {
 
             // Detect git commits
             if (cmd.includes('git commit')) {
-              const match = cmd.match(/-m\s+["']([^"']+)["']/);
-              const message = match ? match[1] : 'commit';
+              // Handle HEREDOC pattern: git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
+              const heredocMatch = cmd.match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
+              const simpleMatch = cmd.match(/-m\s+["']([^"']+)["']/);
+              const message = heredocMatch
+                ? heredocMatch[1].split('\n')[0].trim()
+                : simpleMatch ? simpleMatch[1] : 'commit';
               worker.commits.push({ sha: 'pending', message });
               if (worker.commits.length > 50) {
                 worker.commits.shift();
