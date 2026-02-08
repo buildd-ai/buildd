@@ -50,6 +50,7 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     const openWs = await db.query.workspaces.findMany({
       where: eq(workspaces.accessMode, 'open'),
       columns: { id: true, name: true },
+      limit: 100, // Limit open workspaces to prevent excessive data transfer
     });
     const seen = new Set<string>();
     const result: { id: string; name: string }[] = [];
@@ -82,6 +83,7 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
   const openWs = await db.query.workspaces.findMany({
     where: eq(workspaces.accessMode, 'open'),
     columns: { id: true, name: true },
+    limit: 100, // Limit open workspaces to prevent excessive data transfer
   });
   const seen = new Set<string>();
   const result: { id: string; name: string }[] = [];
