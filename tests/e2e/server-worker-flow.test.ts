@@ -5,7 +5,7 @@
  *   Server reachable → Create task → Local worker picks it up → Completion confirmed
  *
  * Environment variables:
- *   BUILDD_SERVER       Remote server URL  (default: https://app.buildd.dev)
+ *   BUILDD_SERVER       Remote server URL  (default: https://buildd.dev)
  *   BUILDD_API_KEY      API key            (fallback: ~/.buildd/config.json)
  *   LOCAL_UI_URL        Local-UI address   (default: http://localhost:8766)
  *   SKIP_LOCAL_UI_START Set to "1" if local-ui is already running
@@ -31,7 +31,7 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const BUILDD_SERVER = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
+const BUILDD_SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const LOCAL_UI_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TEST_TIMEOUT = 120_000; // 2 min — Claude execution can be slow
 const TEST_MODEL = process.env.E2E_MODEL || 'claude-haiku-4-5-20251001';

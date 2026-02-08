@@ -19,7 +19,7 @@ ${task.description || 'No description provided.'}
 
 ---
 Task ID: ${task.id}
-Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.buildd.dev'}/api/workers/{workerId}`;
+Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/api/workers/{workerId}`;
 
     const response = await fetch(webhookConfig.url, {
       method: 'POST',

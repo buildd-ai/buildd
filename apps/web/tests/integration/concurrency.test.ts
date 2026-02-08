@@ -7,7 +7,7 @@
  *
  * Prerequisites:
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
- *   - Test server running (defaults to https://app.buildd.dev)
+ *   - Test server running (defaults to https://buildd.dev)
  *
  * Usage:
  *   bun test apps/web/tests/integration/concurrency.test.ts
@@ -18,7 +18,7 @@ import { join } from 'path';
 
 // --- Config ---
 
-const SERVER = process.env.BUILDD_SERVER || 'https://app.buildd.dev';
+const SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const TIMEOUT = 30_000; // 30 seconds per test
 
 // Resolve API key: env var > config.json

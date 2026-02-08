@@ -18,7 +18,7 @@ function getPrivateKey(): string | undefined {
 const GITHUB_APP_PRIVATE_KEY = getPrivateKey();
 const GITHUB_APP_CLIENT_SECRET = process.env.GITHUB_APP_CLIENT_SECRET;
 const GITHUB_APP_WEBHOOK_SECRET = process.env.GITHUB_APP_WEBHOOK_SECRET;
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://app.buildd.dev';
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
 export function isGitHubAppConfigured(): boolean {
   return !!(GITHUB_APP_ID && GITHUB_APP_PRIVATE_KEY && GITHUB_APP_CLIENT_ID);

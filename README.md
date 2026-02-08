@@ -47,7 +47,7 @@ Add to your project's `.mcp.json`:
       "command": "bun",
       "args": ["run", "/path/to/buildd/apps/mcp-server/src/index.ts"],
       "env": {
-        "BUILDD_SERVER": "https://app.buildd.dev",
+        "BUILDD_SERVER": "https://buildd.dev",
         "BUILDD_API_KEY": "bld_your_api_key_here"
       }
     }
@@ -65,7 +65,7 @@ Then tell Claude Code:
 ```bash
 cd apps/agent
 export BUILDD_API_KEY=bld_xxx
-export BUILDD_SERVER=https://app.buildd.dev
+export BUILDD_SERVER=https://buildd.dev
 export CLAUDE_CODE_OAUTH_TOKEN=xxx  # or ANTHROPIC_API_KEY
 
 bun run start --max-tasks=1
@@ -117,7 +117,7 @@ All agent endpoints require `Authorization: Bearer <API_KEY>` header.
 ### Claim Tasks
 
 ```bash
-curl -X POST https://app.buildd.dev/api/workers/claim \
+curl -X POST https://buildd.dev/api/workers/claim \
   -H "Authorization: Bearer bld_xxx" \
   -H "Content-Type: application/json" \
   -d '{"maxTasks": 1}'
@@ -142,17 +142,17 @@ Response:
 
 ```bash
 # Report progress
-curl -X PATCH https://app.buildd.dev/api/workers/:id \
+curl -X PATCH https://buildd.dev/api/workers/:id \
   -H "Authorization: Bearer bld_xxx" \
   -H "Content-Type: application/json" \
   -d '{"status": "running", "progress": 50}'
 
 # Mark complete
-curl -X PATCH https://app.buildd.dev/api/workers/:id \
+curl -X PATCH https://buildd.dev/api/workers/:id \
   -d '{"status": "completed"}'
 
 # Mark failed
-curl -X PATCH https://app.buildd.dev/api/workers/:id \
+curl -X PATCH https://buildd.dev/api/workers/:id \
   -d '{"status": "failed", "error": "Build failed"}'
 ```
 

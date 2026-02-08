@@ -30,10 +30,10 @@ Set these environment variables:
 
 ```bash
 export BUILDD_API_KEY="bld_your_api_key"
-export BUILDD_SERVER="https://app.buildd.dev"  # Optional, defaults to this
+export BUILDD_SERVER="https://buildd.dev"  # Optional, defaults to this
 ```
 
-Get your API key from the Buildd dashboard at https://app.buildd.dev/settings
+Get your API key from the Buildd dashboard at https://buildd.dev/settings
 
 ## Workflow Example
 

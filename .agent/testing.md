@@ -33,7 +33,7 @@ Located in `scripts/seed/`, these scripts create reproducible test data.
 
 ### Requirements
 - `BUILDD_API_KEY` environment variable must be set
-- Optionally set `BUILDD_SERVER` to target a different environment (default: `https://app.buildd.dev`)
+- Optionally set `BUILDD_SERVER` to target a different environment (default: `https://buildd.dev`)
 
 ### Example
 ```bash
@@ -42,7 +42,7 @@ bun run seed:waiting-input
 
 # View the seeded task
 # → Task ID: abc123
-# → View at: https://app.buildd.dev/app/tasks/abc123
+# → View at: https://buildd.dev/app/tasks/abc123
 
 # When done testing
 bun run seed:reset

@@ -48,7 +48,7 @@ function getFileConfig(): { apiKey?: string; builddServer?: string } {
 
 const fileConfig = getFileConfig();
 const API_KEY = process.env.BUILDD_API_KEY || fileConfig.apiKey;
-let SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://app.buildd.dev';
+let SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://buildd.dev';
 
 // --- Tracking for cleanup ---
 

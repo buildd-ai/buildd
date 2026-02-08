@@ -18,7 +18,7 @@ cat > ~/.claude/hooks.json << 'EOF'
 {
   "hooks": {
     "post_tool_use": [{
-      "command": "curl -sf -X POST \"${BUILDD_SERVER:-https://app.buildd.dev}/api/workers/${BUILDD_WORKER_ID}/activity\" -H \"Authorization: Bearer $BUILDD_API_KEY\" -H \"Content-Type: application/json\" -d '{\"toolName\": \"'\"$CLAUDE_TOOL_NAME\"'\"}' >/dev/null 2>&1 || true",
+      "command": "curl -sf -X POST \"${BUILDD_SERVER:-https://buildd.dev}/api/workers/${BUILDD_WORKER_ID}/activity\" -H \"Authorization: Bearer $BUILDD_API_KEY\" -H \"Content-Type: application/json\" -d '{\"toolName\": \"'\"$CLAUDE_TOOL_NAME\"'\"}' >/dev/null 2>&1 || true",
       "timeout": 2000
     }]
   }
@@ -32,7 +32,7 @@ When you claim a task via MCP, you'll get export commands:
 
 ```bash
 export BUILDD_WORKER_ID=<worker-id>
-export BUILDD_SERVER=https://app.buildd.dev
+export BUILDD_SERVER=https://buildd.dev
 export BUILDD_API_KEY=bld_xxx  # Your API key
 ```
 
@@ -59,7 +59,7 @@ Claude Code              Buildd Server              Dashboard
 | Variable | Description |
 |----------|-------------|
 | `BUILDD_WORKER_ID` | Worker ID from claim_task |
-| `BUILDD_SERVER` | Buildd server URL (default: https://app.buildd.dev) |
+| `BUILDD_SERVER` | Buildd server URL (default: https://buildd.dev) |
 | `BUILDD_API_KEY` | Your buildd API key |
 
 ## Coder Integration
