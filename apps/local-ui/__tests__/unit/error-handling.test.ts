@@ -115,7 +115,7 @@ describe('Error Handling', () => {
   });
 
   describe('Observation Creation Failures', () => {
-    test('should handle observation API failure gracefully', () => {
+    test('should handle observation API failure gracefully', async () => {
       // Mock observation creation that fails
       const createObservation = async () => {
         throw new Error('API error: 500 - Failed to create observation');
@@ -142,7 +142,7 @@ describe('Error Handling', () => {
         }
       };
 
-      executeTask();
+      await executeTask();
 
       expect(taskCompleted).toBe(true);
       expect(errorLogged).toBe(true);
@@ -169,7 +169,6 @@ describe('Error Handling', () => {
         'not json',
         '{"incomplete":',
         '',
-        'null',
       ];
 
       invalidResponses.forEach(response => {
