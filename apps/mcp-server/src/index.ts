@@ -355,6 +355,32 @@ const baseTools = [
     },
   },
   {
+    name: "buildd_update_task",
+    description: "Update a task's title, description, or priority. Use when you need to edit task details, clarify requirements, or adjust priority.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: {
+          type: "string",
+          description: "The task ID to update",
+        },
+        title: {
+          type: "string",
+          description: "New task title (optional)",
+        },
+        description: {
+          type: "string",
+          description: "New task description (optional)",
+        },
+        priority: {
+          type: "number",
+          description: "New priority 0-10 (optional)",
+        },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
     name: "buildd_search_memory",
     description: "Search workspace memory for relevant observations. Returns compact index (id, title, type, files) - use buildd_get_memory for full details. Search at the start of a task for relevant context about the files and concepts you'll be working with.",
     inputSchema: {
@@ -1133,6 +1159,35 @@ export BUILDD_SERVER=${SERVER_URL}`;
             {
               type: "text",
               text: "Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.",
+            },
+          ],
+        };
+      }
+
+      case "buildd_update_task": {
+        if (!args?.taskId) {
+          throw new Error("taskId is required");
+        }
+
+        const updateFields: Record<string, unknown> = {};
+        if (args.title !== undefined) updateFields.title = args.title;
+        if (args.description !== undefined) updateFields.description = args.description;
+        if (args.priority !== undefined) updateFields.priority = args.priority;
+
+        if (Object.keys(updateFields).length === 0) {
+          throw new Error("At least one field (title, description, priority) must be provided");
+        }
+
+        const updated = await apiCall(`/api/tasks/${args.taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify(updateFields),
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}`,
             },
           ],
         };
