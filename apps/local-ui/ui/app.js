@@ -967,8 +967,9 @@ function updateSettings() {
   };
 
   const modelSelect = document.getElementById('settingsModel');
-  if (modelSelect && config.model) {
-    modelSelect.value = config.model;
+  if (modelSelect) {
+    modelSelect.value = config.model || '';  // Empty string = "Default" option
+    loadAvailableModels(); // Fetch dynamic models from SDK
   }
 
   const maxEl = document.getElementById('settingsMax');
@@ -1093,7 +1094,7 @@ setInterval(async () => {
 // Handle model selection change
 async function handleModelChange() {
   const modelSelect = document.getElementById('settingsModel');
-  const model = modelSelect.value;
+  const model = modelSelect.value; // Empty string = SDK default
 
   try {
     const res = await fetch('/api/config/model', {
@@ -1104,8 +1105,8 @@ async function handleModelChange() {
 
     if (res.ok) {
       config.model = model;
-      // Show success feedback
-      showToast(`Model updated to ${getModelDisplayName(model)}. New workers will use this model.`, 'success');
+      const displayName = model ? getModelDisplayName(model) : 'Default (latest)';
+      showToast(`Model updated to ${displayName}. New workers will use this model.`, 'success');
     } else {
       showToast('Failed to update model', 'error');
     }
@@ -1218,12 +1219,60 @@ async function handleMaxConcurrentChange(value) {
 }
 
 function getModelDisplayName(model) {
+  if (!model) return 'Default (latest)';
   const names = {
+    'claude-opus-4-6': 'Opus 4.6',
     'claude-opus-4-5-20251101': 'Opus 4.5',
     'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
+    'claude-haiku-4-5-20251001': 'Haiku 4.5',
     'claude-haiku-4-20250514': 'Haiku 4',
   };
-  return names[model] || model;
+  if (names[model]) return names[model];
+  // Dynamic fallback: extract family + version from model ID
+  const match = model.match(/^claude-(\w+)-(\d[\d.]*)/);
+  if (match) {
+    const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+    return `${family} ${match[2]}`;
+  }
+  return model;
+}
+
+// Fetch available models from SDK (cached on server after first worker starts)
+async function loadAvailableModels() {
+  try {
+    const res = await fetch('/api/config/models');
+    if (!res.ok) return;
+    const data = await res.json();
+    const models = data.models || [];
+    if (models.length === 0) return; // No cached models yet
+
+    const modelSelect = document.getElementById('settingsModel');
+    if (!modelSelect) return;
+    const currentValue = modelSelect.value;
+
+    // Rebuild options: Default first, then models from SDK
+    modelSelect.innerHTML = '<option value="">Default (recommended)</option>';
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name || getModelDisplayName(m.id);
+      modelSelect.appendChild(opt);
+    }
+
+    // Restore selected value (or add it if it's a custom model not in the list)
+    if (currentValue) {
+      const exists = Array.from(modelSelect.options).some(o => o.value === currentValue);
+      if (!exists) {
+        const opt = document.createElement('option');
+        opt.value = currentValue;
+        opt.textContent = getModelDisplayName(currentValue);
+        modelSelect.appendChild(opt);
+      }
+      modelSelect.value = currentValue;
+    }
+  } catch {
+    // Non-fatal — keep hardcoded fallback options
+  }
 }
 
 function showToast(message, type = 'info') {
