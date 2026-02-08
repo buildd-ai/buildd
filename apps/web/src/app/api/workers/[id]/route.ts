@@ -124,8 +124,17 @@ export async function PATCH(
 
       // Snapshot worker stats into task.result on completion
       if (status === 'completed') {
+        // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
+        let summary = body.summary || undefined;
+        if (typeof summary === 'string') {
+          summary = summary
+            .replace(/\$\(cat\s*<<'?EOF'?\n?/g, '')
+            .replace(/\nEOF\n?\)\s*"?\s*$/g, '')
+            .replace(/\s*Co-Authored-By:.*$/gm, '')
+            .trim() || undefined;
+        }
         taskUpdate.result = {
-          summary: body.summary || undefined,
+          summary,
           branch: worker.branch,
           commits: commitCount ?? worker.commitCount ?? 0,
           sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,
