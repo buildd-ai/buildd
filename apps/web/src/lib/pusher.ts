@@ -69,4 +69,6 @@ export const events = {
   WORKER_PLAN_SUBMITTED: 'worker:plan_submitted',
   WORKER_PLAN_APPROVED: 'worker:plan_approved',
   WORKER_PLAN_REVISION_REQUESTED: 'worker:plan_revision_requested',
+  // Schedule events
+  SCHEDULE_TRIGGERED: 'schedule:triggered',
 } as const;

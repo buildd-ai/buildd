@@ -520,6 +520,65 @@ const adminTools = [
     },
   },
   {
+    name: "buildd_create_schedule",
+    description: "Create a recurring task schedule. Tasks will be automatically created on the specified cron cadence. Workspace is auto-detected from git remote.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Schedule name (e.g., 'Nightly test suite')",
+        },
+        cronExpression: {
+          type: "string",
+          description: "Cron expression (5-field: minute hour day-of-month month day-of-week). Examples: '0 9 * * *' (daily 9am), '0 */6 * * *' (every 6 hours), '0 9 * * 1' (Mondays 9am)",
+        },
+        timezone: {
+          type: "string",
+          description: "Timezone (default: UTC). Examples: 'America/New_York', 'Europe/London'",
+          default: "UTC",
+        },
+        title: {
+          type: "string",
+          description: "Task title to create on each run",
+        },
+        description: {
+          type: "string",
+          description: "Task description",
+        },
+        priority: {
+          type: "number",
+          description: "Task priority (0-10)",
+          default: 5,
+        },
+        mode: {
+          type: "string",
+          description: "Task mode: 'execution' or 'planning'",
+          default: "execution",
+          enum: ["execution", "planning"],
+        },
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+      required: ["name", "cronExpression", "title"],
+    },
+  },
+  {
+    name: "buildd_list_schedules",
+    description: "List task schedules for the workspace. Shows schedule names, cron expressions, next run times, and status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+    },
+  },
+  {
     name: "buildd_decompose_task",
     description: "Decompose a large task into subtasks by creating a special decomposition task. A worker will claim this task, investigate the codebase, and create 3-7 implementable subtasks.",
     inputSchema: {
@@ -937,6 +996,76 @@ export BUILDD_SERVER=${SERVER_URL}`;
               text: `Cleanup completed:\n- Stalled workers marked failed: ${cleaned.stalledWorkers || 0}\n- Orphaned tasks reset to pending: ${cleaned.orphanedTasks || 0}\n- Expired plan approvals failed: ${cleaned.expiredPlans || 0}`,
             },
           ],
+        };
+      }
+
+      case "buildd_create_schedule": {
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.name || !args?.cronExpression || !args?.title) {
+          throw new Error("name, cronExpression, and title are required");
+        }
+
+        const workspaceId = args.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const schedule = await apiCall(`/api/workspaces/${workspaceId}/schedules`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: args.name,
+            cronExpression: args.cronExpression,
+            timezone: args.timezone || 'UTC',
+            taskTemplate: {
+              title: args.title,
+              description: args.description,
+              priority: args.priority || 5,
+              mode: args.mode || 'execution',
+            },
+          }),
+        });
+
+        const sched = schedule.schedule;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nCreates task: "${sched.taskTemplate.title}"`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_list_schedules": {
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        const workspaceId = args?.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/schedules`);
+        const schedules = data.schedules || [];
+
+        if (schedules.length === 0) {
+          return {
+            content: [{ type: "text", text: "No schedules configured for this workspace." }],
+          };
+        }
+
+        const summary = schedules.map((s: { id: string; name: string; cronExpression: string; timezone: string; enabled: boolean; nextRunAt: string | null; totalRuns: number; consecutiveFailures: number; taskTemplate: { title: string } }) =>
+          `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
+        ).join("\n\n");
+
+        return {
+          content: [{ type: "text", text: `${schedules.length} schedule(s):\n\n${summary}` }],
         };
       }
 

@@ -84,6 +84,7 @@ export const CreationSource = {
   MCP: 'mcp',
   GITHUB: 'github',
   LOCAL_UI: 'local_ui',
+  SCHEDULE: 'schedule',
 } as const;
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
@@ -269,6 +270,37 @@ export interface Observation {
   createdAt: Date;
 }
 
+export interface TaskScheduleTemplate {
+  title: string;
+  description?: string;
+  mode?: TaskModeValue;
+  priority?: number;
+  runnerPreference?: RunnerPreferenceValue;
+  requiredCapabilities?: string[];
+  context?: Record<string, unknown>;
+}
+
+export interface TaskSchedule {
+  id: string;
+  workspaceId: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  taskTemplate: TaskScheduleTemplate;
+  enabled: boolean;
+  nextRunAt: Date | null;
+  lastRunAt: Date | null;
+  lastTaskId: string | null;
+  totalRuns: number;
+  consecutiveFailures: number;
+  lastError: string | null;
+  maxConcurrentFromSchedule: number;
+  pauseAfterFailures: number;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================
@@ -356,6 +388,26 @@ export interface CreateObservationInput {
   concepts?: string[];
   workerId?: string;
   taskId?: string;
+}
+
+export interface CreateScheduleInput {
+  name: string;
+  cronExpression: string;
+  timezone?: string;
+  taskTemplate: TaskScheduleTemplate;
+  enabled?: boolean;
+  maxConcurrentFromSchedule?: number;
+  pauseAfterFailures?: number;
+}
+
+export interface UpdateScheduleInput {
+  name?: string;
+  cronExpression?: string;
+  timezone?: string;
+  taskTemplate?: TaskScheduleTemplate;
+  enabled?: boolean;
+  maxConcurrentFromSchedule?: number;
+  pauseAfterFailures?: number;
 }
 
 // ============================================================================

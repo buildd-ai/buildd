@@ -2,9 +2,9 @@ import { db } from '@buildd/core/db';
 import { accounts, workers, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 
-export type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui';
+export type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule';
 
-const VALID_CREATION_SOURCES: CreationSource[] = ['dashboard', 'api', 'mcp', 'github', 'local_ui'];
+const VALID_CREATION_SOURCES: CreationSource[] = ['dashboard', 'api', 'mcp', 'github', 'local_ui', 'schedule'];
 
 export interface CreateTaskCreatorParams {
   // Auth context - one of these should be provided
