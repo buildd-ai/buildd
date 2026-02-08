@@ -1,9 +1,9 @@
 /**
- * Dogfood Tests — Full E2E through buildd's own task coordination
+ * Integration Tests: Task Lifecycle
  *
- * Creates real tasks on the server and waits for a connected worker
- * (local-ui or other runner) to claim and execute them. This is
- * "eating our own dogfood" — the system tests itself.
+ * Tests the complete task lifecycle from creation through execution to completion.
+ * Creates real tasks on the server and validates that connected workers (local-ui)
+ * claim and execute them correctly.
  *
  * Tests cover:
  *   - Heartbeat & discovery (server sees local-ui)
@@ -19,14 +19,14 @@
  *   - local-ui running with Pusher configured (claims tasks)
  *
  * Usage:
- *   bun test apps/web/tests/integration/dogfood.test.ts
+ *   bun run test:integration task-lifecycle
  *
  * Env vars:
  *   BUILDD_API_KEY      - required (or config.json)
  *   BUILDD_SERVER       - defaults to local-ui's configured server
  *   LOCAL_UI_URL        - defaults to http://localhost:8766
  *   BUILDD_WORKSPACE_ID - optional, auto-picks first workspace
- *   DOGFOOD_TIMEOUT     - per-test timeout in ms (default: 300000 = 5 min)
+ *   INTEGRATION_TEST_TIMEOUT     - per-test timeout in ms (default: 300000 = 5 min)
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
@@ -36,7 +36,7 @@ import { join } from 'path';
 // --- Config ---
 
 const LOCAL_UI = process.env.LOCAL_UI_URL || 'http://localhost:8766';
-const TIMEOUT = Number(process.env.DOGFOOD_TIMEOUT) || 300_000; // 5 min per test
+const TIMEOUT = Number(process.env.INTEGRATION_TEST_TIMEOUT) || 300_000; // 5 min per test
 const POLL_INTERVAL = 3_000;
 
 function getFileConfig(): { apiKey?: string; builddServer?: string } {
@@ -228,7 +228,7 @@ async function cleanupStaleWorkers() {
         try {
           await api(`/api/workers/${w.id}`, {
             method: 'PATCH',
-            body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup (stale)' }),
+            body: JSON.stringify({ status: 'failed', error: 'Integration test cleanup (stale)' }),
           });
         } catch {}
       }
@@ -240,7 +240,7 @@ async function cleanupStaleWorkers() {
 
 // --- Test suite ---
 
-describe('dogfood', () => {
+describe('Task Lifecycle', () => {
   let workspaceId: string;
 
   beforeAll(async () => {
@@ -279,7 +279,7 @@ describe('dogfood', () => {
       try {
         await api(`/api/workers/${wid}`, {
           method: 'PATCH',
-          body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup' }),
+          body: JSON.stringify({ status: 'failed', error: 'Integration test cleanup' }),
         });
       } catch {}
     }
@@ -324,7 +324,7 @@ describe('dogfood', () => {
 
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Direct claim',
+      ' Direct claim',
       `Reply with exactly: "${marker}". Nothing else -- just that string. Do not use any tools.`,
     );
     expect(task.id).toBeTruthy();
@@ -347,7 +347,7 @@ describe('dogfood', () => {
     // Create task — stays pending
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Dashboard dispatch',
+      ' Dashboard dispatch',
       `Reply with exactly: "${marker}". Nothing else. Do not use any tools.`,
     );
     expect(task.status).toBe('pending');
@@ -389,7 +389,7 @@ describe('dogfood', () => {
   test('worker lifecycle — status syncs to server', async () => {
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Lifecycle',
+      ' Lifecycle',
       'Reply with "LIFECYCLE_OK". Nothing else. Do not use any tools.',
     );
     const workerId = await triggerClaim(task.id);
@@ -426,7 +426,7 @@ describe('dogfood', () => {
   test('CLAUDE.md context — agent knows the tech stack', async () => {
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Context test',
+      ' Context test',
       'What is the primary tech stack used in this project? Reply in 10 words or fewer. Do not use any tools.',
     );
 
@@ -454,7 +454,7 @@ describe('dogfood', () => {
   test('abort handling — worker can be force-stopped', async () => {
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Abort test',
+      ' Abort test',
       'Read every file in packages/core/db/ one by one using the Read tool. For each file, write a detailed summary. Take your time and be thorough.',
     );
 
@@ -496,7 +496,7 @@ describe('dogfood', () => {
 
     const task = await createTask(
       workspaceId,
-      '[DOGFOOD] Follow-up test',
+      ' Follow-up test',
       'Reply with "INITIAL_DONE". Nothing else. Do not use any tools.',
     );
 
@@ -542,7 +542,7 @@ describe('dogfood', () => {
     for (let i = 0; i < maxConcurrent; i++) {
       const task = await createTask(
         workspaceId,
-        `[DOGFOOD] Filler ${i}`,
+        ` Filler ${i}`,
         'Read every file in the root directory one by one using the Read tool. Write a detailed summary for each. Take your time.',
       );
       const workerId = await triggerClaim(task.id);
@@ -562,7 +562,7 @@ describe('dogfood', () => {
     // Now try to claim one more — server should return 429
     const overflowTask = await createTask(
       workspaceId,
-      '[DOGFOOD] Overflow',
+      ' Overflow',
       'Reply with "OVERFLOW". Do not use any tools.',
     );
 
@@ -571,7 +571,7 @@ describe('dogfood', () => {
       body: JSON.stringify({
         workspaceId,
         taskId: overflowTask.id,
-        runner: 'dogfood-test',
+        runner: 'integration-test',
       }),
     });
 
