@@ -36,6 +36,10 @@ export default function QuickCreateModal({
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
+
+  // Recurring schedule
+  const [recurring, setRecurring] = useState(false);
+  const [cronExpression, setCronExpression] = useState('0 9 * * *');
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -146,6 +150,33 @@ export default function QuickCreateModal({
     setAssignmentStatus('idle');
 
     try {
+      if (recurring) {
+        // Create schedule instead of task
+        const res = await fetch(`/api/workspaces/${workspaceId}/schedules`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: title.trim(),
+            cronExpression,
+            timezone: 'UTC',
+            taskTemplate: {
+              title: title.trim(),
+              description: description.trim() || undefined,
+              priority: 5,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || 'Failed to create schedule');
+        }
+
+        // Navigate to schedules page
+        window.location.href = `/app/workspaces/${workspaceId}/schedules`;
+        return;
+      }
+
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -321,6 +352,33 @@ export default function QuickCreateModal({
                 disabled={loading}
               />
 
+              {/* Recurring toggle */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRecurring(!recurring)}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                    recurring
+                      ? 'border-fuchsia-300 dark:border-fuchsia-700 bg-fuchsia-50 dark:bg-fuchsia-900/20 text-fuchsia-700 dark:text-fuchsia-300'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                  }`}
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Recurring
+                </button>
+                {recurring && (
+                  <input
+                    type="text"
+                    value={cronExpression}
+                    onChange={(e) => setCronExpression(e.target.value)}
+                    className="flex-1 px-2 py-1 text-xs font-mono border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-800"
+                    placeholder="0 9 * * *"
+                  />
+                )}
+              </div>
+
               {showDescription ? (
                 <textarea
                   value={description}
@@ -404,7 +462,14 @@ export default function QuickCreateModal({
                 disabled={loading || !title.trim()}
                 className="px-3 py-1.5 text-sm bg-black dark:bg-white text-white dark:text-black rounded hover:opacity-80 disabled:opacity-50"
               >
-                {loading ? 'Creating...' : selectedLocalUi ? 'Create & Send' : 'Create'}
+                {loading
+                  ? 'Creating...'
+                  : recurring
+                    ? 'Create Schedule'
+                    : selectedLocalUi
+                      ? 'Create & Send'
+                      : 'Create'
+                }
               </button>
             </div>
           </form>

@@ -18,6 +18,12 @@ interface PastedImage {
   data: string; // base64 data URL
 }
 
+interface CronPreview {
+  valid: boolean;
+  description?: string;
+  nextRuns?: string[];
+}
+
 export default function NewTaskPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -26,6 +32,13 @@ export default function NewTaskPage() {
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+
+  // Recurring schedule state
+  const [recurring, setRecurring] = useState(false);
+  const [scheduleName, setScheduleName] = useState('');
+  const [cronExpression, setCronExpression] = useState('0 9 * * *');
+  const [timezone, setTimezone] = useState('UTC');
+  const [cronPreview, setCronPreview] = useState<CronPreview | null>(null);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -62,10 +75,6 @@ export default function NewTaskPage() {
         const ws = data.workspaces || [];
         setWorkspaces(ws);
 
-        // Smart workspace selection priority:
-        // 1. Last used workspace (from localStorage)
-        // 2. Default workspace (if marked)
-        // 3. First workspace (if only one)
         if (ws.length > 0) {
           const lastUsed = localStorage.getItem(LAST_WORKSPACE_KEY);
           const lastUsedExists = lastUsed && ws.some((w: Workspace) => w.id === lastUsed);
@@ -86,6 +95,29 @@ export default function NewTaskPage() {
       .finally(() => setLoadingWorkspaces(false));
   }, []);
 
+  // Validate cron expression with live preview
+  useEffect(() => {
+    if (!recurring || !selectedWorkspaceId || !cronExpression.trim()) {
+      setCronPreview(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/workspaces/${selectedWorkspaceId}/schedules/validate?cron=${encodeURIComponent(cronExpression)}&timezone=${encodeURIComponent(timezone)}`
+        );
+        if (res.ok) {
+          setCronPreview(await res.json());
+        }
+      } catch {
+        // Non-critical
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [recurring, cronExpression, timezone, selectedWorkspaceId]);
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setLoading(true);
@@ -93,31 +125,59 @@ export default function NewTaskPage() {
 
     const formData = new FormData(e.currentTarget);
     const workspaceId = formData.get('workspaceId') as string;
-    const data = {
-      workspaceId,
-      title: formData.get('title') as string,
-      description: formData.get('description') as string,
-      priority: parseInt(formData.get('priority') as string) || 0,
-      ...(pastedImages.length > 0 && { attachments: pastedImages }),
-    };
+    const title = formData.get('title') as string;
+    const description = formData.get('description') as string;
+    const priority = parseInt(formData.get('priority') as string) || 0;
 
     try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
+      if (recurring) {
+        // Create schedule
+        const res = await fetch(`/api/workspaces/${workspaceId}/schedules`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: scheduleName.trim() || title,
+            cronExpression,
+            timezone,
+            taskTemplate: {
+              title,
+              description: description || undefined,
+              priority,
+            },
+          }),
+        });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to create task');
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Failed to create schedule');
+        }
+
+        localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
+        router.push(`/app/workspaces/${workspaceId}/schedules`);
+        router.refresh();
+      } else {
+        // Create one-time task
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            title,
+            description,
+            priority,
+            ...(pastedImages.length > 0 && { attachments: pastedImages }),
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Failed to create task');
+        }
+
+        localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
+        router.push('/app/tasks');
+        router.refresh();
       }
-
-      // Remember last used workspace
-      localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
-
-      router.push('/app/tasks');
-      router.refresh();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -148,6 +208,35 @@ export default function NewTaskPage() {
               </div>
             )}
 
+            {/* Run once / Recurring toggle */}
+            <div className="flex items-center gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+              <button
+                type="button"
+                onClick={() => setRecurring(false)}
+                className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                  !recurring
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Run once
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecurring(true)}
+                className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                  recurring
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Recurring
+              </button>
+            </div>
+
             <div>
               <label htmlFor="workspaceId" className="block text-sm font-medium mb-2">
                 Workspace
@@ -170,6 +259,24 @@ export default function NewTaskPage() {
               </select>
             </div>
 
+            {/* Schedule name (recurring only) */}
+            {recurring && (
+              <div>
+                <label htmlFor="scheduleName" className="block text-sm font-medium mb-2">
+                  Schedule Name
+                </label>
+                <input
+                  type="text"
+                  id="scheduleName"
+                  value={scheduleName}
+                  onChange={(e) => setScheduleName(e.target.value)}
+                  placeholder="e.g. Nightly test suite"
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">Optional. Defaults to task title.</p>
+              </div>
+            )}
+
             <div>
               <label htmlFor="title" className="block text-sm font-medium mb-2">
                 Task Title
@@ -179,7 +286,7 @@ export default function NewTaskPage() {
                 id="title"
                 name="title"
                 required
-                placeholder="Fix login bug"
+                placeholder={recurring ? "Run full test suite" : "Fix login bug"}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
             </div>
@@ -191,9 +298,12 @@ export default function NewTaskPage() {
               <textarea
                 id="description"
                 name="description"
-                required
-                rows={6}
-                placeholder="Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
+                required={!recurring}
+                rows={recurring ? 4 : 6}
+                placeholder={recurring
+                  ? "Instructions for each run. Agents receive this every time the schedule fires."
+                  : "Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
+                }
                 onPaste={handlePaste}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
@@ -234,13 +344,80 @@ export default function NewTaskPage() {
               />
             </div>
 
+            {/* Cron fields (recurring only) */}
+            {recurring && (
+              <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4 space-y-4 bg-gray-50 dark:bg-gray-900/50">
+                <div>
+                  <label htmlFor="cron" className="block text-sm font-medium mb-2">
+                    Schedule
+                  </label>
+                  <input
+                    type="text"
+                    id="cron"
+                    value={cronExpression}
+                    onChange={(e) => setCronExpression(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                    placeholder="0 9 * * *"
+                    required
+                  />
+                  {cronPreview && (
+                    <div className="mt-2">
+                      {cronPreview.valid ? (
+                        <div className="text-sm">
+                          <p className="text-green-600 dark:text-green-400">{cronPreview.description}</p>
+                          {cronPreview.nextRuns && cronPreview.nextRuns.length > 0 && (
+                            <div className="text-gray-500 mt-1 space-y-0.5">
+                              {cronPreview.nextRuns.map((run, i) => (
+                                <p key={i} className="text-xs">{run}</p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-red-600 dark:text-red-400">{cronPreview.description}</p>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    minute hour day-of-month month day-of-week
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="timezone" className="block text-sm font-medium mb-2">
+                    Timezone
+                  </label>
+                  <select
+                    id="timezone"
+                    value={timezone}
+                    onChange={(e) => setTimezone(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                  >
+                    <option value="UTC">UTC</option>
+                    <option value="America/New_York">Eastern (America/New_York)</option>
+                    <option value="America/Chicago">Central (America/Chicago)</option>
+                    <option value="America/Denver">Mountain (America/Denver)</option>
+                    <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
+                    <option value="Europe/London">London (Europe/London)</option>
+                    <option value="Europe/Berlin">Berlin (Europe/Berlin)</option>
+                    <option value="Asia/Tokyo">Tokyo (Asia/Tokyo)</option>
+                    <option value="Asia/Shanghai">Shanghai (Asia/Shanghai)</option>
+                    <option value="Australia/Sydney">Sydney (Australia/Sydney)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
             <div className="flex gap-4">
               <button
                 type="submit"
-                disabled={loading || loadingWorkspaces}
+                disabled={loading || loadingWorkspaces || (recurring && cronPreview !== null && !cronPreview.valid)}
                 className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
               >
-                {loading ? 'Creating...' : 'Create Task'}
+                {loading
+                  ? (recurring ? 'Creating Schedule...' : 'Creating...')
+                  : (recurring ? 'Create Schedule' : 'Create Task')
+                }
               </button>
               <Link
                 href="/app/tasks"
