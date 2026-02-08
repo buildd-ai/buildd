@@ -711,7 +711,7 @@ const server = Bun.serve({
     // OAuth: Redirect to server login
     if (path === '/auth/login') {
       const callbackUrl = `http://localhost:${PORT}/auth/callback`;
-      const loginUrl = `${config.builddServer}/api/auth/local-ui?callback=${encodeURIComponent(callbackUrl)}`;
+      const loginUrl = `${config.builddServer}/api/auth/cli?client=local-ui&callback=${encodeURIComponent(callbackUrl)}`;
       return Response.redirect(loginUrl, 302);
     }
 

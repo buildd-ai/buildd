@@ -225,6 +225,50 @@ GLOBALEOF
       exit 1
     fi
     ;;
+
+  login)
+    shift
+    exec bun run "$HOME/.buildd/apps/local-ui/src/login.ts" "$@"
+    ;;
+
+  logout)
+    CONFIG_FILE="$HOME/.buildd/config.json"
+    if [ -f "$CONFIG_FILE" ]; then
+      bun -e "
+        const fs = require('fs');
+        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
+        delete config.apiKey;
+        fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2));
+      "
+      echo "Logged out. API key removed from $CONFIG_FILE"
+    else
+      echo "Not logged in (no config file found)"
+    fi
+    exit 0
+    ;;
+
+  status)
+    CONFIG_FILE="$HOME/.buildd/config.json"
+    if [ -f "$CONFIG_FILE" ]; then
+      bun -e "
+        const fs = require('fs');
+        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
+        if (config.apiKey) {
+          const key = config.apiKey;
+          console.log('Status: logged in');
+          console.log('API key: ' + key.slice(0, 10) + '...' + key.slice(-4));
+          console.log('Server:  ' + (config.builddServer || 'https://buildd.dev'));
+        } else {
+          console.log('Status: not logged in');
+          console.log('Run \"buildd login\" to authenticate.');
+        }
+      "
+    else
+      echo "Status: not logged in"
+      echo "Run \"buildd login\" to authenticate."
+    fi
+    exit 0
+    ;;
 esac
 
 # Run

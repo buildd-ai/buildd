@@ -14,44 +14,53 @@ bun run build
 ./dist/buildd-agent
 ```
 
-## Authentication Methods
+## Authentication
 
-The agent supports **two authentication methods** for Claude:
+### Recommended: `buildd login`
 
-### 1. OAuth (Seat-Based) - Recommended for Users
-
-Uses your Claude Pro/Team subscription seat. **No per-token costs**.
+The simplest way to authenticate is via the CLI login flow. This saves your API key to `~/.buildd/config.json`, which the agent reads automatically:
 
 ```bash
-# Authenticate with Claude
+# One-time setup (from any machine with buildd installed)
+buildd login
+
+# Then just run the agent — no env vars needed
+bun run start --max-tasks=3
+```
+
+For headless environments (SSH, VMs), use the device code flow:
+
+```bash
+buildd login --device
+```
+
+### Alternative: Environment Variables
+
+You can also set credentials explicitly via env vars (useful for CI/CD, Docker):
+
+```bash
+export BUILDD_API_KEY=bld_xxxxx        # Required: buildd account key
+export BUILDD_SERVER=https://buildd.dev # Optional: defaults to config.json or buildd.dev
+```
+
+### Claude Authentication (for running tasks)
+
+The agent also needs Claude credentials to execute code:
+
+#### OAuth (Seat-Based) - Recommended for Users
+
+```bash
 claude auth
-
-# Run agent
-export BUILDD_API_KEY=buildd_user_xxxxx
 export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.config/claude/auth.json | jq -r .token)
-bun run start --server=http://localhost:3000 --max-tasks=3
+bun run start --max-tasks=3
 ```
 
-**Best for:**
-- Personal laptops
-- Team member workspaces
-- Development/testing
-
-### 2. API (Pay-Per-Token) - Recommended for Production
-
-Uses Anthropic API with per-token billing.
+#### API (Pay-Per-Token) - Recommended for Production
 
 ```bash
-# Run agent
-export BUILDD_API_KEY=buildd_service_xxxxx
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
-bun run start --server=http://localhost:3000 --max-tasks=10
+bun run start --max-tasks=10
 ```
-
-**Best for:**
-- Service accounts (dedicated VMs)
-- GitHub Actions (CI/CD)
-- Production workloads
 
 ## Usage
 
@@ -79,8 +88,8 @@ bun run build
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BUILDD_SERVER` | No | Server URL (default: http://localhost:3000) |
-| `BUILDD_API_KEY` | **Yes** | Account API key |
+| `BUILDD_SERVER` | No | Server URL (default: config.json or https://buildd.dev) |
+| `BUILDD_API_KEY` | No* | Account API key (*reads from `~/.buildd/config.json` if not set) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | One of | OAuth token for seat-based auth |
 | `ANTHROPIC_API_KEY` | these | API key for pay-per-token auth |
 
@@ -90,8 +99,8 @@ bun run build
 buildd-agent [options]
 
 Options:
-  --server <url>       buildd server URL (default: $BUILDD_SERVER or http://localhost:3000)
-  --api-key <key>      Account API key (default: $BUILDD_API_KEY)
+  --server <url>       buildd server URL (default: $BUILDD_SERVER or config.json or https://buildd.dev)
+  --api-key <key>      Account API key (default: $BUILDD_API_KEY or config.json)
   --workspace <id>     Workspace ID to claim tasks from (optional filter)
   --max-tasks <n>      Maximum concurrent tasks (default: 3)
 ```

@@ -371,10 +371,30 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
+// Device code flow for CLI authentication in headless environments
+export const deviceCodes = pgTable('device_codes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userCode: text('user_code').notNull().unique(), // Human-readable code like "ABCD-1234"
+  deviceToken: text('device_token').notNull().unique(), // Opaque token for CLI polling
+  status: text('status').default('pending').notNull().$type<'pending' | 'approved' | 'expired'>(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  apiKey: text('api_key'), // Plaintext key stored temporarily until CLI retrieves it
+  clientName: text('client_name').default('CLI').notNull(),
+  level: text('level').default('admin').notNull().$type<'admin' | 'worker'>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userCodeIdx: uniqueIndex('device_codes_user_code_idx').on(t.userCode),
+  deviceTokenIdx: uniqueIndex('device_codes_device_token_idx').on(t.deviceToken),
+  statusIdx: index('device_codes_status_idx').on(t.status),
+  expiresAtIdx: index('device_codes_expires_at_idx').on(t.expiresAt),
+}));
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   accounts: many(accounts),
   workspaces: many(workspaces),
+  deviceCodes: many(deviceCodes),
 }));
 
 export const accountsRelations = relations(accounts, ({ one, many }) => ({
@@ -457,4 +477,8 @@ export const githubInstallationsRelations = relations(githubInstallations, ({ ma
 export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
   installation: one(githubInstallations, { fields: [githubRepos.installationId], references: [githubInstallations.id] }),
   workspaces: many(workspaces),
+}));
+
+export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
+  user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
 }));

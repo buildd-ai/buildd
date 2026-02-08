@@ -1,14 +1,4 @@
-"use client";
-
-import { useState } from "react";
-
 export default function LandingPage() {
-  const [platform, setPlatform] = useState<"unix" | "windows">("unix");
-
-  const installCommand =
-    platform === "unix"
-      ? "curl -fsSL https://buildd.dev/install.sh | bash"
-      : "irm buildd.dev/install.ps1 | iex";
 
   return (
     <main className="min-h-screen bg-[#2a2d3a] text-white">
@@ -77,50 +67,20 @@ export default function LandingPage() {
               <div className="w-3 h-3 rounded-full bg-green-500/80" />
               <span className="ml-2 text-sm text-gray-500">Terminal</span>
             </div>
-            {/* Platform toggle */}
-            <div className="flex items-center gap-1 text-xs">
-              <button
-                onClick={() => setPlatform("unix")}
-                className={`px-2 py-1 rounded transition-colors ${
-                  platform === "unix"
-                    ? "bg-white/10 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                macOS/Linux
-              </button>
-              <button
-                onClick={() => setPlatform("windows")}
-                className={`px-2 py-1 rounded transition-colors ${
-                  platform === "windows"
-                    ? "bg-white/10 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                Windows
-              </button>
-            </div>
           </div>
           {/* Install command */}
-          <div className="p-6">
+          <div className="p-6 space-y-3">
             <div className="flex items-center gap-3">
-              <span className="text-gray-500 select-none">
-                {platform === "unix" ? "$" : ">"}
-              </span>
+              <span className="text-gray-500 select-none">$</span>
               <code className="text-gray-200 font-mono text-sm md:text-base flex-1">
-                {installCommand}
+                curl -fsSL https://buildd.dev/install.sh | bash
               </code>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(installCommand);
-                }}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors text-gray-400 hover:text-white"
-                title="Copy to clipboard"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-gray-500 select-none">$</span>
+              <code className="text-gray-400 font-mono text-sm md:text-base flex-1">
+                buildd login
+              </code>
             </div>
           </div>
         </div>
@@ -167,22 +127,22 @@ export default function LandingPage() {
             <div className="w-10 h-10 rounded-full bg-fuchsia-500/20 border border-fuchsia-500/30 flex items-center justify-center mx-auto mb-4">
               <span className="text-fuchsia-400 font-semibold">1</span>
             </div>
-            <h3 className="font-semibold mb-2">Create tasks</h3>
-            <p className="text-sm text-gray-400">From the dashboard, CLI, API &mdash; or set a cron schedule and let them run automatically.</p>
+            <h3 className="font-semibold mb-2">Install &amp; login</h3>
+            <p className="text-sm text-gray-400">One command installs. <code className="text-gray-300">buildd login</code> authenticates everything &mdash; CLI, MCP, and agents.</p>
           </div>
           <div className="text-center">
             <div className="w-10 h-10 rounded-full bg-violet-500/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-4">
               <span className="text-violet-400 font-semibold">2</span>
             </div>
-            <h3 className="font-semibold mb-2">Agents build</h3>
-            <p className="text-sm text-gray-400">Workers claim tasks, branch, code, and open PRs. You review and merge.</p>
+            <h3 className="font-semibold mb-2">Create tasks</h3>
+            <p className="text-sm text-gray-400">From the dashboard, CLI, API &mdash; or set a cron schedule and let them run automatically.</p>
           </div>
           <div className="text-center">
             <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center mx-auto mb-4">
               <span className="text-amber-400 font-semibold">3</span>
             </div>
-            <h3 className="font-semibold mb-2">Knowledge compounds</h3>
-            <p className="text-sm text-gray-400">Agents record gotchas, patterns, and decisions. The next agent starts where the last one left off.</p>
+            <h3 className="font-semibold mb-2">Agents build</h3>
+            <p className="text-sm text-gray-400">Workers claim tasks, branch, code, and open PRs. Knowledge compounds &mdash; each agent smarter than the last.</p>
           </div>
         </div>
       </div>

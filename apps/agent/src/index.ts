@@ -1,18 +1,36 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from 'util';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { BuilddAgent } from './agent';
+
+/**
+ * Load ~/.buildd/config.json as fallback for env vars
+ */
+function loadBuilddConfig(): { apiKey?: string; builddServer?: string } {
+  try {
+    const configPath = join(homedir(), '.buildd', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+const config = loadBuilddConfig();
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
   options: {
     server: {
       type: 'string',
-      default: process.env.BUILDD_SERVER || 'http://localhost:3000',
+      default: process.env.BUILDD_SERVER || config.builddServer || 'https://buildd.dev',
     },
     'api-key': {
       type: 'string',
-      default: process.env.BUILDD_API_KEY,
+      default: process.env.BUILDD_API_KEY || config.apiKey,
     },
     workspace: {
       type: 'string',
@@ -25,8 +43,8 @@ const { values } = parseArgs({
 });
 
 if (!values['api-key']) {
-  console.error('Error: BUILDD_API_KEY is required');
-  console.error('Set via environment variable or --api-key flag');
+  console.error('Error: No API key found.');
+  console.error('Run `buildd login` to authenticate, or set BUILDD_API_KEY / --api-key.');
   process.exit(1);
 }
 

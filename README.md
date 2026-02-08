@@ -28,47 +28,52 @@ Open source task coordination system for Claude AI agents. Run agents on laptops
 
 ## Quick Start
 
-### Install Local UI (Recommended)
+### 1. Install
 
 ```bash
 curl -fsSL https://buildd.dev/install.sh | bash
 ```
 
-This installs the **local-ui** - a standalone web interface for running workers on your machine with real-time streaming of agent output.
+### 2. Login
 
-### Or Connect Claude Code via MCP
-
-Add to your project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "buildd": {
-      "command": "bun",
-      "args": ["run", "/path/to/buildd/apps/mcp-server/src/index.ts"],
-      "env": {
-        "BUILDD_SERVER": "https://buildd.dev",
-        "BUILDD_API_KEY": "bld_your_api_key_here"
-      }
-    }
-  }
-}
+```bash
+buildd login
 ```
 
-Then tell Claude Code:
-- *"Check buildd for tasks"*
-- *"Claim a task from buildd and work on it"*
-- *"Mark the buildd task complete"*
+This opens your browser, authenticates via OAuth, and saves your API key to `~/.buildd/config.json`. It also auto-configures the MCP server in `~/.claude.json` so Claude Code can use buildd tools immediately.
+
+For headless/SSH environments, use the device code flow:
+
+```bash
+buildd login --device
+```
+
+### 3. Run
+
+```bash
+# Start the local worker UI (dashboard + agent runner)
+buildd
+
+# Or use Claude Code directly — MCP is already configured
+# Just tell Claude: "Check buildd for tasks"
+```
+
+### Other CLI Commands
+
+```bash
+buildd status          # Show current auth state
+buildd logout          # Remove saved API key
+buildd init <id>       # Configure MCP for a specific workspace
+buildd install --global # Register MCP server globally
+```
 
 ### Or Run the Agent Binary
 
 ```bash
 cd apps/agent
-export BUILDD_API_KEY=bld_xxx
-export BUILDD_SERVER=https://buildd.dev
-export CLAUDE_CODE_OAUTH_TOKEN=xxx  # or ANTHROPIC_API_KEY
-
 bun run start --max-tasks=1
+# Reads API key from ~/.buildd/config.json automatically
+# Or set BUILDD_API_KEY and BUILDD_SERVER env vars
 ```
 
 ## Features

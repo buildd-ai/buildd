@@ -4,34 +4,54 @@ Connect Claude Code directly to buildd for task management.
 
 ## Setup
 
-1. **Get an API key** from the buildd dashboard: https://buildd.dev/accounts
+### Recommended: `buildd login`
 
-2. **Add to your project's `.mcp.json`**:
+The easiest way to set up the MCP server is via the CLI login flow, which auto-configures everything:
+
+```bash
+# Install buildd
+curl -fsSL https://buildd.dev/install.sh | bash
+
+# Login — this saves your API key AND configures the MCP server in ~/.claude.json
+buildd login
+```
+
+After login, restart Claude Code and the buildd MCP tools will be available in every session.
+
+### Alternative: Manual Setup
+
+If you prefer manual configuration, or want per-project setup:
+
+**Global** (all Claude Code sessions):
+
+```bash
+buildd install --global
+```
+
+**Per-project** (single repo):
+
+```bash
+cd your-repo
+buildd init <workspace-id>
+```
+
+**Manual `.mcp.json`**:
 
 ```json
 {
   "mcpServers": {
     "buildd": {
       "command": "bun",
-      "args": ["run", "/path/to/buildd/apps/mcp-server/src/index.ts"],
+      "args": ["run", "~/.buildd/apps/mcp-server/src/index.ts"],
       "env": {
-        "BUILDD_SERVER": "https://buildd.dev",
-        "BUILDD_API_KEY": "bld_your_api_key_here"
+        "BUILDD_WORKSPACE": "optional-workspace-id"
       }
     }
   }
 }
 ```
 
-3. **Enable MCP servers** in `~/.claude/settings.json`:
-
-```json
-{
-  "enableAllProjectMcpServers": true
-}
-```
-
-4. **Restart Claude Code** to load the MCP server
+The MCP server reads your API key from `~/.buildd/config.json` automatically. You can override with env vars if needed.
 
 ## Available Tools
 
@@ -42,6 +62,9 @@ Connect Claude Code directly to buildd for task management.
 | `buildd_update_progress` | Report progress (0-100%) |
 | `buildd_complete_task` | Mark task as done |
 | `buildd_fail_task` | Mark task as failed |
+| `buildd_create_task` | Create a new task (admin) |
+| `buildd_search_memory` | Search workspace observations |
+| `buildd_save_memory` | Save an observation |
 
 ## Usage
 
@@ -56,5 +79,7 @@ Just ask Claude Code:
 
 | Variable | Description |
 |----------|-------------|
-| `BUILDD_SERVER` | API server URL (default: https://buildd.dev) |
-| `BUILDD_API_KEY` | Your API key from the dashboard |
+| `BUILDD_SERVER` | API server URL (default: config.json or https://buildd.dev) |
+| `BUILDD_API_KEY` | API key (default: reads from `~/.buildd/config.json`) |
+| `BUILDD_WORKSPACE` | Filter to a specific workspace ID |
+| `BUILDD_WORKER_ID` | Worker context for subtask creation |
