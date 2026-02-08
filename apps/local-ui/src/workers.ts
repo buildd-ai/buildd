@@ -186,10 +186,11 @@ export class WorkerManager {
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
 
-    // Send heartbeat every 30s to announce availability (also send immediately)
+    // Send heartbeat to register availability (immediate + periodic)
+    // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
       this.sendHeartbeat();
-      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 30_000);
+      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 5 * 60_000); // Every 5 minutes
     }
 
     // Initialize Pusher if configured
