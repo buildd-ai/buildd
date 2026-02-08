@@ -13,6 +13,16 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+// Mock api-auth - authenticateApiKey delegates to mockAccountsFindFirst
+mock.module('@/lib/api-auth', () => ({
+  authenticateApiKey: async (apiKey: string | null) => {
+    if (!apiKey) return null;
+    return mockAccountsFindFirst();
+  },
+  hashApiKey: (key: string) => `hashed_${key}`,
+  extractApiKeyPrefix: (key: string) => key.substring(0, 12),
+}));
+
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {

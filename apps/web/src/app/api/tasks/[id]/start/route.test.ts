@@ -11,6 +11,13 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+// Mock api-auth
+mock.module('@/lib/api-auth', () => ({
+  authenticateApiKey: async () => null,
+  hashApiKey: (key: string) => `hashed_${key}`,
+  extractApiKeyPrefix: (key: string) => key.substring(0, 12),
+}));
+
 // Mock pusher
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
