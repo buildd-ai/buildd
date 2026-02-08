@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 
-const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
+const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes (heartbeat every 5 min + buffer)
 
 /**
  * GET /api/workers/active
