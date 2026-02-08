@@ -7,6 +7,8 @@ const mockAccountsFindMany = mock(() => [] as any[]);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
+const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
+const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -14,6 +16,11 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/api-auth', () => ({
   hashApiKey: (key: string) => `hashed_${key}`,
+}));
+
+mock.module('@/lib/redis', () => ({
+  getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
+  setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -57,6 +64,12 @@ describe('GET /api/workers/active', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockHeartbeatsFindMany.mockReset();
+    mockGetCachedOpenWorkspaceIds.mockReset();
+    mockSetCachedOpenWorkspaceIds.mockReset();
+
+    // Default mocks for Redis
+    mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
+    mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
   });
 
   it('returns 401 when no auth', async () => {
