@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import type { LocalUIConfig } from './types';
+import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
@@ -40,6 +40,10 @@ interface SavedConfig {
   localUiUrl?: string; // Direct access URL override (Tailscale IP, Coder subdomain, etc.)
   pusherKey?: string; // Pusher public key for realtime events
   pusherCluster?: string; // Pusher cluster (e.g. 'us2')
+  // LLM provider settings
+  llmProvider?: LLMProvider; // 'anthropic' or 'openrouter'
+  llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
+  llmBaseUrl?: string; // Custom base URL
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -58,6 +62,9 @@ function loadSavedConfig(): SavedConfig {
         localUiUrl: data.localUiUrl,
         pusherKey: data.pusherKey,
         pusherCluster: data.pusherCluster,
+        llmProvider: data.llmProvider,
+        llmApiKey: data.llmApiKey,
+        llmBaseUrl: data.llmBaseUrl,
       };
     }
   } catch (err) {
@@ -242,14 +249,33 @@ function resolveLocalUiUrl(): string {
 
 const resolvedLocalUiUrl = resolveLocalUiUrl();
 
+// Build LLM provider config
+function buildProviderConfig(): ProviderConfig | undefined {
+  const provider = (process.env.LLM_PROVIDER || savedConfig.llmProvider || 'anthropic') as LLMProvider;
+  if (provider === 'anthropic') {
+    // Default Anthropic - no special config needed (uses ANTHROPIC_API_KEY or Claude OAuth)
+    return undefined;
+  }
+
+  // OpenRouter or custom provider
+  return {
+    provider,
+    apiKey: process.env.LLM_API_KEY || savedConfig.llmApiKey,
+    baseUrl: process.env.LLM_BASE_URL || savedConfig.llmBaseUrl ||
+      (provider === 'openrouter' ? 'https://openrouter.ai/api' : undefined),
+  };
+}
+
 // Build runtime config
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
-  builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://app.buildd.dev',
+  builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || '',  // Empty = SDK default (always latest)
+  model: process.env.MODEL || savedConfig.model || 'claude-opus-4-6',
+  // LLM provider (OpenRouter, etc.)
+  llmProvider: buildProviderConfig(),
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (auto-detected or explicit override)
@@ -454,6 +480,10 @@ const server = Bun.serve({
         openBrowser: savedConfig.openBrowser !== false, // default true
         accountId: currentAccountId,
         outboxCount: outbox.count(),
+        // LLM provider info
+        llmProvider: config.llmProvider?.provider || 'anthropic',
+        llmBaseUrl: config.llmProvider?.baseUrl,
+        hasLlmApiKey: !!config.llmProvider?.apiKey,
       }, { headers: corsHeaders });
     }
 
@@ -529,21 +559,21 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { model } = body;
 
-      // Accept empty string (SDK default) or any claude-* model ID
-      if (model !== '' && (typeof model !== 'string' || !model.startsWith('claude-'))) {
-        return Response.json({ error: 'Invalid model — must be empty (default) or a claude-* model ID' }, { status: 400, headers: corsHeaders });
+      const validModels = [
+        'claude-opus-4-6',
+        'claude-opus-4-5-20251101',
+        'claude-sonnet-4-5-20250929',
+        'claude-haiku-4-5-20251001',
+      ];
+
+      if (!model || !validModels.includes(model)) {
+        return Response.json({ error: 'Invalid model' }, { status: 400, headers: corsHeaders });
       }
 
       config.model = model;
-      saveConfig({ model: model || undefined }); // Don't persist empty string
+      saveConfig({ model });
 
       return Response.json({ ok: true, model }, { headers: corsHeaders });
-    }
-
-    // Get available models (cached from first worker's supportedModels() call)
-    if (path === '/api/config/models' && req.method === 'GET') {
-      const cached = workerManager?.getCachedModels() || [];
-      return Response.json({ models: cached }, { headers: corsHeaders });
     }
 
     // Toggle accept remote tasks setting
@@ -596,6 +626,60 @@ const server = Bun.serve({
       saveConfig({ maxConcurrent });
 
       return Response.json({ ok: true, maxConcurrent }, { headers: corsHeaders });
+    }
+
+    // Update LLM provider settings (OpenRouter, etc.)
+    if (path === '/api/config/llm-provider' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { provider, apiKey: llmApiKey, baseUrl } = body;
+
+      const validProviders = ['anthropic', 'openrouter'];
+      if (!provider || !validProviders.includes(provider)) {
+        return Response.json({ error: 'Invalid provider. Must be: anthropic, openrouter' }, { status: 400, headers: corsHeaders });
+      }
+
+      if (provider === 'openrouter' && !llmApiKey) {
+        return Response.json({ error: 'OpenRouter requires an API key (sk-or-...)' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Update config
+      if (provider === 'anthropic') {
+        config.llmProvider = undefined;
+        saveConfig({ llmProvider: 'anthropic', llmApiKey: undefined, llmBaseUrl: undefined });
+      } else {
+        config.llmProvider = {
+          provider,
+          apiKey: llmApiKey,
+          baseUrl: baseUrl || 'https://openrouter.ai/api',
+        };
+        saveConfig({
+          llmProvider: provider,
+          llmApiKey: llmApiKey,
+          llmBaseUrl: baseUrl || 'https://openrouter.ai/api',
+        });
+      }
+
+      // Reinitialize worker manager with new provider config
+      if (workerManager) {
+        workerManager.destroy();
+        workerManager = new WorkerManager(config, resolver);
+        workerManager.onEvent(broadcast);
+      }
+
+      return Response.json({
+        ok: true,
+        provider,
+        baseUrl: config.llmProvider?.baseUrl,
+      }, { headers: corsHeaders });
+    }
+
+    // Get LLM provider info
+    if (path === '/api/config/llm-provider' && req.method === 'GET') {
+      return Response.json({
+        provider: config.llmProvider?.provider || 'anthropic',
+        baseUrl: config.llmProvider?.baseUrl,
+        hasApiKey: !!config.llmProvider?.apiKey,
+      }, { headers: corsHeaders });
     }
 
     // Set API key

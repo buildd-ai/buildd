@@ -18,19 +18,26 @@ export const config = {
 
   databaseUrl: required('DATABASE_URL'),
 
+  // LLM configuration
   anthropicApiKey: required('ANTHROPIC_API_KEY'),
-  anthropicModel: optional('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929'),
-  
+  anthropicModel: optional('ANTHROPIC_MODEL', 'claude-opus-4-6'),
+  // Custom LLM provider (e.g., 'openrouter')
+  llmProvider: optional('LLM_PROVIDER', 'anthropic'),
+  // Custom base URL for OpenRouter or other providers
+  llmBaseUrl: optional('LLM_BASE_URL', ''),
+  // Provider-specific API key (e.g., OpenRouter key)
+  llmApiKey: optional('LLM_API_KEY', ''),
+
   storageEndpoint: optional('STORAGE_ENDPOINT', ''),
   storageRegion: optional('STORAGE_REGION', 'auto'),
   storageBucket: optional('STORAGE_BUCKET', 'buildd-artifacts'),
   storageAccessKey: optional('STORAGE_ACCESS_KEY', ''),
   storageSecretKey: optional('STORAGE_SECRET_KEY', ''),
   storagePublicUrl: optional('STORAGE_PUBLIC_URL', ''),
-  
+
   defaultBranchPrefix: optional('DEFAULT_BRANCH_PREFIX', 'buildd/'),
   worktreeBasePath: optional('WORKTREE_BASE_PATH', '/tmp/buildd-worktrees'),
-  
+
   maxTurns: parseInt(optional('MAX_TURNS', '100')),
   maxCostPerWorker: parseFloat(optional('MAX_COST_PER_WORKER', '10.0')),
 } as const;

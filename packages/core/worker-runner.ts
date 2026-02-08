@@ -38,6 +38,16 @@ export class WorkerRunner extends EventEmitter {
 
       const fullPrompt = this.buildPrompt(prompt, worker);
 
+      // Build environment with LLM provider config
+      const env = { ...process.env };
+      if (config.llmProvider === 'openrouter' || config.llmBaseUrl) {
+        env.ANTHROPIC_BASE_URL = config.llmBaseUrl || 'https://openrouter.ai/api';
+        if (config.llmApiKey) {
+          env.ANTHROPIC_AUTH_TOKEN = config.llmApiKey;
+          env.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
+        }
+      }
+
       for await (const message of query({
         prompt: fullPrompt,
         options: {
@@ -45,6 +55,7 @@ export class WorkerRunner extends EventEmitter {
           model: config.anthropicModel,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
+          env,
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],

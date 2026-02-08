@@ -134,6 +134,18 @@ export interface WorkerCommand {
   timestamp: number;
 }
 
+// Provider configuration for LLM routing
+export type LLMProvider = 'anthropic' | 'openrouter';
+
+export interface ProviderConfig {
+  provider: LLMProvider;
+  // For OpenRouter: the API key (sk-or-...)
+  // For Anthropic: uses ANTHROPIC_API_KEY or Claude Code OAuth
+  apiKey?: string;
+  // Custom base URL (e.g., https://openrouter.ai/api)
+  baseUrl?: string;
+}
+
 // Config
 export interface LocalUIConfig {
   projectsRoot: string;  // Primary root (backwards compat)
@@ -142,6 +154,8 @@ export interface LocalUIConfig {
   apiKey: string;
   maxConcurrent: number;
   model: string;
+  // LLM provider configuration (default: anthropic)
+  llmProvider?: ProviderConfig;
   // Serverless mode (no server connection)
   serverless?: boolean;
   // Direct access URL for this local-ui instance

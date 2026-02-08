@@ -1,5 +1,4 @@
-import { query, createSdkMcpServer, tool, type SDKMessage, type SDKUserMessage, type McpSdkServerConfigWithInstance, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
+import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
@@ -8,32 +7,6 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import Pusher from 'pusher-js';
-
-// Planning mode system prompt - instructs agent to investigate and propose a plan
-const PLANNING_SYSTEM_PROMPT = `
-## PLANNING MODE - READ CAREFULLY
-
-This is a PLANNING task. You must NOT implement any changes yet. Instead:
-
-1. **Investigate the codebase** - Use Read, Glob, Grep to understand the relevant code
-2. **Analyze the requirements** - Break down what needs to be done
-3. **Propose implementation approaches** - Describe 2-3 possible approaches with trade-offs
-4. **Recommend the best approach** - Explain your recommendation and why
-
-When you have completed your investigation and are ready to submit your plan, use the
-\`mcp__buildd__submit_plan\` tool with your complete plan in markdown format.
-
-Your plan should include:
-- **Summary**: Brief overview of the task
-- **Key Files**: Files that will need to be modified
-- **Approach Options**: 2-3 implementation approaches with pros/cons
-- **Recommended Approach**: Your recommendation with justification
-- **Implementation Steps**: Ordered list of changes to make
-- **Risk Assessment**: Potential issues and how to mitigate them
-
-DO NOT make any file edits, writes, or run any commands that modify files. Only investigate and plan.
-After submitting your plan, STOP and wait for the task author to approve before proceeding.
-`;
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -143,9 +116,6 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
-// Plan submission callback type
-type PlanSubmissionCallback = (workerId: string, plan: string) => Promise<void>;
-
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -161,13 +131,11 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
-  private planSubmissionCallbacks = new Map<string, PlanSubmissionCallback>();
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
-  private cachedModels: Array<{ id: string; name: string; description?: string }> = [];
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -398,8 +366,8 @@ export class WorkerManager {
         }
 
         if (parsed?.type === 'request_plan') {
-          // Inject planning prompt as a follow-up message
-          const planMessage = `**PLAN REQUESTED:** Please pause implementation and submit a plan for review. Investigate the codebase, then call the \`submit_plan\` MCP tool with your implementation plan in markdown format. ${parsed.message || ''}`;
+          // Inject planning prompt — agent will use native EnterPlanMode/ExitPlanMode flow
+          const planMessage = `**PLAN REQUESTED:** Please pause implementation and propose a plan for review. Use EnterPlanMode to investigate the codebase and plan your approach, then use ExitPlanMode to submit the plan for approval. ${parsed.message || ''}`;
           await this.sendMessage(worker.id, planMessage);
         } else if (response.instructions) {
           // Regular instruction - inject as message
@@ -586,86 +554,6 @@ export class WorkerManager {
     return worker;
   }
 
-  // Create MCP server for planning mode with plan submission tool
-  private createPlanningMcpServer(worker: LocalWorker): McpSdkServerConfigWithInstance {
-    return createSdkMcpServer({
-      name: 'buildd',
-      version: '1.0.0',
-      tools: [
-        tool(
-          'submit_plan',
-          'Submit your implementation plan for review. Call this when you have completed investigating the codebase and are ready to propose your implementation approach. The plan will be reviewed by the task author before any implementation begins.',
-          { plan: z.string().describe('The complete implementation plan in markdown format') },
-          async ({ plan }) => {
-            console.log(`[Worker ${worker.id}] Plan submitted (${plan.length} chars)`);
-
-            // Store plan as artifact via buildd API
-            try {
-              await this.buildd.submitPlan(worker.id, plan);
-              this.addMilestone(worker, 'Plan submitted for review');
-              worker.currentAction = 'Awaiting plan approval';
-              this.emit({ type: 'worker_update', worker });
-            } catch (err) {
-              console.error(`[Worker ${worker.id}] Failed to submit plan:`, err);
-            }
-
-            return {
-              content: [{
-                type: 'text' as const,
-                text: 'Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.',
-              }],
-            };
-          }
-        ),
-      ],
-    });
-  }
-
-  // Create MCP server for execution mode with memory tools
-  private createExecutionMcpServer(workspaceId: string): McpSdkServerConfigWithInstance {
-    return createSdkMcpServer({
-      name: 'buildd',
-      version: '1.0.0',
-      tools: [
-        tool(
-          'search_memory',
-          'Search workspace memory for relevant observations, gotchas, and past task summaries. Use this to find context about the codebase, past decisions, and known issues.',
-          { query: z.string().describe('Search query — keywords, file names, concepts, or error messages') },
-          async ({ query: searchQuery }) => {
-            try {
-              const results = await this.buildd.searchObservations(workspaceId, searchQuery, 10);
-              if (results.length === 0) {
-                return { content: [{ type: 'text' as const, text: 'No matching memories found.' }] };
-              }
-              const fullObs = await this.buildd.getBatchObservations(workspaceId, results.map(r => r.id));
-              const text = fullObs.map(o => `### [${o.type}] ${o.title}\n${o.content}`).join('\n\n');
-              return { content: [{ type: 'text' as const, text }] };
-            } catch (err) {
-              return { content: [{ type: 'text' as const, text: `Memory search failed: ${err}` }] };
-            }
-          }
-        ),
-        tool(
-          'save_memory',
-          'Save an observation to workspace memory for future agents. Use this to record gotchas, architectural decisions, debugging insights, or important patterns discovered during the task.',
-          {
-            title: z.string().describe('Short descriptive title'),
-            content: z.string().describe('Detailed observation content'),
-            type: z.string().describe('Type: gotcha, pattern, decision, summary, or note').default('note'),
-          },
-          async ({ title, content, type }) => {
-            try {
-              await this.buildd.createObservation(workspaceId, { type, title, content });
-              return { content: [{ type: 'text' as const, text: `Memory saved: "${title}"` }] };
-            } catch (err) {
-              return { content: [{ type: 'text' as const, text: `Failed to save memory: ${err}` }] };
-            }
-          }
-        ),
-      ],
-    });
-  }
-
   // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
   // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
   // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
@@ -841,7 +729,7 @@ export class WorkerManager {
         if (compactResult.markdown) {
           let digest = compactResult.markdown;
           if (digest.length > MAX_MEMORY_BYTES) {
-            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `mcp__buildd__search_memory` for more)*';
+            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `buildd_search_memory` for more)*';
           }
           memoryContext.push(digest);
         }
@@ -863,7 +751,7 @@ export class WorkerManager {
           }
         }
 
-        memoryContext.push('\nUse `mcp__buildd__search_memory` for more context and `mcp__buildd__save_memory` to record learnings.');
+        memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
         promptParts.push(memoryContext.join('\n'));
       }
 
@@ -888,81 +776,65 @@ export class WorkerManager {
         )
       );
 
+      // Inject LLM provider config into environment (for OpenRouter, etc.)
+      // The Claude Agent SDK reads ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
+      if (this.config.llmProvider?.provider === 'openrouter') {
+        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl || 'https://openrouter.ai/api';
+        cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey || '';
+        cleanEnv.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
+        console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
+      } else if (this.config.llmProvider?.baseUrl) {
+        // Custom provider with base URL
+        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl;
+        if (this.config.llmProvider.apiKey) {
+          cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
+          cleanEnv.ANTHROPIC_API_KEY = '';
+        }
+      }
+
       // Determine whether to load CLAUDE.md
       // Default to true if not configured, respect admin setting if configured
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
 
-      // Check if task is in planning mode
-      const isPlanningMode = task.mode === 'planning';
-
       // Resolve permission mode
       const bypassPermissions = this.resolveBypassPermissions(workspaceConfig);
-      let permissionMode: 'plan' | 'acceptEdits' | 'bypassPermissions';
-      if (isPlanningMode) {
-        permissionMode = 'plan';
-      } else if (bypassPermissions) {
-        permissionMode = 'bypassPermissions';
-      } else {
-        permissionMode = 'acceptEdits';
-      }
+      const permissionMode: 'acceptEdits' | 'bypassPermissions' = bypassPermissions
+        ? 'bypassPermissions'
+        : 'acceptEdits';
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         cwd,
+        model: this.config.model,
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
         permissionMode,
-        persistSession: false, // Workers are ephemeral, don't litter ~/.claude/projects/
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
       };
 
-      // Only set model if explicitly configured (empty = SDK default, always latest)
-      if (this.config.model) {
-        queryOptions.model = this.config.model;
-      }
+      // Attach Buildd MCP server so workers can list/update/create tasks
+      const mcpServerPath = join(__dirname, '../../mcp-server/src/index.ts');
+      queryOptions.mcpServers = {
+        buildd: {
+          command: 'bun',
+          args: ['run', mcpServerPath],
+          env: {
+            BUILDD_SERVER: this.config.builddServer,
+            BUILDD_API_KEY: this.config.apiKey,
+            BUILDD_WORKSPACE_ID: task.workspaceId,
+            BUILDD_WORKER_ID: worker.id,
+          },
+        },
+      };
 
-      // Required when using bypassPermissions mode — without it SDK falls back to default mode
-      if (permissionMode === 'bypassPermissions') {
-        queryOptions.allowDangerouslySkipPermissions = true;
-      }
-
-      // Attach permission hook for execution mode (blocks dangerous commands, allows safe bash)
-      if (!isPlanningMode) {
-        queryOptions.hooks = {
-          PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
-        };
-      }
-
-      // Configure system prompt based on mode
-      if (isPlanningMode) {
-        // Planning mode: append planning instructions to system prompt
-        queryOptions.systemPrompt = {
-          type: 'preset',
-          preset: 'claude_code',
-          append: PLANNING_SYSTEM_PROMPT,
-        };
-        // Add MCP server for plan submission
-        queryOptions.mcpServers = {
-          buildd: this.createPlanningMcpServer(worker),
-        };
-        // Only allow read-only tools in planning mode
-        queryOptions.allowedTools = [
-          'Read', 'Glob', 'Grep', 'Task', 'WebSearch', 'WebFetch',
-          'mcp__buildd__submit_plan',
-        ];
-        this.addMilestone(worker, 'Planning mode started');
-        worker.currentAction = 'Investigating codebase...';
-        this.emit({ type: 'worker_update', worker });
-      } else {
-        // Execution mode: standard claude_code preset + memory MCP tools
-        queryOptions.systemPrompt = { type: 'preset', preset: 'claude_code' };
-        queryOptions.mcpServers = {
-          buildd: this.createExecutionMcpServer(task.workspaceId),
-        };
-      }
+      // Attach permission hook (blocks dangerous commands, allows safe bash)
+      queryOptions.hooks = {
+        PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
+      };
 
       // Start query with full options
       const queryInstance = query({
@@ -970,18 +842,8 @@ export class WorkerManager {
         options: queryOptions,
       });
 
-      // Cache supported models from the first query (non-blocking)
-      if (this.cachedModels.length === 0) {
-        queryInstance.supportedModels().then(models => {
-          // SDK 0.2.37 uses `value`/`displayName`, normalize to `id`/`name` for our API
-          this.cachedModels = models.map(m => ({
-            id: (m as any).value || (m as any).id,
-            name: (m as any).displayName || (m as any).name,
-            description: (m as any).description,
-          }));
-          console.log(`Cached ${this.cachedModels.length} supported models`);
-        }).catch(() => { /* non-fatal */ });
-      }
+      // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
+      queryInstance.streamInput(inputStream);
 
       // Stream responses
       for await (const msg of queryInstance) {
@@ -1210,6 +1072,28 @@ export class WorkerManager {
                 type: 'question',
                 prompt: firstQuestion?.question || 'Awaiting input',
                 options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+              },
+            }).catch(() => {});
+          } else if (toolName === 'ExitPlanMode') {
+            // Agent finished planning and wants approval before implementing
+            worker.status = 'waiting';
+            worker.waitingFor = {
+              type: 'plan_approval',
+              prompt: 'Agent has proposed a plan. Review the plan above, then approve or request changes.',
+              options: [
+                { label: 'Approve & implement', description: 'Let the agent proceed with the plan' },
+                { label: 'Request changes', description: 'Ask the agent to revise its approach' },
+              ],
+            };
+            worker.currentAction = 'Awaiting plan approval';
+            this.addMilestone(worker, 'Plan ready for review');
+            this.buildd.updateWorker(worker.id, {
+              status: 'waiting_input',
+              currentAction: worker.currentAction,
+              waitingFor: {
+                type: 'plan_approval',
+                prompt: worker.waitingFor.prompt,
+                options: ['Approve & implement', 'Request changes'],
               },
             }).catch(() => {});
           }
@@ -1719,10 +1603,6 @@ export class WorkerManager {
     } catch {}
 
     return stats;
-  }
-
-  getCachedModels(): Array<{ id: string; name: string; description?: string }> {
-    return this.cachedModels;
   }
 
   destroy() {
