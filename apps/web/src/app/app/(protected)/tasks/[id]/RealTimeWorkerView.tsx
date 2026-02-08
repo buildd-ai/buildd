@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
-import PlanReviewPanel from './PlanReviewPanel';
+
 
 interface Worker {
   id: string;
@@ -36,6 +36,88 @@ interface Worker {
 interface Props {
   initialWorker: Worker;
   statusColors: Record<string, string>;
+}
+
+// Probe direct connection to local-ui and cache viewer token
+function useDirectConnect(localUiUrl: string | null) {
+  const [status, setStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking');
+  const viewerTokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!localUiUrl) {
+      setStatus('unavailable');
+      return;
+    }
+
+    // Mixed content: HTTPS dashboard can't reach HTTP local-ui
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && localUiUrl.startsWith('http://')) {
+      setStatus('unavailable');
+      return;
+    }
+
+    let cancelled = false;
+
+    const url = localUiUrl; // capture for closure narrowing
+
+    async function probe() {
+      try {
+        // Fetch viewer token from heartbeat data
+        const activeRes = await fetch('/api/workers/active');
+        if (activeRes.ok) {
+          const data = await activeRes.json();
+          const match = (data.activeLocalUis || []).find(
+            (ui: { localUiUrl: string; viewerToken?: string }) => ui.localUiUrl === url
+          );
+          if (match?.viewerToken) {
+            viewerTokenRef.current = match.viewerToken;
+          }
+        }
+
+        // Ping local-ui health endpoint
+        const healthUrl = new URL('/health', url);
+        if (viewerTokenRef.current) {
+          healthUrl.searchParams.set('token', viewerTokenRef.current);
+        }
+        const res = await fetch(healthUrl.toString(), {
+          signal: AbortSignal.timeout(3000),
+          mode: 'cors',
+        });
+        if (!cancelled && res.ok) {
+          setStatus('connected');
+        } else if (!cancelled) {
+          setStatus('unavailable');
+        }
+      } catch {
+        if (!cancelled) setStatus('unavailable');
+      }
+    }
+
+    probe();
+    return () => { cancelled = true; };
+  }, [localUiUrl]);
+
+  // Send message directly to local-ui, returns true on success
+  const sendDirect = useCallback(async (workerId: string, message: string): Promise<boolean> => {
+    if (status !== 'connected' || !localUiUrl) return false;
+    try {
+      const sendUrl = new URL(`/api/workers/${workerId}/send`, localUiUrl);
+      if (viewerTokenRef.current) {
+        sendUrl.searchParams.set('token', viewerTokenRef.current);
+      }
+      const res = await fetch(sendUrl.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+        signal: AbortSignal.timeout(5000),
+        mode: 'cors',
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, [status, localUiUrl]);
+
+  return { status, sendDirect };
 }
 
 function RequestPlanButton({ workerId }: { workerId: string }) {
@@ -89,8 +171,11 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [actionLog, setActionLog] = useState<string[]>([]);
+  const [answerSending, setAnswerSending] = useState<string | null>(null);
+  const [answerSent, setAnswerSent] = useState(false);
   const outputRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
+  const { status: directStatus, sendDirect } = useDirectConnect(worker.localUiUrl);
 
   // Track action history for output display
   useEffect(() => {
@@ -125,28 +210,11 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       channel.bind('worker:progress', handleUpdate);
       channel.bind('worker:completed', handleUpdate);
       channel.bind('worker:failed', handleUpdate);
-      channel.bind('worker:plan_approved', handleUpdate);
-      channel.bind('worker:plan_revision_requested', handleUpdate);
-
-      // Auto-show plan panel when plan is submitted
-      const handlePlanSubmitted = (data: { worker: Worker }) => {
-        console.log('[RealTimeWorkerView] Plan submitted:', data.worker?.status);
-        setWorker(data.worker);
-      };
-      channel.bind('worker:plan_submitted', handlePlanSubmitted);
-
-      // Log all events for debugging
-      channel.bind_global((eventName: string, data: unknown) => {
-        console.log('[RealTimeWorkerView] Event received:', eventName, data);
-      });
 
       return () => {
         channel.unbind('worker:progress', handleUpdate);
         channel.unbind('worker:completed', handleUpdate);
         channel.unbind('worker:failed', handleUpdate);
-        channel.unbind('worker:plan_approved', handleUpdate);
-        channel.unbind('worker:plan_revision_requested', handleUpdate);
-        channel.unbind('worker:plan_submitted', handlePlanSubmitted);
         unsubscribeFromChannel(channelName);
       };
     } else {
@@ -162,7 +230,38 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   };
 
-  const isActive = ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(worker.status);
+  // Send answer: try direct connect first, fall back to server instruct
+  async function handleAnswer(option: string) {
+    setAnswerSending(option);
+    try {
+      // Try direct connection first (instant delivery via Tailscale/LAN)
+      const directOk = await sendDirect(worker.id, option);
+      if (directOk) {
+        setAnswerSent(true);
+        setTimeout(() => setAnswerSent(false), 3000);
+        return;
+      }
+
+      // Fall back to server-side instruct endpoint (queued delivery)
+      const res = await fetch(`/api/workers/${worker.id}/instruct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: option }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to send answer');
+      }
+      setAnswerSent(true);
+      setTimeout(() => setAnswerSent(false), 3000);
+    } catch (err) {
+      console.error('Failed to send answer:', err);
+    } finally {
+      setAnswerSending(null);
+    }
+  }
+
+  const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
 
   return (
     <div className="border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded-lg p-4">
@@ -176,14 +275,25 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             {worker.status}
           </span>
           {worker.localUiUrl && (
-            <a
-              href={`${worker.localUiUrl}/worker/${worker.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
-            >
-              Open Terminal
-            </a>
+            <div className="flex items-center gap-1.5">
+              {directStatus === 'connected' && (
+                <span
+                  className="flex items-center gap-1 px-2 py-1 text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-full"
+                  title="Direct connection to local-ui available (Tailscale/LAN)"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Direct
+                </span>
+              )}
+              <a
+                href={`${worker.localUiUrl}/worker/${worker.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
+              >
+                Open Terminal
+              </a>
+            </div>
           )}
         </div>
       </div>
@@ -208,23 +318,28 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
             </span>
             <span data-testid="worker-needs-input-label" className="text-xs font-medium text-purple-700 dark:text-purple-300 uppercase">Needs input</span>
+            {directStatus === 'connected' && (
+              <span className="text-[10px] text-emerald-600 dark:text-emerald-400">instant delivery</span>
+            )}
           </div>
           <p data-testid="worker-needs-input-prompt" className="text-sm text-gray-800 dark:text-gray-200">{worker.waitingFor.prompt}</p>
-          {worker.waitingFor.options && worker.waitingFor.options.length > 0 && (
-            <div data-testid="worker-needs-input-options" className="flex flex-wrap gap-2 mt-2">
+          {answerSent ? (
+            <p className="mt-2 text-sm text-green-600 dark:text-green-400">Answer sent</p>
+          ) : worker.waitingFor.options && worker.waitingFor.options.length > 0 ? (
+            <div data-testid="worker-needs-input-options" className="flex flex-wrap gap-2 mt-3">
               {worker.waitingFor.options.map((opt, i) => (
-                <span key={i} className="px-2 py-1 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 rounded">
-                  {opt}
-                </span>
+                <button
+                  key={i}
+                  onClick={() => handleAnswer(opt)}
+                  disabled={answerSending !== null}
+                  className="px-3 py-1.5 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 rounded-lg border border-purple-200 dark:border-purple-700 hover:bg-purple-200 dark:hover:bg-purple-800/60 hover:border-purple-400 dark:hover:border-purple-500 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  {answerSending === opt ? 'Sending...' : opt}
+                </button>
               ))}
             </div>
-          )}
+          ) : null}
         </div>
-      )}
-
-      {/* Plan review panel */}
-      {worker.status === 'awaiting_plan_approval' && (
-        <PlanReviewPanel workerId={worker.id} />
       )}
 
       {/* Terminal-style output box */}
