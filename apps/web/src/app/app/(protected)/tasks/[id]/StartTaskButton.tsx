@@ -2,17 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-
-interface ActiveLocalUi {
-  localUiUrl: string;
-  accountId: string;
-  accountName: string;
-  maxConcurrent: number;
-  activeWorkers: number;
-  capacity: number;
-  workspaceIds: string[];
-  workspaceNames: string[];
-}
+import { useLocalUiHealth } from '../useLocalUiHealth';
 
 interface Props {
   taskId: string;
@@ -24,7 +14,7 @@ const ASSIGNMENT_TIMEOUT_MS = 8000;
 export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [activeLocalUis, setActiveLocalUis] = useState<ActiveLocalUi[]>([]);
+  const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed'>('idle');
   const [countdown, setCountdown] = useState(0);
@@ -32,30 +22,6 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
-
-  // Fetch available workers when modal opens
-  useEffect(() => {
-    if (!showModal) return;
-
-    async function fetchWorkers() {
-      try {
-        const res = await fetch('/api/workers/active');
-        if (res.ok) {
-          const data = await res.json();
-          // Filter to workers that have capacity and can work on this workspace
-          const available = (data.activeLocalUis || []).filter(
-            (ui: ActiveLocalUi) =>
-              ui.capacity > 0 && ui.workspaceIds.includes(workspaceId)
-          );
-          setActiveLocalUis(available);
-        }
-      } catch {
-        // Silently fail
-      }
-    }
-
-    fetchWorkers();
-  }, [showModal, workspaceId]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -303,7 +269,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       <option value="">Any available worker</option>
                       {activeLocalUis.map((ui) => (
                         <option key={ui.localUiUrl} value={ui.localUiUrl}>
-                          {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available)
+                          {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''}{ui.live ? ' — live' : ''})
                         </option>
                       ))}
                     </select>
