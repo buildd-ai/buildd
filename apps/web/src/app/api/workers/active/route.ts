@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, accounts, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
-import { eq, gt } from 'drizzle-orm';
+import { eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 
@@ -61,11 +61,40 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     }
     return result;
   }
-  // Session auth: get workspaces owned by user
-  return db.query.workspaces.findMany({
+  // Session auth: get workspaces owned by user + accessible through their accounts + open
+  const ownedWs = await db.query.workspaces.findMany({
     where: eq(workspaces.ownerId, auth.user.id),
     columns: { id: true, name: true },
   });
+  // Workspaces accessible through user's accounts
+  const userAccounts = await db.query.accounts.findMany({
+    where: eq(accounts.ownerId, auth.user.id),
+    columns: { id: true },
+  });
+  let linkedWs: { id: string; name: string }[] = [];
+  if (userAccounts.length > 0) {
+    const allAw = await db.query.accountWorkspaces.findMany({
+      where: inArray(accountWorkspaces.accountId, userAccounts.map(a => a.id)),
+      with: { workspace: { columns: { id: true, name: true } } },
+    });
+    linkedWs = allAw.map(a => a.workspace);
+  }
+  const openWs = await db.query.workspaces.findMany({
+    where: eq(workspaces.accessMode, 'open'),
+    columns: { id: true, name: true },
+  });
+  const seen = new Set<string>();
+  const result: { id: string; name: string }[] = [];
+  for (const w of ownedWs) {
+    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
+  }
+  for (const w of linkedWs) {
+    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
+  }
+  for (const w of openWs) {
+    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
+  }
+  return result;
 }
 
 export async function GET(req: NextRequest) {
