@@ -4,6 +4,7 @@ import { accountWorkspaces, accounts, workerHeartbeats, workspaces } from '@buil
 import { eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
+import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -47,11 +48,24 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
       where: eq(accountWorkspaces.accountId, auth.account.id),
       with: { workspace: { columns: { id: true, name: true } } },
     });
-    const openWs = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
-      columns: { id: true, name: true },
-      limit: 100, // Limit open workspaces to prevent excessive data transfer
-    });
+    // Try Redis cache first for open workspaces
+    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
+    let openWs: { id: string; name: string }[];
+    if (openWorkspaceIds) {
+      // Cache hit - fetch names only for the cached IDs
+      openWs = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, openWorkspaceIds),
+        columns: { id: true, name: true },
+      });
+    } else {
+      // Cache miss - query DB and cache IDs
+      openWs = await db.query.workspaces.findMany({
+        where: eq(workspaces.accessMode, 'open'),
+        columns: { id: true, name: true },
+        limit: 100,
+      });
+      await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
+    }
     const seen = new Set<string>();
     const result: { id: string; name: string }[] = [];
     for (const a of aw) {
@@ -80,11 +94,24 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     });
     linkedWs = allAw.map(a => a.workspace);
   }
-  const openWs = await db.query.workspaces.findMany({
-    where: eq(workspaces.accessMode, 'open'),
-    columns: { id: true, name: true },
-    limit: 100, // Limit open workspaces to prevent excessive data transfer
-  });
+  // Try Redis cache first for open workspaces
+  let openWorkspaceIds = await getCachedOpenWorkspaceIds();
+  let openWs: { id: string; name: string }[];
+  if (openWorkspaceIds) {
+    // Cache hit - fetch names only for the cached IDs
+    openWs = await db.query.workspaces.findMany({
+      where: inArray(workspaces.id, openWorkspaceIds),
+      columns: { id: true, name: true },
+    });
+  } else {
+    // Cache miss - query DB and cache IDs
+    openWs = await db.query.workspaces.findMany({
+      where: eq(workspaces.accessMode, 'open'),
+      columns: { id: true, name: true },
+      limit: 100,
+    });
+    await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
+  }
   const seen = new Set<string>();
   const result: { id: string; name: string }[] = [];
   for (const w of ownedWs) {
