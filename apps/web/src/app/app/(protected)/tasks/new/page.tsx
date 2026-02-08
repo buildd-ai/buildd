@@ -174,8 +174,9 @@ export default function NewTaskPage() {
           throw new Error(err.error || 'Failed to create task');
         }
 
+        const created = await res.json();
         localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
-        router.push('/app/tasks');
+        router.push(`/app/tasks/${created.id}`);
         router.refresh();
       }
     } catch (err: any) {
