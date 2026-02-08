@@ -123,9 +123,11 @@ function useDirectConnect(localUiUrl: string | null) {
 function RequestPlanButton({ workerId }: { workerId: string }) {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   async function handleRequestPlan() {
     setLoading(true);
+    setShowConfirm(false);
     try {
       const res = await fetch(`/api/workers/${workerId}/instruct`, {
         method: 'POST',
@@ -156,12 +158,39 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
     );
   }
 
+  if (showConfirm) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-xs text-gray-700 dark:text-gray-300 max-w-md">
+          <p className="mb-1 font-medium">Request Plan Mode?</p>
+          <p className="mb-2">The agent will pause, investigate the codebase, and write a plan in the output below. You'll then see a prompt to approve or request changes before it continues.</p>
+          <p className="text-gray-500 dark:text-gray-400 text-[11px]">The session stays alive — no restart needed.</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleRequestPlan}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+          >
+            Confirm
+          </button>
+          <button
+            onClick={() => setShowConfirm(false)}
+            className="px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <button
-      onClick={handleRequestPlan}
+      onClick={() => setShowConfirm(true)}
       disabled={loading}
       className="px-3 py-2 text-xs border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-50 whitespace-nowrap"
-      title="Ask the worker to pause and submit a plan for review"
+      title="Ask the agent to pause and propose a plan before continuing implementation"
     >
       {loading ? '...' : 'Request Plan'}
     </button>
