@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
+import { workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { randomBytes } from 'crypto';
-import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 
 /**
  * POST /api/workers/heartbeat
@@ -37,29 +36,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'localUiUrl is required' }, { status: 400 });
     }
 
-    // Get workspace IDs this account has access to (explicit links + open workspaces)
-    const accountWs = await db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.accountId, account.id),
-      columns: { workspaceId: true },
-    });
-
-    // Try Redis cache first for open workspaces (they rarely change)
-    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-    if (!openWorkspaceIds) {
-      // Cache miss - query DB and cache for 5 minutes
-      const openWs = await db.query.workspaces.findMany({
-        where: eq(workspaces.accessMode, 'open'),
-        columns: { id: true },
-        limit: 100, // Limit open workspaces to prevent excessive data transfer
-      });
-      openWorkspaceIds = openWs.map(w => w.id);
-      await setCachedOpenWorkspaceIds(openWorkspaceIds);
-    }
-
-    const workspaceIds = [...new Set([
-      ...accountWs.map(aw => aw.workspaceId),
-      ...openWorkspaceIds,
-    ])];
+    // Heartbeat is just a ping - no workspace resolution needed
+    // Workspaces are resolved on-demand in /api/workers/active
 
     const now = new Date();
 
@@ -76,12 +54,13 @@ export async function POST(req: NextRequest) {
     const viewerToken = existing?.viewerToken || randomBytes(24).toString('base64url');
 
     // Atomic upsert using unique index on (accountId, localUiUrl)
+    // Only update timestamp and worker count - workspaces resolved on-demand
     await db.insert(workerHeartbeats)
       .values({
         accountId: account.id,
         localUiUrl,
         viewerToken,
-        workspaceIds,
+        workspaceIds: [], // Deprecated - computed on-demand in /api/workers/active
         maxConcurrentWorkers: account.maxConcurrentWorkers,
         activeWorkerCount,
         lastHeartbeatAt: now,
@@ -89,7 +68,6 @@ export async function POST(req: NextRequest) {
       .onConflictDoUpdate({
         target: [workerHeartbeats.accountId, workerHeartbeats.localUiUrl],
         set: {
-          workspaceIds,
           maxConcurrentWorkers: account.maxConcurrentWorkers,
           activeWorkerCount,
           lastHeartbeatAt: now,

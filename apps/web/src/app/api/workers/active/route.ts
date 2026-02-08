@@ -152,10 +152,32 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    // Filter to only heartbeats whose workspaceIds overlap with user's workspaces
-    const activeLocalUis = heartbeats
-      .map(hb => {
-        const hbWorkspaceIds = (hb.workspaceIds || []) as string[];
+    // Compute workspace access on-demand for each heartbeat
+    // Cache open workspaces once for all heartbeats
+    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
+    if (!openWorkspaceIds) {
+      const openWs = await db.query.workspaces.findMany({
+        where: eq(workspaces.accessMode, 'open'),
+        columns: { id: true },
+        limit: 100,
+      });
+      openWorkspaceIds = openWs.map(w => w.id);
+      await setCachedOpenWorkspaceIds(openWorkspaceIds);
+    }
+
+    // Filter to only heartbeats that have access to user's workspaces
+    const activeLocalUis = await Promise.all(
+      heartbeats.map(async hb => {
+        // Compute which workspaces this heartbeat can access
+        const accountWs = await db.query.accountWorkspaces.findMany({
+          where: eq(accountWorkspaces.accountId, hb.accountId),
+          columns: { workspaceId: true },
+        });
+        const hbWorkspaceIds = [
+          ...accountWs.map(aw => aw.workspaceId),
+          ...openWorkspaceIds!,
+        ];
+
         const overlapping = hbWorkspaceIds.filter(id => workspaceIds.includes(id));
         if (overlapping.length === 0) return null;
 
@@ -172,12 +194,13 @@ export async function GET(req: NextRequest) {
           lastUpdated: hb.lastHeartbeatAt,
         };
       })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
+    );
 
-    // Sort by capacity (most available first)
-    activeLocalUis.sort((a, b) => b.capacity - a.capacity);
+    // Filter out nulls and sort by capacity (most available first)
+    const validLocalUis = activeLocalUis.filter((x): x is NonNullable<typeof x> => x !== null);
+    validLocalUis.sort((a, b) => b.capacity - a.capacity);
 
-    return NextResponse.json({ activeLocalUis });
+    return NextResponse.json({ activeLocalUis: validLocalUis });
   } catch (error) {
     console.error('Get active workers error:', error);
     return NextResponse.json({ error: 'Failed to get active workers' }, { status: 500 });
