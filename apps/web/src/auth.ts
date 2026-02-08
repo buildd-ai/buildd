@@ -6,6 +6,7 @@ import { db } from '@buildd/core/db';
 import { users, accounts, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
+import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -140,11 +141,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           })
           .returning();
 
+        const plaintextKey = generateApiKey();
         await db.insert(accounts).values({
           name: `${user.name || user.email}'s Account`,
           type: 'user',
           authType: 'oauth',
-          apiKey: generateApiKey(),
+          apiKey: hashApiKey(plaintextKey),
+          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
           maxConcurrentWorkers: 3,
           ownerId: newUser.id,
         });
