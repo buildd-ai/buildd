@@ -102,8 +102,13 @@ describe('GET /api/workers/active', () => {
     // Owned workspaces
     mockWorkspacesFindMany
       .mockResolvedValueOnce([{ id: 'ws-1', name: 'My Workspace' }]) // owned
-      .mockResolvedValueOnce([]); // open
+      .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
+      .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);
+    // Mock accountWorkspaces for heartbeat filtering
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { workspaceId: 'ws-1' },
+    ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
       {
@@ -132,9 +137,14 @@ describe('GET /api/workers/active', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(null);
     mockWorkspacesFindMany
-      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Workspace 1' }])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Workspace 1' }]) // owned
+      .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
+      .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);
+    // Mock accountWorkspaces for heartbeat filtering - returns different workspace
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { workspaceId: 'ws-other' },
+    ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
       {
