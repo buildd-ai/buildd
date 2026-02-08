@@ -13,6 +13,11 @@
  *   - Abort handling (force-stop running workers)
  *   - Follow-up messages (send to completed workers)
  *   - Concurrent worker limits (429 when at capacity)
+ *   - Observations CRUD (create, list, search, compact, batch)
+ *   - Task reassignment (pending re-broadcast, assigned rejection)
+ *   - Plan approval (submit plan, verify state, approve)
+ *   - Stale cleanup (maintenance endpoint smoke test)
+ *   - Waiting input (question/answer cycle with live worker)
  *
  * Prerequisites:
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
@@ -583,4 +588,242 @@ describe('dogfood', () => {
       } catch {}
     }
   }, 60_000);
+
+  // ---------------------------------------------------------------
+  // 9. Observations — CRUD and search
+  // ---------------------------------------------------------------
+
+  test('observations — create, list, search, compact, batch', async () => {
+    const marker = `OBS_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // Create observation
+    const { observation } = await api(`/api/workspaces/${workspaceId}/observations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'discovery',
+        title: `${marker} Test Discovery`,
+        content: `Integration test observation created by dogfood tests: ${marker}`,
+        files: ['tests/integration/dogfood.test.ts'],
+        concepts: ['testing', 'dogfood'],
+      }),
+    });
+    expect(observation.id).toBeTruthy();
+    expect(observation.type).toBe('discovery');
+
+    // List with type filter
+    const { observations } = await api(
+      `/api/workspaces/${workspaceId}/observations?type=discovery&limit=50`
+    );
+    expect(observations.some((o: any) => o.id === observation.id)).toBe(true);
+
+    // Search by marker
+    const { results } = await api(
+      `/api/workspaces/${workspaceId}/observations/search?query=${encodeURIComponent(marker)}`
+    );
+    expect(results.some((r: any) => r.id === observation.id)).toBe(true);
+
+    // Compact digest
+    const { markdown, count } = await api(
+      `/api/workspaces/${workspaceId}/observations/compact`
+    );
+    expect(count).toBeGreaterThan(0);
+    expect(markdown).toContain(marker);
+
+    // Batch get
+    const { observations: batch } = await api(
+      `/api/workspaces/${workspaceId}/observations/batch?ids=${observation.id}`
+    );
+    expect(batch.length).toBe(1);
+    expect(batch[0].id).toBe(observation.id);
+
+    // Cleanup: delete test observation
+    try {
+      await api(`/api/workspaces/${workspaceId}/observations/${observation.id}`, {
+        method: 'DELETE',
+      });
+    } catch {}
+  }, 30_000);
+
+  // ---------------------------------------------------------------
+  // 10. Task reassignment — reset and re-claim
+  // ---------------------------------------------------------------
+
+  test('task reassignment — pending re-broadcast and assigned rejection', async () => {
+    // Test A: Reassign a pending task (no force needed, just re-broadcasts)
+    const task = await createTask(workspaceId, '[DOGFOOD] Reassign test', 'Placeholder for reassign');
+
+    const reassignPending = await api(`/api/tasks/${task.id}/reassign`, {
+      method: 'POST',
+    });
+    expect(reassignPending.reassigned).toBe(true);
+
+    // Task should still be pending
+    let taskStatus = await getTaskStatus(task.id);
+    expect(taskStatus.status).toBe('pending');
+
+    // Test B: Claim the task, then try to reassign without force
+    const workerId = await serverClaim(workspaceId, task.id);
+    await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    taskStatus = await getTaskStatus(task.id);
+    expect(taskStatus.status).toBe('assigned');
+
+    // Reassign without force → should return reassigned: false
+    const { status: noForceStatus, body: noForceBody } = await apiRaw(`/api/tasks/${task.id}/reassign`, {
+      method: 'POST',
+    });
+    expect(noForceBody.reassigned).toBe(false);
+    expect(noForceBody.reason).toContain('force=true');
+
+    // Test C: Reassign with force but non-owner, non-stale → should be 403
+    const { status: forceStatus, body: forceBody } = await apiRaw(`/api/tasks/${task.id}/reassign?force=true`, {
+      method: 'POST',
+    });
+    expect(forceStatus).toBe(403);
+    expect(forceBody.reassigned).toBe(false);
+
+    // Cleanup
+    await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup' }),
+    });
+  }, 30_000);
+
+  // ---------------------------------------------------------------
+  // 11. Plan approval — submit and approve via API
+  // ---------------------------------------------------------------
+
+  test('plan approval — submit plan, verify state, approve', async () => {
+    const task = await createTask(workspaceId, '[DOGFOOD] Plan test', 'Plan: improve error handling');
+    const workerId = await serverClaim(workspaceId, task.id);
+
+    // Set worker to running
+    await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    // Submit plan
+    const planContent = '## Plan\n\n1. Add error boundaries\n2. Implement retry logic\n3. Add logging';
+    const planRes = await api(`/api/workers/${workerId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify({ plan: planContent }),
+    });
+    expect(planRes.message).toContain('Plan submitted');
+
+    // Verify worker is awaiting approval
+    const { body: workerAfterPlan } = await apiRaw(`/api/workers/${workerId}`);
+    expect(workerAfterPlan.status).toBe('awaiting_plan_approval');
+
+    // Get plan
+    const { plan: retrievedPlan } = await api(`/api/workers/${workerId}/plan`);
+    expect(retrievedPlan).toBeTruthy();
+    expect(retrievedPlan.content).toContain('error boundaries');
+
+    // Approve plan
+    const approveRes = await api(`/api/workers/${workerId}/plan/approve`, {
+      method: 'POST',
+    });
+    expect(approveRes.worker.status).toBe('running');
+
+    // Verify worker is back to running with pending instructions
+    const { body: workerAfterApprove } = await apiRaw(`/api/workers/${workerId}`);
+    expect(workerAfterApprove.status).toBe('running');
+    expect(workerAfterApprove.pendingInstructions).toContain('APPROVED');
+
+    // Cleanup
+    await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup' }),
+    });
+  }, 30_000);
+
+  // ---------------------------------------------------------------
+  // 12. Stale cleanup — maintenance endpoint smoke test
+  // ---------------------------------------------------------------
+
+  test('stale cleanup — cleanup endpoint returns correct structure', async () => {
+    const { status, body } = await apiRaw('/api/tasks/cleanup', {
+      method: 'POST',
+    });
+
+    if (status === 200) {
+      // Admin auth accepted — verify response structure
+      expect(typeof body.cleaned.stalledWorkers).toBe('number');
+      expect(typeof body.cleaned.orphanedTasks).toBe('number');
+      expect(typeof body.cleaned.expiredPlans).toBe('number');
+      expect(typeof body.cleaned.staleHeartbeats).toBe('number');
+    } else {
+      // Non-admin API key → auth error (expected)
+      expect(status).toBe(401);
+      console.log(`  Cleanup requires admin auth (got ${status}) — expected for non-admin key`);
+    }
+  }, 15_000);
+
+  // ---------------------------------------------------------------
+  // 13. Waiting input — question/answer cycle with live worker
+  // ---------------------------------------------------------------
+
+  test('waiting input — worker asks question, receives answer', async () => {
+    const marker = `INPUT_${Date.now()}`;
+
+    const task = await createTask(
+      workspaceId,
+      '[DOGFOOD] Waiting input test',
+      [
+        'You must ask the user a clarification question before doing anything else.',
+        'Use the AskUserQuestion tool to ask: "What output format?" with options "JSON" and "YAML".',
+        `After they respond, reply with exactly "CHOSEN_${marker}: [their answer]".`,
+        'Do not use any other tools. Do not skip the question.',
+      ].join(' '),
+    );
+
+    const workerId = await triggerClaim(task.id);
+
+    // Wait for worker to enter waiting state
+    let waitingFor: any = null;
+    const start = Date.now();
+    while (Date.now() - start < 90_000) {
+      const local = await getLocalWorkerStatus(workerId);
+      if (local?.waitingFor) {
+        waitingFor = local.waitingFor;
+        break;
+      }
+      // If worker finished without asking, break early
+      if (local?.status === 'done' || local?.status === 'error') break;
+      await sleep(1_000);
+    }
+
+    if (!waitingFor) {
+      // Agent didn't trigger AskUserQuestion — graceful skip
+      console.log('  SKIP: Agent did not ask a question (AskUserQuestion not triggered)');
+      return;
+    }
+
+    console.log(`  Worker waiting: ${JSON.stringify(waitingFor).slice(0, 100)}`);
+
+    // Wait a sync cycle so server reflects waiting_input
+    await sleep(12_000);
+    const { body: serverWorker } = await apiRaw(`/api/workers/${workerId}`);
+    expect(serverWorker.status).toBe('waiting_input');
+    expect(serverWorker.waitingFor).toBeTruthy();
+
+    // Send answer via local-ui
+    const sendRes = await fetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'JSON' }),
+    });
+    expect(sendRes.ok).toBe(true);
+
+    // Wait for completion
+    const result = await waitForTaskTerminal(task.id);
+    expect(result.status).toBe('completed');
+
+    const output = await getLocalWorkerOutput(workerId);
+    expect(output.join(' ')).toContain(`CHOSEN_${marker}`);
+  }, TIMEOUT);
 });
