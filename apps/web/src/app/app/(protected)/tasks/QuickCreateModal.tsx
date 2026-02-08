@@ -1,22 +1,12 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useLocalUiHealth } from './useLocalUiHealth';
 
 interface PastedImage {
   filename: string;
   mimeType: string;
   data: string;
-}
-
-interface ActiveLocalUi {
-  localUiUrl: string;
-  accountId: string;
-  accountName: string;
-  maxConcurrent: number;
-  activeWorkers: number;
-  capacity: number;
-  workspaceIds: string[];
-  workspaceNames: string[];
 }
 
 interface Props {
@@ -39,7 +29,7 @@ export default function QuickCreateModal({
   const [showDescription, setShowDescription] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [activeLocalUis, setActiveLocalUis] = useState<ActiveLocalUi[]>([]);
+  const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [assignmentStatus, setAssignmentStatus] = useState<'idle' | 'waiting' | 'accepted' | 'reassigned'>('idle');
   const [countdown, setCountdown] = useState(0);
@@ -51,7 +41,6 @@ export default function QuickCreateModal({
 
   useEffect(() => {
     inputRef.current?.focus();
-    fetchActiveWorkers();
 
     return () => {
       if (pollIntervalRef.current) {
@@ -59,23 +48,6 @@ export default function QuickCreateModal({
       }
     };
   }, []);
-
-  const fetchActiveWorkers = async () => {
-    try {
-      const res = await fetch('/api/workers/active');
-      if (res.ok) {
-        const data = await res.json();
-        // Filter to only show workers that have capacity and can work on this workspace
-        const availableWorkers = (data.activeLocalUis || []).filter(
-          (ui: ActiveLocalUi) =>
-            ui.capacity > 0 && ui.workspaceIds.includes(workspaceId)
-        );
-        setActiveLocalUis(availableWorkers);
-      }
-    } catch {
-      // Silently fail - worker assignment is optional
-    }
-  };
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -405,7 +377,7 @@ export default function QuickCreateModal({
                     <option value="">Queue for any worker</option>
                     {activeLocalUis.map((ui) => (
                       <option key={ui.localUiUrl} value={ui.localUiUrl}>
-                        {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available)
+                        {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''}{ui.live ? ' — live' : ''})
                       </option>
                     ))}
                   </select>

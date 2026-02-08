@@ -37,6 +37,7 @@ interface SavedConfig {
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
   builddServer?: string; // Server URL override
+  localUiUrl?: string; // Direct access URL override (Tailscale IP, Coder subdomain, etc.)
   pusherKey?: string; // Pusher public key for realtime events
   pusherCluster?: string; // Pusher cluster (e.g. 'us2')
 }
@@ -54,6 +55,7 @@ function loadSavedConfig(): SavedConfig {
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
         builddServer: data.builddServer,
+        localUiUrl: data.localUiUrl,
         pusherKey: data.pusherKey,
         pusherCluster: data.pusherCluster,
       };
@@ -212,6 +214,34 @@ function getRepos(forceRescan = false): CachedRepo[] {
   return scanned;
 }
 
+// Auto-detect Tailscale IPv4 (runs once at startup, fails silently)
+function detectTailscaleIp(): string | null {
+  try {
+    const result = Bun.spawnSync(['tailscale', 'ip', '-4']);
+    if (result.exitCode === 0) {
+      const ip = new TextDecoder().decode(result.stdout).trim();
+      if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+    }
+  } catch {
+    // tailscale not installed or not running — that's fine
+  }
+  return null;
+}
+
+// Resolve localUiUrl: env var > config.json > Tailscale auto-detect > localhost
+function resolveLocalUiUrl(): string {
+  if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
+  if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
+  const tsIp = detectTailscaleIp();
+  if (tsIp) {
+    console.log(`  Tailscale IP detected: ${tsIp}`);
+    return `http://${tsIp}:${PORT}`;
+  }
+  return `http://localhost:${PORT}`;
+}
+
+const resolvedLocalUiUrl = resolveLocalUiUrl();
+
 // Build runtime config
 const config: LocalUIConfig = {
   projectsRoot: projectRoots[0], // Primary for backwards compat
@@ -222,8 +252,8 @@ const config: LocalUIConfig = {
   model: process.env.MODEL || savedConfig.model || 'claude-opus-4-5-20251101',
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
-  // Direct access URL (set this to your Coder subdomain or Tailscale IP)
-  localUiUrl: process.env.LOCAL_UI_URL || `http://localhost:${PORT}`,
+  // Direct access URL (auto-detected or explicit override)
+  localUiUrl: resolvedLocalUiUrl,
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY || process.env.NEXT_PUBLIC_PUSHER_KEY || savedConfig.pusherKey,
   pusherCluster: process.env.PUSHER_CLUSTER || process.env.NEXT_PUBLIC_PUSHER_CLUSTER || savedConfig.pusherCluster,
@@ -381,7 +411,7 @@ const server = Bun.serve({
     // viewerToken auth for remote access to worker data endpoints
     // Localhost requests bypass auth; remote requests need ?token= or Authorization header
     const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
-    const viewerProtectedPaths = ['/api/workers', '/api/events'];
+    const viewerProtectedPaths = ['/api/workers', '/api/events', '/health'];
     const needsViewerAuth = !isLocalhost && viewerProtectedPaths.some(p => path === p || path.startsWith(p + '/'));
     if (needsViewerAuth) {
       const expectedToken = workerManager?.getViewerToken();
@@ -389,6 +419,21 @@ const server = Bun.serve({
       if (!expectedToken || providedToken !== expectedToken) {
         return Response.json({ error: 'Unauthorized - invalid viewer token' }, { status: 401, headers: corsHeaders });
       }
+    }
+
+    // Health check for browser-side capacity pings
+    if (path === '/health' && req.method === 'GET') {
+      const activeCount = workerManager
+        ? Array.from(workerManager.getWorkers()).filter(
+            (w: any) => w.status === 'working' || w.status === 'waiting'
+          ).length
+        : 0;
+      return Response.json({
+        alive: true,
+        activeWorkers: activeCount,
+        maxConcurrent: config.maxConcurrent,
+        capacity: Math.max(0, config.maxConcurrent - activeCount),
+      }, { headers: corsHeaders });
     }
 
     // Auth & Config endpoints (work without API key)
@@ -1205,6 +1250,9 @@ console.log(`╔═════════════════════�
 console.log(`║  buildd local-ui                           ║`);
 console.log(`╚════════════════════════════════════════════╝`);
 console.log(`  URL:        ${terminalLink(localUrl)}`);
+if (config.localUiUrl && config.localUiUrl !== localUrl) {
+  console.log(`  External:   ${terminalLink(config.localUiUrl)}`);
+}
 console.log(`  Server:     ${config.builddServer}`);
 console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
 console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
