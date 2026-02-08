@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
     const openWs = await db.query.workspaces.findMany({
       where: eq(workspaces.accessMode, 'open'),
       columns: { id: true },
+      limit: 100, // Limit open workspaces to prevent excessive data transfer
     });
     const workspaceIds = [...new Set([
       ...accountWs.map(aw => aw.workspaceId),
