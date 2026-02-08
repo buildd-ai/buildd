@@ -10,9 +10,16 @@ const mockHeartbeatsInsert = mock(() => ({
     onConflictDoUpdate: mock(() => Promise.resolve()),
   })),
 }));
+const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
+const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/redis', () => ({
+  getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
+  setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -73,6 +80,12 @@ describe('POST /api/workers/heartbeat', () => {
     mockWorkspacesFindMany.mockReset();
     mockHeartbeatsFindFirst.mockReset();
     mockHeartbeatsInsert.mockReset();
+    mockGetCachedOpenWorkspaceIds.mockReset();
+    mockSetCachedOpenWorkspaceIds.mockReset();
+
+    // Default mocks
+    mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
+    mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
 
     // Default mock for insert chain
     mockHeartbeatsInsert.mockReturnValue({
