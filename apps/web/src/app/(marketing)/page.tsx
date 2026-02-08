@@ -60,7 +60,7 @@ export default function LandingPage() {
               Task Queue for AI Agents
             </p>
             <p className="text-lg text-gray-400">
-              Create tasks. Agents work. Each one smarter than the last.
+              Create tasks &mdash; or schedule them on a cron. Agents work. Each one smarter than the last.
             </p>
           </div>
         </div>
@@ -168,7 +168,7 @@ export default function LandingPage() {
               <span className="text-fuchsia-400 font-semibold">1</span>
             </div>
             <h3 className="font-semibold mb-2">Create tasks</h3>
-            <p className="text-sm text-gray-400">From the dashboard, CLI, or API. Describe what you need built.</p>
+            <p className="text-sm text-gray-400">From the dashboard, CLI, API &mdash; or set a cron schedule and let them run automatically.</p>
           </div>
           <div className="text-center">
             <div className="w-10 h-10 rounded-full bg-violet-500/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-4">
@@ -189,6 +189,32 @@ export default function LandingPage() {
 
       {/* Features Section */}
       <div className="max-w-6xl mx-auto px-6 py-16">
+        {/* Featured: Scheduled Tasks */}
+        <div className="mb-8 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/10 to-cyan-500/10 rounded-xl p-6 md:p-8 border border-fuchsia-500/20 backdrop-blur-sm relative overflow-hidden">
+          <span className="absolute top-4 right-4 px-2.5 py-0.5 text-xs font-semibold bg-fuchsia-500 text-white rounded-full">
+            NEW
+          </span>
+          <div className="flex flex-col md:flex-row md:items-center gap-6">
+            <div className="w-14 h-14 bg-fuchsia-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg className="w-7 h-7 text-fuchsia-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-xl font-semibold mb-2">Scheduled Tasks</h3>
+              <p className="text-gray-400">
+                Set a cron schedule and your agents run automatically &mdash; nightly test suites, daily PR reviews, weekly dependency audits.
+                Define the task template once, and Buildd creates and dispatches tasks on cadence. No extra infrastructure needed.
+              </p>
+            </div>
+            <div className="flex-shrink-0 font-mono text-sm text-gray-500 bg-white/5 rounded-lg px-4 py-3 border border-white/10 hidden md:block">
+              <div className="text-gray-400 text-xs mb-1">cron</div>
+              <div className="text-fuchsia-300">0 9 * * *</div>
+              <div className="text-gray-500 text-xs mt-1">Daily at 09:00</div>
+            </div>
+          </div>
+        </div>
+
         <div className="grid md:grid-cols-2 gap-8">
           <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
             <div className="w-12 h-12 bg-fuchsia-500/20 rounded-lg flex items-center justify-center mb-4">
