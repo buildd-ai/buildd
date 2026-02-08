@@ -1815,9 +1815,13 @@ async function claimTask(taskId) {
     });
     const data = await res.json();
     if (data.worker) {
-      // Remove optimistic worker (real one comes via SSE)
+      // Replace optimistic with real worker immediately (don't rely solely on SSE)
       workers = workers.filter(w => w.id !== `claiming-${taskId}`);
+      if (!workers.some(w => w.id === data.worker.id)) {
+        workers.push(data.worker);
+      }
       renderWorkers();
+      openWorkerModal(data.worker.id);
       showToast('Task started', 'success');
       loadTasks();
     } else {
@@ -2182,9 +2186,13 @@ async function createAndStartTask() {
       const claimData = await claimRes.json();
 
       if (claimData.worker) {
-        // Remove optimistic worker (real one comes via SSE)
+        // Replace optimistic with real worker immediately (don't rely solely on SSE)
         workers = workers.filter(w => w.id !== tempId);
+        if (!workers.some(w => w.id === claimData.worker.id)) {
+          workers.push(claimData.worker);
+        }
         renderWorkers();
+        openWorkerModal(claimData.worker.id);
         loadTasks();
       } else {
         // Claim failed - remove optimistic worker, show error
