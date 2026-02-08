@@ -221,8 +221,8 @@ const config: LocalUIConfig = {
   // Direct access URL (set this to your Coder subdomain or Tailscale IP)
   localUiUrl: process.env.LOCAL_UI_URL || `http://localhost:${PORT}`,
   // Pusher config for command relay from server
-  pusherKey: process.env.PUSHER_KEY,
-  pusherCluster: process.env.PUSHER_CLUSTER,
+  pusherKey: process.env.PUSHER_KEY || process.env.NEXT_PUBLIC_PUSHER_KEY || savedConfig.pusherKey,
+  pusherCluster: process.env.PUSHER_CLUSTER || process.env.NEXT_PUBLIC_PUSHER_CLUSTER || savedConfig.pusherCluster,
   // Accept remote task assignments (default: true)
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
   // Bypass permission prompts (default: false)
