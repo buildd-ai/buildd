@@ -361,12 +361,8 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
                         <span title={worker.startedAt ? new Date(worker.startedAt).toString() : undefined}>
                           Started: {worker.startedAt ? new Date(worker.startedAt).toLocaleString(undefined, {
-                            month: 'numeric',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                            timeZoneName: 'short'
+                            dateStyle: 'short',
+                            timeStyle: 'medium'
                           }) : '-'}
                         </span>
                         <span>Turns: {worker.turns}</span>

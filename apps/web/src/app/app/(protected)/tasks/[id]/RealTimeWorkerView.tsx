@@ -421,7 +421,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           <span>Cost: ${parseFloat(worker.costUsd || '0').toFixed(4)}</span>
         )}
         {worker.startedAt && (
-          <span>
+          <span title={`Started: ${new Date(worker.startedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })}`}>
             {Math.round((Date.now() - new Date(worker.startedAt).getTime()) / 60000)}m elapsed
           </span>
         )}
