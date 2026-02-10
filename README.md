@@ -87,6 +87,12 @@ bun run start --max-tasks=1
 - **Dual auth** - API keys (pay-per-token) or OAuth (seat-based) with per-account cost tracking.
 - **Workspace management** - Organize tasks by project with per-workspace context and memory.
 
+## Documentation
+
+- **[Self-Hosting Guide](docs/deployment/self-hosting.md)** - Deploy on your own infrastructure with Docker, VPS, or bare metal
+- **[Task Schedules](docs/features/schedules.md)** - Create recurring tasks with cron expressions
+- **[Full Documentation Index](docs/README.md)** - Browse all guides and references
+
 ## Project Structure
 
 ```
@@ -232,6 +238,7 @@ bun run db:studio
 | `AUTH_SECRET` | Yes | NextAuth secret (`openssl rand -base64 32`) |
 | `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth secret |
+| `CRON_SECRET` | Yes* | Secret for `/api/cron/schedules` endpoint (`openssl rand -base64 32`) |
 | `ALLOWED_EMAILS` | No | Comma-separated email whitelist |
 | `PUSHER_APP_ID` | No | Pusher app ID (for realtime) |
 | `PUSHER_KEY` | No | Pusher key |
@@ -239,6 +246,8 @@ bun run db:studio
 | `PUSHER_CLUSTER` | No | Pusher cluster (e.g., us2) |
 | `NEXT_PUBLIC_PUSHER_KEY` | No | Same as PUSHER_KEY |
 | `NEXT_PUBLIC_PUSHER_CLUSTER` | No | Same as PUSHER_CLUSTER |
+
+\* Required only if using [task schedules](docs/features/schedules.md) feature
 
 #### Agent / Worker
 

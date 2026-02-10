@@ -3,7 +3,7 @@ export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'wa
 
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question';
+  type: 'question' | 'plan_approval';
   prompt: string;
   options?: Array<{
     label: string;
@@ -53,6 +53,7 @@ export interface LocalWorker {
   sessionId?: string;
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
+  planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
 }
 
 // Task mode

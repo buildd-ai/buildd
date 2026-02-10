@@ -394,14 +394,23 @@ function renderWorkerCard(w) {
 }
 
 function renderWaitingCard(w) {
+  const isPlan = w.waitingFor?.type === 'plan_approval';
   const question = w.waitingFor?.prompt || 'Awaiting input';
   const truncatedQuestion = question.length > 120 ? question.slice(0, 120) + '...' : question;
+  const badgeLabel = isPlan ? 'plan review' : 'needs input';
+  // Use complete class strings so Tailwind's JIT scanner can detect them
+  const cardClasses = isPlan
+    ? 'from-cyan-500/[0.12] to-cyan-500/[0.04] border-cyan-500/30 hover:border-cyan-500'
+    : 'from-orange-500/[0.12] to-orange-500/[0.04] border-orange-500/30 hover:border-orange-500';
+  const badgeClasses = isPlan
+    ? 'text-cyan-500 bg-cyan-500/15'
+    : 'text-orange-500 bg-orange-500/15';
   return `
-    <div class="waiting-banner bg-gradient-to-br from-orange-500/[0.12] to-orange-500/[0.04] border border-orange-500/30 rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98] hover:border-orange-500" data-id="${w.id}">
+    <div class="waiting-banner bg-gradient-to-br ${cardClasses} border rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98]" data-id="${w.id}">
       <div class="flex items-center gap-2.5 mb-1.5">
         <div class="status-dot w-2.5 h-2.5 rounded-full shrink-0 waiting"></div>
         <div class="flex-1 text-[15px] font-medium text-zinc-50">${escapeHtml(w.taskTitle)}</div>
-        <div class="text-[11px] font-semibold uppercase tracking-wide text-orange-500 bg-orange-500/15 py-0.5 px-2 rounded">${'needs input'}</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wide ${badgeClasses} py-0.5 px-2 rounded">${badgeLabel}</div>
       </div>
       <div class="text-[13px] text-zinc-400 pl-5 leading-relaxed">${escapeHtml(truncatedQuestion)}</div>
     </div>
@@ -767,25 +776,51 @@ function renderWorkerDetail(worker) {
       </div>`;
   }
 
-  // Question prompt for waiting workers
+  // Question/plan prompt for waiting workers
   if (worker.status === 'waiting' && worker.waitingFor) {
-    const options = worker.waitingFor.options || [];
-    timelineEl.innerHTML += `
-      <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
-        <div class="text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">Agent is asking:</div>
-        <div class="text-sm text-zinc-50 leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
-        ${options.length > 0 ? `
-          <div class="flex flex-wrap gap-2">
-            ${options.map((opt, i) => `
-              <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-zinc-900 hover:border-orange-500" data-option="${i}"
-                onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
-                ${escapeHtml(opt.label)}
-                ${opt.description ? `<span class="text-[11px] text-zinc-400 font-normal">${escapeHtml(opt.description)}</span>` : ''}
-              </button>
-            `).join('')}
+    if (worker.waitingFor.type === 'plan_approval') {
+      // Dedicated plan review UI with cyan accent
+      timelineEl.innerHTML += `
+        <div class="bg-gradient-to-br from-cyan-500/15 to-cyan-500/5 border border-cyan-500 rounded-xl p-4 my-4">
+          <div class="text-xs text-cyan-400 font-semibold uppercase tracking-wide mb-3">
+            Plan ready for review
           </div>
-        ` : ''}
-      </div>`;
+          <div class="text-sm text-zinc-300 mb-4">
+            Review the plan above, then approve to execute with a fresh context window or request changes.
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-cyan-500/10 border border-cyan-500/50 rounded-lg text-cyan-50 text-[13px] font-medium cursor-pointer transition-all hover:bg-cyan-500/20 hover:border-cyan-400 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              onclick="sendQuestionAnswer('Approve & implement')">
+              Approve & implement
+              <span class="text-[11px] text-cyan-400/70 font-normal">Fresh context — plan only</span>
+            </button>
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all hover:bg-zinc-900 hover:border-orange-500 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:outline-none"
+              onclick="promptPlanChanges()">
+              Request changes
+              <span class="text-[11px] text-zinc-400 font-normal">Ask the agent to revise</span>
+            </button>
+          </div>
+        </div>`;
+    } else {
+      // Standard question UI
+      const options = worker.waitingFor.options || [];
+      timelineEl.innerHTML += `
+        <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
+          <div class="text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">Agent is asking:</div>
+          <div class="text-sm text-zinc-50 leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
+          ${options.length > 0 ? `
+            <div class="flex flex-wrap gap-2">
+              ${options.map((opt, i) => `
+                <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-zinc-900 hover:border-orange-500" data-option="${i}"
+                  onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
+                  ${escapeHtml(opt.label)}
+                  ${opt.description ? `<span class="text-[11px] text-zinc-400 font-normal">${escapeHtml(opt.description)}</span>` : ''}
+                </button>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>`;
+    }
   }
 
   // Error indicator for failed/aborted workers
@@ -846,7 +881,9 @@ function renderWorkerDetail(worker) {
     if (worker.status === 'done') {
       placeholder = 'Give the agent a follow-up task...';
     } else if (worker.status === 'waiting') {
-      placeholder = 'Type your answer or click an option above...';
+      placeholder = worker.waitingFor?.type === 'plan_approval'
+        ? 'Approve above or type changes...'
+        : 'Type your answer or click an option above...';
     } else if (worker.status === 'error') {
       placeholder = 'Send a message to restart the task...';
     } else if (worker.status === 'stale') {
@@ -2057,6 +2094,13 @@ async function sendQuestionAnswer(answer) {
   } catch (err) {
     console.error('Failed to send answer:', err);
   }
+}
+
+// Focus message input for plan change requests
+function promptPlanChanges() {
+  const input = document.getElementById('messageInput');
+  input.focus();
+  input.placeholder = 'What should the agent change in the plan?';
 }
 
 async function createTask() {
