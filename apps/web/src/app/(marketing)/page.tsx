@@ -43,6 +43,9 @@ export default function LandingPage() {
               </svg>
               Self-Hostable
             </span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-500/20 border border-indigo-500/30 rounded-full text-sm text-indigo-300">
+              Alpha &mdash; Everything Free
+            </span>
           </div>
 
           <div className="space-y-4">
@@ -276,6 +279,21 @@ export default function LandingPage() {
             </p>
           </div>
 
+          <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm relative overflow-hidden">
+            <span className="absolute top-4 right-4 px-2.5 py-0.5 text-xs font-semibold bg-emerald-500 text-white rounded-full">
+              NEW
+            </span>
+            <div className="w-12 h-12 bg-emerald-500/20 rounded-lg flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold mb-2">Teams &amp; Collaboration</h3>
+            <p className="text-gray-300">
+              Invite your team, manage roles, share workspaces. Owner, admin, and member roles with fine-grained access control.
+            </p>
+          </div>
+
           <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
             <div className="w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center mb-4">
               <svg
@@ -298,6 +316,26 @@ export default function LandingPage() {
               Monitor progress, send instructions to running agents mid-task, and request plan approval before code is written.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Pricing CTA */}
+      <div className="max-w-4xl mx-auto px-6 py-16 text-center">
+        <h2 className="text-2xl font-bold mb-3">Free forever for open source</h2>
+        <p className="text-gray-300 mb-6">Unlimited workspaces, workers, and tasks on public repos. No credit card required.</p>
+        <div className="flex flex-wrap justify-center gap-4">
+          <a
+            href="/app"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-semibold rounded-lg transition-colors"
+          >
+            Get Started Free
+          </a>
+          <a
+            href="/pricing"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-medium rounded-lg transition-colors"
+          >
+            View Pricing
+          </a>
         </div>
       </div>
 
@@ -324,10 +362,10 @@ export default function LandingPage() {
                 Contact
               </a>
               <a
-                href="mailto:hello@buildd.dev?subject=Enterprise%20Inquiry"
+                href="/pricing"
                 className="hover:text-white transition-colors"
               >
-                Enterprise
+                Pricing
               </a>
               <a
                 href="/app"

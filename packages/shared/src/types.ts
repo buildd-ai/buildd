@@ -112,10 +112,13 @@ export const TeamRole = {
 
 export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
+export type TeamPlan = 'free' | 'pro' | 'team';
+
 export interface Team {
   id: string;
   name: string;
   slug: string;
+  plan: TeamPlan;
   createdAt: Date;
   updatedAt: Date;
 }

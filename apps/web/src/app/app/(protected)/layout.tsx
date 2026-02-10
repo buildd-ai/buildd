@@ -46,6 +46,9 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <div className="bg-indigo-600 text-white text-center text-xs py-1">
+        Alpha &mdash; All features free for all users
+      </div>
       {userTeams.length > 0 && (
         <div className="border-b border-gray-200 dark:border-gray-800 px-8 py-2 flex items-center gap-2">
           <span className="text-xs text-gray-400 uppercase tracking-wide">Team</span>
