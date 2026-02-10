@@ -226,6 +226,11 @@ GLOBALEOF
     fi
     ;;
 
+  skill)
+    shift
+    exec bun run "$HOME/.buildd/apps/local-ui/src/skill.ts" "$@"
+    ;;
+
   login)
     shift
     exec bun run "$HOME/.buildd/apps/local-ui/src/login.ts" "$@"

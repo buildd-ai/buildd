@@ -301,6 +301,25 @@ export interface TaskSchedule {
   updatedAt: Date;
 }
 
+export interface Skill {
+  id: string;
+  ownerId: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  contentHash: string;
+  source: string | null;
+  sourceVersion: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SkillRef {
+  skillId: string;
+  slug: string;
+  contentHash: string;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================
@@ -325,6 +344,8 @@ export interface CreateTaskInput {
   createdByWorkerId?: string;
   parentTaskId?: string;
   creationSource?: CreationSourceValue;
+  // Skill reference — server resolves slug to contentHash
+  skillRef?: { slug: string };
 }
 
 export interface CreateWorkerInput {
@@ -398,6 +419,23 @@ export interface CreateScheduleInput {
   enabled?: boolean;
   maxConcurrentFromSchedule?: number;
   pauseAfterFailures?: number;
+}
+
+export interface RegisterSkillInput {
+  slug: string;
+  name: string;
+  description?: string;
+  contentHash: string;
+  source?: string;
+  sourceVersion?: string;
+}
+
+export interface UpdateSkillInput {
+  name?: string;
+  description?: string;
+  contentHash?: string;
+  source?: string;
+  sourceVersion?: string;
 }
 
 export interface UpdateScheduleInput {

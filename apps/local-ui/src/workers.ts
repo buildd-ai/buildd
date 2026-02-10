@@ -795,7 +795,7 @@ export class WorkerManager {
       // Resolve and verify skill if task has a skillRef
       const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
       if (skillRef) {
-        const skillDir = join(homedir(), '.claude', 'skills', skillRef.slug);
+        const skillDir = join(homedir(), '.buildd', 'skills', skillRef.slug);
         const skillPath = join(skillDir, 'SKILL.md');
 
         if (!existsSync(skillPath)) {
@@ -876,7 +876,7 @@ export class WorkerManager {
         model: this.config.model,
         abortController,
         env: cleanEnv,
-        settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Always load user skills; project settings follow useClaudeMd
+        settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
         permissionMode,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         stderr: (data: string) => {

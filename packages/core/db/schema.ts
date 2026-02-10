@@ -371,6 +371,23 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
+// Skill registry — stores hash + metadata, NOT content (content lives on worker filesystem)
+export const skills = pgTable('skills', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  slug: text('slug').notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  contentHash: text('content_hash').notNull(), // SHA-256 hex of SKILL.md
+  source: text('source'), // e.g. 'npm:uxtools/ui-audit' or 'github:owner/repo/path'
+  sourceVersion: text('source_version'), // npm version or git ref
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  ownerSlugIdx: uniqueIndex('skills_owner_slug_idx').on(t.ownerId, t.slug),
+  ownerIdx: index('skills_owner_idx').on(t.ownerId),
+}));
+
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -394,6 +411,7 @@ export const deviceCodes = pgTable('device_codes', {
 export const usersRelations = relations(users, ({ many }) => ({
   accounts: many(accounts),
   workspaces: many(workspaces),
+  skills: many(skills),
   deviceCodes: many(deviceCodes),
 }));
 
@@ -477,6 +495,10 @@ export const githubInstallationsRelations = relations(githubInstallations, ({ ma
 export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
   installation: one(githubInstallations, { fields: [githubRepos.installationId], references: [githubInstallations.id] }),
   workspaces: many(workspaces),
+}));
+
+export const skillsRelations = relations(skills, ({ one }) => ({
+  owner: one(users, { fields: [skills.ownerId], references: [users.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({

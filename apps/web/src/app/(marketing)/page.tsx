@@ -175,6 +175,32 @@ export default function LandingPage() {
           </div>
         </div>
 
+        {/* Featured: Skills */}
+        <div className="mb-8 bg-gradient-to-r from-violet-500/10 via-cyan-500/10 to-fuchsia-500/10 rounded-xl p-6 md:p-8 border border-violet-500/20 backdrop-blur-sm relative overflow-hidden">
+          <span className="absolute top-4 right-4 px-2.5 py-0.5 text-xs font-semibold bg-violet-500 text-white rounded-full">
+            NEW
+          </span>
+          <div className="flex flex-col md:flex-row md:items-center gap-6">
+            <div className="w-14 h-14 bg-violet-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg className="w-7 h-7 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-xl font-semibold mb-2">Skills</h3>
+              <p className="text-gray-400">
+                Reusable instruction templates that standardize agent workflows. Install a skill once, reference it in any task.
+                Every agent runs the exact same instructions &mdash; verified by SHA-256 hash. Compatible with the Claude Code skill system.
+              </p>
+            </div>
+            <div className="flex-shrink-0 font-mono text-sm text-gray-500 bg-white/5 rounded-lg px-4 py-3 border border-white/10 hidden md:block">
+              <div className="text-gray-400 text-xs mb-1">install</div>
+              <div className="text-violet-300">buildd skill install acme/ui-audit</div>
+              <div className="text-gray-500 text-xs mt-1">Hash-verified</div>
+            </div>
+          </div>
+        </div>
+
         <div className="grid md:grid-cols-2 gap-8">
           <div className="bg-white/5 rounded-xl p-6 border border-white/10 backdrop-blur-sm">
             <div className="w-12 h-12 bg-fuchsia-500/20 rounded-lg flex items-center justify-center mb-4">
