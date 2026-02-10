@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, skills } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
 import { desc, eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -131,30 +131,30 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
 
-    // Resolve skill reference if provided — skills are owner-scoped
+    // TODO: Resolve skill reference if provided — skills table not yet implemented
     let resolvedSkillRef: { skillId: string; slug: string; contentHash: string } | undefined;
-    if (skillRef?.slug) {
-      if (!targetWorkspace.ownerId) {
-        return NextResponse.json(
-          { error: 'Workspace has no owner — cannot resolve skills' },
-          { status: 400 }
-        );
-      }
-      const skill = await db.query.skills.findFirst({
-        where: and(eq(skills.ownerId, targetWorkspace.ownerId), eq(skills.slug, skillRef.slug)),
-      });
-      if (!skill) {
-        return NextResponse.json(
-          { error: `Skill "${skillRef.slug}" not registered` },
-          { status: 400 }
-        );
-      }
-      resolvedSkillRef = {
-        skillId: skill.id,
-        slug: skill.slug,
-        contentHash: skill.contentHash,
-      };
-    }
+    // if (skillRef?.slug) {
+    //   if (!targetWorkspace.ownerId) {
+    //     return NextResponse.json(
+    //       { error: 'Workspace has no owner — cannot resolve skills' },
+    //       { status: 400 }
+    //     );
+    //   }
+    //   const skill = await db.query.skills.findFirst({
+    //     where: and(eq(skills.ownerId, targetWorkspace.ownerId), eq(skills.slug, skillRef.slug)),
+    //   });
+    //   if (!skill) {
+    //     return NextResponse.json(
+    //       { error: `Skill "${skillRef.slug}" not registered` },
+    //       { status: 400 }
+    //     );
+    //   }
+    //   resolvedSkillRef = {
+    //     skillId: skill.id,
+    //     slug: skill.slug,
+    //     contentHash: skill.contentHash,
+    //   };
+    // }
 
     // Process attachments - accept both R2 references and legacy inline base64
     const processedAttachments: Array<
