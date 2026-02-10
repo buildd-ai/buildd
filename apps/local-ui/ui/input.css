@@ -3,15 +3,72 @@
 @tailwind utilities;
 
 /* ============================================================
-   Base layer - resets and global styles
+   Base layer - resets, global styles, and CSS custom properties
    ============================================================ */
 @layer base {
+  /* --- Light theme (default) --- */
+  :root {
+    --color-brand: 124 58 237;         /* violet-600 */
+    --color-brand-hover: 109 40 217;   /* violet-700 */
+    --color-bg-base: 255 255 255;      /* white */
+    --color-bg-surface: 250 250 250;   /* zinc-50 */
+    --color-bg-surface-hover: 244 244 245; /* zinc-100 */
+    --color-bg-elevated: 255 255 255;  /* white */
+    --color-bg-inset: 244 244 245;     /* zinc-100 */
+    --color-border: 228 228 231;       /* zinc-200 */
+    --color-border-hover: 161 161 170; /* zinc-400 */
+    --color-text-primary: 24 24 27;    /* zinc-900 */
+    --color-text-secondary: 113 113 122; /* zinc-500 */
+    --color-text-tertiary: 161 161 170;  /* zinc-400 */
+    --color-status-success: 34 197 94;
+    --color-status-error: 239 68 68;
+    --color-status-warning: 249 115 22;
+    --color-status-info: 59 130 246;
+    --color-focus-ring: 124 58 237;    /* matches brand */
+    --color-overlay: 0 0 0;
+    --shadow-strength: 0.08;
+  }
+
+  /* --- Dark theme --- */
+  .dark {
+    --color-brand: 139 92 246;         /* violet-500 */
+    --color-brand-hover: 124 58 237;   /* violet-600 */
+    --color-bg-base: 9 9 11;           /* zinc-950 */
+    --color-bg-surface: 24 24 27;      /* zinc-900 */
+    --color-bg-surface-hover: 39 39 42; /* zinc-800 */
+    --color-bg-elevated: 24 24 27;     /* zinc-900 */
+    --color-bg-inset: 9 9 11;          /* zinc-950 */
+    --color-border: 63 63 70;          /* zinc-700 */
+    --color-border-hover: 113 113 122; /* zinc-500 */
+    --color-text-primary: 250 250 250; /* zinc-50 */
+    --color-text-secondary: 161 161 170; /* zinc-400 */
+    --color-text-tertiary: 113 113 122;  /* zinc-500 */
+    --color-status-success: 34 197 94;
+    --color-status-error: 239 68 68;
+    --color-status-warning: 249 115 22;
+    --color-status-info: 59 130 246;
+    --color-focus-ring: 139 92 246;    /* matches brand */
+    --color-overlay: 0 0 0;
+    --shadow-strength: 0.4;
+  }
+
   * {
     -webkit-tap-highlight-color: transparent;
   }
 
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: rgb(var(--color-bg-base));
+    color: rgb(var(--color-text-primary));
+  }
+
+  /* --- Reduced motion --- */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
@@ -25,14 +82,19 @@
     display: none !important;
   }
 
+  /* --- Accent brand for checkboxes --- */
+  .accent-brand {
+    accent-color: rgb(var(--color-brand));
+  }
+
   /* --- Custom select dropdown --- */
   .custom-select {
     position: relative;
   }
 
   .custom-select.open .custom-select-trigger {
-    border-color: #d946ef;
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    border-color: rgb(var(--color-focus-ring));
+    box-shadow: 0 0 0 2px rgb(var(--color-focus-ring) / 0.2);
   }
 
   .custom-select.open .custom-select-arrow {
@@ -44,10 +106,10 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    background: #18181b;
-    border: 1px solid #3f3f46;
+    background: rgb(var(--color-bg-surface));
+    border: 1px solid rgb(var(--color-border));
     border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 32px rgb(var(--color-overlay) / var(--shadow-strength));
     z-index: 1000;
     max-height: 280px;
     overflow-y: auto;
@@ -55,17 +117,17 @@
   }
 
   .custom-select-option:hover:not(.disabled):not(.highlighted) {
-    background: #27272a;
+    background: rgb(var(--color-bg-surface-hover));
   }
 
   .custom-select-option.disabled {
-    color: #a1a1aa;
+    color: rgb(var(--color-text-secondary));
     cursor: not-allowed;
     opacity: 0.6;
   }
 
   .custom-select-option.highlighted {
-    background: #d946ef;
+    background: rgb(var(--color-brand));
     color: white;
   }
 
@@ -77,29 +139,29 @@
     padding: 8px 8px 0 8px;
     position: sticky;
     top: 0;
-    background: #18181b;
+    background: rgb(var(--color-bg-surface));
     z-index: 1;
   }
 
   .custom-select-search-input {
     width: 100%;
     padding: 10px 12px;
-    background: #09090b;
-    border: 1px solid #3f3f46;
+    background: rgb(var(--color-bg-inset));
+    border: 1px solid rgb(var(--color-border));
     border-radius: 8px;
-    color: #fafafa;
+    color: rgb(var(--color-text-primary));
     font-size: 14px;
     outline: none;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
 
   .custom-select-search-input:focus {
-    border-color: #d946ef;
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+    border-color: rgb(var(--color-focus-ring));
+    box-shadow: 0 0 0 2px rgb(var(--color-focus-ring) / 0.15);
   }
 
   .custom-select-search-input::placeholder {
-    color: #a1a1aa;
+    color: rgb(var(--color-text-secondary));
   }
 
   /* Keyboard hint in dropdown */
@@ -108,9 +170,9 @@
     display: block;
     padding: 8px 12px;
     font-size: 11px;
-    color: #a1a1aa;
+    color: rgb(var(--color-text-secondary));
     text-align: center;
-    border-top: 1px solid #3f3f46;
+    border-top: 1px solid rgb(var(--color-border));
     margin-top: 4px;
   }
 
@@ -118,7 +180,7 @@
   .markdown-content {
     font-size: 14px;
     line-height: 1.6;
-    color: #fafafa;
+    color: rgb(var(--color-text-primary));
   }
 
   .markdown-content h1 {
@@ -154,7 +216,7 @@
   }
 
   .markdown-content code {
-    background: #27272a;
+    background: rgb(var(--color-bg-surface-hover));
     padding: 2px 6px;
     border-radius: 4px;
     font-family: 'SF Mono', Monaco, monospace;
@@ -162,7 +224,7 @@
   }
 
   .markdown-content pre {
-    background: #18181b;
+    background: rgb(var(--color-bg-surface));
     padding: 12px;
     border-radius: 8px;
     overflow-x: auto;
@@ -175,15 +237,15 @@
   }
 
   .markdown-content blockquote {
-    border-left: 3px solid #3f3f46;
+    border-left: 3px solid rgb(var(--color-border));
     padding-left: 12px;
     margin: 8px 0;
-    color: #a1a1aa;
+    color: rgb(var(--color-text-secondary));
     font-style: italic;
   }
 
   .markdown-content a {
-    color: #d946ef;
+    color: rgb(var(--color-brand));
     text-decoration: none;
   }
 
@@ -246,21 +308,21 @@
   }
 
   /* --- Status dot variants --- */
-  .status-dot.new { background: #d946ef; animation: pulse 2s infinite; }
-  .status-dot.working { background: #a1a1aa; animation: spin 1s linear infinite; }
-  .status-dot.done { background: #22c55e; }
-  .status-dot.error { background: #ef4444; }
-  .status-dot.stale { background: #27272a; }
-  .status-dot.pending { background: #f97316; }
-  .status-dot.waiting { background: #f97316; animation: pulse 1.5s ease-in-out infinite; }
-  .status-dot.assigned { background: #3b82f6; }
-  .status-dot.status-ready { background: #22c55e; }
-  .status-dot.status-clone { background: #f97316; }
-  .status-dot.status-local { background: #3b82f6; }
+  .status-dot.new { background: rgb(var(--color-brand)); animation: pulse 2s infinite; }
+  .status-dot.working { background: rgb(var(--color-text-secondary)); animation: spin 1s linear infinite; }
+  .status-dot.done { background: rgb(var(--color-status-success)); }
+  .status-dot.error { background: rgb(var(--color-status-error)); }
+  .status-dot.stale { background: rgb(var(--color-bg-surface-hover)); }
+  .status-dot.pending { background: rgb(var(--color-status-warning)); }
+  .status-dot.waiting { background: rgb(var(--color-status-warning)); animation: pulse 1.5s ease-in-out infinite; }
+  .status-dot.assigned { background: rgb(var(--color-status-info)); }
+  .status-dot.status-ready { background: rgb(var(--color-status-success)); }
+  .status-dot.status-clone { background: rgb(var(--color-status-warning)); }
+  .status-dot.status-local { background: rgb(var(--color-status-info)); }
 
   /* --- Segmented control active state --- */
   .segmented-control .segment.active {
-    background: linear-gradient(135deg, #d946ef, #22d3ee);
+    background: rgb(var(--color-brand));
     color: white;
   }
 
@@ -285,18 +347,18 @@
 
   /* --- Meta tag status colors --- */
   .meta-tag.status-done {
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.15);
+    color: rgb(var(--color-status-success));
+    background: rgb(var(--color-status-success) / 0.15);
   }
 
   .meta-tag.status-error {
-    color: #ef4444;
-    background: rgba(239, 68, 68, 0.15);
+    color: rgb(var(--color-status-error));
+    background: rgb(var(--color-status-error) / 0.15);
   }
 
   .meta-tag.status-stale {
-    color: #f97316;
-    background: rgba(249, 115, 22, 0.15);
+    color: rgb(var(--color-status-warning));
+    background: rgb(var(--color-status-warning) / 0.15);
   }
 
   /* --- Setup divider lines --- */
@@ -305,6 +367,6 @@
     content: '';
     flex: 1;
     height: 1px;
-    background: #3f3f46;
+    background: rgb(var(--color-border));
   }
 }

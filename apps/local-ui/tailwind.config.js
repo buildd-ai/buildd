@@ -1,11 +1,34 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: 'class',
   content: ['./ui/index.html', './ui/app.js'],
   theme: {
     extend: {
-      backgroundImage: {
-        'gradient-primary': 'linear-gradient(135deg, #d946ef, #22d3ee)',
-        'gradient-primary-hover': 'linear-gradient(135deg, #c026d3, #06b6d4)',
+      colors: {
+        brand: {
+          DEFAULT: 'rgb(var(--color-brand) / <alpha-value>)',
+          hover: 'rgb(var(--color-brand-hover) / <alpha-value>)',
+        },
+        base: 'rgb(var(--color-bg-base) / <alpha-value>)',
+        surface: {
+          DEFAULT: 'rgb(var(--color-bg-surface) / <alpha-value>)',
+          hover: 'rgb(var(--color-bg-surface-hover) / <alpha-value>)',
+        },
+        elevated: 'rgb(var(--color-bg-elevated) / <alpha-value>)',
+        inset: 'rgb(var(--color-bg-inset) / <alpha-value>)',
+        'border-default': 'rgb(var(--color-border) / <alpha-value>)',
+        'border-hover': 'rgb(var(--color-border-hover) / <alpha-value>)',
+        'text-primary': 'rgb(var(--color-text-primary) / <alpha-value>)',
+        'text-secondary': 'rgb(var(--color-text-secondary) / <alpha-value>)',
+        'text-tertiary': 'rgb(var(--color-text-tertiary) / <alpha-value>)',
+        'status-success': 'rgb(var(--color-status-success) / <alpha-value>)',
+        'status-error': 'rgb(var(--color-status-error) / <alpha-value>)',
+        'status-warning': 'rgb(var(--color-status-warning) / <alpha-value>)',
+        'status-info': 'rgb(var(--color-status-info) / <alpha-value>)',
+        'focus-ring': 'rgb(var(--color-focus-ring) / <alpha-value>)',
+      },
+      borderColor: {
+        DEFAULT: 'rgb(var(--color-border) / <alpha-value>)',
       },
       keyframes: {
         pulse: {

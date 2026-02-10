@@ -1,3 +1,28 @@
+// Theme management
+function getThemePreference() {
+  const stored = localStorage.getItem('buildd-theme');
+  if (stored) return stored;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme) {
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+}
+
+function toggleTheme() {
+  const current = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  const next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('buildd-theme', next);
+  applyTheme(next);
+}
+
+// Follow OS preference when no explicit choice
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  if (!localStorage.getItem('buildd-theme')) {
+    applyTheme(e.matches ? 'dark' : 'light');
+  }
+});
+
 // State
 let workers = [];
 let tasks = [];
@@ -205,7 +230,7 @@ function showConnectionStatus(connected) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'connectionBanner';
-    banner.className = 'fixed top-0 left-0 right-0 z-[9999] bg-amber-500/90 text-black text-center py-1.5 text-xs font-medium backdrop-blur-sm';
+    banner.className = 'fixed top-0 left-0 right-0 z-[9999] bg-status-warning/90 text-white text-center py-1.5 text-xs font-medium backdrop-blur-sm';
     banner.textContent = 'Connection lost. Reconnecting...';
     document.body.prepend(banner);
   }
@@ -377,18 +402,18 @@ function updateStats(activeCount, pendingCount, completedCount) {
 
 function renderWorkerCard(w) {
   return `
-    <div class="worker-card bg-zinc-900 rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-zinc-800 hover:bg-zinc-800" data-id="${w.id}">
+    <div class="worker-card bg-surface rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-surface-hover hover:bg-surface-hover" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-2">
         <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${getStatusClass(w)}"></div>
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
-        <div class="text-xs text-zinc-400 bg-zinc-800 py-1 px-2 rounded">${w.status}</div>
+        <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="text-[13px] text-zinc-400 mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
+      <div class="text-[13px] text-text-secondary mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
       <div class="flex gap-1 mb-2">
         ${renderMilestoneBoxes(w.milestones)}
-        <span class="text-xs text-zinc-400 ml-2">${w.milestones.length}</span>
+        <span class="text-xs text-text-secondary ml-2">${w.milestones.length}</span>
       </div>
-      <div class="text-[13px] text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.currentAction)}</div>
+      <div class="text-[13px] text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.currentAction)}</div>
     </div>
   `;
 }
@@ -409,10 +434,10 @@ function renderWaitingCard(w) {
     <div class="waiting-banner bg-gradient-to-br ${cardClasses} border rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98]" data-id="${w.id}">
       <div class="flex items-center gap-2.5 mb-1.5">
         <div class="status-dot w-2.5 h-2.5 rounded-full shrink-0 waiting"></div>
-        <div class="flex-1 text-[15px] font-medium text-zinc-50">${escapeHtml(w.taskTitle)}</div>
+        <div class="flex-1 text-[15px] font-medium text-text-primary">${escapeHtml(w.taskTitle)}</div>
         <div class="text-[11px] font-semibold uppercase tracking-wide ${badgeClasses} py-0.5 px-2 rounded">${badgeLabel}</div>
       </div>
-      <div class="text-[13px] text-zinc-400 pl-5 leading-relaxed">${escapeHtml(truncatedQuestion)}</div>
+      <div class="text-[13px] text-text-secondary pl-5 leading-relaxed">${escapeHtml(truncatedQuestion)}</div>
     </div>
   `;
 }
@@ -435,8 +460,8 @@ function renderCompletedSection(completed) {
 
   completedEl.innerHTML = `
     <div class="section-header-collapsible flex items-center justify-between py-2 cursor-pointer select-none hover:opacity-80 ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
-      <span class="text-[13px] font-semibold text-zinc-400 uppercase tracking-wide">Completed (${completed.length})</span>
-      <svg class="chevron text-zinc-400 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+      <span class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide">Completed (${completed.length})</span>
+      <svg class="chevron text-text-secondary transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
     </div>
@@ -454,13 +479,13 @@ function renderCompletedSection(completed) {
 function renderCompletedCard(w) {
   const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
   return `
-    <div class="worker-card bg-zinc-900 rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
+    <div class="worker-card bg-surface rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-1">
         <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${w.status}"></div>
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
-        <div class="text-xs text-zinc-400 bg-zinc-800 py-1 px-2 rounded">${w.status}</div>
+        <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="text-[13px] text-zinc-400">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
+      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
     </div>
   `;
 }
@@ -509,7 +534,7 @@ function renderMilestoneBoxes(milestones) {
   const completed = Math.min(milestones.length, max);
   let html = '';
   for (let i = 0; i < max; i++) {
-    html += `<div class="w-6 h-2 rounded-sm ${i < completed ? 'bg-fuchsia-500' : 'bg-zinc-800'}"></div>`;
+    html += `<div class="w-6 h-2 rounded-sm ${i < completed ? 'bg-brand' : 'bg-surface-hover'}"></div>`;
   }
   return html;
 }
@@ -559,19 +584,19 @@ function renderTasks() {
     // Only assigned, no pending - skip empty message
   } else {
     html += pending.map(t => `
-      <div class="bg-zinc-900 rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 relative border border-transparent hover:bg-zinc-800 hover:border-zinc-700 active:scale-[0.98]" data-id="${t.id}">
+      <div class="bg-surface rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 relative border border-transparent hover:bg-surface-hover hover:border-border-hover active:scale-[0.98]" data-id="${t.id}">
         <div class="flex items-start gap-2.5">
           <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 pending"></div>
           <div class="flex-1 min-w-0">
-            <div class="text-[15px] font-medium leading-relaxed text-zinc-50 mb-1">${escapeHtml(t.title)}</div>
-            <div class="text-xs text-zinc-400 flex items-center gap-1">
+            <div class="text-[15px] font-medium leading-relaxed text-text-primary mb-1">${escapeHtml(t.title)}</div>
+            <div class="text-xs text-text-secondary flex items-center gap-1">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 opacity-60">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
               ${escapeHtml(t.workspace?.name || 'Unknown')}
             </div>
           </div>
-          <button class="task-card-start shrink-0 py-1.5 px-3.5 text-[13px] font-medium bg-gradient-primary text-white border-none rounded-md cursor-pointer transition-all duration-150 whitespace-nowrap hover:opacity-90 active:scale-95" data-id="${t.id}">Start</button>
+          <button class="task-card-start shrink-0 py-1.5 px-3.5 text-[13px] font-medium bg-brand text-white border-none rounded-md cursor-pointer transition-all duration-150 whitespace-nowrap hover:opacity-90 active:scale-95" data-id="${t.id}">Start</button>
         </div>
       </div>
     `).join('');
@@ -580,21 +605,21 @@ function renderTasks() {
   // Assigned tasks section
   if (assigned.length > 0) {
     html += `
-      <div class="mt-6 pt-4 border-t border-zinc-700">
-        <div class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-3">Assigned Elsewhere (${assigned.length})</div>
+      <div class="mt-6 pt-4 border-t border-border-default">
+        <div class="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-3">Assigned Elsewhere (${assigned.length})</div>
         ${assigned.map(t => {
           const isStale = t.expiresAt && new Date(t.expiresAt) < new Date();
           const staleLabel = isStale ? '<span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-amber-400/15 text-orange-500">Stale</span>' : '';
           return `
-            <div class="bg-zinc-900 rounded-xl p-4 cursor-default opacity-80 hover:opacity-100" data-id="${t.id}" data-stale="${isStale}">
+            <div class="bg-surface rounded-xl p-4 cursor-default opacity-80 hover:opacity-100" data-id="${t.id}" data-stale="${isStale}">
               <div class="flex items-start gap-3 mb-2">
                 <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 assigned"></div>
                 <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(t.title)}</div>
                 ${staleLabel}
               </div>
-              <div class="text-[13px] text-zinc-400">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
+              <div class="text-[13px] text-text-secondary">${escapeHtml(t.workspace?.name || 'Unknown')}</div>
               <div class="mt-3 flex gap-2">
-                <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200 takeover-btn" data-id="${t.id}" data-stale="${isStale}">
+                <button class="btn py-1.5 px-3 text-[13px] bg-surface-hover text-text-primary rounded-lg font-medium cursor-pointer transition-all duration-200 takeover-btn" data-id="${t.id}" data-stale="${isStale}">
                   Take Over
                 </button>
                 <button class="btn py-1.5 px-3 text-[13px] bg-red-500 text-white rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-red-600 delete-btn" data-id="${t.id}" title="Delete task">
@@ -645,9 +670,9 @@ function renderWorkerDetail(worker) {
   document.getElementById('modalTitle').textContent = worker.taskTitle;
 
   document.getElementById('modalMeta').innerHTML = `
-    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400">${worker.workspaceName}</span>
-    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400">${worker.branch}</span>
-    <span class="text-xs bg-zinc-800 py-1.5 px-2.5 rounded text-zinc-400 meta-tag status-${worker.status}">${worker.status}</span>
+    <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary">${worker.workspaceName}</span>
+    <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary">${worker.branch}</span>
+    <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary meta-tag status-${worker.status}">${worker.status}</span>
   `;
 
   // Render description with markdown support (collapsible if long)
@@ -655,11 +680,11 @@ function renderWorkerDetail(worker) {
   if (worker.taskDescription) {
     const isLongDescription = worker.taskDescription.length > 300 || worker.taskDescription.split('\n').length > 6;
     descriptionEl.innerHTML = `
-      <div class="task-description-card bg-zinc-900 rounded-lg py-3 px-3.5 mb-2 border-l-[3px] border-l-fuchsia-500 relative ${isLongDescription ? 'collapsed' : ''}">
-        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide mb-1.5">Task</div>
+      <div class="task-description-card bg-surface rounded-lg py-3 px-3.5 mb-2 border-l-[3px] border-l-brand relative ${isLongDescription ? 'collapsed' : ''}">
+        <div class="text-[11px] font-semibold text-text-secondary uppercase tracking-wide mb-1.5">Task</div>
         <div class="markdown-content text-[13px] leading-normal">${marked.parse(worker.taskDescription)}</div>
         ${isLongDescription ? `
-          <button class="expand-btn items-center justify-center gap-1 w-full pt-1.5 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleDescription(this)">
+          <button class="expand-btn items-center justify-center gap-1 w-full pt-1.5 pb-0.5 text-xs text-text-secondary bg-none border-none cursor-pointer transition-colors duration-150 hover:text-brand" onclick="toggleDescription(this)">
             <span class="expand-text">Show more</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
               <polyline points="6 9 12 15 18 9"/>
@@ -692,10 +717,10 @@ function renderWorkerDetail(worker) {
         const isLong = combinedContent.length > 800 || combinedContent.split('\n').length > 15;
         return `
           <div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start ${isLong ? 'collapsed' : ''}">
-            <div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative">
+            <div class="chat-msg-content bg-surface rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative">
               <div class="markdown-content text-sm">${marked.parse(combinedContent)}</div>
               ${isLong ? `
-                <button class="expand-msg-btn items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-zinc-400 bg-none border-none cursor-pointer transition-colors duration-150 hover:text-fuchsia-500" onclick="toggleAgentMessage(this)">
+                <button class="expand-msg-btn items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-text-secondary bg-none border-none cursor-pointer transition-colors duration-150 hover:text-brand" onclick="toggleAgentMessage(this)">
                   <span class="expand-text">Show more</span>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
                     <polyline points="6 9 12 15 18 9"/>
@@ -708,8 +733,8 @@ function renderWorkerDetail(worker) {
       if (group.type === 'user') {
         return group.items.map(m => `
           <div class="chat-msg max-w-[90%] animate-chat-fade-in self-end">
-            <div class="text-[11px] text-zinc-400 mb-1 text-right">You</div>
-            <div class="bg-fuchsia-500 bg-gradient-to-br from-fuchsia-500/25 to-cyan-400/15 border border-fuchsia-500/30 rounded-tl-lg rounded-tr-sm rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-normal text-zinc-50">${escapeHtml(m.content)}</div>
+            <div class="text-[11px] text-text-secondary mb-1 text-right">You</div>
+            <div class="bg-brand/15 border border-brand/25 rounded-tl-lg rounded-tr-sm rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-normal text-text-primary">${escapeHtml(m.content)}</div>
           </div>`).join('');
       }
       if (group.type === 'tool_use') {
@@ -728,7 +753,7 @@ function renderWorkerDetail(worker) {
         return `
           <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
             ${visible.map(m => renderToolCallInline(m)).join('')}
-            <button class="flex items-center gap-1.5 py-1 px-2.5 bg-zinc-900/50 rounded text-[11px] text-zinc-500 cursor-pointer transition-colors hover:text-zinc-300 border-none" onclick="toggleToolGroup('${groupId}', this)">
+            <button class="flex items-center gap-1.5 py-1 px-2.5 bg-surface/50 rounded text-[11px] text-text-tertiary cursor-pointer transition-colors hover:text-text-secondary border-none" onclick="toggleToolGroup('${groupId}', this)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 transition-transform duration-200">
                 <polyline points="9 18 15 12 9 6"/>
               </svg>
@@ -744,16 +769,16 @@ function renderWorkerDetail(worker) {
   } else {
     // Fallback: render from old output/toolCalls arrays for backwards compat
     const fallbackHtml = (worker.output || []).length > 0
-      ? `<div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start"><div class="chat-msg-content bg-zinc-900 rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative"><div class="bg-zinc-900 rounded-lg p-3 font-mono text-[13px] leading-normal max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
-      : '<div class="text-center py-8 text-zinc-400 text-sm">Waiting for agent output...</div>';
+      ? `<div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start"><div class="chat-msg-content bg-surface rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative"><div class="bg-surface rounded-lg p-3 font-mono text-[13px] leading-normal max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words">${escapeHtml(worker.output.slice(-50).join('\n'))}</div></div></div>`
+      : '<div class="text-center py-8 text-text-secondary text-sm">Waiting for agent output...</div>';
     timelineEl.innerHTML = fallbackHtml;
   }
 
   // Status indicator at bottom
   if (worker.status === 'working') {
     timelineEl.innerHTML += `
-      <div class="flex items-center gap-2 py-2 text-[13px] text-zinc-400">
-        <div class="w-2 h-2 rounded-full bg-fuchsia-500 animate-pulse-fast shrink-0"></div>
+      <div class="flex items-center gap-2 py-2 text-[13px] text-text-secondary">
+        <div class="w-2 h-2 rounded-full bg-brand animate-pulse-fast shrink-0"></div>
         <span>${escapeHtml(worker.currentAction)}</span>
       </div>`;
   }
@@ -770,9 +795,9 @@ function renderWorkerDetail(worker) {
           </svg>
           Agent appears stuck
         </div>
-        <div class="text-sm text-zinc-50 leading-normal mb-2">No activity for over 2 minutes. Last action: ${escapeHtml(worker.currentAction)}</div>
-        <div class="text-xs text-zinc-400">Send a message below to nudge the agent, or use Retry to restart the session</div>
-        <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200 mt-2" onclick="retryWorker()">Retry</button>
+        <div class="text-sm text-text-primary leading-normal mb-2">No activity for over 2 minutes. Last action: ${escapeHtml(worker.currentAction)}</div>
+        <div class="text-xs text-text-secondary">Send a message below to nudge the agent, or use Retry to restart the session</div>
+        <button class="btn py-1.5 px-3 text-[13px] bg-surface-hover text-text-primary rounded-lg font-medium cursor-pointer transition-all duration-200 mt-2" onclick="retryWorker()">Retry</button>
       </div>`;
   }
 
@@ -785,7 +810,7 @@ function renderWorkerDetail(worker) {
           <div class="text-xs text-cyan-400 font-semibold uppercase tracking-wide mb-3">
             Plan ready for review
           </div>
-          <div class="text-sm text-zinc-300 mb-4">
+          <div class="text-sm text-text-secondary mb-4">
             Review the plan above, then approve to execute with a fresh context window or request changes.
           </div>
           <div class="flex flex-wrap gap-2">
@@ -794,10 +819,10 @@ function renderWorkerDetail(worker) {
               Approve & implement
               <span class="text-[11px] text-cyan-400/70 font-normal">Fresh context — plan only</span>
             </button>
-            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all hover:bg-zinc-900 hover:border-orange-500 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:outline-none"
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-orange-500 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:outline-none"
               onclick="promptPlanChanges()">
               Request changes
-              <span class="text-[11px] text-zinc-400 font-normal">Ask the agent to revise</span>
+              <span class="text-[11px] text-text-secondary font-normal">Ask the agent to revise</span>
             </button>
           </div>
         </div>`;
@@ -807,14 +832,14 @@ function renderWorkerDetail(worker) {
       timelineEl.innerHTML += `
         <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
           <div class="text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">Agent is asking:</div>
-          <div class="text-sm text-zinc-50 leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
+          <div class="text-sm text-text-primary leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
           ${options.length > 0 ? `
             <div class="flex flex-wrap gap-2">
               ${options.map((opt, i) => `
-                <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-50 text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-zinc-900 hover:border-orange-500" data-option="${i}"
+                <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-surface hover:border-orange-500" data-option="${i}"
                   onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
                   ${escapeHtml(opt.label)}
-                  ${opt.description ? `<span class="text-[11px] text-zinc-400 font-normal">${escapeHtml(opt.description)}</span>` : ''}
+                  ${opt.description ? `<span class="text-[11px] text-text-secondary font-normal">${escapeHtml(opt.description)}</span>` : ''}
                 </button>
               `).join('')}
             </div>
@@ -835,8 +860,8 @@ function renderWorkerDetail(worker) {
           </svg>
           Task stopped
         </div>
-        <div class="text-sm text-zinc-50 leading-normal mb-2">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
-        <div class="text-xs text-zinc-400">Send a message below to restart with new instructions</div>
+        <div class="text-sm text-text-primary leading-normal mb-2">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
+        <div class="text-xs text-text-secondary">Send a message below to restart with new instructions</div>
       </div>`;
   }
 
@@ -853,11 +878,11 @@ function renderWorkerDetail(worker) {
           </svg>
           Delivered
         </div>
-        <div class="flex items-center gap-3 text-sm text-zinc-300 flex-wrap">
-          <span class="text-xs bg-zinc-800 py-1 px-2 rounded font-mono">${escapeHtml(worker.branch)}</span>
+        <div class="flex items-center gap-3 text-sm text-text-secondary flex-wrap">
+          <span class="text-xs bg-surface-hover py-1 px-2 rounded font-mono">${escapeHtml(worker.branch)}</span>
           <span>${commitCount} commit${commitCount !== 1 ? 's' : ''}</span>
         </div>
-        <div class="text-xs text-zinc-500 mt-2">${commitMsgs}</div>
+        <div class="text-xs text-text-tertiary mt-2">${commitMsgs}</div>
       </div>`;
   }
 
@@ -874,7 +899,7 @@ function renderWorkerDetail(worker) {
 
   // Show/hide message input based on status
   // Allow input for working, done, waiting, stale, AND error (to restart/continue)
-  const messageInputEl = workerModal.querySelector('.border-t.bg-zinc-900');
+  const messageInputEl = workerModal.querySelector('.border-t.bg-surface');
   if (worker.status === 'working' || worker.status === 'done' || worker.status === 'waiting' || worker.status === 'error' || worker.status === 'stale') {
     messageInputEl.classList.remove('hidden');
     let placeholder = 'Send a message to the agent...';
@@ -958,10 +983,10 @@ function renderToolCallInline(tc) {
   }
 
   return `
-    <div class="flex items-center gap-1.5 py-1 px-2.5 bg-zinc-900 border-l-2 border-l-zinc-800 rounded-r text-xs text-zinc-400 overflow-hidden">
-      <span class="shrink-0 flex items-center text-zinc-400 opacity-70">${icon}</span>
-      <span class="font-semibold text-fuchsia-500 text-xs shrink-0">${escapeHtml(name)}</span>
-      ${detail ? `<span class="font-mono text-[11px] text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis min-w-0">${escapeHtml(detail)}</span>` : ''}
+    <div class="flex items-center gap-1.5 py-1 px-2.5 bg-surface border-l-2 border-l-border-default rounded-r text-xs text-text-secondary overflow-hidden">
+      <span class="shrink-0 flex items-center text-text-secondary opacity-70">${icon}</span>
+      <span class="font-medium text-text-secondary text-xs shrink-0">${escapeHtml(name)}</span>
+      ${detail ? `<span class="font-mono text-[11px] text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis min-w-0">${escapeHtml(detail)}</span>` : ''}
     </div>`;
 }
 
@@ -1045,7 +1070,7 @@ function updateSettings() {
   const maxEl = document.getElementById('settingsMax');
   maxEl.innerHTML = `
     <input type="number" min="1" max="20" value="${config.maxConcurrent || 3}"
-      class="bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-sm text-zinc-50 w-20 focus:outline-none focus:border-fuchsia-500"
+      class="bg-surface border border-border-default rounded-lg py-2 px-3 text-sm text-text-primary w-20 focus:outline-none focus:border-focus-ring"
       id="settingsMaxInput">
   `;
 
@@ -1097,7 +1122,7 @@ async function handleServerUrlChange() {
       config.builddServer = data.builddServer;
       serverSaveBtn.style.display = 'none';
       hint.textContent = 'Server URL updated. Reconnecting...';
-      hint.style.color = '#22c55e';
+      hint.style.color = 'rgb(var(--color-status-success))';
       // Reconnect SSE and reload all data
       connectSSE();
       await Promise.all([loadTasks(), loadWorkspaces()]);
@@ -1108,11 +1133,11 @@ async function handleServerUrlChange() {
       }, 3000);
     } else {
       hint.textContent = data.error || 'Failed to update server URL';
-      hint.style.color = '#ef4444';
+      hint.style.color = 'rgb(var(--color-status-error))';
     }
   } catch (err) {
     hint.textContent = 'Failed to save server URL';
-    hint.style.color = '#ef4444';
+    hint.style.color = 'rgb(var(--color-status-error))';
   } finally {
     serverSaveBtn.disabled = false;
     serverSaveBtn.textContent = 'Save';
@@ -1365,7 +1390,7 @@ function showToast(message, type = 'info') {
   };
 
   const toast = document.createElement('div');
-  toast.className = `toast fixed bottom-6 left-1/2 bg-zinc-800 text-zinc-50 py-3 px-5 rounded-lg shadow-[0_4px_20px_rgba(0,0,0,0.4)] text-sm z-[1000] flex items-center gap-2.5 max-w-[min(500px,90vw)] border-l-[3px] ${borderColors[type] || borderColors.info}`;
+  toast.className = `toast fixed bottom-6 left-1/2 bg-elevated text-text-primary py-3 px-5 rounded-lg shadow-[0_4px_20px_rgb(var(--color-overlay)/var(--shadow-strength))] text-sm z-[1000] flex items-center gap-2.5 max-w-[min(500px,90vw)] border border-border-default border-l-[3px] ${borderColors[type] || borderColors.info}`;
 
   const icon = document.createElement('span');
   icon.className = 'shrink-0 w-[18px] h-[18px]';
@@ -1531,7 +1556,7 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
         <div class="custom-select-option flex items-center gap-2.5 py-2.5 px-3 rounded-lg cursor-pointer transition-all duration-100 mb-0.5 ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
           ${o.icon ? `<span class="shrink-0 w-5 h-5 flex items-center justify-center">${o.icon}</span>` : ''}
           <span class="option-label flex-1 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(o.label)}</span>
-          ${o.hint ? `<span class="option-hint text-xs text-zinc-400 whitespace-nowrap">${escapeHtml(o.hint)}</span>` : ''}
+          ${o.hint ? `<span class="option-hint text-xs text-text-secondary whitespace-nowrap">${escapeHtml(o.hint)}</span>` : ''}
         </div>
       `).join('');
     },
@@ -1546,7 +1571,7 @@ function selectOption(container, value, label) {
   trigger.dataset.value = value;
   valueEl.textContent = label;
   valueEl.classList.toggle('placeholder', !value);
-  valueEl.classList.toggle('text-zinc-400', !value);
+  valueEl.classList.toggle('text-text-secondary', !value);
 }
 
 function closeAllDropdowns() {
@@ -1723,38 +1748,38 @@ async function renderWorkspaceModal() {
   const localOnly = combinedWorkspaces.filter(w => w.status === 'local-only');
 
   document.getElementById('workspacesReady').innerHTML = ready.length ? ready.map(w => `
-    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+    <div class="flex items-center justify-between p-3 bg-surface rounded-lg gap-3">
       <div class="flex-1 min-w-0">
         <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
-        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.localPath)}</div>
+        <div class="text-xs text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.localPath)}</div>
       </div>
       <span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-green-500/15 text-green-500">Ready</span>
     </div>
-  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
+  `).join('') : '<div class="text-[13px] text-text-secondary py-2">None</div>';
 
   document.getElementById('workspacesNeedsClone').innerHTML = needsClone.length ? needsClone.map(w => `
-    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+    <div class="flex items-center justify-between p-3 bg-surface rounded-lg gap-3">
       <div class="flex-1 min-w-0">
         <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
-        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.repo || '')}</div>
+        <div class="text-xs text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.repo || '')}</div>
       </div>
-      <button class="btn py-1.5 px-3 text-[13px] bg-gradient-primary text-white rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="cloneWorkspace('${w.id}', '${escapeHtml(w.repo)}')">
+      <button class="btn py-1.5 px-3 text-[13px] bg-brand text-white rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="cloneWorkspace('${w.id}', '${escapeHtml(w.repo)}')">
         Clone
       </button>
     </div>
-  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
+  `).join('') : '<div class="text-[13px] text-text-secondary py-2">None</div>';
 
   document.getElementById('workspacesLocalOnly').innerHTML = localOnly.length ? localOnly.map(w => `
-    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg gap-3">
+    <div class="flex items-center justify-between p-3 bg-surface rounded-lg gap-3">
       <div class="flex-1 min-w-0">
         <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
-        <div class="text-xs text-zinc-400 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.normalizedUrl || '')}</div>
+        <div class="text-xs text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.normalizedUrl || '')}</div>
       </div>
-      <button class="btn py-1.5 px-3 text-[13px] bg-zinc-800 text-zinc-50 rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="syncWorkspace('${escapeHtml(w.localPath)}', '${escapeHtml(w.name)}')">
+      <button class="btn py-1.5 px-3 text-[13px] bg-surface-hover text-text-primary rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="syncWorkspace('${escapeHtml(w.localPath)}', '${escapeHtml(w.name)}')">
         Sync
       </button>
     </div>
-  `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
+  `).join('') : '<div class="text-[13px] text-text-secondary py-2">None</div>';
 }
 
 async function cloneWorkspace(workspaceId, repoUrl) {
@@ -2287,9 +2312,9 @@ function renderAttachments() {
       <div class="remove absolute top-1 right-1 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-sm cursor-pointer" data-index="${i}">&times;</div>
     </div>
   `).join('') + `
-    <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-zinc-900 border-2 border-dashed border-zinc-700 flex items-center justify-center cursor-pointer">
+    <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-surface border-2 border-dashed border-border-default flex items-center justify-center cursor-pointer">
       <input type="file" id="fileInput" accept="image/*" multiple hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 text-zinc-400">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 text-text-secondary">
         <path d="M12 5v14M5 12h14"/>
       </svg>
     </label>
@@ -2326,6 +2351,7 @@ function escapeHtml(str) {
 }
 
 // Event listeners
+document.getElementById('themeToggle').onclick = toggleTheme;
 document.getElementById('refreshBtn').onclick = loadTasks;
 document.getElementById('addBtn').onclick = openTaskModal;
 document.getElementById('settingsBtn').onclick = openSettingsModal;
