@@ -1,10 +1,13 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, githubInstallations } from '@buildd/core/db/schema';
-import { desc, inArray, eq, and } from 'drizzle-orm';
+import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats } from '@buildd/core/db/schema';
+import { desc, inArray, eq, and, sql, gt } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import StatusBadge from '@/components/StatusBadge';
+
+const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
@@ -17,6 +20,8 @@ export default async function DashboardPage() {
   let activeWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect })[] = [];
   let githubOrgs: { accountLogin: string; repoCount: number }[] = [];
   let githubConfigured = false;
+  let totalTaskCount = 0;
+  let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -36,6 +41,10 @@ export default async function DashboardPage() {
       const workspaceIds = userWorkspaces.map(w => w.id);
 
       if (workspaceIds.length > 0) {
+        // Get total task count for stat card
+        const countResult = await db.select({ count: sql<number>`count(*)::int` }).from(tasks).where(inArray(tasks.workspaceId, workspaceIds));
+        totalTaskCount = countResult[0]?.count || 0;
+
         // Get active tasks first (running, assigned, pending, failed) - sorted by status priority
         const activeTasks = await db.query.tasks.findMany({
           where: and(
@@ -94,6 +103,30 @@ export default async function DashboardPage() {
         }) as any;
       }
 
+      // Get connected agents via heartbeats
+      const userAccounts = await db.query.accounts.findMany({
+        where: eq(accounts.ownerId, user.id),
+        columns: { id: true, name: true },
+      });
+      if (userAccounts.length > 0) {
+        const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
+        const heartbeats = await db.query.workerHeartbeats.findMany({
+          where: and(
+            inArray(workerHeartbeats.accountId, userAccounts.map(a => a.id)),
+            gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+          ),
+          limit: 20,
+        });
+        const accountNameMap = new Map(userAccounts.map(a => [a.id, a.name]));
+        connectedAgents = heartbeats.map(hb => ({
+          localUiUrl: hb.localUiUrl,
+          accountName: accountNameMap.get(hb.accountId) || 'Unknown',
+          activeWorkers: hb.activeWorkerCount,
+          maxConcurrent: hb.maxConcurrentWorkers,
+          lastHeartbeat: hb.lastHeartbeatAt,
+        }));
+      }
+
       // Get GitHub installations
       if (githubConfigured) {
         const installations = await db.query.githubInstallations.findMany({
@@ -127,7 +160,7 @@ export default async function DashboardPage() {
                   href="/app/settings"
                   className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30"
                 >
-                  <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
                   <span className="text-green-700 dark:text-green-400">
@@ -139,7 +172,7 @@ export default async function DashboardPage() {
                   href="/api/github/install"
                   className="flex items-center gap-2 px-3 py-1.5 text-sm border border-dashed border-gray-300 dark:border-gray-600 rounded-lg hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30"
                 >
-                  <svg className="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
                   <span className="text-blue-600 dark:text-blue-400">Connect GitHub</span>
@@ -173,7 +206,7 @@ export default async function DashboardPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-                  <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
                 </div>
@@ -214,7 +247,7 @@ export default async function DashboardPage() {
           >
             <div className="flex justify-between items-start mb-4">
               <h2 className="text-xl font-semibold">Tasks</h2>
-              <span className="text-2xl font-bold">{recentTasks.length}</span>
+              <span className="text-2xl font-bold">{totalTaskCount}</span>
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
               Work items for agents to complete
@@ -227,11 +260,24 @@ export default async function DashboardPage() {
             className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
           >
             <div className="flex justify-between items-start mb-4">
-              <h2 className="text-xl font-semibold">Workers</h2>
-              <span className="text-2xl font-bold text-green-600">{activeWorkers.length}</span>
+              <h2 className="text-xl font-semibold">Agents</h2>
+              <div className="text-right">
+                {connectedAgents.length > 0 ? (
+                  <>
+                    <span className="text-2xl font-bold text-green-600">{connectedAgents.length}</span>
+                    <span className="text-sm text-gray-400 ml-1">connected</span>
+                  </>
+                ) : (
+                  <span className="text-2xl font-bold text-gray-400">0</span>
+                )}
+              </div>
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
-              Active agents working on tasks
+              {activeWorkers.length > 0
+                ? `${activeWorkers.length} working on tasks`
+                : connectedAgents.length > 0
+                  ? 'Ready to claim tasks'
+                  : 'No agents connected'}
             </p>
           </Link>
         </div>
@@ -297,6 +343,48 @@ export default async function DashboardPage() {
           )}
         </div>
 
+        {/* Connected Agents */}
+        {connectedAgents.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-4">Connected Agents</h2>
+            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+              {connectedAgents.map((agent) => (
+                <div
+                  key={agent.localUiUrl}
+                  className="p-4"
+                >
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                      <div>
+                        <span className="font-medium">{agent.accountName}</span>
+                        <span className="text-sm text-gray-400 ml-2">
+                          {agent.activeWorkers}/{agent.maxConcurrent} workers
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-gray-400">
+                        {agent.maxConcurrent - agent.activeWorkers > 0
+                          ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
+                          : 'At capacity'}
+                      </span>
+                      <a
+                        href={agent.localUiUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+                      >
+                        Open
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Active Workers */}
         <div>
           <h2 className="text-xl font-semibold mb-4">Active Workers</h2>
@@ -305,7 +393,9 @@ export default async function DashboardPage() {
             <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
               <p className="text-gray-500">No active workers</p>
               <p className="text-sm text-gray-400 mt-2">
-                Workers will appear here when agents claim tasks
+                {connectedAgents.length > 0
+                  ? 'Agents are connected and ready — create a task to get started'
+                  : 'Start a local-ui instance to connect agents'}
               </p>
             </div>
           ) : (
@@ -381,20 +471,3 @@ export default async function DashboardPage() {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
-    assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-    running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-    starting: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-    completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-    failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-    waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-  };
-
-  return (
-    <span className={`px-2 py-1 text-xs rounded-full ${colors[status] || colors.pending}`}>
-      {status}
-    </span>
-  );
-}

@@ -11,6 +11,7 @@ const SHOW_ALL_KEY = 'buildd:workspaceShowAll';
 const COMPLETED_COLLAPSED_KEY = 'buildd:completedCollapsed';
 const HIDDEN_WORKSPACES_KEY = 'buildd:hiddenWorkspaces';
 const TASKS_PER_WORKSPACE = 5;
+const SEARCH_KEY = 'buildd:taskSearch';
 
 interface Task {
   id: string;
@@ -56,6 +57,7 @@ function getStatusIndicator(status: string): React.ReactNode {
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
@@ -111,6 +113,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   const [hiddenWorkspaces, setHiddenWorkspaces] = useState<Record<string, boolean>>({});
   const [showHiddenSection, setShowHiddenSection] = useState(false);
   const [quickCreateWorkspaceId, setQuickCreateWorkspaceId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Update workspaces when props change (e.g., after navigation)
   useEffect(() => {
@@ -289,8 +292,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     }
   };
 
+  // Filter tasks by search query
+  const searchLower = searchQuery.toLowerCase();
+  const filteredWorkspaces = searchQuery
+    ? workspaces.map(ws => ({
+        ...ws,
+        tasks: ws.tasks.filter(t => t.title.toLowerCase().includes(searchLower)),
+      })).filter(ws => ws.tasks.length > 0)
+    : workspaces;
+
   // Sort workspaces: those with active tasks first, then sort tasks within each workspace
-  const allSortedWorkspaces = [...workspaces].map(ws => ({
+  const allSortedWorkspaces = [...filteredWorkspaces].map(ws => ({
     ...ws,
     tasks: [...ws.tasks].sort((a, b) => {
       // First sort by status priority
@@ -332,6 +344,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
           <h1 className="text-lg font-semibold mt-2">Tasks</h1>
         </div>
 
+        {/* Search */}
+        <div className="px-3 pb-2">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search tasks..."
+            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400"
+          />
+        </div>
+
         {/* Workspace list */}
         <nav className="flex-1 overflow-y-auto p-2">
           {sortedWorkspaces.length === 0 && hiddenCount === 0 ? (
@@ -361,6 +384,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                     <div className="flex items-center gap-1 group">
                       <button
                         onClick={() => toggleCollapse(ws.id)}
+                        aria-expanded={!isCollapsed}
                         className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
                       >
                         <span className="text-gray-400 w-4">
@@ -378,15 +402,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       </button>
                       <button
                         onClick={() => setQuickCreateWorkspaceId(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                         title="Quick create task"
+                        aria-label={`Quick create task in ${ws.name}`}
                       >
                         +
                       </button>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                         title="Hide workspace"
+                        aria-label={`Hide ${ws.name}`}
                       >
                         hide
                       </button>
@@ -447,6 +473,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 <>
                                   <button
                                     onClick={() => toggleCompletedCollapsed(ws.id)}
+                                    aria-expanded={!isCompletedHidden}
                                     className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
                                   >
                                     <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
@@ -512,6 +539,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
               <button
                 onClick={() => setShowHiddenSection(!showHiddenSection)}
+                aria-expanded={showHiddenSection}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
               >
                 <span className="w-3 text-[10px]">{showHiddenSection ? '▼' : '›'}</span>
@@ -526,8 +554,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       </span>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                         title="Show workspace"
+                        aria-label={`Show ${ws.name}`}
                       >
                         show
                       </button>

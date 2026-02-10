@@ -5,6 +5,7 @@ import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client'
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
+import StatusBadge from '@/components/StatusBadge';
 
 
 interface Worker {
@@ -35,7 +36,7 @@ interface Worker {
 
 interface Props {
   initialWorker: Worker;
-  statusColors: Record<string, string>;
+  statusColors?: Record<string, string>;
 }
 
 // Probe direct connection to local-ui and cache viewer token
@@ -300,9 +301,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           <p className="text-sm text-gray-500">Branch: {worker.branch}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`px-2 py-1 text-xs rounded-full ${statusColors[worker.status] || statusColors.idle}`}>
-            {worker.status}
-          </span>
+          <StatusBadge status={worker.status} />
           {worker.localUiUrl && (
             <div className="flex items-center gap-1.5">
               {directStatus === 'connected' && (
@@ -330,7 +329,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       {/* Current action */}
       {worker.currentAction && (
         <div className="mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+          <span className="w-2 h-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" aria-hidden="true" />
           <p className="text-sm text-gray-600 dark:text-gray-400">{worker.currentAction}</p>
         </div>
       )}
@@ -378,6 +377,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           <div
             ref={outputRef}
             onScroll={handleScroll}
+            role="log"
+            aria-live="polite"
             className="bg-gray-900 text-green-400 font-mono text-xs p-3 rounded-lg max-h-48 overflow-y-auto"
           >
             {actionLog.map((line, i) => (

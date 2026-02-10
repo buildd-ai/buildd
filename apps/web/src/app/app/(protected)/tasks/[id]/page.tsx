@@ -12,6 +12,7 @@ import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
+import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 
 export default async function TaskDetailPage({
   params,
@@ -77,25 +78,6 @@ export default async function TaskDetailPage({
       ? 'awaiting_plan_approval'
       : task.status;
 
-  const statusColors: Record<string, string> = {
-    pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
-    assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-    running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-    waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-    awaiting_plan_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
-    completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-    failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-  };
-
-  const workerStatusColors: Record<string, string> = {
-    idle: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-    starting: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-    running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-    waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-    awaiting_plan_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
-    completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-    failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-  };
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
   const rawAttachments = (task.context as any)?.attachments as Array<{
@@ -129,17 +111,20 @@ export default async function TaskDetailPage({
         {/* Auto-refresh when worker claims this task */}
         <TaskAutoRefresh taskId={task.id} workspaceId={task.workspaceId} taskStatus={task.status} />
 
+        {/* Breadcrumbs */}
+        <nav aria-label="Breadcrumb" className="text-sm text-gray-500 mb-4">
+          <Link href="/app/tasks" className="hover:text-gray-700 dark:hover:text-gray-300">Tasks</Link>
+          <span className="mx-2">/</span>
+          <span className="text-gray-900 dark:text-gray-100">{task.title}</span>
+        </nav>
+
         {/* Header */}
         <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-3 mb-6">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-2 flex-wrap">
               <h1 className="text-xl md:text-2xl font-bold break-words">{task.title}</h1>
-              <span
-                data-testid="task-header-status"
-                data-status={displayStatus}
-                className={`px-3 py-1 text-sm rounded-full ${statusColors[displayStatus] || statusColors.pending}`}
-              >
-                {displayStatus}
+              <span data-testid="task-header-status" data-status={displayStatus}>
+                <StatusBadge status={displayStatus} />
               </span>
             </div>
             <p className="text-gray-500 text-sm">
@@ -147,6 +132,7 @@ export default async function TaskDetailPage({
             </p>
           </div>
           <div className="flex gap-2 flex-wrap">
+            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
             <EditTaskButton
               task={{
                 id: task.id,
@@ -155,8 +141,6 @@ export default async function TaskDetailPage({
                 priority: task.priority,
               }}
             />
-            <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
-            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
             {canReassign && <ReassignButton taskId={task.id} />}
             {task.externalUrl && (
               <a
@@ -168,6 +152,7 @@ export default async function TaskDetailPage({
                 View Source
               </a>
             )}
+            <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
           </div>
         </div>
 
@@ -193,7 +178,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${statusColors[task.parentTask.status] || statusColors.pending}`}>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
                     {task.parentTask.status}
                   </span>
                 </div>
@@ -210,7 +195,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <span className={`px-2 py-0.5 text-xs rounded-full ${statusColors[sub.status] || statusColors.pending}`}>
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
                           {sub.status}
                         </span>
                       </div>
@@ -270,7 +255,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8">
             <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full border-2 border-green-500 border-t-transparent animate-spin"></span>
+              <span className="w-2 h-2 rounded-full border-2 border-green-500 border-t-transparent animate-spin" aria-hidden="true"></span>
               Active Worker
             </h2>
             <RealTimeWorkerView
@@ -299,7 +284,6 @@ export default async function TaskDetailPage({
                 pendingInstructions: activeWorker.pendingInstructions,
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
               }}
-              statusColors={workerStatusColors}
             />
           </div>
         )}
@@ -364,7 +348,7 @@ export default async function TaskDetailPage({
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <h3 className="font-medium">{worker.name}</h3>
-                        <span className={`px-2 py-0.5 text-xs rounded-full ${workerStatusColors[worker.status]}`}>
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[worker.status] || STATUS_COLORS.pending}`}>
                           {worker.status}
                         </span>
                       </div>
