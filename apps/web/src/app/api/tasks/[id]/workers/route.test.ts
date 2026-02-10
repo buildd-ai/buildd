@@ -5,10 +5,16 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+// Mock team-access
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
 // Mock database
@@ -52,6 +58,10 @@ describe('GET /api/tasks/[id]/workers', () => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+
+    // Default: grant access
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
   });
 
   it('returns 401 when no session auth (session only)', async () => {
@@ -82,11 +92,12 @@ describe('GET /api/tasks/[id]/workers', () => {
       id: 'task-123',
       title: 'Test Task',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'other-user' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const request = createMockRequest();
     const response = await callHandler(request, 'task-123');
@@ -101,7 +112,7 @@ describe('GET /api/tasks/[id]/workers', () => {
       id: 'task-123',
       title: 'Test Task',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     const mockWorkers = [
@@ -155,7 +166,7 @@ describe('GET /api/tasks/[id]/workers', () => {
       id: 'task-123',
       title: 'Test Task',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     const mockWorkers = [
@@ -203,7 +214,7 @@ describe('GET /api/tasks/[id]/workers', () => {
       id: 'task-123',
       title: 'Test Task',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -223,7 +234,7 @@ describe('GET /api/tasks/[id]/workers', () => {
       id: 'task-123',
       title: 'Test Task',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     const mockWorkers = [

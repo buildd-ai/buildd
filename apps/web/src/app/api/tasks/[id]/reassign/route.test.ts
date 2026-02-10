@@ -9,6 +9,8 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) }));
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) }));
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -23,6 +25,12 @@ mock.module('@/lib/api-auth', () => ({
   },
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
+}));
+
+// Mock team-access
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
 // Mock pusher
@@ -120,6 +128,12 @@ describe('POST /api/tasks/[id]/reassign', () => {
     mockTasksUpdate.mockReset();
     mockWorkersUpdate.mockReset();
     mockTriggerEvent.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+
+    // Default: grant access (workspace owner)
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
 
     // Default mocks
     mockTasksUpdate.mockReturnValue({
@@ -161,7 +175,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       expiresAt: null,
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -191,7 +205,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60), // Future expiry
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -216,7 +230,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60), // Future expiry
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -241,10 +255,11 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() - 1000 * 60), // Past expiry = stale
-      workspace: { id: 'ws-1', ownerId: 'other-user' }, // Different owner
+      workspace: { id: 'ws-1', teamId: 'team-2' }, // Different owner
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null); // Not a workspace member
     mockTasksFindFirst
       .mockResolvedValueOnce(mockTask)
       .mockResolvedValueOnce({ ...mockTask, status: 'pending' });
@@ -265,10 +280,11 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60), // Future expiry = not stale
-      workspace: { id: 'ws-1', ownerId: 'other-user' }, // Different owner
+      workspace: { id: 'ws-1', teamId: 'team-2' }, // Different owner
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null); // Not a workspace member
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
     const request = createMockRequest({ searchParams: { force: 'true' } });
@@ -288,7 +304,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     const activeWorkers = [
@@ -319,7 +335,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     const activeWorkers = [
@@ -351,7 +367,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       title: 'Test Task',
       status: 'completed',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -373,7 +389,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       title: 'Test Task',
       status: 'failed',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -395,7 +411,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       expiresAt: null,
-      workspace: { id: 'ws-1', ownerId: 'other-user' },
+      workspace: { id: 'ws-1', teamId: 'team-2' },
     };
 
     mockGetCurrentUser.mockResolvedValue(null);
@@ -419,7 +435,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       expiresAt: null,
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -443,7 +459,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       claimedBy: 'some-worker',
       claimedAt: new Date(),
       expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -473,7 +489,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       expiresAt: null,
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -496,10 +512,11 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: new Date(Date.now() - 1000), // 1 second ago = stale
-      workspace: { id: 'ws-1', ownerId: 'other-user' },
+      workspace: { id: 'ws-1', teamId: 'team-2' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null); // Not a workspace member
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
     const request = createMockRequest();
@@ -517,10 +534,11 @@ describe('POST /api/tasks/[id]/reassign', () => {
       status: 'assigned',
       workspaceId: 'ws-1',
       expiresAt: null, // No expiry = not stale
-      workspace: { id: 'ws-1', ownerId: 'other-user' },
+      workspace: { id: 'ws-1', teamId: 'team-2' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null); // Not a workspace member
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
     const request = createMockRequest();

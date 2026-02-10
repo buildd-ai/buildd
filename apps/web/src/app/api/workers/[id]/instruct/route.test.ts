@@ -11,6 +11,7 @@ const mockWorkersUpdate = mock(() => ({
     })),
   })),
 }));
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -18,6 +19,10 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -69,6 +74,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
 
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
@@ -104,10 +110,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('allows session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
       instructionHistory: [],
       pendingInstructions: null,
     });
@@ -126,7 +133,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'other-user' },
+      workspace: { teamId: 'other-team' },
       instructionHistory: [],
       pendingInstructions: null,
     });
@@ -151,10 +158,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('returns 404 when session user does not own workspace', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'user-2' },
+      workspace: { teamId: 'other-team' },
     });
 
     const req = createMockRequest({ message: 'Fix the bug' });
@@ -166,10 +174,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('returns 400 when worker is completed', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'completed',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
     });
 
     const req = createMockRequest({ message: 'Fix the bug' });
@@ -183,10 +192,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('returns 400 when worker is failed', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'failed',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
     });
 
     const req = createMockRequest({ message: 'Fix the bug' });
@@ -198,10 +208,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('returns 400 when message is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
       instructionHistory: [],
     });
 
@@ -216,10 +227,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('returns 400 when message is not a string', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
       instructionHistory: [],
     });
 
@@ -232,10 +244,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   it('handles request_plan type', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
-      workspace: { ownerId: 'user-1' },
+      workspace: { teamId: 'team-1' },
       instructionHistory: [],
       pendingInstructions: null,
     });

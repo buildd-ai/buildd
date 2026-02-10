@@ -11,9 +11,14 @@ const mockWorkspacesUpdate = mock(() => ({
 const mockWorkspacesDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
 }));
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -32,7 +37,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  workspaces: { id: 'id', ownerId: 'ownerId' },
+  workspaces: { id: 'id', teamId: 'teamId' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -57,6 +62,8 @@ describe('GET /api/workspaces/[id]', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     process.env.NODE_ENV = 'production';
   });
 
@@ -107,6 +114,8 @@ describe('PATCH /api/workspaces/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesUpdate.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     process.env.NODE_ENV = 'production';
 
     mockWorkspacesUpdate.mockReturnValue({
@@ -131,7 +140,7 @@ describe('PATCH /api/workspaces/[id]', () => {
 
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const req = createMockRequest({ method: 'PATCH', body: { name: 'Updated' } });
     const res = await PATCH(req, { params: mockParams });
@@ -141,7 +150,6 @@ describe('PATCH /api/workspaces/[id]', () => {
 
   it('updates workspace successfully', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const req = createMockRequest({ method: 'PATCH', body: { name: 'Updated Name' } });
     const res = await PATCH(req, { params: mockParams });
@@ -157,6 +165,8 @@ describe('DELETE /api/workspaces/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesDelete.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     process.env.NODE_ENV = 'production';
 
     mockWorkspacesDelete.mockReturnValue({
@@ -179,7 +189,7 @@ describe('DELETE /api/workspaces/[id]', () => {
 
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const req = createMockRequest({ method: 'DELETE' });
     const res = await DELETE(req, { params: mockParams });
@@ -189,7 +199,6 @@ describe('DELETE /api/workspaces/[id]', () => {
 
   it('deletes workspace successfully', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const req = createMockRequest({ method: 'DELETE' });
     const res = await DELETE(req, { params: mockParams });

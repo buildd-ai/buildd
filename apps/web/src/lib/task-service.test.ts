@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { resolveCreatorContext, resolveCreationSource } from './task-service';
 
 // Mock functions with proper typing
 const mockAccountsFindFirst = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 
 // Mock the database module
 mock.module('@buildd/core/db', () => ({
@@ -23,11 +23,19 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+mock.module('@/lib/team-access', () => ({
+  getUserTeamIds: mockGetUserTeamIds,
+}));
+
+import { resolveCreatorContext, resolveCreationSource } from './task-service';
+
 describe('task-service', () => {
   beforeEach(() => {
     mockAccountsFindFirst.mockReset();
     mockWorkersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
   });
 
   describe('resolveCreationSource', () => {
@@ -218,8 +226,9 @@ describe('task-service', () => {
         });
         mockWorkspacesFindFirst.mockResolvedValue({
           id: 'ws-1',
-          ownerId: 'user-123',
+          teamId: 'team-1',
         });
+        mockGetUserTeamIds.mockResolvedValue(['team-1']);
 
         const result = await resolveCreatorContext({
           userId: 'user-123',
@@ -241,8 +250,9 @@ describe('task-service', () => {
         });
         mockWorkspacesFindFirst.mockResolvedValue({
           id: 'ws-1',
-          ownerId: 'different-user',
+          teamId: 'other-team',
         });
+        mockGetUserTeamIds.mockResolvedValue(['team-1']);
 
         const result = await resolveCreatorContext({
           userId: 'user-123',

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountsDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
@@ -9,6 +10,10 @@ const mockAccountsDelete = mock(() => ({
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  getUserTeamIds: mockGetUserTeamIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -23,10 +28,11 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { id: 'id', ownerId: 'ownerId' },
+  accounts: { id: 'id', teamId: 'teamId' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -39,6 +45,8 @@ describe('GET /api/accounts/[id]', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
     process.env.NODE_ENV = 'production';
   });
 
@@ -86,6 +94,8 @@ describe('DELETE /api/accounts/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsDelete.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
     process.env.NODE_ENV = 'production';
 
     mockAccountsDelete.mockReturnValue({

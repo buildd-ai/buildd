@@ -10,6 +10,9 @@ const mockWorkspacesInsert = mock(() => ({
     returning: mock(() => [{ id: 'ws-new', name: 'New Workspace' }]),
   })),
 }));
+const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
+const mockGetUserDefaultTeamId = mock(() => Promise.resolve('team-1'));
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -17,6 +20,12 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  getUserWorkspaceIds: mockGetUserWorkspaceIds,
+  getUserDefaultTeamId: mockGetUserDefaultTeamId,
+  getUserTeamIds: mockGetUserTeamIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -32,11 +41,12 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId' },
-  workspaces: { id: 'id', ownerId: 'ownerId', createdAt: 'createdAt', accessMode: 'accessMode' },
+  workspaces: { id: 'id', teamId: 'teamId', createdAt: 'createdAt', accessMode: 'accessMode' },
 }));
 
 // Override NODE_ENV for tests
@@ -66,6 +76,8 @@ describe('GET /api/workspaces', () => {
     mockAuthenticateApiKey.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     process.env.NODE_ENV = 'production';
   });
 
@@ -133,6 +145,10 @@ describe('POST /api/workspaces', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockWorkspacesInsert.mockReset();
+    mockGetUserDefaultTeamId.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserDefaultTeamId.mockResolvedValue('team-1');
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
     process.env.NODE_ENV = 'production';
 
     mockWorkspacesInsert.mockReturnValue({

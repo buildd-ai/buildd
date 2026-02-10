@@ -22,6 +22,9 @@ const mockResolveCreatorContext = mock(() =>
     parentTaskId: null,
   })
 );
+const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
+const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
+const mockDispatchNewTask = mock(() => Promise.resolve());
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -38,9 +41,20 @@ mock.module('@/lib/api-auth', () => ({
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
 }));
 
+// Mock team-access
+mock.module('@/lib/team-access', () => ({
+  getUserWorkspaceIds: mockGetUserWorkspaceIds,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+}));
+
 // Mock task-service
 mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mockResolveCreatorContext,
+}));
+
+// Mock task-dispatch
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
 }));
 
 // Mock pusher
@@ -88,7 +102,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   accountWorkspaces: { accountId: 'accountId' },
-  workspaces: { id: 'id', ownerId: 'ownerId', accessMode: 'accessMode' },
+  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt' },
 }));
 
@@ -130,6 +144,12 @@ describe('GET /api/tasks', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+
+    // Default: session auth gets workspace access
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
   });
 
   it('returns 401 when no auth', async () => {
@@ -178,7 +198,7 @@ describe('GET /api/tasks', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAccountsFindFirst.mockResolvedValue(null);
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockTasksFindMany.mockResolvedValue(mockTasks);
 
     const request = createMockRequest();
@@ -193,7 +213,7 @@ describe('GET /api/tasks', () => {
   it('returns empty array when no workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAccountsFindFirst.mockResolvedValue(null);
-    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockGetUserWorkspaceIds.mockResolvedValue([]);
 
     const request = createMockRequest();
     const response = await GET(request);
@@ -231,6 +251,11 @@ describe('POST /api/tasks', () => {
     mockTasksInsert.mockReset();
     mockTriggerEvent.mockReset();
     mockResolveCreatorContext.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockDispatchNewTask.mockReset();
+
+    // Default: API key auth has workspace access
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
 
     // Default mock for resolveCreatorContext
     mockResolveCreatorContext.mockResolvedValue({
@@ -412,7 +437,7 @@ describe('POST /api/tasks', () => {
     expect(data.priority).toBe(5);
   });
 
-  it('creates task with assignToLocalUiUrl and triggers TASK_ASSIGNED', async () => {
+  it('creates task with assignToLocalUiUrl and triggers dispatch', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -439,21 +464,17 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(200);
 
-    // Should trigger both TASK_CREATED and TASK_ASSIGNED
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(2);
-
-    // First call is TASK_CREATED
-    expect(mockTriggerEvent.mock.calls[0][1]).toBe('task:created');
-
-    // Second call is TASK_ASSIGNED with targetLocalUiUrl
-    expect(mockTriggerEvent.mock.calls[1][1]).toBe('task:assigned');
-    expect(mockTriggerEvent.mock.calls[1][2]).toEqual({
-      task: createdTask,
-      targetLocalUiUrl: 'http://localhost:3456',
-    });
+    // dispatchNewTask should be called with the task, workspace, and options
+    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockDispatchNewTask.mock.calls[0][0]).toEqual(createdTask);
+    expect(mockDispatchNewTask.mock.calls[0][2]).toEqual(
+      expect.objectContaining({
+        assignToLocalUiUrl: 'http://localhost:3456',
+      })
+    );
   });
 
-  it('triggers TASK_CREATED event on successful creation', async () => {
+  it('dispatches task on successful creation', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -474,10 +495,10 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'workspace-ws-1',
-      'task:created',
-      { task: createdTask }
+    expect(mockDispatchNewTask).toHaveBeenCalledWith(
+      createdTask,
+      { id: 'ws-1' },
+      expect.any(Object)
     );
   });
 
@@ -634,7 +655,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.parentTaskId).toBe('parent-task-1');
   });
 
-  it('dispatches to webhook when enabled and no assignToLocalUiUrl', async () => {
+  it('passes workspace with webhook config to dispatchNewTask', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -643,44 +664,38 @@ describe('POST /api/tasks', () => {
       status: 'pending',
     };
 
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({
+    const workspace = {
       id: 'ws-1',
       webhookConfig: {
         enabled: true,
         url: 'https://webhook.example.com',
         token: 'webhook-token',
       },
-    });
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
     mockTasksInsert.mockReturnValue({ values: mockValues });
 
-    // Mock fetch for webhook
-    const originalFetch = global.fetch;
-    const mockFetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    const request = createMockRequest({
+      method: 'POST',
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Test Task',
+        description: 'Test description',
+      },
+    });
+    await POST(request);
+
+    // dispatchNewTask receives the workspace with webhook config
+    expect(mockDispatchNewTask).toHaveBeenCalledWith(
+      createdTask,
+      workspace,
+      expect.any(Object)
     );
-    global.fetch = mockFetch as any;
-
-    try {
-      const request = createMockRequest({
-        method: 'POST',
-        body: {
-          workspaceId: 'ws-1',
-          title: 'Test Task',
-          description: 'Test description',
-        },
-      });
-      await POST(request);
-
-      // Verify webhook was called
-      expect(mockFetch).toHaveBeenCalled();
-      expect(mockFetch.mock.calls[0][0]).toBe('https://webhook.example.com');
-    } finally {
-      global.fetch = originalFetch;
-    }
   });
 
   it('does not dispatch to webhook when assignToLocalUiUrl is set', async () => {

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
+const mockGetUserDefaultTeamId = mock(() => Promise.resolve('team-1'));
 const mockAccountsFindMany = mock(() => [] as any[]);
 const mockAccountsInsert = mock(() => ({
   values: mock(() => ({
@@ -11,6 +13,11 @@ const mockAccountsInsert = mock(() => ({
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  getUserTeamIds: mockGetUserTeamIds,
+  getUserDefaultTeamId: mockGetUserDefaultTeamId,
 }));
 
 mock.module('@/lib/api-auth', () => ({
@@ -30,10 +37,11 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { ownerId: 'ownerId', createdAt: 'createdAt' },
+  accounts: { teamId: 'teamId', createdAt: 'createdAt' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -44,6 +52,10 @@ describe('GET /api/accounts', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindMany.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserDefaultTeamId.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserDefaultTeamId.mockResolvedValue('team-1');
     process.env.NODE_ENV = 'production';
   });
 
@@ -79,6 +91,10 @@ describe('POST /api/accounts', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAccountsInsert.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserDefaultTeamId.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserDefaultTeamId.mockResolvedValue('team-1');
     process.env.NODE_ENV = 'production';
 
     mockAccountsInsert.mockReturnValue({

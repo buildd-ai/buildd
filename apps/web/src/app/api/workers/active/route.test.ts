@@ -9,6 +9,8 @@ const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
 const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
+const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -21,6 +23,11 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/redis', () => ({
   getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
   setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  getUserWorkspaceIds: mockGetUserWorkspaceIds,
+  getUserTeamIds: mockGetUserTeamIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -41,9 +48,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { apiKey: 'apiKey', id: 'id', ownerId: 'ownerId' },
+  accounts: { apiKey: 'apiKey', id: 'id', teamId: 'teamId' },
   accountWorkspaces: { accountId: 'accountId' },
-  workspaces: { id: 'id', ownerId: 'ownerId', accessMode: 'accessMode' },
+  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt' },
 }));
 
@@ -66,10 +73,15 @@ describe('GET /api/workers/active', () => {
     mockHeartbeatsFindMany.mockReset();
     mockGetCachedOpenWorkspaceIds.mockReset();
     mockSetCachedOpenWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserTeamIds.mockReset();
 
     // Default mocks for Redis
     mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
     mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
+    // Default mocks for team access
+    mockGetUserWorkspaceIds.mockResolvedValue([]);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
   });
 
   it('returns 401 when no auth', async () => {
@@ -85,6 +97,7 @@ describe('GET /api/workers/active', () => {
   it('returns empty list when no workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue([]);
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockAccountsFindMany.mockResolvedValue([]);
 
@@ -99,9 +112,10 @@ describe('GET /api/workers/active', () => {
   it('returns active local-ui instances for session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(null);
-    // Owned workspaces
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    // Team workspaces query for names, then open workspaces in getWorkspaceIdsAndNames, then open workspaces during heartbeat filtering
     mockWorkspacesFindMany
-      .mockResolvedValueOnce([{ id: 'ws-1', name: 'My Workspace' }]) // owned
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'My Workspace' }]) // team workspace names
       .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
       .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);
@@ -136,8 +150,9 @@ describe('GET /api/workers/active', () => {
   it('filters heartbeats with no overlapping workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkspacesFindMany
-      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Workspace 1' }]) // owned
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Workspace 1' }]) // team workspace names
       .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
       .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);

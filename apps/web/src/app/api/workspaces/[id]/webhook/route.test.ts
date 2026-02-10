@@ -8,9 +8,14 @@ const mockWorkspacesUpdate = mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -28,7 +33,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  workspaces: { id: 'id', ownerId: 'ownerId' },
+  workspaces: { id: 'id', teamId: 'teamId' },
 }));
 
 import { POST } from './route';
@@ -48,6 +53,8 @@ describe('POST /api/workspaces/[id]/webhook', () => {
     mockGetCurrentUser.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesUpdate.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
 
     mockWorkspacesUpdate.mockReturnValue({
       set: mock(() => ({
@@ -67,7 +74,7 @@ describe('POST /api/workspaces/[id]/webhook', () => {
 
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const req = createMockRequest({ url: 'https://hook.example.com' });
     const res = await POST(req, { params: mockParams });

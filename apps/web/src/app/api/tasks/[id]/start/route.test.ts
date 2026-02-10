@@ -5,6 +5,8 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -16,6 +18,12 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: async () => null,
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
+}));
+
+// Mock team-access
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
 // Mock pusher
@@ -90,6 +98,12 @@ describe('POST /api/tasks/[id]/start', () => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
     mockTriggerEvent.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+
+    // Default: grant access
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
   });
 
   it('returns 401 when no session auth (API key not supported)', async () => {
@@ -121,11 +135,12 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'other-user' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const request = createMockRequest();
     const response = await callHandler(request, 'task-123');
@@ -141,7 +156,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -170,7 +185,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -200,7 +215,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'assigned',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -221,7 +236,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'running',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -241,7 +256,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'completed',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -261,7 +276,7 @@ describe('POST /api/tasks/[id]/start', () => {
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
-      workspace: { id: 'ws-1', ownerId: 'user-123' },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
