@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>buildd</title>
   <link rel="icon" type="image/png" href="/icon.png">
   <link rel="apple-touch-icon" href="/icon.png">
@@ -77,14 +77,14 @@
         <span>buildd</span>
       </div>
       <div class="flex gap-2">
-        <button class="hidden relative w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="outboxBtn" title="Pending sync" onclick="handleOutboxFlush()">
+        <button class="hidden relative w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="outboxBtn" title="Pending sync" aria-label="Pending sync" onclick="handleOutboxFlush()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 2v10l4 2"/>
             <circle cx="12" cy="12" r="10"/>
           </svg>
           <span id="outboxBadge" class="absolute -top-0.5 -right-0.5 bg-status-warning text-white text-[10px] font-bold min-w-[16px] h-4 rounded-full flex items-center justify-center px-1">0</span>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="themeToggle" title="Toggle theme">
+        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
           <svg class="w-5 h-5 dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
           </svg>
@@ -96,18 +96,18 @@
             <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="refreshBtn" title="Refresh">
+        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="refreshBtn" title="Refresh" aria-label="Refresh">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
             <path d="M21 3v5h-5"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="addBtn" title="New Task">
+        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="addBtn" title="New Task" aria-label="New Task">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 5v14M5 12h14"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings">
+        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
             <circle cx="12" cy="12" r="3"/>
@@ -119,7 +119,7 @@
     <!-- Main content -->
     <main class="p-4 md:max-w-[800px] md:mx-auto md:p-6">
       <!-- Stats bar -->
-      <div class="flex items-center justify-center p-3 px-4 bg-surface rounded-xl mb-5" id="statsBar">
+      <div class="flex items-center justify-center p-3 px-4 bg-surface rounded-xl mb-5" id="statsBar" aria-live="polite" aria-atomic="true">
         <div class="flex flex-col items-center flex-1 gap-0.5">
           <span class="text-xl font-bold text-text-primary leading-none" id="statActive">0</span>
           <span class="text-[11px] text-text-secondary uppercase tracking-wide font-medium">Active</span>
@@ -157,13 +157,13 @@
       <div id="contentSections">
         <!-- Waiting workers (needs attention) -->
         <section class="mb-6" id="waitingSection">
-          <div id="waiting" class="flex flex-col gap-3"></div>
+          <div id="waiting" class="flex flex-col gap-3" aria-live="polite"></div>
         </section>
 
         <!-- Active workers -->
         <section class="mb-6" id="activeSection">
           <h2 class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide mb-3">Active</h2>
-          <div id="workers" class="flex flex-col gap-3"></div>
+          <div id="workers" class="flex flex-col gap-3" aria-live="polite"></div>
         </section>
 
         <!-- Pending tasks -->
@@ -172,7 +172,7 @@
             <h2 class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide">Pending</h2>
             <button class="bg-none border-none text-brand text-[13px] font-medium cursor-pointer py-1 px-2 rounded transition-colors duration-150 hover:bg-brand/10" id="inlineAddBtn">+ New</button>
           </div>
-          <div id="tasks" class="flex flex-col gap-3"></div>
+          <div id="tasks" class="flex flex-col gap-3" aria-live="polite"></div>
         </section>
 
         <!-- Completed workers section -->
@@ -183,16 +183,16 @@
     </main>
 
     <!-- Worker detail modal -->
-    <div id="workerModal" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+    <div id="workerModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
       <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[640px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)] sm:h-[80vh]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalBack">
+          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
           <h2 class="flex-1 text-[17px] font-semibold" id="modalTitle">Worker</h2>
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalClose">
+          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalClose" aria-label="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M18 6L6 18M6 6l12 12"/>
             </svg>
@@ -220,10 +220,10 @@
     </div>
 
     <!-- New task modal -->
-    <div id="taskModal" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+    <div id="taskModal" role="dialog" aria-modal="true" aria-label="New Task" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
       <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[520px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="taskModalBack">
+          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="taskModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
@@ -285,10 +285,10 @@
     </div>
 
     <!-- Settings modal -->
-    <div id="settingsModal" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+    <div id="settingsModal" role="dialog" aria-modal="true" aria-label="Settings" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
       <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[420px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsModalBack">
+          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
@@ -303,9 +303,9 @@
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">buildd Server</label>
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <input type="text" id="settingsServer" class="input w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev" style="flex: 1;">
-              <button id="settingsServerSave" class="btn bg-brand text-white py-1.5 px-3 text-[13px] rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()" style="display: none;">Save</button>
+            <div class="flex gap-2 items-center">
+              <input type="text" id="settingsServer" class="input flex-1 w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev">
+              <button id="settingsServerSave" class="hidden btn bg-brand text-white py-1.5 px-3 text-[13px] rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()">Save</button>
             </div>
             <p class="text-xs text-text-secondary mt-1.5" id="settingsServerHint">Reinitializes connection when changed</p>
           </div>
@@ -350,10 +350,10 @@
     </div>
 
     <!-- Workspace management modal -->
-    <div id="workspaceModal" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
+    <div id="workspaceModal" role="dialog" aria-modal="true" aria-label="Manage Workspaces" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
       <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[560px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="workspaceModalBack">
+          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="workspaceModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
@@ -399,7 +399,7 @@
     </div>
   </div>
   <!-- Confirm dialog -->
-  <div id="confirmDialog" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in">
+  <div id="confirmDialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in">
     <div class="bg-surface border border-border-default rounded-xl w-full max-w-[380px] mx-4 overflow-hidden">
       <div class="p-6 flex gap-4 items-start">
         <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-red-500/10 text-red-500">

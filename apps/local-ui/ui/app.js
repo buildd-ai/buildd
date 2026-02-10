@@ -111,7 +111,7 @@ function showClaudeAuthWarning() {
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        <span>Claude credentials not found. Run <code class="bg-black/30 py-0.5 px-1.5 rounded font-mono text-[13px]">claude login</code> in terminal, then restart buildd.</span>
+        <span>Claude credentials not found. Run <code class="bg-red-500/20 py-0.5 px-1.5 rounded font-mono text-[13px]">claude login</code> in terminal, then restart buildd.</span>
       </div>
     `;
     document.querySelector('main')?.prepend(banner);
@@ -1058,7 +1058,7 @@ function updateSettings() {
   const serverSaveBtn = document.getElementById('settingsServerSave');
   serverInput.oninput = () => {
     const changed = serverInput.value.trim() !== (config.builddServer || '');
-    serverSaveBtn.style.display = changed ? '' : 'none';
+    serverSaveBtn.classList.toggle('hidden', !changed);
   };
 
   const modelSelect = document.getElementById('settingsModel');
@@ -1120,7 +1120,7 @@ async function handleServerUrlChange() {
     const data = await res.json();
     if (data.ok) {
       config.builddServer = data.builddServer;
-      serverSaveBtn.style.display = 'none';
+      serverSaveBtn.classList.add('hidden');
       hint.textContent = 'Server URL updated. Reconnecting...';
       hint.style.color = 'rgb(var(--color-status-success))';
       // Reconnect SSE and reload all data
@@ -1391,6 +1391,8 @@ function showToast(message, type = 'info') {
 
   const toast = document.createElement('div');
   toast.className = `toast fixed bottom-6 left-1/2 bg-elevated text-text-primary py-3 px-5 rounded-lg shadow-[0_4px_20px_rgb(var(--color-overlay)/var(--shadow-strength))] text-sm z-[1000] flex items-center gap-2.5 max-w-[min(500px,90vw)] border border-border-default border-l-[3px] ${borderColors[type] || borderColors.info}`;
+  toast.setAttribute('role', 'alert');
+  toast.setAttribute('aria-live', 'assertive');
 
   const icon = document.createElement('span');
   icon.className = 'shrink-0 w-[18px] h-[18px]';
@@ -1446,6 +1448,12 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
   const trigger = container.querySelector('.custom-select-trigger');
   const dropdown = container.querySelector('.custom-select-dropdown');
   const optionsContainer = container.querySelector('.custom-select-options');
+
+  // ARIA: set up roles
+  trigger.setAttribute('role', 'combobox');
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  optionsContainer.setAttribute('role', 'listbox');
 
   let allOptions = [];
   let searchInput = null;
@@ -1530,6 +1538,7 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
     if (!isOpen) {
       dropdown.classList.remove('hidden');
       container.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
       if (searchInput) {
         searchInput.value = '';
         filterOptions('');
@@ -1553,7 +1562,7 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
     setOptions: (opts) => {
       allOptions = opts;
       optionsContainer.innerHTML = opts.map(o => `
-        <div class="custom-select-option flex items-center gap-2.5 py-2.5 px-3 rounded-lg cursor-pointer transition-all duration-100 mb-0.5 ${o.disabled ? 'disabled' : ''}" data-value="${o.value}">
+        <div class="custom-select-option flex items-center gap-2.5 py-2.5 px-3 rounded-lg cursor-pointer transition-all duration-100 mb-0.5 ${o.disabled ? 'disabled' : ''}" data-value="${o.value}" role="option" ${o.disabled ? 'aria-disabled="true"' : ''}>
           ${o.icon ? `<span class="shrink-0 w-5 h-5 flex items-center justify-center">${o.icon}</span>` : ''}
           <span class="option-label flex-1 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(o.label)}</span>
           ${o.hint ? `<span class="option-hint text-xs text-text-secondary whitespace-nowrap">${escapeHtml(o.hint)}</span>` : ''}
@@ -1577,6 +1586,7 @@ function selectOption(container, value, label) {
 function closeAllDropdowns() {
   document.querySelectorAll('.custom-select-dropdown').forEach(d => d.classList.add('hidden'));
   document.querySelectorAll('.custom-select').forEach(c => c.classList.remove('open'));
+  document.querySelectorAll('.custom-select-trigger').forEach(t => t.setAttribute('aria-expanded', 'false'));
 }
 
 // Close dropdowns when clicking outside
@@ -1943,7 +1953,16 @@ async function takeoverTask(taskId, btn) {
   }
 }
 
-async function deleteTask(taskId, btn) {
+function deleteTask(taskId, btn) {
+  showConfirmDialog(
+    'Delete this task?',
+    'This task will be permanently removed. This action cannot be undone.',
+    'Delete',
+    () => confirmDeleteTask(taskId, btn)
+  );
+}
+
+async function confirmDeleteTask(taskId, btn) {
   if (!btn) btn = event?.target;
   const originalText = btn?.textContent || 'Delete';
   if (btn) {
@@ -1979,6 +1998,7 @@ async function deleteTask(taskId, btn) {
       btn.disabled = false;
       btn.textContent = originalText;
     }
+    hideConfirmDialog();
   }
 }
 
@@ -2349,6 +2369,122 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// Global Escape key handler for modals
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+
+  // Close in priority order: confirm dialog > worker modal > task modal > settings > workspace
+  const confirmEl = document.getElementById('confirmDialog');
+  if (!confirmEl.classList.contains('hidden')) {
+    hideConfirmDialog();
+    return;
+  }
+  if (!workerModal.classList.contains('hidden')) {
+    closeWorkerModal();
+    return;
+  }
+  if (!taskModal.classList.contains('hidden')) {
+    closeTaskModal();
+    return;
+  }
+  if (!settingsModal.classList.contains('hidden')) {
+    closeSettingsModal();
+    return;
+  }
+  const wsModal = document.getElementById('workspaceModal');
+  if (!wsModal.classList.contains('hidden')) {
+    closeWorkspaceModal();
+    return;
+  }
+});
+
+// Focus trapping for modals
+function trapFocus(modal) {
+  const focusable = modal.querySelectorAll(
+    'button:not([disabled]):not(.hidden), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  first.focus();
+
+  modal._trapHandler = (e) => {
+    if (e.key !== 'Tab') return;
+    if (e.shiftKey) {
+      if (document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+  modal.addEventListener('keydown', modal._trapHandler);
+}
+
+function releaseFocus(modal) {
+  if (modal._trapHandler) {
+    modal.removeEventListener('keydown', modal._trapHandler);
+    delete modal._trapHandler;
+  }
+}
+
+// Wrap modal open/close with focus trap
+const _origOpenWorkerModal = openWorkerModal;
+openWorkerModal = function(workerId) {
+  const result = _origOpenWorkerModal(workerId);
+  trapFocus(workerModal);
+  return result;
+};
+
+const _origCloseWorkerModal = closeWorkerModal;
+closeWorkerModal = function() {
+  releaseFocus(workerModal);
+  return _origCloseWorkerModal();
+};
+
+const _origOpenTaskModal = openTaskModal;
+openTaskModal = function() {
+  const result = _origOpenTaskModal();
+  trapFocus(taskModal);
+  return result;
+};
+
+const _origCloseTaskModal = closeTaskModal;
+closeTaskModal = function() {
+  releaseFocus(taskModal);
+  return _origCloseTaskModal();
+};
+
+const _origOpenSettingsModal = openSettingsModal;
+openSettingsModal = function() {
+  const result = _origOpenSettingsModal();
+  trapFocus(settingsModal);
+  return result;
+};
+
+const _origCloseSettingsModal = closeSettingsModal;
+closeSettingsModal = function() {
+  releaseFocus(settingsModal);
+  return _origCloseSettingsModal();
+};
+
+const _origOpenWorkspaceModal = openWorkspaceModal;
+openWorkspaceModal = function() {
+  const result = _origOpenWorkspaceModal();
+  trapFocus(document.getElementById('workspaceModal'));
+  return result;
+};
+
+const _origCloseWorkspaceModal = closeWorkspaceModal;
+closeWorkspaceModal = function() {
+  releaseFocus(document.getElementById('workspaceModal'));
+  return _origCloseWorkspaceModal();
+};
 
 // Event listeners
 document.getElementById('themeToggle').onclick = toggleTheme;
