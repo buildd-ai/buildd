@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { tasks, workspaces, accountWorkspaces, skills } from '@buildd/core/db/schema';
+import { desc, eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -106,6 +106,8 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
       // Direct assignment to a specific local-ui instance
       assignToLocalUiUrl,
+      // Skill reference
+      skillRef,
     } = body;
 
     if (!workspaceId || !title) {
@@ -129,16 +131,51 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
 
-    // Process attachments - store as base64 in context
-    const processedAttachments: Array<{ filename: string; mimeType: string; data: string }> = [];
+    // Resolve skill reference if provided — skills are owner-scoped
+    let resolvedSkillRef: { skillId: string; slug: string; contentHash: string } | undefined;
+    if (skillRef?.slug) {
+      if (!targetWorkspace.ownerId) {
+        return NextResponse.json(
+          { error: 'Workspace has no owner — cannot resolve skills' },
+          { status: 400 }
+        );
+      }
+      const skill = await db.query.skills.findFirst({
+        where: and(eq(skills.ownerId, targetWorkspace.ownerId), eq(skills.slug, skillRef.slug)),
+      });
+      if (!skill) {
+        return NextResponse.json(
+          { error: `Skill "${skillRef.slug}" not registered` },
+          { status: 400 }
+        );
+      }
+      resolvedSkillRef = {
+        skillId: skill.id,
+        slug: skill.slug,
+        contentHash: skill.contentHash,
+      };
+    }
+
+    // Process attachments - accept both R2 references and legacy inline base64
+    const processedAttachments: Array<
+      { filename: string; mimeType: string; storageKey: string } |
+      { filename: string; mimeType: string; data: string }
+    > = [];
     if (attachments && Array.isArray(attachments)) {
       for (const att of attachments) {
-        if (att.data && att.mimeType && att.filename) {
-          // data is already base64 data URL from client
+        if (att.storageKey && att.mimeType && att.filename) {
+          // R2 reference (new format)
           processedAttachments.push({
             filename: att.filename,
             mimeType: att.mimeType,
-            data: att.data, // data:image/png;base64,...
+            storageKey: att.storageKey,
+          });
+        } else if (att.data && att.mimeType && att.filename) {
+          // Inline base64 data URL (legacy format)
+          processedAttachments.push({
+            filename: att.filename,
+            mimeType: att.mimeType,
+            data: att.data,
           });
         }
       }
@@ -155,7 +192,10 @@ export async function POST(req: NextRequest) {
         mode: mode || 'execution',  // Default to execution mode
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
-        context: processedAttachments.length > 0 ? { attachments: processedAttachments } : {},
+        context: {
+          ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
+          ...(resolvedSkillRef ? { skillRef: resolvedSkillRef } : {}),
+        },
         // Creator tracking (from service)
         ...creatorContext,
       })

@@ -4,6 +4,7 @@ import { eq, desc, and } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
@@ -96,12 +97,28 @@ export default async function TaskDetailPage({
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   };
 
-  // Parse attachments from context
-  const attachments = (task.context as any)?.attachments as Array<{
+  // Parse attachments from context — resolve R2 storage keys to presigned URLs
+  const rawAttachments = (task.context as any)?.attachments as Array<{
     filename: string;
     mimeType: string;
-    data: string;
+    data?: string;
+    storageKey?: string;
   }> | undefined;
+
+  let attachments: Array<{ filename: string; mimeType: string; src: string }> | undefined;
+  if (rawAttachments && rawAttachments.length > 0) {
+    const storageReady = isStorageConfigured();
+    attachments = await Promise.all(
+      rawAttachments.map(async (att) => {
+        if (att.storageKey && storageReady) {
+          const url = await generateDownloadUrl(att.storageKey);
+          return { filename: att.filename, mimeType: att.mimeType, src: url };
+        }
+        // Legacy inline base64
+        return { filename: att.filename, mimeType: att.mimeType, src: att.data || '' };
+      })
+    );
+  }
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending';
@@ -214,7 +231,7 @@ export default async function TaskDetailPage({
                 <div key={i} className="relative">
                   {att.mimeType.startsWith('image/') ? (
                     <img
-                      src={att.data}
+                      src={att.src}
                       alt={att.filename}
                       className="max-h-32 rounded border border-gray-200 dark:border-gray-700"
                     />

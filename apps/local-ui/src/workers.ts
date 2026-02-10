@@ -3,6 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -676,11 +677,30 @@ export class WorkerManager {
       content.push({ type: 'text', text: task.description || task.title });
 
       // Add image attachments if present (from task.context.attachments)
-      const ctx = task.context as { attachments?: Array<{ filename: string; mimeType: string; data: string }> } | undefined;
+      // Supports both presigned URL format (from R2) and inline base64 data URLs (legacy)
+      const ctx = task.context as { attachments?: Array<{ filename: string; mimeType: string; data?: string; url?: string }> } | undefined;
       if (ctx?.attachments && Array.isArray(ctx.attachments)) {
         for (const att of ctx.attachments) {
-          if (att.data && att.mimeType) {
-            // Extract base64 data from data URL (data:image/png;base64,...)
+          if (att.url && att.mimeType) {
+            // R2 presigned URL format — fetch and convert to base64
+            try {
+              const response = await fetch(att.url);
+              const arrayBuffer = await response.arrayBuffer();
+              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+              content.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: att.mimeType,
+                  data: base64Data,
+                },
+              });
+              this.addMilestone(worker, `Image: ${att.filename}`);
+            } catch (err) {
+              this.addMilestone(worker, `Failed to fetch image: ${att.filename}`);
+            }
+          } else if (att.data && att.mimeType) {
+            // Inline base64 data URL format (legacy)
             const base64Match = att.data.match(/^data:([^;]+);base64,(.+)$/);
             if (base64Match) {
               content.push({
@@ -772,6 +792,34 @@ export class WorkerManager {
         promptParts.push(memoryContext.join('\n'));
       }
 
+      // Resolve and verify skill if task has a skillRef
+      const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
+      if (skillRef) {
+        const skillDir = join(homedir(), '.claude', 'skills', skillRef.slug);
+        const skillPath = join(skillDir, 'SKILL.md');
+
+        if (!existsSync(skillPath)) {
+          const msg = `Skill "${skillRef.slug}" not installed locally. Run \`buildd skill install ${skillRef.slug}\` to install.`;
+          console.warn(`[Worker ${worker.id}] ${msg}`);
+          this.addMilestone(worker, `⚠ Skill missing: ${skillRef.slug}`);
+          promptParts.push(`## Skill Warning\n${msg}`);
+        } else {
+          const skillContent = readFileSync(skillPath, 'utf-8');
+          const localHash = createHash('sha256').update(skillContent).digest('hex');
+
+          if (localHash !== skillRef.contentHash) {
+            const msg = `Skill "${skillRef.slug}" hash mismatch — local copy is outdated. Run \`buildd skill install ${skillRef.slug}\` to update.`;
+            console.warn(`[Worker ${worker.id}] ${msg}`);
+            this.addMilestone(worker, `⚠ Skill outdated: ${skillRef.slug}`);
+            promptParts.push(`## Skill Warning\n${msg}`);
+          } else {
+            // Hash matches — inject skill content into prompt
+            this.addMilestone(worker, `Skill: ${skillRef.slug}`);
+            promptParts.push(`## Skill Instructions\n${skillContent}`);
+          }
+        }
+      }
+
       // Add task description
       // Clean up description: strip anything after "---" separator which might be polluted context from previous runs
       let taskDescription = task.description || task.title;
@@ -828,7 +876,7 @@ export class WorkerManager {
         model: this.config.model,
         abortController,
         env: cleanEnv,
-        settingSources: useClaudeMd ? ['project'] : [],  // Conditionally load CLAUDE.md
+        settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Always load user skills; project settings follow useClaudeMd
         permissionMode,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         stderr: (data: string) => {

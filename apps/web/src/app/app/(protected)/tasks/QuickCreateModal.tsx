@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocalUiHealth } from './useLocalUiHealth';
+import { uploadImagesToR2 } from '@/lib/upload';
 
 interface PastedImage {
   filename: string;
@@ -177,6 +178,16 @@ export default function QuickCreateModal({
         return;
       }
 
+      // Upload images to R2 if available, fall back to inline base64
+      let attachments: any[] | undefined;
+      if (pastedImages.length > 0) {
+        try {
+          attachments = await uploadImagesToR2(workspaceId, pastedImages);
+        } catch {
+          attachments = pastedImages;
+        }
+      }
+
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,7 +198,7 @@ export default function QuickCreateModal({
           priority: 5,
           creationSource: 'dashboard',
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
-          ...(pastedImages.length > 0 && { attachments: pastedImages }),
+          ...(attachments && { attachments }),
         }),
       });
 

@@ -5,6 +5,7 @@ import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -269,6 +270,24 @@ export async function POST(req: NextRequest) {
         activeSessions: sql`${accounts.activeSessions} + ${claimedWorkers.length}`,
       })
       .where(eq(accounts.id, account.id));
+  }
+
+  // Resolve R2 storage keys to presigned download URLs for attachments
+  if (isStorageConfigured()) {
+    for (const cw of claimedWorkers) {
+      const ctx = (cw.task as any)?.context as { attachments?: any[] } | undefined;
+      if (ctx?.attachments) {
+        ctx.attachments = await Promise.all(
+          ctx.attachments.map(async (att: any) => {
+            if (att.storageKey) {
+              const url = await generateDownloadUrl(att.storageKey);
+              return { filename: att.filename, mimeType: att.mimeType, url };
+            }
+            return att; // legacy base64 passes through
+          })
+        );
+      }
+    }
   }
 
   return NextResponse.json({ workers: claimedWorkers });

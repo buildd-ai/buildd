@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { uploadImagesToR2 } from '@/lib/upload';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
@@ -156,6 +157,17 @@ export default function NewTaskPage() {
         router.push(`/app/workspaces/${workspaceId}/schedules`);
         router.refresh();
       } else {
+        // Upload images to R2 if available, fall back to inline base64
+        let attachments: any[] | undefined;
+        if (pastedImages.length > 0) {
+          try {
+            attachments = await uploadImagesToR2(workspaceId, pastedImages);
+          } catch {
+            // R2 not configured or upload failed — fall back to inline base64
+            attachments = pastedImages;
+          }
+        }
+
         // Create one-time task
         const res = await fetch('/api/tasks', {
           method: 'POST',
@@ -165,7 +177,7 @@ export default function NewTaskPage() {
             title,
             description,
             priority,
-            ...(pastedImages.length > 0 && { attachments: pastedImages }),
+            ...(attachments && { attachments }),
           }),
         });
 
