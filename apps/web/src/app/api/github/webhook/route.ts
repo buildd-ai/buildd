@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { verifyWebhookSignature, type GitHubInstallationEvent, type GitHubIssuesEvent } from '@/lib/github';
+import { dispatchNewTask } from '@/lib/task-dispatch';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -157,7 +158,9 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
         (l) => l.name.toLowerCase() === 'buildd:plan'
       );
 
-      await db
+      const mode = hasPlanLabel ? 'planning' : 'execution';
+
+      const [newTask] = await db
         .insert(tasks)
         .values({
           workspaceId: workspace.id,
@@ -166,7 +169,7 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
           externalId: `issue-${issue.id}`,
           externalUrl: issue.html_url,
           status: 'pending',
-          mode: hasPlanLabel ? 'planning' : 'execution',
+          mode,
           context: {
             github: {
               issueNumber: issue.number,
@@ -180,7 +183,13 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
           createdByWorkerId: null,
           parentTaskId: null,
         })
-        .onConflictDoNothing(); // Don't create duplicate tasks
+        .onConflictDoNothing() // Don't create duplicate tasks
+        .returning();
+
+      // Dispatch to connected workers and GitHub Actions
+      if (newTask) {
+        await dispatchNewTask(newTask, workspace);
+      }
       break;
     }
 

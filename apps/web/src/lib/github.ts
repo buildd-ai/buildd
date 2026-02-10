@@ -133,6 +133,11 @@ export async function githubApi(installationId: number, path: string, options: R
     throw new Error(`GitHub API error: ${response.status} ${error}`);
   }
 
+  // Handle 204 No Content (e.g., repository_dispatch)
+  if (response.status === 204) {
+    return null;
+  }
+
   return response.json();
 }
 
@@ -235,4 +240,51 @@ export interface GitHubIssuesEvent {
   installation?: {
     id: number;
   };
+}
+
+// Dispatch a repository_dispatch event to trigger GitHub Actions workflows
+export async function dispatchToGitHubActions(
+  installationId: number,
+  repoFullName: string,
+  task: {
+    id: string;
+    title: string;
+    description: string | null;
+    workspaceId: string;
+    mode?: string;
+    priority?: number;
+  }
+): Promise<boolean> {
+  if (!isGitHubAppConfigured()) {
+    return false;
+  }
+
+  try {
+    const [owner, repo] = repoFullName.split('/');
+    if (!owner || !repo) {
+      console.error(`Invalid repo full name: ${repoFullName}`);
+      return false;
+    }
+
+    await githubApi(installationId, `/repos/${owner}/${repo}/dispatches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_type: 'buildd-task',
+        client_payload: {
+          task_id: task.id,
+          title: task.title,
+          workspace_id: task.workspaceId,
+          mode: task.mode || 'execution',
+          priority: task.priority || 0,
+        },
+      }),
+    });
+
+    console.log(`Task ${task.id} dispatched to GitHub Actions: ${repoFullName}`);
+    return true;
+  } catch (error) {
+    console.error(`GitHub Actions dispatch failed for ${repoFullName}:`, error);
+    return false;
+  }
 }

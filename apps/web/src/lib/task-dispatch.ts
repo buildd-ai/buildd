@@ -1,5 +1,8 @@
-import { type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { db } from '@buildd/core/db';
+import { githubInstallations, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
 
 /**
  * Dispatch task to external webhook (e.g., OpenClaw)
@@ -48,13 +51,23 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
 }
 
 /**
- * Dispatch a newly created task via Pusher events and webhook.
+ * Dispatch a newly created task via Pusher events, webhook, and GitHub Actions.
  *
- * Handles: TASK_CREATED event, webhook check, TASK_ASSIGNED fallback.
+ * Dispatch chain:
+ * 1. Pusher TASK_CREATED (real-time dashboard)
+ * 2. Direct local-ui assignment (if specified)
+ * 3. Webhook dispatch (OpenClaw, etc.)
+ * 4. GitHub Actions repository_dispatch (if workspace has GitHub integration)
+ * 5. Fallback: Pusher TASK_ASSIGNED (connected local workers)
  */
 export async function dispatchNewTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string },
-  workspace: { webhookConfig?: WorkspaceWebhookConfig | null },
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number },
+  workspace: {
+    id?: string;
+    webhookConfig?: WorkspaceWebhookConfig | null;
+    githubInstallationId?: string | null;
+    githubRepoId?: string | null;
+  },
   options?: {
     assignToLocalUiUrl?: string;
     runnerPreference?: string;
@@ -90,12 +103,58 @@ export async function dispatchNewTask(
     }
   }
 
-  // If no webhook handled it, broadcast TASK_ASSIGNED so any connected worker can claim
+  // Try GitHub Actions dispatch if workspace has a linked GitHub repo
+  if (!dispatched) {
+    dispatched = await tryGitHubActionsDispatch(workspace, task);
+  }
+
+  // If nothing handled it, broadcast TASK_ASSIGNED so any connected worker can claim
   if (!dispatched) {
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
       { task, targetLocalUiUrl: null }
     );
+  }
+}
+
+/**
+ * Try to dispatch a task via GitHub Actions repository_dispatch.
+ * Requires workspace to have a linked GitHub installation and repo.
+ */
+async function tryGitHubActionsDispatch(
+  workspace: {
+    id?: string;
+    githubInstallationId?: string | null;
+    githubRepoId?: string | null;
+  },
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number }
+): Promise<boolean> {
+  if (!isGitHubAppConfigured() || !workspace.githubInstallationId || !workspace.githubRepoId) {
+    return false;
+  }
+
+  try {
+    // Look up the GitHub installation's numeric ID and repo full name
+    const installation = await db.query.githubInstallations.findFirst({
+      where: eq(githubInstallations.id, workspace.githubInstallationId),
+    });
+
+    const repo = await db.query.githubRepos.findFirst({
+      where: eq(githubRepos.id, workspace.githubRepoId),
+    });
+
+    if (!installation || !repo) {
+      return false;
+    }
+
+    return await dispatchToGitHubActions(
+      installation.installationId,
+      repo.fullName,
+      task
+    );
+  } catch (error) {
+    console.error('GitHub Actions dispatch lookup failed:', error);
+    return false;
   }
 }
