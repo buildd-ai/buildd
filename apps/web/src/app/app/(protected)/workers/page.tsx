@@ -4,6 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserWorkspaceIds } from '@/lib/team-access';
 
 export default async function WorkersPage() {
   const isDev = process.env.NODE_ENV === 'development';
@@ -17,12 +18,8 @@ export default async function WorkersPage() {
     }
 
     try {
-      // Get user's workspace IDs first
-      const userWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user.id),
-        columns: { id: true },
-      });
-      const workspaceIds = userWorkspaces.map(w => w.id);
+      // Get user's workspace IDs via team membership
+      const workspaceIds = await getUserWorkspaceIds(user.id);
 
       if (workspaceIds.length > 0) {
         allWorkers = await db.query.workers.findMany({

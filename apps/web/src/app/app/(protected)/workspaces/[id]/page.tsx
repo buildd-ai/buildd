@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -30,8 +31,11 @@ export default async function WorkspaceDetailPage({
     redirect('/app/auth/signin');
   }
 
+  const access = await verifyWorkspaceAccess(user.id, id);
+  if (!access) notFound();
+
   const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
+    where: eq(workspaces.id, id),
     with: {
       accountWorkspaces: {
         with: {

@@ -4,6 +4,7 @@ import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // POST /api/workers/[id]/instruct - Send instructions to a worker (admin only)
 // Instructions are delivered on the worker's next progress update
@@ -39,9 +40,10 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Verify ownership if using session auth (not admin token)
+  // Verify workspace access if using session auth (not admin token)
   if (hasSessionAuth && !hasAdminToken) {
-    if (worker.workspace?.ownerId !== user!.id) {
+    const access = await verifyWorkspaceAccess(user!.id, worker.workspaceId);
+    if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
   }

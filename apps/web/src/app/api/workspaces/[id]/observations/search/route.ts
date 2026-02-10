@@ -4,6 +4,7 @@ import { observations, accounts } from '@buildd/core/db/schema';
 import { eq, and, desc, or, ilike, sql, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 const VALID_TYPES = ['discovery', 'decision', 'gotcha', 'pattern', 'architecture', 'summary'] as const;
 
@@ -38,6 +39,15 @@ export async function GET(
     const auth = await authenticateRequest(req);
     if (!auth) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify workspace access
+    if (auth.type === 'session') {
+        const access = await verifyWorkspaceAccess(auth.user.id, id);
+        if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    } else if (auth.type === 'api') {
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
     try {

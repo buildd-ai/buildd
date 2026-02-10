@@ -1,9 +1,10 @@
 import { db } from '@buildd/core/db';
 import { observations, workspaces } from '@buildd/core/db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 import ObservationList from './ObservationList';
 
 export default async function WorkspaceMemoryPage({
@@ -29,8 +30,11 @@ export default async function WorkspaceMemoryPage({
     redirect('/app/auth/signin');
   }
 
+  const access = await verifyWorkspaceAccess(user.id, id);
+  if (!access) notFound();
+
   const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
+    where: eq(workspaces.id, id),
     columns: { id: true, name: true },
   });
 

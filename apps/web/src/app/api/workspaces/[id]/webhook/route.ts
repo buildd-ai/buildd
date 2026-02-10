@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // POST /api/workspaces/[id]/webhook - Save webhook config
 export async function POST(
@@ -17,12 +18,8 @@ export async function POST(
     }
 
     try {
-        // Verify ownership
-        const workspace = await db.query.workspaces.findFirst({
-            where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-        });
-
-        if (!workspace) {
+        const access = await verifyWorkspaceAccess(user.id, id);
+        if (!access) {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
 

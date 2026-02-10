@@ -3,6 +3,7 @@ import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserWorkspaceIds } from '@/lib/team-access';
 import WorkspaceSidebar from './WorkspaceSidebar';
 import MobileTasksLayout from './MobileTasksLayout';
 
@@ -33,11 +34,12 @@ export default async function TasksLayout({
 
   if (!isDev && user) {
     try {
-      const userWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user.id),
+      const wsIds = await getUserWorkspaceIds(user.id);
+      const userWorkspaces = wsIds.length > 0 ? await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
         columns: { id: true, name: true },
         orderBy: desc(workspaces.updatedAt),
-      });
+      }) : [];
 
       if (userWorkspaces.length > 0) {
         const workspaceIds = userWorkspaces.map(w => w.id);

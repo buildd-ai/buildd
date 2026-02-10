@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
+import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -64,18 +65,21 @@ export async function GET(req: NextRequest) {
       const openOnly = openWorkspaces.filter(w => !seenIds.has(w.id));
       allWorkspaces = [...linkedWs, ...openOnly];
     } else {
-      // For session auth, get workspaces owned by user
-      allWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user!.id),
-        orderBy: desc(workspaces.createdAt),
-        with: {
-          accountWorkspaces: {
+      // For session auth, get workspaces via team membership
+      const wsIds = await getUserWorkspaceIds(user!.id);
+      allWorkspaces = wsIds.length > 0
+        ? await db.query.workspaces.findMany({
+            where: inArray(workspaces.id, wsIds),
+            orderBy: desc(workspaces.createdAt),
             with: {
-              account: true,
+              accountWorkspaces: {
+                with: {
+                  account: true,
+                },
+              },
             },
-          },
-        },
-      });
+          })
+        : [];
     }
 
     // Transform to include runner status
@@ -144,7 +148,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, githubRepo, githubInstallationId, accessMode } = body;
+    const { name, repoUrl, defaultBranch, githubRepo, githubInstallationId, accessMode, teamId: requestedTeamId } = body;
 
     // Auto-derive name from repoUrl if not provided
     let workspaceName = name;
@@ -189,6 +193,21 @@ export async function POST(req: NextRequest) {
       githubRepoDbId = upserted.id;
     }
 
+    // Use requested teamId if provided and user is a member, otherwise fall back to default
+    let teamId: string | null = null;
+    if (requestedTeamId) {
+      const memberTeamIds = await getUserTeamIds(user!.id);
+      if (memberTeamIds.includes(requestedTeamId)) {
+        teamId = requestedTeamId;
+      }
+    }
+    if (!teamId) {
+      teamId = await getUserDefaultTeamId(user!.id);
+    }
+    if (!teamId) {
+      return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
+    }
+
     const [workspace] = await db
       .insert(workspaces)
       .values({
@@ -198,7 +217,7 @@ export async function POST(req: NextRequest) {
         githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
-        ownerId: user.id,
+        teamId,
       })
       .returning();
 

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { skills } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserTeamIds } from '@/lib/team-access';
 
 // PATCH /api/skills/[skillId] — update skill hash/metadata
 export async function PATCH(
@@ -17,6 +18,11 @@ export async function PATCH(
   }
 
   try {
+    const teamIds = await getUserTeamIds(user.id);
+    if (teamIds.length === 0) {
+      return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+    }
+
     const body = await req.json();
     const { name, description, contentHash, source, sourceVersion } = body;
 
@@ -30,7 +36,7 @@ export async function PATCH(
     const [updated] = await db
       .update(skills)
       .set(updates)
-      .where(and(eq(skills.id, skillId), eq(skills.ownerId, user.id)))
+      .where(and(eq(skills.id, skillId), inArray(skills.teamId, teamIds)))
       .returning();
 
     if (!updated) {
@@ -57,9 +63,14 @@ export async function DELETE(
   }
 
   try {
+    const teamIds = await getUserTeamIds(user.id);
+    if (teamIds.length === 0) {
+      return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+    }
+
     const [deleted] = await db
       .delete(skills)
-      .where(and(eq(skills.id, skillId), eq(skills.ownerId, user.id)))
+      .where(and(eq(skills.id, skillId), inArray(skills.teamId, teamIds)))
       .returning();
 
     if (!deleted) {

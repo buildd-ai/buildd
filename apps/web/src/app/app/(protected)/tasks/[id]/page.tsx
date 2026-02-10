@@ -1,9 +1,10 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
@@ -52,8 +53,9 @@ export default async function TaskDetailPage({
     notFound();
   }
 
-  // Verify ownership through workspace
-  if (task.workspace?.ownerId !== user.id) {
+  // Verify access through team membership
+  const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+  if (!access) {
     notFound();
   }
 

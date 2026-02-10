@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserTeamIds } from '@/lib/team-access';
 
 export async function GET(
   req: NextRequest,
@@ -20,9 +21,12 @@ export async function GET(
   }
 
   try {
-    const account = await db.query.accounts.findFirst({
-      where: and(eq(accounts.id, id), eq(accounts.ownerId, user.id)),
-    });
+    const teamIds = await getUserTeamIds(user.id);
+    const account = teamIds.length > 0
+      ? await db.query.accounts.findFirst({
+          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+        })
+      : null;
 
     if (!account) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
@@ -51,10 +55,12 @@ export async function DELETE(
   }
 
   try {
-    // Check if account exists and belongs to user
-    const account = await db.query.accounts.findFirst({
-      where: and(eq(accounts.id, id), eq(accounts.ownerId, user.id)),
-    });
+    const teamIds = await getUserTeamIds(user.id);
+    const account = teamIds.length > 0
+      ? await db.query.accounts.findFirst({
+          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+        })
+      : null;
 
     if (!account) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });

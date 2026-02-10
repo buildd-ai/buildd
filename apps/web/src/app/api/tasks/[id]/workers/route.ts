@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 /**
  * GET /api/tasks/[id]/workers
@@ -32,8 +33,9 @@ export async function GET(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Check if user owns the workspace
-    if (task.workspace?.ownerId !== user.id) {
+    // Check if user has workspace access
+    const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+    if (!access) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 

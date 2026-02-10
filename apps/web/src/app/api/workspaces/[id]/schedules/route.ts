@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // GET /api/workspaces/[id]/schedules - List schedules for a workspace
 export async function GET(
@@ -16,13 +17,9 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Verify workspace ownership
-  const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    columns: { id: true },
-  });
-
-  if (!workspace) {
+  // Verify workspace access
+  const access = await verifyWorkspaceAccess(user.id, id);
+  if (!access) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
@@ -45,13 +42,9 @@ export async function POST(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Verify workspace ownership
-  const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    columns: { id: true },
-  });
-
-  if (!workspace) {
+  // Verify workspace access
+  const postAccess = await verifyWorkspaceAccess(user.id, id);
+  if (!postAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 

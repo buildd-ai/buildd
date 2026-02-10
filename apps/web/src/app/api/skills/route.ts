@@ -1,35 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { skills } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
 
-// Resolve the owner (user) ID from either session or API key auth
-async function resolveOwnerId(req: NextRequest): Promise<string | null> {
+// Resolve the team ID from either session or API key auth
+async function resolveTeamId(req: NextRequest): Promise<string | null> {
   // Try session auth first
   const user = await getCurrentUser();
-  if (user) return user.id;
+  if (user) return getUserDefaultTeamId(user.id);
 
-  // Fall back to API key → account → ownerId
+  // Fall back to API key → account → teamId
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
-  if (account?.ownerId) return account.ownerId;
+  if (account?.teamId) return account.teamId;
 
   return null;
 }
 
-// GET /api/skills — list skills for the authenticated owner
+// GET /api/skills — list skills for the authenticated team
 export async function GET(req: NextRequest) {
-  const ownerId = await resolveOwnerId(req);
-  if (!ownerId) {
+  const teamId = await resolveTeamId(req);
+  if (!teamId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
     const results = await db.query.skills.findMany({
-      where: eq(skills.ownerId, ownerId),
+      where: eq(skills.teamId, teamId),
       orderBy: (s, { asc }) => [asc(s.slug)],
     });
 
@@ -42,8 +43,8 @@ export async function GET(req: NextRequest) {
 
 // POST /api/skills — register a skill (upserts by slug)
 export async function POST(req: NextRequest) {
-  const ownerId = await resolveOwnerId(req);
-  if (!ownerId) {
+  const teamId = await resolveTeamId(req);
+  if (!teamId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -66,9 +67,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Upsert: update if slug already exists for this owner
+    // Upsert: update if slug already exists for this team
     const existing = await db.query.skills.findFirst({
-      where: and(eq(skills.ownerId, ownerId), eq(skills.slug, slug)),
+      where: and(eq(skills.teamId, teamId), eq(skills.slug, slug)),
     });
 
     if (existing) {
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest) {
     const [skill] = await db
       .insert(skills)
       .values({
-        ownerId,
+        teamId,
         slug,
         name,
         description: description || null,

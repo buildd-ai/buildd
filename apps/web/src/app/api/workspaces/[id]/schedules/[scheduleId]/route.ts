@@ -4,6 +4,7 @@ import { taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -15,12 +16,8 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    columns: { id: true },
-  });
-
-  if (!workspace) {
+  const access = await verifyWorkspaceAccess(user.id, id);
+  if (!access) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
@@ -46,12 +43,8 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    columns: { id: true },
-  });
-
-  if (!workspace) {
+  const patchAccess = await verifyWorkspaceAccess(user.id, id);
+  if (!patchAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
@@ -126,12 +119,8 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    columns: { id: true },
-  });
-
-  if (!workspace) {
+  const deleteAccess = await verifyWorkspaceAccess(user.id, id);
+  if (!deleteAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 

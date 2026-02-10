@@ -1,16 +1,17 @@
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { desc, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import DeleteAccountButton from './DeleteAccountButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserTeamIds } from '@/lib/team-access';
 
 export default async function AccountsPage() {
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
-  let allAccounts: typeof accounts.$inferSelect[] = [];
+  let allAccounts: (typeof accounts.$inferSelect & { team?: { name: string } | null })[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -18,10 +19,15 @@ export default async function AccountsPage() {
     }
 
     try {
-      allAccounts = await db.query.accounts.findMany({
-        where: eq(accounts.ownerId, user.id),
+      const teamIds = await getUserTeamIds(user.id);
+      const rawAccounts = teamIds.length > 0 ? await db.query.accounts.findMany({
+        where: inArray(accounts.teamId, teamIds),
         orderBy: desc(accounts.createdAt),
-      });
+        with: {
+          team: { columns: { name: true } },
+        },
+      }) : [];
+      allAccounts = rawAccounts;
     } catch (error) {
       console.error('Accounts query error:', error);
     }
@@ -74,7 +80,12 @@ export default async function AccountsPage() {
               >
                 <div className="flex justify-between items-start mb-3">
                   <div>
-                    <h3 className="font-medium">{account.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium">{account.name}</h3>
+                      {account.team?.name && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">{account.team.name}</span>
+                      )}
+                    </div>
                     <span className={`inline-block px-2 py-0.5 text-xs rounded-full mt-1 ${typeColors[account.type]}`}>
                       {account.type}
                     </span>

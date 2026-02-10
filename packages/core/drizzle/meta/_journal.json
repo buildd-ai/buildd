@@ -169,6 +169,20 @@
       "when": 1770646161657,
       "tag": "0023_kind_saracen",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1770700000000,
+      "tag": "0024_team_multi_tenancy",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1770710000000,
+      "tag": "0025_team_invitations",
+      "breakpoints": true
     }
   ]
 }

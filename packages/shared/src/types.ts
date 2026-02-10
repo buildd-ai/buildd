@@ -104,6 +104,41 @@ export type ObservationTypeValue = typeof ObservationType[keyof typeof Observati
 // ENTITIES
 // ============================================================================
 
+export const TeamRole = {
+  OWNER: 'owner',
+  ADMIN: 'admin',
+  MEMBER: 'member',
+} as const;
+
+export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
+
+export interface Team {
+  id: string;
+  name: string;
+  slug: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface TeamMember {
+  teamId: string;
+  userId: string;
+  role: TeamRoleValue;
+  joinedAt: Date;
+}
+
+export interface TeamInvitation {
+  id: string;
+  teamId: string;
+  email: string;
+  role: 'admin' | 'member';
+  token: string;
+  invitedBy: string | null;
+  status: 'pending' | 'accepted' | 'expired';
+  createdAt: Date;
+  expiresAt: Date;
+}
+
 export interface Account {
   id: string;
   type: AccountTypeValue;
@@ -303,7 +338,7 @@ export interface TaskSchedule {
 
 export interface Skill {
   id: string;
-  ownerId: string;
+  teamId: string;
   slug: string;
   name: string;
   description: string | null;

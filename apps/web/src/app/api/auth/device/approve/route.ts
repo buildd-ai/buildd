@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { deviceCodes, accounts } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -63,16 +64,24 @@ export async function POST(req: NextRequest) {
     const accountName = updated.clientName || 'CLI';
     const level = updated.level as 'admin' | 'worker';
 
-    let account = await db.query.accounts.findFirst({
-      where: and(
-        eq(accounts.ownerId, session.user.id),
-        eq(accounts.name, accountName)
-      ),
-    });
+    const teamIds = await getUserTeamIds(session.user.id);
+    let account = teamIds.length > 0
+      ? await db.query.accounts.findFirst({
+          where: and(
+            inArray(accounts.teamId, teamIds),
+            eq(accounts.name, accountName)
+          ),
+        })
+      : null;
 
     const plaintextKey = generateApiKey();
 
     if (!account) {
+      const teamId = await getUserDefaultTeamId(session.user.id);
+      if (!teamId) {
+        return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
+      }
+
       await db.insert(accounts).values({
         name: accountName,
         type: 'user',
@@ -80,7 +89,7 @@ export async function POST(req: NextRequest) {
         authType: 'api',
         apiKey: hashApiKey(plaintextKey),
         apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-        ownerId: session.user.id,
+        teamId,
       });
     } else {
       await db.update(accounts)

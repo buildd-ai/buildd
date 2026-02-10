@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
+import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -15,8 +16,8 @@ export default async function DashboardPage() {
   // In dev mode, show empty state
   const isDev = process.env.NODE_ENV === 'development';
 
-  let userWorkspaces: typeof workspaces.$inferSelect[] = [];
-  let recentTasks: (typeof tasks.$inferSelect & { workspace: typeof workspaces.$inferSelect })[] = [];
+  let userWorkspaces: (typeof workspaces.$inferSelect & { team?: { name: string } | null })[] = [];
+  let recentTasks: (typeof tasks.$inferSelect & { workspace: typeof workspaces.$inferSelect & { team?: { name: string } | null } })[] = [];
   let activeWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect })[] = [];
   let githubOrgs: { accountLogin: string; repoCount: number }[] = [];
   let githubConfigured = false;
@@ -31,12 +32,18 @@ export default async function DashboardPage() {
     try {
       githubConfigured = isGitHubAppConfigured();
 
-      // Get user's workspaces (filtered by owner)
-      userWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user.id),
-        orderBy: desc(workspaces.createdAt),
-        limit: 10,
-      });
+      // Get user's workspaces (via team membership)
+      const wsIds = await getUserWorkspaceIds(user.id);
+      userWorkspaces = wsIds.length > 0
+        ? await db.query.workspaces.findMany({
+            where: inArray(workspaces.id, wsIds),
+            orderBy: desc(workspaces.createdAt),
+            limit: 10,
+            with: {
+              team: { columns: { name: true } },
+            },
+          })
+        : [];
 
       const workspaceIds = userWorkspaces.map(w => w.id);
 
@@ -53,7 +60,7 @@ export default async function DashboardPage() {
           ),
           orderBy: desc(tasks.updatedAt),
           limit: 10,
-          with: { workspace: true },
+          with: { workspace: { with: { team: { columns: { name: true } } } } },
         }) as any;
 
         // Sort by status priority: running/assigned first, then pending, then failed
@@ -86,7 +93,7 @@ export default async function DashboardPage() {
           ),
           orderBy: desc(tasks.updatedAt),
           limit: remaining,
-          with: { workspace: true },
+          with: { workspace: { with: { team: { columns: { name: true } } } } },
         }) as any : [];
 
         recentTasks = [...activeTasks.slice(0, maxDisplay), ...completedTasks];
@@ -104,10 +111,13 @@ export default async function DashboardPage() {
       }
 
       // Get connected agents via heartbeats
-      const userAccounts = await db.query.accounts.findMany({
-        where: eq(accounts.ownerId, user.id),
-        columns: { id: true, name: true },
-      });
+      const teamIds = await getUserTeamIds(user.id);
+      const userAccounts = teamIds.length > 0
+        ? await db.query.accounts.findMany({
+            where: inArray(accounts.teamId, teamIds),
+            columns: { id: true, name: true },
+          })
+        : [];
       if (userAccounts.length > 0) {
         const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
         const heartbeats = await db.query.workerHeartbeats.findMany({
@@ -190,6 +200,12 @@ export default async function DashboardPage() {
               className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
             >
               Accounts
+            </Link>
+            <Link
+              href="/app/teams"
+              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              Teams
             </Link>
             <Link
               href="/api/auth/signout"
@@ -335,6 +351,9 @@ export default async function DashboardPage() {
                       <StatusBadge status={task.status} />
                       <span className="font-medium truncate">{task.title}</span>
                       <span className="text-sm text-gray-400 truncate hidden sm:inline">{task.workspace?.name}</span>
+                      {task.workspace?.team?.name && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hidden sm:inline">{task.workspace.team.name}</span>
+                      )}
                     </div>
                   </div>
                 </Link>

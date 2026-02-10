@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -47,8 +48,14 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Check if user owns the workspace (admin access)
-    const isWorkspaceOwner = task.workspace?.ownerId === authUserId;
+    // Check if user has workspace access (admin access)
+    let isWorkspaceOwner = false;
+    if (user) {
+      const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+      isWorkspaceOwner = !!access;
+    } else if (apiAccount) {
+      isWorkspaceOwner = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+    }
 
     // Check if task is stale (expiresAt is in the past)
     const isStale = task.expiresAt && new Date(task.expiresAt) < new Date();

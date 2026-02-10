@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { observations, accounts } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { hashApiKey } from '@/lib/api-auth';
+import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 // GET /api/workspaces/[id]/observations/compact
 // Returns observations formatted as markdown for prompt injection
@@ -22,6 +23,11 @@ export async function GET(
         });
         if (!account) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+        // Verify workspace access for API key
+        const hasAccess = await verifyAccountWorkspaceAccess(account.id, id);
+        if (!hasAccess) {
+            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
     } else if (process.env.NODE_ENV !== 'development') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

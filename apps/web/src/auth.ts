@@ -3,8 +3,8 @@ import Google from 'next-auth/providers/google';
 import GitHub from 'next-auth/providers/github';
 import Credentials from 'next-auth/providers/credentials';
 import { db } from '@buildd/core/db';
-import { users, accounts, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { users, accounts, workspaces, teams, teamMembers, teamInvitations } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 
@@ -130,7 +130,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           return true;
         }
 
-        // Brand new user — create user + account + workspace
+        // Brand new user — create user + team + account + workspace
         const [newUser] = await db
           .insert(users)
           .values({
@@ -141,6 +141,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           })
           .returning();
 
+        // Create personal team
+        const [team] = await db
+          .insert(teams)
+          .values({
+            name: `${user.name || user.email}'s Team`,
+            slug: `personal-${newUser.id}`,
+          })
+          .returning();
+
+        // Add user as team owner
+        await db.insert(teamMembers).values({
+          teamId: team.id,
+          userId: newUser.id,
+          role: 'owner',
+        });
+
         const plaintextKey = generateApiKey();
         await db.insert(accounts).values({
           name: `${user.name || user.email}'s Account`,
@@ -149,13 +165,34 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           apiKey: hashApiKey(plaintextKey),
           apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
           maxConcurrentWorkers: 10,
-          ownerId: newUser.id,
+          teamId: team.id,
         });
 
         await db.insert(workspaces).values({
           name: 'My Workspace',
-          ownerId: newUser.id,
+          teamId: team.id,
         });
+
+        // Auto-accept any pending invitations for this email
+        const pendingInvites = await db.query.teamInvitations.findMany({
+          where: and(
+            eq(teamInvitations.email, user.email!),
+            eq(teamInvitations.status, 'pending'),
+          ),
+        });
+
+        for (const invite of pendingInvites) {
+          if (new Date(invite.expiresAt) > new Date()) {
+            await db.insert(teamMembers).values({
+              teamId: invite.teamId,
+              userId: newUser.id,
+              role: invite.role,
+            }).onConflictDoNothing();
+            await db.update(teamInvitations)
+              .set({ status: 'accepted' })
+              .where(eq(teamInvitations.id, invite.id));
+          }
+        }
 
         console.log(`Created new user: ${user.email} via ${provider}`);
         return true;

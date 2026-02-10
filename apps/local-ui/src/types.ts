@@ -70,7 +70,7 @@ export interface BuilddTask {
     repo?: string;
     gitConfig?: WorkspaceGitConfig;
     configStatus?: 'unconfigured' | 'admin_confirmed';
-    ownerId?: string;
+    teamId?: string;
   };
   status: string;
   priority: number;

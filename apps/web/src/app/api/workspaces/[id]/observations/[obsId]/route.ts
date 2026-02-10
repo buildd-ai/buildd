@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { observations, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // DELETE /api/workspaces/[id]/observations/[obsId]
 export async function DELETE(
@@ -17,12 +18,8 @@ export async function DELETE(
     }
 
     try {
-        // Verify workspace ownership
-        const workspace = await db.query.workspaces.findFirst({
-            where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-            columns: { id: true },
-        });
-        if (!workspace) {
+        const access = await verifyWorkspaceAccess(user.id, id);
+        if (!access) {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
 

@@ -1,9 +1,10 @@
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserWorkspaceIds } from '@/lib/team-access';
 
 interface WorkspaceWithRunners {
   id: string;
@@ -11,6 +12,7 @@ interface WorkspaceWithRunners {
   repo: string | null;
   localPath: string | null;
   createdAt: Date;
+  teamName: string | null;
   runners: {
     action: boolean;
     service: boolean;
@@ -46,17 +48,19 @@ export default async function WorkspacesPage() {
     }
 
     try {
-      const rawWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user.id),
+      const wsIds = await getUserWorkspaceIds(user.id);
+      const rawWorkspaces = wsIds.length > 0 ? await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
         orderBy: desc(workspaces.createdAt),
         with: {
+          team: { columns: { name: true } },
           accountWorkspaces: {
             with: {
               account: true,
             },
           },
         },
-      });
+      }) : [];
 
       allWorkspaces = rawWorkspaces.map((ws) => {
         const connectedAccounts = ws.accountWorkspaces || [];
@@ -66,6 +70,7 @@ export default async function WorkspacesPage() {
           repo: ws.repo,
           localPath: ws.localPath,
           createdAt: ws.createdAt,
+          teamName: ws.team?.name || null,
           runners: {
             action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim),
             service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim),
@@ -119,7 +124,12 @@ export default async function WorkspacesPage() {
               >
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
-                    <h3 className="font-medium">{workspace.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium">{workspace.name}</h3>
+                      {workspace.teamName && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">{workspace.teamName}</span>
+                      )}
+                    </div>
                     {workspace.repo && (
                       <p className="text-sm text-gray-500">{workspace.repo}</p>
                     )}

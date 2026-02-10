@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { auth } from '@/auth';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 export async function GET(
   req: NextRequest,
@@ -17,6 +18,12 @@ export async function GET(
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Verify workspace access
+  const access = await verifyWorkspaceAccess(session.user.id!, id);
+  if (!access) {
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   try {
@@ -55,6 +62,12 @@ export async function POST(
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Verify workspace access
+  const postAccess = await verifyWorkspaceAccess(session.user.id!, workspaceId);
+  if (!postAccess) {
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   try {
@@ -138,6 +151,12 @@ export async function DELETE(
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Verify workspace access
+  const deleteAccess = await verifyWorkspaceAccess(session.user.id!, workspaceId);
+  if (!deleteAccess) {
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   try {

@@ -3,6 +3,29 @@ import {
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
+// Teams table for multi-tenancy ownership
+export const teams = pgTable('teams', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
+}));
+
+// Team membership
+export const teamMembers = pgTable('team_members', {
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  role: text('role').notNull().$type<'owner' | 'admin' | 'member'>(),
+  joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.teamId, t.userId] }),
+  teamIdx: index('team_members_team_idx').on(t.teamId),
+  userIdx: index('team_members_user_idx').on(t.userId),
+}));
+
 // Users table for multi-tenancy
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -47,14 +70,14 @@ export const accounts = pgTable('accounts', {
   totalTasks: integer('total_tasks').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 
-  // Multi-tenancy: owner of this account
-  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Multi-tenancy: team that owns this account
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
 }, (t) => ({
   apiKeyIdx: uniqueIndex('accounts_api_key_idx').on(t.apiKey),
   githubIdIdx: index('accounts_github_id_idx').on(t.githubId),
   authTypeIdx: index('accounts_auth_type_idx').on(t.authType),
   seatIdIdx: index('accounts_seat_id_idx').on(t.seatId),
-  ownerIdx: index('accounts_owner_idx').on(t.ownerId),
+  teamIdx: index('accounts_team_idx').on(t.teamId),
 }));
 
 export const accountWorkspaces = pgTable('account_workspaces', {
@@ -149,12 +172,12 @@ export const workspaces = pgTable('workspaces', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
-  // Multi-tenancy: owner of this workspace
-  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Multi-tenancy: team that owns this workspace
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
 }, (t) => ({
   githubRepoIdx: index('workspaces_github_repo_idx').on(t.githubRepoId),
   githubInstallationIdx: index('workspaces_github_installation_idx').on(t.githubInstallationId),
-  ownerIdx: index('workspaces_owner_idx').on(t.ownerId),
+  teamIdx: index('workspaces_team_idx').on(t.teamId),
   configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
@@ -374,7 +397,7 @@ export const githubRepos = pgTable('github_repos', {
 // Skill registry — stores hash + metadata, NOT content (content lives on worker filesystem)
 export const skills = pgTable('skills', {
   id: uuid('id').primaryKey().defaultRandom(),
-  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   slug: text('slug').notNull(),
   name: text('name').notNull(),
   description: text('description'),
@@ -384,8 +407,25 @@ export const skills = pgTable('skills', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  ownerSlugIdx: uniqueIndex('skills_owner_slug_idx').on(t.ownerId, t.slug),
-  ownerIdx: index('skills_owner_idx').on(t.ownerId),
+  teamSlugIdx: uniqueIndex('skills_team_slug_idx').on(t.teamId, t.slug),
+  teamIdx: index('skills_team_idx').on(t.teamId),
+}));
+
+// Team invitations for multi-tenancy
+export const teamInvitations = pgTable('team_invitations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  email: text('email').notNull(),
+  role: text('role').notNull().$type<'admin' | 'member'>(),
+  token: text('token').notNull().unique(),
+  invitedBy: uuid('invited_by').references(() => users.id, { onDelete: 'set null' }),
+  status: text('status').notNull().$type<'pending' | 'accepted' | 'expired'>().default('pending'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  tokenIdx: uniqueIndex('team_invitations_token_idx').on(t.token),
+  teamIdx: index('team_invitations_team_idx').on(t.teamId),
+  emailIdx: index('team_invitations_email_idx').on(t.email),
 }));
 
 // Device code flow for CLI authentication in headless environments
@@ -408,15 +448,31 @@ export const deviceCodes = pgTable('device_codes', {
 }));
 
 // Relations
-export const usersRelations = relations(users, ({ many }) => ({
+export const teamsRelations = relations(teams, ({ many }) => ({
+  members: many(teamMembers),
   accounts: many(accounts),
   workspaces: many(workspaces),
   skills: many(skills),
+  invitations: many(teamInvitations),
+}));
+
+export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
+  team: one(teams, { fields: [teamMembers.teamId], references: [teams.id] }),
+  user: one(users, { fields: [teamMembers.userId], references: [users.id] }),
+}));
+
+export const teamInvitationsRelations = relations(teamInvitations, ({ one }) => ({
+  team: one(teams, { fields: [teamInvitations.teamId], references: [teams.id] }),
+  inviter: one(users, { fields: [teamInvitations.invitedBy], references: [users.id] }),
+}));
+
+export const usersRelations = relations(users, ({ many }) => ({
+  teamMembers: many(teamMembers),
   deviceCodes: many(deviceCodes),
 }));
 
 export const accountsRelations = relations(accounts, ({ one, many }) => ({
-  owner: one(users, { fields: [accounts.ownerId], references: [users.id] }),
+  team: one(teams, { fields: [accounts.teamId], references: [teams.id] }),
   accountWorkspaces: many(accountWorkspaces),
   tasks: many(tasks),
   workers: many(workers),
@@ -430,7 +486,7 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
-  owner: one(users, { fields: [workspaces.ownerId], references: [users.id] }),
+  team: one(teams, { fields: [workspaces.teamId], references: [teams.id] }),
   sources: many(sources),
   tasks: many(tasks),
   workers: many(workers),
@@ -498,7 +554,7 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
 }));
 
 export const skillsRelations = relations(skills, ({ one }) => ({
-  owner: one(users, { fields: [skills.ownerId], references: [users.id] }),
+  team: one(teams, { fields: [skills.teamId], references: [teams.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({

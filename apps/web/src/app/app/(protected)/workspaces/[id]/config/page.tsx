@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -19,8 +20,11 @@ export default async function WorkspaceConfigPage({
         redirect('/app/auth/signin');
     }
 
+    const access = await verifyWorkspaceAccess(user.id, id);
+    if (!access) notFound();
+
     const workspace = await db.query.workspaces.findFirst({
-        where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
+        where: eq(workspaces.id, id),
         columns: {
             id: true,
             name: true,

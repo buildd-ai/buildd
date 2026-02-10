@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -47,12 +48,8 @@ export async function GET(req: NextRequest) {
       const openIds = openWorkspaces.map(w => w.id);
       workspaceIds = [...new Set([...linkedIds, ...openIds])];
     } else {
-      // For session auth, get user's workspaces
-      const userWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.ownerId, user!.id),
-        columns: { id: true },
-      });
-      workspaceIds = userWorkspaces.map(w => w.id);
+      // For session auth, get user's workspaces via team membership
+      workspaceIds = await getUserWorkspaceIds(user!.id);
     }
 
     // Get tasks from the resolved workspace IDs
@@ -122,6 +119,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
     }
 
+    // Verify workspace access
+    if (apiAccount) {
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId, 'canCreate');
+      if (!hasAccess) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+    }
+
     // Resolve creator context using the service
     const creatorContext = await resolveCreatorContext({
       apiAccount,
@@ -134,14 +139,14 @@ export async function POST(req: NextRequest) {
     // TODO: Resolve skill reference if provided — skills table not yet implemented
     let resolvedSkillRef: { skillId: string; slug: string; contentHash: string } | undefined;
     // if (skillRef?.slug) {
-    //   if (!targetWorkspace.ownerId) {
+    //   if (!targetWorkspace.teamId) {
     //     return NextResponse.json(
-    //       { error: 'Workspace has no owner — cannot resolve skills' },
+    //       { error: 'Workspace has no team — cannot resolve skills' },
     //       { status: 400 }
     //     );
     //   }
     //   const skill = await db.query.skills.findFirst({
-    //     where: and(eq(skills.ownerId, targetWorkspace.ownerId), eq(skills.slug, skillRef.slug)),
+    //     where: and(eq(skills.teamId, targetWorkspace.teamId), eq(skills.slug, skillRef.slug)),
     //   });
     //   if (!skill) {
     //     return NextResponse.json(

@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { accounts, workers, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { accounts, workers, workspaces, teamMembers } from '@buildd/core/db/schema';
+import { eq, inArray } from 'drizzle-orm';
+import { getUserTeamIds } from '@/lib/team-access';
 
 export type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule';
 
@@ -73,10 +74,13 @@ async function resolveAccountId(
   }
 
   if (userId) {
-    const userAccount = await db.query.accounts.findFirst({
-      where: eq(accounts.ownerId, userId),
-    });
-    return userAccount?.id || null;
+    const teamIds = await getUserTeamIds(userId);
+    if (teamIds.length > 0) {
+      const userAccount = await db.query.accounts.findFirst({
+        where: inArray(accounts.teamId, teamIds),
+      });
+      return userAccount?.id || null;
+    }
   }
 
   return null;
@@ -137,15 +141,19 @@ async function validateWorkerContext(
     return { validatedWorkerId, derivedParentTaskId };
   }
 
-  // For session auth: worker must be in a workspace owned by the user
+  // For session auth: worker must be in a workspace the user can access via team
   if (userId) {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, worker.workspaceId),
+      columns: { teamId: true },
     });
-    if (workspace?.ownerId === userId) {
-      validatedWorkerId = createdByWorkerId;
-      if (!derivedParentTaskId && worker.taskId) {
-        derivedParentTaskId = worker.taskId;
+    if (workspace) {
+      const teamIds = await getUserTeamIds(userId);
+      if (teamIds.includes(workspace.teamId)) {
+        validatedWorkerId = createdByWorkerId;
+        if (!derivedParentTaskId && worker.taskId) {
+          derivedParentTaskId = worker.taskId;
+        }
       }
     }
   }

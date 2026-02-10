@@ -1,14 +1,45 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+
+interface Team {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
+}
 
 export default function NewAccountPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [createdAccount, setCreatedAccount] = useState<{ name: string; apiKey: string } | null>(null);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+
+  useEffect(() => {
+    async function loadTeams() {
+      try {
+        const res = await fetch('/api/teams');
+        if (res.ok) {
+          const data = await res.json();
+          setTeams(data.teams || []);
+          // Default to personal team
+          const personal = (data.teams || []).find((t: Team) => t.slug.startsWith('personal-'));
+          if (personal) {
+            setSelectedTeamId(personal.id);
+          } else if (data.teams?.length > 0) {
+            setSelectedTeamId(data.teams[0].id);
+          }
+        }
+      } catch {
+        // Teams not available
+      }
+    }
+    loadTeams();
+  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -16,13 +47,16 @@ export default function NewAccountPage() {
     setError('');
 
     const formData = new FormData(e.currentTarget);
-    const data = {
+    const data: Record<string, unknown> = {
       name: formData.get('name') as string,
       type: formData.get('type') as string,
       authType: formData.get('authType') as string,
       level: formData.get('level') as string,
       maxConcurrentWorkers: parseInt(formData.get('maxConcurrentWorkers') as string) || 3,
     };
+    if (selectedTeamId) {
+      data.teamId = selectedTeamId;
+    }
 
     try {
       const res = await fetch('/api/accounts', {
@@ -97,6 +131,29 @@ export default function NewAccountPage() {
           {error && (
             <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
               {error}
+            </div>
+          )}
+
+          {teams.length > 1 && (
+            <div>
+              <label htmlFor="team" className="block text-sm font-medium mb-2">
+                Team
+              </label>
+              <select
+                id="team"
+                value={selectedTeamId}
+                onChange={(e) => setSelectedTeamId(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              >
+                {teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}{team.slug.startsWith('personal-') ? ' (Personal)' : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Which team owns this account
+              </p>
             </div>
           )}
 

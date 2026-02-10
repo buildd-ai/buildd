@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
 
 // Generalized CLI OAuth flow:
 // 1. CLI redirects here with ?callback=http://localhost:PORT/callback&client=cli&level=admin
@@ -72,17 +73,27 @@ export async function GET(req: NextRequest) {
 
   // User is logged in - get or create their account
   try {
-    let account = await db.query.accounts.findFirst({
-      where: and(
-        eq(accounts.ownerId, session.user.id),
-        eq(accounts.name, resolvedName)
-      ),
-    });
+    const teamIds = await getUserTeamIds(session.user.id);
+    let account = teamIds.length > 0
+      ? await db.query.accounts.findFirst({
+          where: and(
+            inArray(accounts.teamId, teamIds),
+            eq(accounts.name, resolvedName)
+          ),
+        })
+      : null;
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();
 
     if (!account) {
+      const teamId = await getUserDefaultTeamId(session.user.id);
+      if (!teamId) {
+        const errorUrl = new URL(callback);
+        errorUrl.searchParams.set('error', 'No team found');
+        return NextResponse.redirect(errorUrl.toString());
+      }
+
       // Create dedicated account with hashed key
       const [newAccount] = await db
         .insert(accounts)
@@ -93,7 +104,7 @@ export async function GET(req: NextRequest) {
           authType: 'api',
           apiKey: hashApiKey(plaintextKey),
           apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-          ownerId: session.user.id,
+          teamId,
         })
         .returning();
       account = newAccount;

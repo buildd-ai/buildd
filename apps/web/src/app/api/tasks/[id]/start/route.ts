@@ -5,6 +5,7 @@ import { eq, and, or } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 /**
  * POST /api/tasks/[id]/start
@@ -63,23 +64,14 @@ export async function POST(
 
     // Authorization check
     if (authType === 'session') {
-      // Session: user must own the workspace
-      if (task.workspace?.ownerId !== userId) {
+      const access = await verifyWorkspaceAccess(userId!, task.workspaceId);
+      if (!access) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
     } else {
-      // API key: account must have access to workspace (via accountWorkspaces or open)
-      const isOpen = task.workspace?.accessMode === 'open';
-      if (!isOpen) {
-        const link = await db.query.accountWorkspaces.findFirst({
-          where: and(
-            eq(accountWorkspaces.accountId, accountId!),
-            eq(accountWorkspaces.workspaceId, task.workspaceId),
-          ),
-        });
-        if (!link) {
-          return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-        }
+      const hasAccess = await verifyAccountWorkspaceAccess(accountId!, task.workspaceId);
+      if (!hasAccess) {
+        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
     }
 

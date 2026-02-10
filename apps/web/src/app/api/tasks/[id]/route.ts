@@ -4,6 +4,7 @@ import { tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 // GET /api/tasks/[id] - Get a single task
 export async function GET(
@@ -36,9 +37,13 @@ export async function GET(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Verify ownership for session auth
-    if (user && !apiAccount && task.workspace?.ownerId !== user.id) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    // Verify access
+    if (user && !apiAccount) {
+      const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+      if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    } else if (apiAccount) {
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
     return NextResponse.json(task);
@@ -79,9 +84,13 @@ export async function PATCH(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Verify ownership for session auth
-    if (user && !apiAccount && task.workspace?.ownerId !== user.id) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    // Verify access
+    if (user && !apiAccount) {
+      const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+      if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    } else if (apiAccount) {
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
     const body = await req.json();
@@ -139,9 +148,13 @@ export async function DELETE(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Verify ownership for session auth
-    if (user && !apiAccount && task.workspace?.ownerId !== user.id) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    // Verify access
+    if (user && !apiAccount) {
+      const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+      if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    } else if (apiAccount) {
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
     // Only allow deleting pending, assigned, or failed tasks (not running or completed)

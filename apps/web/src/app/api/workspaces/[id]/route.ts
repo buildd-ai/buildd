@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 export async function GET(
   req: NextRequest,
@@ -20,8 +21,13 @@ export async function GET(
   }
 
   try {
+    const access = await verifyWorkspaceAccess(user.id, id);
+    if (!access) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
     const workspace = await db.query.workspaces.findFirst({
-      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
+      where: eq(workspaces.id, id),
       with: {
         tasks: true,
         workers: true,
@@ -56,12 +62,8 @@ export async function PATCH(
   }
 
   try {
-    // Verify ownership
-    const workspace = await db.query.workspaces.findFirst({
-      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    });
-
-    if (!workspace) {
+    const access = await verifyWorkspaceAccess(user.id, id);
+    if (!access) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
@@ -100,12 +102,8 @@ export async function DELETE(
   }
 
   try {
-    // Check if workspace exists and belongs to user
-    const workspace = await db.query.workspaces.findFirst({
-      where: and(eq(workspaces.id, id), eq(workspaces.ownerId, user.id)),
-    });
-
-    if (!workspace) {
+    const access = await verifyWorkspaceAccess(user.id, id, 'owner');
+    if (!access) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 

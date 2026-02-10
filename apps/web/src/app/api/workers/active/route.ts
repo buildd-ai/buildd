@@ -5,6 +5,7 @@ import { eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
+import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes (heartbeat every 5 min + buffer)
 
@@ -76,35 +77,24 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     }
     return result;
   }
-  // Session auth: get workspaces owned by user + accessible through their accounts + open
-  const ownedWs = await db.query.workspaces.findMany({
-    where: eq(workspaces.ownerId, auth.user.id),
-    columns: { id: true, name: true },
-  });
-  // Workspaces accessible through user's accounts
-  const userAccounts = await db.query.accounts.findMany({
-    where: eq(accounts.ownerId, auth.user.id),
-    columns: { id: true },
-  });
-  let linkedWs: { id: string; name: string }[] = [];
-  if (userAccounts.length > 0) {
-    const allAw = await db.query.accountWorkspaces.findMany({
-      where: inArray(accountWorkspaces.accountId, userAccounts.map(a => a.id)),
-      with: { workspace: { columns: { id: true, name: true } } },
+  // Session auth: get workspaces via team membership + open workspaces
+  const teamWsIds = await getUserWorkspaceIds(auth.user.id);
+  let teamWs: { id: string; name: string }[] = [];
+  if (teamWsIds.length > 0) {
+    teamWs = await db.query.workspaces.findMany({
+      where: inArray(workspaces.id, teamWsIds),
+      columns: { id: true, name: true },
     });
-    linkedWs = allAw.map(a => a.workspace);
   }
   // Try Redis cache first for open workspaces
   let openWorkspaceIds = await getCachedOpenWorkspaceIds();
   let openWs: { id: string; name: string }[];
   if (openWorkspaceIds) {
-    // Cache hit - fetch names only for the cached IDs
     openWs = await db.query.workspaces.findMany({
       where: inArray(workspaces.id, openWorkspaceIds),
       columns: { id: true, name: true },
     });
   } else {
-    // Cache miss - query DB and cache IDs
     openWs = await db.query.workspaces.findMany({
       where: eq(workspaces.accessMode, 'open'),
       columns: { id: true, name: true },
@@ -114,10 +104,7 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
   }
   const seen = new Set<string>();
   const result: { id: string; name: string }[] = [];
-  for (const w of ownedWs) {
-    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
-  }
-  for (const w of linkedWs) {
+  for (const w of teamWs) {
     if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
   }
   for (const w of openWs) {
