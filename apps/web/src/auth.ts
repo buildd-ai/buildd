@@ -148,7 +148,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           authType: 'oauth',
           apiKey: hashApiKey(plaintextKey),
           apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-          maxConcurrentWorkers: 3,
+          maxConcurrentWorkers: 10,
           ownerId: newUser.id,
         });
 
