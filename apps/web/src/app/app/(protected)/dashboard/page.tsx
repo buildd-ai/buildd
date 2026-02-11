@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
+import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
@@ -153,9 +154,79 @@ export default async function DashboardPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
+        {/* Mobile Header */}
+        <div className="md:hidden mb-6">
+          <h1 className="text-2xl font-bold text-white">buildd</h1>
+          <p className="text-sm text-slate-400">
+            {user?.email || 'Development Mode'}
+          </p>
+        </div>
+
+        {/* Mobile Active Workers */}
+        {activeWorkers.length > 0 && (
+          <div className="md:hidden mb-6 space-y-3">
+            <h2 className="text-lg font-semibold text-white">Active Workers</h2>
+            {activeWorkers.map((worker) => (
+              <MobileWorkerCard
+                key={worker.id}
+                workerId={worker.id}
+                name={worker.name}
+                status={worker.status}
+                taskTitle={worker.task?.title || null}
+                workspaceName={null}
+                milestones={(worker.milestones as any[]) || []}
+                turns={worker.turns}
+                costUsd={worker.costUsd?.toString() || null}
+                startedAt={worker.startedAt?.toISOString() || null}
+                taskId={worker.task?.id || ''}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Mobile Recent Tasks */}
+        <div className="md:hidden mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-white">Tasks</h2>
+            <Link
+              href="/app/tasks/new"
+              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-medium"
+            >
+              + New
+            </Link>
+          </div>
+          {recentTasks.length === 0 ? (
+            <div className="rounded-xl bg-slate-800 border border-slate-700 p-6 text-center">
+              <p className="text-slate-400 mb-2">No active tasks</p>
+              <Link href="/app/tasks/new" className="text-sm text-violet-400 hover:underline">
+                Create your first task
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {recentTasks.slice(0, 5).map((task) => (
+                <Link
+                  key={task.id}
+                  href={`/app/tasks/${task.id}`}
+                  className="block rounded-xl bg-slate-800 border border-slate-700 p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <StatusBadge status={task.status} />
+                    <span className="font-medium text-white truncate text-sm">{task.title}</span>
+                  </div>
+                </Link>
+              ))}
+              <Link href="/app/tasks" className="block text-center text-sm text-violet-400 py-2">
+                View all tasks &rarr;
+              </Link>
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Header */}
+        <div className="hidden md:flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold">buildd</h1>
             <p className="text-gray-600 dark:text-gray-400">
@@ -215,6 +286,9 @@ export default async function DashboardPage() {
             </Link>
           </div>
         </div>
+
+        {/* Desktop-only content below */}
+        <div className="hidden md:block">
 
         {/* Setup Banner - shows when GitHub not connected */}
         {githubConfigured && githubOrgs.length === 0 && (
@@ -388,14 +462,25 @@ export default async function DashboardPage() {
                           ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
                           : 'At capacity'}
                       </span>
-                      <a
-                        href={agent.localUiUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
-                      >
-                        Open
-                      </a>
+                      {/^https?:\/\/(localhost|127\.0\.0\.1)/.test(agent.localUiUrl) ? (
+                        <a
+                          href={agent.localUiUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hidden sm:inline-block px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+                        >
+                          Open
+                        </a>
+                      ) : (
+                        <a
+                          href={agent.localUiUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+                        >
+                          Open
+                        </a>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -467,13 +552,13 @@ export default async function DashboardPage() {
                           PR #{worker.prNumber}
                         </a>
                       )}
-                      {/* Jump to local-ui link */}
+                      {/* Jump to local-ui link (hide localhost on mobile) */}
                       {worker.localUiUrl && (
                         <a
                           href={`${worker.localUiUrl}/worker/${worker.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
+                          className={`px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
                         >
                           Open Terminal
                         </a>
@@ -485,6 +570,8 @@ export default async function DashboardPage() {
             </div>
           )}
         </div>
+
+        </div>{/* End desktop-only wrapper */}
       </div>
     </main>
   );

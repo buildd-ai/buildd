@@ -54,7 +54,7 @@ function StatusIcon({ status }: { status: string }) {
 
 export default function StatusBadge({ status }: { status: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full ${STATUS_COLORS[status] || STATUS_COLORS.pending}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full transition-colors duration-200 ${STATUS_COLORS[status] || STATUS_COLORS.pending}`}>
       <StatusIcon status={status} />
       {STATUS_LABELS[status] || status}
     </span>

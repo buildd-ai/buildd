@@ -388,7 +388,7 @@ export default async function TaskDetailPage({
                           href={`${worker.localUiUrl}/worker/${worker.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+                          className={`px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
                         >
                           View
                         </a>

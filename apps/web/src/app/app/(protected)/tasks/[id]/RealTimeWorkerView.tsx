@@ -303,7 +303,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         <div className="flex items-center gap-2">
           <StatusBadge status={worker.status} />
           {worker.localUiUrl && (
-            <div className="flex items-center gap-1.5">
+            <div className={`flex items-center gap-1.5${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:flex' : ''}`}>
               {directStatus === 'connected' && (
                 <span
                   className="flex items-center gap-1 px-2 py-1 text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-full"

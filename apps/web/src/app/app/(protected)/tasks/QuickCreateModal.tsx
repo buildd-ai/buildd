@@ -242,11 +242,11 @@ export default function QuickCreateModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-start justify-center pt-16 md:pt-32 z-50 px-4 md:px-0"
+      className="fixed inset-0 bg-black/50 flex items-end md:items-start justify-center md:pt-32 z-50"
       onClick={(e) => e.target === e.currentTarget && assignmentStatus === 'idle' && onClose()}
       onKeyDown={handleKeyDown}
     >
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full max-w-md">
+      <div className="bg-white dark:bg-gray-900 md:bg-white md:dark:bg-gray-900 rounded-t-2xl md:rounded-lg shadow-xl w-full md:max-w-md md:mx-4 animate-slide-up md:animate-none">
         {assignmentStatus === 'waiting' ? (
           // Waiting for worker to accept
           <div className="p-6 text-center">
@@ -459,19 +459,19 @@ export default function QuickCreateModal({
               )}
             </div>
 
-            <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
+            <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex flex-col md:flex-row md:justify-end gap-2">
               <button
                 type="button"
                 onClick={onClose}
                 disabled={loading}
-                className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                className="hidden md:block px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !title.trim()}
-                className="px-3 py-1.5 text-sm bg-black dark:bg-white text-white dark:text-black rounded hover:opacity-80 disabled:opacity-50"
+                className="w-full md:w-auto py-3 md:py-1.5 px-3 text-sm bg-violet-600 hover:bg-violet-700 md:bg-black md:dark:bg-white text-white md:dark:text-black rounded-lg md:rounded hover:opacity-80 disabled:opacity-50 font-medium md:font-normal"
               >
                 {loading
                   ? 'Creating...'

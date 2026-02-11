@@ -25,3 +25,23 @@ body {
     )
     rgb(var(--background-start-rgb));
 }
+
+/* Mobile dark mode: force dark theme on small screens */
+@media (max-width: 767px) {
+  :root {
+    --foreground-rgb: 255, 255, 255;
+    --background-start-rgb: 15, 23, 42;
+    --background-end-rgb: 15, 23, 42;
+  }
+
+  body {
+    background: #0f172a;
+    color: #f8fafc;
+    color-scheme: dark;
+  }
+
+  /* Force dark mode class for Tailwind dark: variants */
+  .dark\:bg-gray-900, .dark\:bg-gray-800 {
+    background-color: inherit;
+  }
+}

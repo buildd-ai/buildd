@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import { AuthGuard } from '@/components/AuthGuard';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
+import BottomNav from '@/components/BottomNav';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
@@ -50,12 +51,15 @@ export default async function ProtectedLayout({
         Alpha &mdash; All features free for all users
       </div>
       {userTeams.length > 0 && (
-        <div className="border-b border-gray-200 dark:border-gray-800 px-8 py-2 flex items-center gap-2">
+        <div className="border-b border-gray-200 dark:border-gray-800 px-4 md:px-8 py-2 flex items-center gap-2">
           <span className="text-xs text-gray-400 uppercase tracking-wide">Team</span>
           <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
         </div>
       )}
-      {children}
+      <div className="pb-16 md:pb-0">
+        {children}
+      </div>
+      <BottomNav />
     </AuthGuard>
   );
 }
