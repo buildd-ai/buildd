@@ -38,6 +38,9 @@ export default function QuickCreateModal({
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
 
+  // Mode toggle
+  const [mode, setMode] = useState<'execution' | 'planning'>('execution');
+
   // Recurring schedule
   const [recurring, setRecurring] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 9 * * *');
@@ -196,6 +199,7 @@ export default function QuickCreateModal({
           title: title.trim(),
           description: description.trim() || null,
           priority: 5,
+          mode,
           creationSource: 'dashboard',
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
@@ -363,8 +367,30 @@ export default function QuickCreateModal({
                 disabled={loading}
               />
 
-              {/* Recurring toggle */}
-              <div className="flex items-center gap-2">
+              {/* Mode + Recurring toggles */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setMode('execution')}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                    mode === 'execution'
+                      ? 'border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                  }`}
+                >
+                  Execute
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('planning')}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                    mode === 'planning'
+                      ? 'border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                  }`}
+                >
+                  Plan first
+                </button>
                 <button
                   type="button"
                   onClick={() => setRecurring(!recurring)}

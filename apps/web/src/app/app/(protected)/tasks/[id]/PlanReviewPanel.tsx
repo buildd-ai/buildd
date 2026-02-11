@@ -116,7 +116,7 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
         <span className="text-xs font-medium text-amber-700 dark:text-amber-300 uppercase">Plan Review</span>
       </div>
 
-      <div className="bg-white dark:bg-gray-900 rounded-lg p-4 mb-3 max-h-96 overflow-y-auto border border-amber-100 dark:border-amber-900">
+      <div className="bg-white dark:bg-gray-900 rounded-lg p-4 mb-3 max-h-[60vh] md:max-h-96 overflow-y-auto border border-amber-100 dark:border-amber-900">
         <MarkdownContent content={plan} />
       </div>
 
@@ -132,18 +132,28 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
             <button
               onClick={handleApprove}
               disabled={actionLoading}
-              className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {actionLoading ? 'Processing...' : 'Approve Plan'}
             </button>
             <button
               onClick={() => setShowFeedback(!showFeedback)}
               disabled={actionLoading}
-              className="px-4 py-2 text-sm border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Request Changes
             </button>
           </div>
+          <button
+            onClick={() => {
+              setFeedback('Plan rejected');
+              setShowFeedback(true);
+            }}
+            disabled={actionLoading}
+            className="w-full py-3 md:py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Reject Plan
+          </button>
 
           {showFeedback && (
             <div className="mt-3">
@@ -151,14 +161,14 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="Describe what changes you'd like to the plan..."
-                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-amber-500 focus:border-transparent min-h-[80px] md:min-h-0"
                 rows={3}
                 disabled={actionLoading}
               />
               <button
                 onClick={handleRevise}
                 disabled={actionLoading || !feedback.trim()}
-                className="mt-2 px-4 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="mt-2 px-4 py-3 md:py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {actionLoading ? 'Sending...' : 'Send Feedback'}
               </button>

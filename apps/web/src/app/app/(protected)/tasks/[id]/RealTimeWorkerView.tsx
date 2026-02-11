@@ -473,7 +473,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             history={worker.instructionHistory || []}
             pendingInstruction={worker.pendingInstructions}
           />
-          <div className="flex items-start gap-2">
+          <div className="flex items-end gap-2">
             <div className="flex-1">
               <InstructWorkerForm
                 workerId={worker.id}
@@ -481,9 +481,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               />
             </div>
             {worker.status === 'running' && (
-              <div className="mt-4 pt-4 border-t border-transparent">
-                <RequestPlanButton workerId={worker.id} />
-              </div>
+              <RequestPlanButton workerId={worker.id} />
             )}
           </div>
         </>
