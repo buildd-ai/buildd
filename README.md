@@ -89,9 +89,12 @@ bun run start --max-tasks=1
 
 ## Documentation
 
-- **[Self-Hosting Guide](docs/deployment/self-hosting.md)** - Deploy on your own infrastructure with Docker, VPS, or bare metal
-- **[Task Schedules](docs/features/schedules.md)** - Create recurring tasks with cron expressions
-- **[Full Documentation Index](docs/README.md)** - Browse all guides and references
+📚 **Full documentation at [docs.buildd.dev](https://docs.buildd.dev)**
+
+- [Self-Hosting Guide](https://docs.buildd.dev/docs/deployment/self-hosting)
+- [Task Schedules](https://docs.buildd.dev/docs/features/schedules)
+- [Skills](https://docs.buildd.dev/docs/features/skills)
+- [Local UI Setup](https://docs.buildd.dev/docs/getting-started/local-ui)
 
 ## Project Structure
 
@@ -247,7 +250,7 @@ bun run db:studio
 | `NEXT_PUBLIC_PUSHER_KEY` | No | Same as PUSHER_KEY |
 | `NEXT_PUBLIC_PUSHER_CLUSTER` | No | Same as PUSHER_CLUSTER |
 
-\* Required only if using [task schedules](docs/features/schedules.md) feature
+\* Required only if using [task schedules](https://docs.buildd.dev/docs/features/schedules) feature
 
 #### Agent / Worker
 

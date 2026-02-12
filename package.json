@@ -16,9 +16,7 @@
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
-    "seed:reset": "bun run scripts/seed/reset.ts",
-    "docs:dev": "bun --filter @buildd/docs dev",
-    "docs:build": "bun --filter @buildd/docs build"
+    "seed:reset": "bun run scripts/seed/reset.ts"
   },
   "dependencies": {
     "next": "^15.1.0",
