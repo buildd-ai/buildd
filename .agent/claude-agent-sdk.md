@@ -1,6 +1,6 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-> **Version investigated**: 0.1.77
+> **Version investigated**: 0.1.77 / 0.2.37
 
 ---
 
@@ -254,9 +254,11 @@ await query({
 
 * **File Ops**: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 * **Shell**: `Bash`, `BashOutput`, `KillBash`
-* **Interaction**: `AskUserQuestion`, `TodoWrite`
+* **Interaction** (user-facing, `sD1` set): `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`
 * **Delegation**: `Task`
 * **Web**: `WebSearch`, `WebFetch`
+
+> **Note**: Interaction tools require special handling in SDK subprocess mode — see "Multi-Turn Conversations & User Input Tools" section.
 
 ---
 
@@ -323,6 +325,93 @@ Expected output:
 ```
 [PASS] Marker found in response - CLAUDE.md was loaded!
 SUCCESS: query() correctly loaded CLAUDE.md via settingSources
+```
+
+---
+
+## Multi-Turn Conversations & User Input Tools
+
+> **Version investigated**: 0.2.37 (2025-02)
+
+### How `streamInput` Works
+
+`query()` returns a `Query` object with a `streamInput(stream)` method. This connects an `AsyncIterable<SDKUserMessage>` to the CLI subprocess's stdin:
+
+```typescript
+const inputStream = new MessageStream(); // custom async iterable
+const queryInstance = query({ prompt, options });
+queryInstance.streamInput(inputStream);   // connects to subprocess stdin
+
+for await (const msg of queryInstance) {
+  handleMessage(msg);
+  if (msg.type === 'result') break;
+}
+```
+
+When a message is enqueued on `inputStream`, `streamInput` serializes it as JSON and writes to the subprocess's stdin. The subprocess reads it and processes it as a user message in the conversation.
+
+### SDKUserMessage Format
+
+```typescript
+interface SDKUserMessage {
+  type: 'user';
+  session_id: string;        // Must match the active session ID
+  message: { role: 'user'; content: ContentBlock[] };
+  parent_tool_use_id: string | null;  // Links response to a pending tool call
+}
+```
+
+### ⚠️ CRITICAL: AskUserQuestion in SDK Mode
+
+**Problem**: When the CLI subprocess encounters `AskUserQuestion` (or `ExitPlanMode`) tool calls, it handles them internally. In interactive CLI mode, a React/Ink component renders and blocks. In subprocess mode (no TTY), the CLI auto-resolves these tools — the session continues without waiting for user input.
+
+**Symptoms**: Agent calls `AskUserQuestion`, the question UI flashes for ~5 seconds in local-ui, then the task terminates. The `result` message arrives before the user can respond.
+
+**Root cause**: The CLI subprocess auto-resolves `AskUserQuestion` in non-interactive mode, sends a tool_result to Claude, Claude responds (often ending the conversation), and the `result` message is emitted — all within seconds.
+
+**Fix** (implemented in local-ui): Set `parent_tool_use_id` and `session_id` correctly when sending the user's response:
+
+```typescript
+// In handleMessage — capture the tool_use block ID
+if (toolName === 'AskUserQuestion') {
+  const toolUseId = block.id; // from the assistant message content block
+  worker.waitingFor = { ..., toolUseId };
+}
+
+// In sendMessage — link response to the tool call
+session.inputStream.enqueue(buildUserMessage(answer, {
+  parentToolUseId: worker.waitingFor?.toolUseId,
+  sessionId: worker.sessionId,
+}));
+```
+
+**Key details**:
+- `block.id` on a `tool_use` content block is the tool_use_id (e.g., `toolu_abc123`)
+- `worker.sessionId` is captured from the SDK's `system/init` message: `msg.session_id`
+- Without correct `parent_tool_use_id`, the CLI treats the response as a new user message rather than a tool result
+- The same pattern applies to `ExitPlanMode` (plan approval flow)
+
+### Internal Tool Filtering (CLI internals)
+
+The CLI has a set called `sD1` containing "user-facing" tools: `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`, and others. These are:
+- **Available** in the main conversation (Claude can call them)
+- **Filtered out** from subagent contexts via `kjA()` function
+- **Not available** to `Task` subagents or hook agents
+
+The base tool list comes from `b0(permissionContext)` → `ss()` which returns ALL tools. `sD1` tools are only removed when building tool lists for subagents/hooks.
+
+### Debug Logging
+
+The local-ui includes debug logging for the AskUserQuestion flow:
+```
+[Worker abc] AskUserQuestion detected — toolUseId=toolu_xyz, question="What output format?"
+[Worker abc] Responding to tool_use toolu_xyz with sessionId=sess_12345
+[MessageStream] enqueue: parent_tool_use_id=toolu_xyz, session_id=sess_12345..., hasWaiter=true
+```
+
+Warning when the bug recurs (result arrives while still waiting):
+```
+[Worker abc] ⚠️ Result received while still waiting — toolUseId=toolu_xyz
 ```
 
 ---

@@ -848,7 +848,11 @@ describe('dogfood', () => {
       return;
     }
 
-    console.log(`  Worker waiting: ${JSON.stringify(waitingFor).slice(0, 100)}`);
+    console.log(`  Worker waiting: ${JSON.stringify(waitingFor).slice(0, 200)}`);
+
+    // Verify toolUseId was captured (critical for SDK response routing)
+    expect(waitingFor.toolUseId).toBeTruthy();
+    console.log(`  toolUseId captured: ${waitingFor.toolUseId}`);
 
     // Wait a sync cycle so server reflects waiting_input
     await sleep(12_000);

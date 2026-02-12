@@ -31,8 +31,13 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   private done = false;
 
   enqueue(message: SDKUserMessage) {
-    if (this.done) return;
-    if (this.resolvers.length > 0) {
+    if (this.done) {
+      console.log(`[MessageStream] ⚠️ enqueue called after stream ended — parent_tool_use_id=${message.parent_tool_use_id}`);
+      return;
+    }
+    const hasWaiter = this.resolvers.length > 0;
+    console.log(`[MessageStream] enqueue: parent_tool_use_id=${message.parent_tool_use_id}, session_id=${message.session_id?.slice(0, 12) || '(empty)'}, hasWaiter=${hasWaiter}`);
+    if (hasWaiter) {
       const resolver = this.resolvers.shift()!;
       resolver({ value: message, done: false });
     } else {
@@ -66,19 +71,22 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 }
 
 // Build a user message for the SDK
-function buildUserMessage(content: string | Array<{ type: string; text?: string; source?: any }>): SDKUserMessage {
+function buildUserMessage(
+  content: string | Array<{ type: string; text?: string; source?: any }>,
+  opts?: { parentToolUseId?: string; sessionId?: string },
+): SDKUserMessage {
   const messageContent = typeof content === 'string'
     ? [{ type: 'text' as const, text: content }]
     : content;
 
   return {
     type: 'user',
-    session_id: '',
+    session_id: opts?.sessionId || '',
     message: {
       role: 'user',
       content: messageContent as any,
     },
-    parent_tool_use_id: null,
+    parent_tool_use_id: opts?.parentToolUseId || null,
   };
 }
 
@@ -945,6 +953,15 @@ export class WorkerManager {
 
       // Stream responses
       for await (const msg of queryInstance) {
+        // Debug: log result/system messages and AskUserQuestion-related flow
+        if (msg.type === 'result') {
+          const result = msg as any;
+          console.log(`[Worker ${worker.id}] SDK result: subtype=${result.subtype}, worker.status=${worker.status}`);
+          if (worker.status === 'waiting') {
+            console.log(`[Worker ${worker.id}] ⚠️ Result received while still waiting — toolUseId=${worker.waitingFor?.toolUseId}`);
+          }
+        }
+
         this.handleMessage(worker, msg);
 
         // Break on result - the query is complete
@@ -1183,11 +1200,14 @@ export class WorkerManager {
             // Agent is asking a question — standalone status milestone + waiting state
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
             const firstQuestion = questions?.[0];
+            const toolUseId = block.id as string | undefined;
+            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${firstQuestion?.question?.slice(0, 60)}"`);
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'question',
               prompt: firstQuestion?.question || 'Awaiting input',
               options: firstQuestion?.options,
+              toolUseId,
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
@@ -1205,6 +1225,8 @@ export class WorkerManager {
             // Extract plan content from the last text message(s) before ExitPlanMode
             const textMessages = worker.messages.filter(m => m.type === 'text');
             worker.planContent = textMessages.slice(-1)[0]?.content || '';
+            const planToolUseId = block.id as string | undefined;
+            console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'plan_approval',
@@ -1213,6 +1235,7 @@ export class WorkerManager {
                 { label: 'Approve & implement', description: 'Let the agent proceed with the plan' },
                 { label: 'Request changes', description: 'Ask the agent to revise its approach' },
               ],
+              toolUseId: planToolUseId,
             };
             worker.currentAction = 'Awaiting plan approval';
             this.addMilestone(worker, { type: 'status', label: 'Plan ready for review', ts: Date.now() });
@@ -1635,8 +1658,16 @@ export class WorkerManager {
     }
 
     try {
-      // Enqueue message to the input stream for multi-turn conversation
-      session.inputStream.enqueue(buildUserMessage(message));
+      // Build the response message with proper tool_use linkage
+      const parentToolUseId = worker.waitingFor?.toolUseId;
+      const sessionId = worker.sessionId;
+      if (parentToolUseId) {
+        console.log(`[Worker ${worker.id}] Responding to tool_use ${parentToolUseId} with sessionId=${sessionId}`);
+      }
+      session.inputStream.enqueue(buildUserMessage(message, {
+        parentToolUseId,
+        sessionId,
+      }));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();
       // Clear waiting/stale state

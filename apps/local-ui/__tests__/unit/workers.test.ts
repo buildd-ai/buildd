@@ -53,19 +53,22 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 }
 
 // Builds SDK-compatible user message from string or content array
-function buildUserMessage(content: string | Array<{ type: string; text?: string; source?: any }>): SDKUserMessage {
+function buildUserMessage(
+  content: string | Array<{ type: string; text?: string; source?: any }>,
+  opts?: { parentToolUseId?: string; sessionId?: string },
+): SDKUserMessage {
   const messageContent = typeof content === 'string'
     ? [{ type: 'text' as const, text: content }]
     : content;
 
   return {
     type: 'user',
-    session_id: '',
+    session_id: opts?.sessionId || '',
     message: {
       role: 'user',
       content: messageContent as any,
     },
-    parent_tool_use_id: null,
+    parent_tool_use_id: opts?.parentToolUseId || null,
   };
 }
 
@@ -95,6 +98,32 @@ describe('buildUserMessage', () => {
   test('handles empty string', () => {
     const msg = buildUserMessage('');
     expect(msg.message.content).toEqual([{ type: 'text', text: '' }]);
+  });
+
+  test('sets parent_tool_use_id when provided', () => {
+    const msg = buildUserMessage('JSON', { parentToolUseId: 'toolu_abc123' });
+    expect(msg.parent_tool_use_id).toBe('toolu_abc123');
+  });
+
+  test('sets session_id when provided', () => {
+    const msg = buildUserMessage('hello', { sessionId: 'sess_xyz' });
+    expect(msg.session_id).toBe('sess_xyz');
+  });
+
+  test('sets both parent_tool_use_id and session_id for AskUserQuestion response', () => {
+    const msg = buildUserMessage('YAML', {
+      parentToolUseId: 'toolu_ask_001',
+      sessionId: 'sess_worker_42',
+    });
+    expect(msg.parent_tool_use_id).toBe('toolu_ask_001');
+    expect(msg.session_id).toBe('sess_worker_42');
+    expect(msg.message.content).toEqual([{ type: 'text', text: 'YAML' }]);
+  });
+
+  test('defaults to null/empty when opts not provided', () => {
+    const msg = buildUserMessage('test');
+    expect(msg.parent_tool_use_id).toBeNull();
+    expect(msg.session_id).toBe('');
   });
 });
 

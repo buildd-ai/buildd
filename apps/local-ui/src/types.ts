@@ -9,6 +9,7 @@ export interface WaitingFor {
     label: string;
     description?: string;
   }>;
+  toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
 }
 
 // Milestone for progress tracking (typed union — no legacy format)
