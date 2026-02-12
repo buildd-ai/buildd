@@ -348,6 +348,14 @@ export default function LandingPage() {
             </p>
             <div className="flex gap-6 text-sm text-gray-400">
               <a
+                href="https://docs.buildd.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                Docs
+              </a>
+              <a
                 href="https://github.com/buildd-ai/buildd"
                 target="_blank"
                 rel="noopener noreferrer"
