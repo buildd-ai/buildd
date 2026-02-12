@@ -8,13 +8,17 @@ import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
 
 
+type Milestone =
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label: string; progress?: number; ts: number };
+
 interface Worker {
   id: string;
   name: string;
   branch: string;
   status: string;
   currentAction: string | null;
-  milestones: Array<{ label: string; timestamp: number }>;
+  milestones: Milestone[];
   turns: number;
   costUsd: string | null;
   inputTokens: number;
@@ -200,30 +204,9 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
 
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
   const [worker, setWorker] = useState<Worker>(initialWorker);
-  const [actionLog, setActionLog] = useState<string[]>([]);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
-  const outputRef = useRef<HTMLDivElement>(null);
-  const userScrolledRef = useRef(false);
   const { status: directStatus, sendDirect } = useDirectConnect(worker.localUiUrl);
-
-  // Track action history for output display
-  useEffect(() => {
-    if (worker.currentAction) {
-      setActionLog(prev => {
-        const newLog = [...prev, `[${new Date().toLocaleTimeString()}] ${worker.currentAction}`];
-        return newLog.slice(-50); // Keep last 50 lines
-      });
-    }
-  }, [worker.currentAction]);
-
-  // Auto-scroll output (respecting user scroll)
-  useEffect(() => {
-    const box = outputRef.current;
-    if (box && !userScrolledRef.current) {
-      box.scrollTop = box.scrollHeight;
-    }
-  }, [actionLog]);
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -251,14 +234,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       console.warn('[RealTimeWorkerView] No channel returned - Pusher not configured?');
     }
   }, [worker.id]);
-
-  const handleScroll = () => {
-    const box = outputRef.current;
-    if (box) {
-      const isAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
-      userScrolledRef.current = !isAtBottom;
-    }
-  };
 
   // Send answer: try direct connect first, fall back to server instruct
   async function handleAnswer(option: string) {
@@ -370,46 +345,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
-      {/* Terminal-style output box */}
-      {actionLog.length > 0 && (
-        <div className="mb-3">
-          <h4 className="text-sm font-medium text-gray-500 mb-2">Output</h4>
-          <div
-            ref={outputRef}
-            onScroll={handleScroll}
-            role="log"
-            aria-live="polite"
-            className="bg-gray-900 text-green-400 font-mono text-xs p-3 rounded-lg max-h-48 overflow-y-auto"
-          >
-            {actionLog.map((line, i) => (
-              <div key={i} className="whitespace-pre-wrap">{line}</div>
-            ))}
-          </div>
+      {/* Last question context (visible on completed/failed workers) */}
+      {!isActive && worker.waitingFor && (
+        <div className="mb-3 border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 rounded-lg p-3">
+          <p className="text-xs font-medium text-gray-500 mb-1">Last question before {worker.status === 'completed' ? 'completion' : 'failure'}</p>
+          <p className="text-sm text-gray-700 dark:text-gray-300">{worker.waitingFor.prompt}</p>
         </div>
       )}
 
       {/* Activity Timeline */}
-      {worker.localUiUrl ? (
-        <WorkerActivityTimeline
-          milestones={worker.milestones || []}
-          currentAction={worker.currentAction}
-        />
-      ) : (
-        /* Milestone boxes for MCP workers */
-        worker.milestones && worker.milestones.length > 0 && (
-          <div className="flex items-center gap-1 mt-2">
-            {Array.from({ length: Math.min(worker.milestones.length, 10) }).map((_, i) => (
-              <div key={i} className="w-6 h-2 bg-blue-500 rounded-sm" />
-            ))}
-            {Array.from({ length: Math.max(0, 10 - worker.milestones.length) }).map((_, i) => (
-              <div key={i} className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm" />
-            ))}
-            <span className="text-xs text-gray-500 ml-2">
-              {worker.milestones.length} milestones
-            </span>
-          </div>
-        )
-      )}
+      <WorkerActivityTimeline
+        milestones={worker.milestones || []}
+        currentAction={isActive ? worker.currentAction : undefined}
+      />
 
       {/* Stats row */}
       <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">

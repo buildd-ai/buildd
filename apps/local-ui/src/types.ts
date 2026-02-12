@@ -11,12 +11,10 @@ export interface WaitingFor {
   }>;
 }
 
-// Milestone for progress tracking
-export interface Milestone {
-  label: string;
-  completed: boolean;
-  timestamp?: number;
-}
+// Milestone for progress tracking (typed union — no legacy format)
+export type Milestone =
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label: string; progress?: number; ts: number };
 
 // Tool call tracking
 export interface ToolCall {
@@ -54,6 +52,11 @@ export interface LocalWorker {
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
+  // Phase tracking (reasoning text → tool call grouping)
+  phaseText: string | null;
+  phaseStart: number | null;
+  phaseToolCount: number;
+  phaseTools: string[];  // Notable tool labels in current phase, cap 5
 }
 
 // Task mode
@@ -127,6 +130,21 @@ export type SSEEvent =
   | { type: 'tasks'; tasks: BuilddTask[] }
   | { type: 'output'; workerId: string; line: string }
   | { type: 'milestone'; workerId: string; milestone: Milestone };
+
+// Extended task result with execution context
+export interface TaskResult {
+  summary?: string;
+  branch?: string;
+  commits?: number;
+  sha?: string;
+  files?: number;
+  added?: number;
+  removed?: number;
+  prUrl?: string;
+  prNumber?: number;
+  phases?: Array<{ label: string; toolCount: number }>;
+  lastQuestion?: string;
+}
 
 // Command from server
 export interface WorkerCommand {

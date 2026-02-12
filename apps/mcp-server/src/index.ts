@@ -752,11 +752,23 @@ export BUILDD_SERVER=${SERVER_URL}`;
 
         let response;
         try {
+          // Build appendMilestones for status tracking
+          const statusMilestone = args.message ? {
+            appendMilestones: [{
+              type: 'status',
+              label: args.message,
+              progress: args.progress || 0,
+              ts: Date.now(),
+            }],
+          } : {};
+
           response = await apiCall(`/api/workers/${args.workerId}`, {
             method: "PATCH",
             body: JSON.stringify({
               status: "running",
               progress: args.progress || 0,
+              ...(args.message && { currentAction: args.message }),
+              ...statusMilestone,
               // Token usage (optional)
               ...(typeof args.inputTokens === 'number' && { inputTokens: args.inputTokens }),
               ...(typeof args.outputTokens === 'number' && { outputTokens: args.outputTokens }),

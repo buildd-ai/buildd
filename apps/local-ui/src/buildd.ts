@@ -72,7 +72,7 @@ export class BuilddClient {
     error?: string;
     localUiUrl?: string;
     currentAction?: string;
-    milestones?: Array<{ label: string; timestamp: number }>;
+    milestones?: any[];
     waitingFor?: { type: string; prompt: string; options?: string[] } | null;
     // Git stats
     lastCommitSha?: string;

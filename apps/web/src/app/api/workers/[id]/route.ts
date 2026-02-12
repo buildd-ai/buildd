@@ -77,6 +77,7 @@ export async function PATCH(
   const body = await req.json();
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    appendMilestones,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -97,6 +98,12 @@ export async function PATCH(
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   if (currentAction !== undefined) updates.currentAction = currentAction;
   if (milestones !== undefined) updates.milestones = milestones;
+  // appendMilestones: merge new milestones into existing (for MCP workers)
+  if (appendMilestones && Array.isArray(appendMilestones)) {
+    const existing = (worker.milestones as any[]) || [];
+    const merged = [...existing, ...appendMilestones];
+    updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
+  }
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
@@ -133,6 +140,16 @@ export async function PATCH(
             .replace(/\s*Co-Authored-By:.*$/gm, '')
             .trim() || undefined;
         }
+        // Extract phase timeline from milestones for result snapshot
+        const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
+        const phases = finalMilestones
+          .filter((m: any) => m.type === 'phase')
+          .map((m: any) => ({ label: m.label, toolCount: m.toolCount }));
+
+        // Capture last question if worker was in waiting state
+        const waitingForData = worker.waitingFor as { prompt?: string } | null;
+        const lastQuestion = waitingForData?.prompt || undefined;
+
         taskUpdate.result = {
           summary,
           branch: worker.branch,
@@ -143,6 +160,8 @@ export async function PATCH(
           removed: linesRemoved ?? worker.linesRemoved ?? 0,
           prUrl: worker.prUrl ?? undefined,
           prNumber: worker.prNumber ?? undefined,
+          ...(phases.length > 0 && { phases }),
+          ...(lastQuestion && { lastQuestion }),
         };
       }
 

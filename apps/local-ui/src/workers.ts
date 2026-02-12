@@ -12,6 +12,18 @@ import Pusher from 'pusher-js';
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
+// Extract a short label from reasoning text: first sentence, up to period/newline/120 chars
+function extractPhaseLabel(text: string): string {
+  // Take first line or sentence
+  const firstLine = text.split('\n')[0].trim();
+  // Find first sentence boundary
+  const periodIdx = firstLine.indexOf('. ');
+  const label = periodIdx > 0 && periodIdx < 120
+    ? firstLine.slice(0, periodIdx)
+    : firstLine.slice(0, 120);
+  return label + (firstLine.length > 120 && periodIdx < 0 ? '...' : '');
+}
+
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = [];
@@ -342,10 +354,22 @@ export class WorkerManager {
   // Sync a single worker's state to server
   private async syncWorkerToServer(worker: LocalWorker) {
     try {
+      // Build milestones array, appending current in-progress phase as pending
+      const milestones: any[] = worker.milestones.map(m => ({ ...m }));
+      if (worker.phaseText && worker.phaseToolCount > 0) {
+        milestones.push({
+          type: 'phase' as const,
+          label: extractPhaseLabel(worker.phaseText),
+          toolCount: worker.phaseToolCount,
+          ts: worker.phaseStart || Date.now(),
+          pending: true,
+        });
+      }
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
-        milestones: worker.milestones.map(m => ({ label: m.label, timestamp: m.timestamp || Date.now() })),
+        milestones,
         localUiUrl: this.config.localUiUrl,
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
@@ -531,6 +555,10 @@ export class WorkerManager {
       output: [],
       toolCalls: [],
       messages: [],
+      phaseText: null,
+      phaseStart: null,
+      phaseToolCount: 0,
+      phaseTools: [],
     };
 
     this.workers.set(worker.id, worker);
@@ -695,9 +723,9 @@ export class WorkerManager {
                   data: base64Data,
                 },
               });
-              this.addMilestone(worker, `Image: ${att.filename}`);
+              this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             } catch (err) {
-              this.addMilestone(worker, `Failed to fetch image: ${att.filename}`);
+              this.addMilestone(worker, { type: 'status', label: `Failed to fetch image: ${att.filename}`, ts: Date.now() });
             }
           } else if (att.data && att.mimeType) {
             // Inline base64 data URL format (legacy)
@@ -711,7 +739,7 @@ export class WorkerManager {
                   data: base64Match[2],
                 },
               });
-              this.addMilestone(worker, `Image: ${att.filename}`);
+              this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             }
           }
         }
@@ -801,7 +829,7 @@ export class WorkerManager {
         if (!existsSync(skillPath)) {
           const msg = `Skill "${skillRef.slug}" not installed locally. Run \`buildd skill install ${skillRef.slug}\` to install.`;
           console.warn(`[Worker ${worker.id}] ${msg}`);
-          this.addMilestone(worker, `⚠ Skill missing: ${skillRef.slug}`);
+          this.addMilestone(worker, { type: 'status', label: `⚠ Skill missing: ${skillRef.slug}`, ts: Date.now() });
           promptParts.push(`## Skill Warning\n${msg}`);
         } else {
           const skillContent = readFileSync(skillPath, 'utf-8');
@@ -810,11 +838,11 @@ export class WorkerManager {
           if (localHash !== skillRef.contentHash) {
             const msg = `Skill "${skillRef.slug}" hash mismatch — local copy is outdated. Run \`buildd skill install ${skillRef.slug}\` to update.`;
             console.warn(`[Worker ${worker.id}] ${msg}`);
-            this.addMilestone(worker, `⚠ Skill outdated: ${skillRef.slug}`);
+            this.addMilestone(worker, { type: 'status', label: `⚠ Skill outdated: ${skillRef.slug}`, ts: Date.now() });
             promptParts.push(`## Skill Warning\n${msg}`);
           } else {
             // Hash matches — inject skill content into prompt
-            this.addMilestone(worker, `Skill: ${skillRef.slug}`);
+            this.addMilestone(worker, { type: 'status', label: `Skill: ${skillRef.slug}`, ts: Date.now() });
             promptParts.push(`## Skill Instructions\n${skillContent}`);
           }
         }
@@ -951,13 +979,14 @@ export class WorkerManager {
       } else {
         // Actually completed - collect git stats before reporting
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
-        this.addMilestone(worker, 'Task completed');
+        this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
+          milestones: worker.milestones,
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
@@ -1043,7 +1072,6 @@ export class WorkerManager {
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
-      this.addMilestone(worker, 'Session started');
     }
 
     if (msg.type === 'assistant') {
@@ -1055,6 +1083,17 @@ export class WorkerManager {
           if (text) {
             // Add to unified timeline
             this.addChatMessage(worker, { type: 'text', content: text, timestamp: Date.now() });
+
+            // Phase detection: text block signals reasoning
+            // If active phase has tool calls, close it and start new
+            if (worker.phaseText && worker.phaseToolCount > 0) {
+              this.closePhase(worker);
+            }
+            // Start new phase (or update if consecutive text blocks)
+            worker.phaseText = text;
+            worker.phaseStart = Date.now();
+            worker.phaseToolCount = 0;
+            worker.phaseTools = [];
           }
           const lines = block.text.split('\n');
           for (const line of lines) {
@@ -1069,7 +1108,7 @@ export class WorkerManager {
           }
         }
 
-        // Detect tool use for milestones and tracking
+        // Detect tool use for phase tracking
         if (block.type === 'tool_use') {
           const toolName = block.name;
           const input = block.input || {};
@@ -1091,32 +1130,44 @@ export class WorkerManager {
           const repetitionCheck = this.detectRepetitiveToolCalls(worker);
           if (repetitionCheck.isRepetitive) {
             console.log(`[Worker ${worker.id}] 🛑 ${repetitionCheck.reason}`);
-            this.addMilestone(worker, `🛑 ${repetitionCheck.reason}`);
+            this.addMilestone(worker, { type: 'status', label: `🛑 ${repetitionCheck.reason}`, ts: Date.now() });
             worker.error = repetitionCheck.reason;
-            // Abort the session gracefully
             this.abort(worker.id).catch(err =>
               console.error(`[Worker ${worker.id}] Failed to abort:`, err)
             );
             return;
           }
 
+          // Increment phase tool count
+          worker.phaseToolCount++;
+
+          // Track notable tools in phaseTools (cap 5)
+          if (['Edit', 'Write', 'Bash'].includes(toolName) && worker.phaseTools.length < 5) {
+            if (toolName === 'Edit' || toolName === 'Write') {
+              const filePath = input.file_path as string;
+              const shortPath = filePath ? filePath.split('/').pop() || filePath : toolName;
+              worker.phaseTools.push(`${toolName}: ${shortPath}`);
+            } else if (toolName === 'Bash') {
+              const cmd = (input.command as string) || '';
+              worker.phaseTools.push(cmd.slice(0, 40));
+            }
+          }
+
+          // Update currentAction (still useful for live display)
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
           } else if (toolName === 'Edit') {
             worker.currentAction = `Editing ${input.file_path}`;
-            this.addMilestone(worker, `Edit: ${input.file_path}`);
           } else if (toolName === 'Write') {
             worker.currentAction = `Writing ${input.file_path}`;
-            this.addMilestone(worker, `Write: ${input.file_path}`);
           } else if (toolName === 'Bash') {
             const cmd = input.command || '';
-            worker.currentAction = `Running: ${cmd.slice(0, 40)}...`;
+            worker.currentAction = `Running: ${(cmd as string).slice(0, 40)}...`;
 
-            // Detect git commits
-            if (cmd.includes('git commit')) {
-              // Handle HEREDOC pattern: git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
-              const heredocMatch = cmd.match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
-              const simpleMatch = cmd.match(/-m\s+["']([^"']+)["']/);
+            // Detect git commits — standalone status milestone
+            if ((cmd as string).includes('git commit')) {
+              const heredocMatch = (cmd as string).match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
+              const simpleMatch = (cmd as string).match(/-m\s+["']([^"']+)["']/);
               const message = heredocMatch
                 ? heredocMatch[1].split('\n')[0].trim()
                 : simpleMatch ? simpleMatch[1] : 'commit';
@@ -1124,12 +1175,12 @@ export class WorkerManager {
               if (worker.commits.length > 50) {
                 worker.commits.shift();
               }
-              this.addMilestone(worker, `Commit: ${message}`);
+              this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
           } else if (toolName === 'AskUserQuestion') {
-            // Agent is asking a question - set waiting status
+            // Agent is asking a question — standalone status milestone + waiting state
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
             const firstQuestion = questions?.[0];
             worker.status = 'waiting';
@@ -1139,8 +1190,8 @@ export class WorkerManager {
               options: firstQuestion?.options,
             };
             worker.currentAction = firstQuestion?.header || 'Question';
-            this.addMilestone(worker, `User: ${firstQuestion?.header || 'Question'}...`);
-            // Immediately sync waiting state to server (don't wait for 10s interval)
+            this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
+            // Immediately sync waiting state to server
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
@@ -1154,7 +1205,6 @@ export class WorkerManager {
             // Extract plan content from the last text message(s) before ExitPlanMode
             const textMessages = worker.messages.filter(m => m.type === 'text');
             worker.planContent = textMessages.slice(-1)[0]?.content || '';
-            // Agent finished planning and wants approval before implementing
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'plan_approval',
@@ -1165,7 +1215,7 @@ export class WorkerManager {
               ],
             };
             worker.currentAction = 'Awaiting plan approval';
-            this.addMilestone(worker, 'Plan ready for review');
+            this.addMilestone(worker, { type: 'status', label: 'Plan ready for review', ts: Date.now() });
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
@@ -1181,10 +1231,13 @@ export class WorkerManager {
     }
 
     if (msg.type === 'result') {
+      // Close any open phase on result
+      if (worker.phaseText && worker.phaseToolCount > 0) {
+        this.closePhase(worker);
+      }
       const result = msg as any;
-      // Don't add "Task completed" here - we check for auth errors after stream ends
       if (result.subtype !== 'success') {
-        this.addMilestone(worker, `Error: ${result.subtype}`);
+        this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
       }
     }
 
@@ -1264,15 +1317,26 @@ export class WorkerManager {
     return { isRepetitive: false };
   }
 
-  private addMilestone(worker: LocalWorker, label: string) {
+  // Close the current reasoning phase as a milestone
+  private closePhase(worker: LocalWorker) {
+    if (!worker.phaseText || worker.phaseToolCount === 0) return;
     const milestone: Milestone = {
-      label,
-      completed: true,
-      timestamp: Date.now(),
+      type: 'phase',
+      label: extractPhaseLabel(worker.phaseText),
+      toolCount: worker.phaseToolCount,
+      ts: worker.phaseStart || Date.now(),
     };
+    this.addMilestone(worker, milestone);
+    worker.phaseText = null;
+    worker.phaseStart = null;
+    worker.phaseToolCount = 0;
+    worker.phaseTools = [];
+  }
+
+  private addMilestone(worker: LocalWorker, milestone: Milestone) {
     worker.milestones.push(milestone);
-    // Keep last 20 milestones
-    if (worker.milestones.length > 20) {
+    // Keep last 30 milestones
+    if (worker.milestones.length > 30) {
       worker.milestones.shift();
     }
     this.emit({ type: 'milestone', workerId: worker.id, milestone });
@@ -1330,7 +1394,7 @@ export class WorkerManager {
     worker.hasNewActivity = true;
     worker.lastActivity = Date.now();
     worker.completedAt = undefined;
-    this.addMilestone(worker, 'Retry requested');
+    this.addMilestone(worker, { type: 'status', label: 'Retry requested', ts: Date.now() });
     this.emit({ type: 'worker_update', worker });
 
     await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
@@ -1362,8 +1426,8 @@ export class WorkerManager {
     // Include what was done so far
     if (worker.milestones.length > 0) {
       const milestoneLabels = worker.milestones
-        .filter(m => !['Session started', 'Task completed', 'Retry requested'].includes(m.label))
-        .map(m => `- ${m.label}`);
+        .filter(m => !['Task completed', 'Retry requested'].includes(m.label))
+        .map(m => m.type === 'phase' ? `- ${m.label} (${m.toolCount} tools)` : `- ${m.label}`);
       if (milestoneLabels.length > 0) {
         contextParts.push(`## Work Done Before Retry\n${milestoneLabels.join('\n')}`);
       }
@@ -1424,7 +1488,7 @@ export class WorkerManager {
       worker.lastActivity = Date.now();
       worker.completedAt = undefined;
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
+      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
 
       // Update server
@@ -1536,7 +1600,7 @@ export class WorkerManager {
         worker.currentAction = 'Executing plan...';
         worker.hasNewActivity = true;
         worker.lastActivity = Date.now();
-        this.addMilestone(worker, 'Plan approved — executing with fresh context');
+        this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
         this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
         this.emit({ type: 'worker_update', worker });
 
@@ -1586,7 +1650,7 @@ export class WorkerManager {
         worker.currentAction = 'Processing message...';
       }
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, `User: ${message.slice(0, 30)}...`);
+      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
       // Immediately sync cleared waiting state to server
       if (wasWaiting) {
@@ -1675,8 +1739,8 @@ export class WorkerManager {
     // Add milestones as work summary
     if (worker.milestones.length > 0) {
       const milestoneLabels = worker.milestones
-        .filter(m => !['Session started', 'Task completed'].includes(m.label))
-        .map(m => `- ${m.label}`);
+        .filter(m => m.label !== 'Task completed')
+        .map(m => m.type === 'phase' ? `- ${m.label} (${m.toolCount} tools)` : `- ${m.label}`);
       if (milestoneLabels.length > 0) {
         contextParts.push(`## Work Completed\n${milestoneLabels.join('\n')}`);
       }
@@ -1724,8 +1788,8 @@ export class WorkerManager {
 
     // Milestones (filtered: skip noise like "Reading..." entries)
     const milestones = worker.milestones
-      .filter(m => m.label !== 'Session started' && m.label !== 'Task completed' && !m.label.startsWith('Reading'))
-      .map(m => m.label);
+      .filter(m => m.label !== 'Task completed')
+      .map(m => m.type === 'phase' ? `${m.label} (${m.toolCount} tools)` : m.label);
     if (milestones.length > 0) {
       parts.push(`Milestones: ${milestones.slice(-10).join(', ')}`);
     }
