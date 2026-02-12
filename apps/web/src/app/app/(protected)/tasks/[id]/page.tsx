@@ -28,7 +28,7 @@ export default async function TaskDetailPage({
     return (
       <div className="p-8">
         <div className="max-w-4xl">
-          <p className="text-gray-500">Development mode - no database</p>
+          <p className="text-text-secondary">Development mode - no database</p>
         </div>
       </div>
     );
@@ -107,6 +107,33 @@ export default async function TaskDetailPage({
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending';
 
+  // --- Helpers ---
+
+  function timeAgo(date: Date | string): string {
+    const now = Date.now();
+    const then = new Date(date).getTime();
+    const seconds = Math.floor((now - then) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
+  const TASK_ICONS: Record<string, { icon: string; bg: string; text: string }> = {
+    completed:              { icon: '\u2713', bg: 'bg-status-success/12', text: 'text-status-success' },
+    running:                { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
+    assigned:               { icon: '\u27F3', bg: 'bg-status-info/12',    text: 'text-status-info' },
+    starting:               { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
+    pending:                { icon: '\u25CB', bg: 'bg-status-warning/12', text: 'text-status-warning' },
+    failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
+    waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+    awaiting_plan_approval: { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+  };
+  const DEFAULT_ICON = TASK_ICONS.pending;
+
   return (
     <div className="p-4 md:p-8 overflow-auto h-full">
       <div className="max-w-4xl">
@@ -114,22 +141,22 @@ export default async function TaskDetailPage({
         <TaskAutoRefresh taskId={task.id} workspaceId={task.workspaceId} taskStatus={task.status} />
 
         {/* Breadcrumbs */}
-        <nav aria-label="Breadcrumb" className="text-sm text-gray-500 mb-4">
-          <Link href="/app/tasks" className="hover:text-gray-700 dark:hover:text-gray-300">Tasks</Link>
+        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+          <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
           <span className="mx-2">/</span>
-          <span className="text-gray-900 dark:text-gray-100">{task.title}</span>
+          <span className="text-text-primary">{task.title}</span>
         </nav>
 
         {/* Header */}
         <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-3 mb-6">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-2 flex-wrap">
-              <h1 className="text-xl md:text-2xl font-bold break-words">{task.title}</h1>
+              <h1 className="text-[28px] font-semibold tracking-tight break-words">{task.title}</h1>
               <span data-testid="task-header-status" data-status={displayStatus}>
                 <StatusBadge status={displayStatus} />
               </span>
             </div>
-            <p className="text-gray-500 text-sm">
+            <p className="text-[14px] text-text-secondary">
               {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
@@ -149,7 +176,7 @@ export default async function TaskDetailPage({
                 href={task.externalUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="px-[18px] py-[9px] text-[13px] font-medium border border-border-default rounded-[6px] hover:bg-surface-3"
               >
                 View Source
               </a>
@@ -160,23 +187,29 @@ export default async function TaskDetailPage({
 
         {/* Description */}
         {task.description && (
-          <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
-            <h2 className="text-sm font-medium text-gray-500 mb-2">Description</h2>
-            <MarkdownContent content={task.description} />
+          <div className="mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Description
+            </div>
+            <div className="p-4 bg-surface-2 rounded-[10px]">
+              <MarkdownContent content={task.description} />
+            </div>
           </div>
         )}
 
         {/* Task Relationships */}
         {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
-          <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
-            <h2 className="text-sm font-medium text-gray-500 mb-3">Related Tasks</h2>
-            <div className="space-y-3">
+          <div className="mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Related Tasks
+            </div>
+            <div className="p-4 bg-surface-2 rounded-[10px] space-y-3">
               {task.parentTask && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400">Parent:</span>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Parent:</span>
                   <Link
                     href={`/app/tasks/${task.parentTask.id}`}
-                    className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                    className="text-sm text-primary-400 hover:underline"
                   >
                     {task.parentTask.title}
                   </Link>
@@ -187,13 +220,13 @@ export default async function TaskDetailPage({
               )}
               {task.subTasks && task.subTasks.length > 0 && (
                 <div>
-                  <span className="text-xs text-gray-400">Subtasks ({task.subTasks.length}):</span>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Subtasks ({task.subTasks.length}):</span>
                   <div className="mt-2 space-y-1 ml-4">
                     {task.subTasks.map((sub: { id: string; title: string; status: string }) => (
                       <div key={sub.id} className="flex items-center gap-2">
                         <Link
                           href={`/app/tasks/${sub.id}`}
-                          className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                          className="text-sm text-primary-400 hover:underline"
                         >
                           {sub.title}
                         </Link>
@@ -212,7 +245,9 @@ export default async function TaskDetailPage({
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
           <div className="mb-6">
-            <h2 className="text-sm font-medium text-gray-500 mb-2">Attachments</h2>
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Attachments
+            </div>
             <div className="flex flex-wrap gap-2">
               {attachments.map((att, i) => (
                 <div key={i} className="relative">
@@ -220,10 +255,10 @@ export default async function TaskDetailPage({
                     <img
                       src={att.src}
                       alt={att.filename}
-                      className="max-h-32 rounded border border-gray-200 dark:border-gray-700"
+                      className="max-h-32 rounded-[6px] border border-border-default"
                     />
                   ) : (
-                    <div className="p-3 bg-gray-100 dark:bg-gray-800 rounded">
+                    <div className="p-3 bg-surface-3 rounded-[6px]">
                       <span className="text-sm">{att.filename}</span>
                     </div>
                   )}
@@ -233,33 +268,33 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Task Details */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="p-4 border border-gray-200 dark:border-gray-800 rounded-lg">
-            <div className="text-sm text-gray-500">Priority</div>
-            <div className="text-xl font-semibold">{task.priority}</div>
+        {/* Stat Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Priority</div>
+            <div className="text-2xl font-semibold">{task.priority}</div>
           </div>
-          <div className="p-4 border border-gray-200 dark:border-gray-800 rounded-lg">
-            <div className="text-sm text-gray-500">Runner Preference</div>
-            <div className="text-xl font-semibold">{task.runnerPreference}</div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Runner</div>
+            <div className="text-2xl font-semibold">{task.runnerPreference}</div>
           </div>
-          <div className="p-4 border border-gray-200 dark:border-gray-800 rounded-lg">
-            <div className="text-sm text-gray-500">Claimed By</div>
-            <div className="text-xl font-semibold">{task.account?.name || '-'}</div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Claimed By</div>
+            <div className="text-2xl font-semibold truncate">{task.account?.name || '-'}</div>
           </div>
-          <div className="p-4 border border-gray-200 dark:border-gray-800 rounded-lg">
-            <div className="text-sm text-gray-500">Workers</div>
-            <div className="text-xl font-semibold">{taskWorkers.length}</div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workers</div>
+            <div className="text-2xl font-semibold">{taskWorkers.length}</div>
           </div>
         </div>
 
-        {/* Active Worker - Real-time updates */}
+        {/* Active Worker */}
         {activeWorker && (
           <div className="mb-8">
-            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full border-2 border-green-500 border-t-transparent animate-spin" aria-hidden="true"></span>
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true"></span>
               Active Worker
-            </h2>
+            </div>
             <RealTimeWorkerView
               initialWorker={{
                 id: activeWorker.id,
@@ -295,45 +330,49 @@ export default async function TaskDetailPage({
           (() => {
             const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number };
             return (
-              <div className="mb-8 p-4 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg">
-                <h2 className="text-sm font-medium text-green-700 dark:text-green-400 mb-2">Deliverables</h2>
-                <div className="flex items-center gap-3 text-sm flex-wrap">
-                  {result.branch && (
-                    <code className="px-2 py-0.5 bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300 rounded text-xs">
-                      {result.branch}
-                    </code>
-                  )}
-                  {(result.commits ?? 0) > 0 && (
-                    <span className="text-gray-600 dark:text-gray-400 text-xs">
-                      {result.commits} commit{result.commits !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
-                    <span className="text-xs">
-                      <span className="text-green-600">+{result.added}</span>
-                      <span className="text-red-500">/{'-'}{result.removed}</span>
-                    </span>
-                  )}
-                  {(result.files ?? 0) > 0 && (
-                    <span className="text-xs text-gray-500">{result.files} files</span>
-                  )}
-                  {result.sha && (
-                    <code className="text-xs text-gray-400">{result.sha.slice(0, 7)}</code>
-                  )}
-                  {result.prUrl && (
-                    <a
-                      href={result.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2 py-0.5 text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-800"
-                    >
-                      PR #{result.prNumber}
-                    </a>
+              <div className="mb-8">
+                <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+                  Deliverables
+                </div>
+                <div className="p-4 bg-status-success/10 border border-status-success/20 rounded-[10px]">
+                  <div className="flex items-center gap-3 text-sm flex-wrap">
+                    {result.branch && (
+                      <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
+                        {result.branch}
+                      </code>
+                    )}
+                    {(result.commits ?? 0) > 0 && (
+                      <span className="text-text-secondary text-xs">
+                        {result.commits} commit{result.commits !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                    {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
+                      <span className="text-xs">
+                        <span className="text-status-success">+{result.added}</span>
+                        <span className="text-status-error">/{'-'}{result.removed}</span>
+                      </span>
+                    )}
+                    {(result.files ?? 0) > 0 && (
+                      <span className="text-xs text-text-secondary">{result.files} files</span>
+                    )}
+                    {result.sha && (
+                      <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
+                    )}
+                    {result.prUrl && (
+                      <a
+                        href={result.prUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                      >
+                        PR #{result.prNumber}
+                      </a>
+                    )}
+                  </div>
+                  {result.summary && (
+                    <p className="text-sm text-text-secondary mt-2">{result.summary}</p>
                   )}
                 </div>
-                {result.summary && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">{result.summary}</p>
-                )}
               </div>
             );
           })()
@@ -342,43 +381,40 @@ export default async function TaskDetailPage({
         {/* Worker History */}
         {taskWorkers.length > 0 && (
           <div>
-            <h2 className="text-xl font-semibold mb-4">Worker History</h2>
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
-              {taskWorkers.map((worker) => (
-                <div key={worker.id} className="p-4">
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-medium">{worker.name}</h3>
-                        <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[worker.status] || STATUS_COLORS.pending}`}>
-                          {worker.status}
-                        </span>
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+              Worker History
+            </div>
+            <div className="border border-border-default rounded-[10px] overflow-hidden">
+              {taskWorkers.map((worker) => {
+                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
+                return (
+                  <div key={worker.id} className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
+                    <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
+                      {iconStyle.icon}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-text-primary truncate">{worker.name}</div>
+                      <div className="font-mono text-[11px] text-text-muted truncate">
+                        {worker.branch}
+                        {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
-                      <p className="text-sm text-gray-500">
-                        Branch: {worker.branch}
-                        {worker.account && ` • ${worker.account.name}`}
-                      </p>
                       {worker.error && (
-                        <p className="text-sm text-red-500 mt-1">{worker.error}</p>
+                        <p className="font-mono text-[11px] text-status-error mt-0.5 truncate">{worker.error}</p>
                       )}
-                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                        <span title={worker.startedAt ? new Date(worker.startedAt).toString() : undefined}>
-                          Started: {worker.startedAt ? new Date(worker.startedAt).toLocaleString(undefined, {
-                            dateStyle: 'short',
-                            timeStyle: 'medium'
-                          }) : '-'}
-                        </span>
-                        <span>Turns: {worker.turns}</span>
-                        <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                      <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
+                        <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
+                        <span>{worker.turns} turns</span>
+                        <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
                       </div>
                     </div>
+                    <StatusBadge status={worker.status} />
                     <div className="flex items-center gap-2">
                       {worker.prUrl && (
                         <a
                           href={worker.prUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-800"
+                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
                         >
                           PR #{worker.prNumber}
                         </a>
@@ -388,24 +424,24 @@ export default async function TaskDetailPage({
                           href={`${worker.localUiUrl}/worker/${worker.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className={`px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
+                          className={`px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
                         >
                           View
                         </a>
                       )}
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
 
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (
-          <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-            <p className="text-gray-500 mb-2">This task is waiting to be started</p>
-            <p className="text-sm text-gray-400 mb-4">
+          <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
+            <p className="text-text-secondary mb-2">This task is waiting to be started</p>
+            <p className="text-sm text-text-muted mb-4">
               Click &quot;Start Task&quot; above to assign it to a worker, or wait for a worker to claim it automatically.
             </p>
             <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />

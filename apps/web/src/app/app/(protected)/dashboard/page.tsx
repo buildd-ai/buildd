@@ -153,161 +153,116 @@ export default async function DashboardPage() {
     }
   }
 
+  // --- Helpers ---
+
+  function timeAgo(date: Date | string): string {
+    const now = Date.now();
+    const then = new Date(date).getTime();
+    const seconds = Math.floor((now - then) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
+  const TASK_ICONS: Record<string, { icon: string; bg: string; text: string }> = {
+    completed:              { icon: '\u2713', bg: 'bg-status-success/12', text: 'text-status-success' },
+    running:                { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
+    assigned:               { icon: '\u27F3', bg: 'bg-status-info/12',    text: 'text-status-info' },
+    starting:               { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
+    pending:                { icon: '\u25CB', bg: 'bg-status-warning/12', text: 'text-status-warning' },
+    failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
+    waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+    awaiting_plan_approval: { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+  };
+  const DEFAULT_ICON = TASK_ICONS.pending;
+
   return (
     <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-6xl mx-auto">
-        {/* Mobile Header */}
-        <div className="md:hidden mb-6">
-          <h1 className="text-2xl font-bold text-white">buildd</h1>
-          <p className="text-sm text-slate-400">
-            {user?.email || 'Development Mode'}
-          </p>
-        </div>
 
-        {/* Mobile Active Workers */}
-        {activeWorkers.length > 0 && (
-          <div className="md:hidden mb-6 space-y-3">
-            <h2 className="text-lg font-semibold text-white">Active Workers</h2>
-            {activeWorkers.map((worker) => (
-              <MobileWorkerCard
-                key={worker.id}
-                workerId={worker.id}
-                name={worker.name}
-                status={worker.status}
-                taskTitle={worker.task?.title || null}
-                workspaceName={null}
-                milestones={(worker.milestones as any[]) || []}
-                turns={worker.turns}
-                costUsd={worker.costUsd?.toString() || null}
-                startedAt={worker.startedAt?.toISOString() || null}
-                taskId={worker.task?.id || ''}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Mobile Recent Tasks */}
-        <div className="md:hidden mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-white">Tasks</h2>
-            <Link
-              href="/app/tasks/new"
-              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-medium"
-            >
-              + New
-            </Link>
-          </div>
-          {recentTasks.length === 0 ? (
-            <div className="rounded-xl bg-slate-800 border border-slate-700 p-6 text-center">
-              <p className="text-slate-400 mb-2">No active tasks</p>
-              <Link href="/app/tasks/new" className="text-sm text-violet-400 hover:underline">
-                Create your first task
-              </Link>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {recentTasks.slice(0, 5).map((task) => (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="block rounded-xl bg-slate-800 border border-slate-700 p-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={task.status} />
-                    <span className="font-medium text-white truncate text-sm">{task.title}</span>
-                  </div>
-                </Link>
-              ))}
-              <Link href="/app/tasks" className="block text-center text-sm text-violet-400 py-2">
-                View all tasks &rarr;
-              </Link>
-            </div>
-          )}
-        </div>
-
-        {/* Desktop Header */}
-        <div className="hidden md:flex justify-between items-center mb-8">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-bold">buildd</h1>
-            <p className="text-gray-600 dark:text-gray-400">
+            <h1 className="text-[28px] font-semibold tracking-tight text-text-primary">buildd</h1>
+            <p className="text-[14px] text-text-secondary">
               {user?.email || 'Development Mode'}
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            {/* GitHub Status in Header */}
+          <div className="flex items-center gap-2 flex-wrap">
             {githubConfigured && (
               githubOrgs.length > 0 ? (
                 <Link
                   href="/app/settings"
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30"
+                  className="flex items-center gap-2 px-3 py-[5px] text-xs bg-status-success/10 border border-status-success/20 rounded-[6px] hover:bg-status-success/15"
                 >
-                  <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="w-4 h-4 text-status-success" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
-                  <span className="text-green-700 dark:text-green-400">
+                  <span className="text-status-success">
                     {githubOrgs.length === 1 ? githubOrgs[0].accountLogin : `${githubOrgs.length} orgs`}
                   </span>
                 </Link>
               ) : (
                 <a
                   href="/api/github/install"
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm border border-dashed border-gray-300 dark:border-gray-600 rounded-lg hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                  className="flex items-center gap-2 px-3 py-[5px] text-xs border border-dashed border-border-default rounded-[6px] hover:border-primary hover:bg-primary/5"
                 >
-                  <svg className="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="w-4 h-4 text-text-secondary" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
-                  <span className="text-blue-600 dark:text-blue-400">Connect GitHub</span>
+                  <span className="text-primary">Connect GitHub</span>
                 </a>
               )
             )}
             <Link
               href="/app/settings"
-              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
             >
               Settings
             </Link>
             <Link
               href="/app/accounts"
-              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
             >
               Accounts
             </Link>
             <Link
               href="/app/teams"
-              className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
             >
               Teams
             </Link>
             <Link
               href="/api/auth/signout"
-              className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              className="px-3 py-[5px] text-xs text-text-secondary hover:text-text-primary"
             >
               Sign Out
             </Link>
           </div>
         </div>
 
-        {/* Desktop-only content below */}
-        <div className="hidden md:block">
-
-        {/* Setup Banner - shows when GitHub not connected */}
+        {/* Setup Banner */}
         {githubConfigured && githubOrgs.length === 0 && (
-          <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
-            <div className="flex items-center justify-between">
+          <div className="mb-6 p-4 bg-status-info/10 border border-status-info/20 rounded-[10px]">
+            <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-                  <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <div className="p-2 bg-status-info/15 rounded-lg">
+                  <svg className="w-5 h-5 text-status-info" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                   </svg>
                 </div>
                 <div>
-                  <h3 className="font-medium text-blue-900 dark:text-blue-100">Connect GitHub to get started</h3>
-                  <p className="text-sm text-blue-700 dark:text-blue-300">Link your GitHub org to auto-discover repos for workspaces</p>
+                  <h3 className="font-medium text-text-primary">Connect GitHub to get started</h3>
+                  <p className="text-sm text-text-secondary">Link your GitHub org to auto-discover repos for workspaces</p>
                 </div>
               </div>
               <a
                 href="/api/github/install"
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium"
+                className="px-[18px] py-[9px] bg-primary hover:bg-primary-hover text-white rounded-[6px] text-[13px] font-medium whitespace-nowrap"
               >
                 Connect GitHub
               </a>
@@ -315,87 +270,134 @@ export default async function DashboardPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          {/* Workspaces Card */}
+        {/* Stat Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
           <Link
             href="/app/workspaces"
-            className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-xl font-semibold">Workspaces</h2>
-              <span className="text-2xl font-bold">{userWorkspaces.length}</span>
-            </div>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
-              GitHub repos connected for task execution
-            </p>
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workspaces</div>
+            <div className="text-2xl font-semibold">{userWorkspaces.length}</div>
           </Link>
-
-          {/* Tasks Card */}
           <Link
             href="/app/tasks"
-            className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-xl font-semibold">Tasks</h2>
-              <span className="text-2xl font-bold">{totalTaskCount}</span>
-            </div>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
-              Work items for agents to complete
-            </p>
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Tasks</div>
+            <div className="text-2xl font-semibold">{totalTaskCount}</div>
           </Link>
-
-          {/* Workers Card */}
           <Link
             href="/app/workers"
-            className="block p-6 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-gray-400 dark:hover:border-gray-600 transition-colors"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-xl font-semibold">Agents</h2>
-              <div className="text-right">
-                {connectedAgents.length > 0 ? (
-                  <>
-                    <span className="text-2xl font-bold text-green-600">{connectedAgents.length}</span>
-                    <span className="text-sm text-gray-400 ml-1">connected</span>
-                  </>
-                ) : (
-                  <span className="text-2xl font-bold text-gray-400">0</span>
-                )}
-              </div>
-            </div>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
-              {activeWorkers.length > 0
-                ? `${activeWorkers.length} working on tasks`
-                : connectedAgents.length > 0
-                  ? 'Ready to claim tasks'
-                  : 'No agents connected'}
-            </p>
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Active</div>
+            <div className="text-2xl font-semibold">{activeWorkers.length}</div>
           </Link>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Connected</div>
+            <div className={`text-2xl font-semibold ${connectedAgents.length > 0 ? 'text-status-success' : ''}`}>
+              {connectedAgents.length}
+            </div>
+          </div>
         </div>
 
-        {/* Recent Tasks - Simplified view, max 3 */}
-        <div className="mb-8">
-          <div className="flex justify-between items-center mb-4">
-            <div className="flex items-center gap-3">
-              <h2 className="text-xl font-semibold">Tasks</h2>
-              {recentTasks.length > 3 && (
-                <Link
-                  href="/app/tasks"
-                  className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  +{recentTasks.length - 3} more →
-                </Link>
-              )}
+        {/* Active Workers */}
+        {activeWorkers.length > 0 && (
+          <div className="mb-8">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+              Active Workers
             </div>
+
+            {/* Mobile: MobileWorkerCard */}
+            <div className="md:hidden space-y-3">
+              {activeWorkers.map((worker) => (
+                <MobileWorkerCard
+                  key={worker.id}
+                  workerId={worker.id}
+                  name={worker.name}
+                  status={worker.status}
+                  taskTitle={worker.task?.title || null}
+                  workspaceName={null}
+                  milestones={(worker.milestones as any[]) || []}
+                  turns={worker.turns}
+                  costUsd={worker.costUsd?.toString() || null}
+                  startedAt={worker.startedAt?.toISOString() || null}
+                  taskId={worker.task?.id || ''}
+                />
+              ))}
+            </div>
+
+            {/* Desktop: task-item rows */}
+            <div className="hidden md:block border border-border-default rounded-[10px] overflow-hidden">
+              {activeWorkers.map((worker) => {
+                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
+                return (
+                  <div
+                    key={worker.id}
+                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
+                  >
+                    <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
+                      {iconStyle.icon}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-text-primary truncate">{worker.name}</div>
+                      <div className="font-mono text-[11px] text-text-muted truncate">{worker.task?.title}</div>
+                    </div>
+                    <StatusBadge status={worker.status} />
+                    {/* Milestone progress */}
+                    {worker.milestones && (worker.milestones as any[]).length > 0 && (
+                      <div className="hidden lg:flex items-center gap-0.5">
+                        {Array.from({ length: Math.min((worker.milestones as any[]).length, 10) }).map((_, i) => (
+                          <div key={i} className="w-5 h-1.5 bg-primary-400 rounded-sm" />
+                        ))}
+                        {Array.from({ length: Math.max(0, 10 - (worker.milestones as any[]).length) }).map((_, i) => (
+                          <div key={i} className="w-5 h-1.5 bg-surface-3 rounded-sm" />
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      {worker.prUrl && (
+                        <a
+                          href={worker.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                        >
+                          PR #{worker.prNumber}
+                        </a>
+                      )}
+                      {worker.localUiUrl && (
+                        <a
+                          href={`${worker.localUiUrl}/worker/${worker.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`px-3 py-[5px] text-xs bg-status-info/10 text-status-info rounded-[6px] hover:bg-status-info/20${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
+                        >
+                          Open Terminal
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Tasks */}
+        <div className="mb-8">
+          <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
+            <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Tasks</span>
             <div className="flex items-center gap-2">
               <Link
                 href="/app/tasks"
-                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 View All
               </Link>
               <Link
                 href="/app/tasks/new"
-                className="px-3 py-1.5 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 text-sm"
+                className="w-full sm:w-auto px-[18px] py-[9px] rounded-[6px] text-[13px] font-medium bg-primary text-white hover:bg-primary-hover"
               >
                 + New
               </Link>
@@ -403,35 +405,39 @@ export default async function DashboardPage() {
           </div>
 
           {recentTasks.length === 0 ? (
-            <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-6 text-center">
-              <p className="text-gray-500 mb-2">No active tasks</p>
-              <Link
-                href="/app/tasks/new"
-                className="text-sm text-blue-600 hover:underline"
-              >
+            <div className="border border-dashed border-border-default rounded-[10px] p-6 text-center">
+              <p className="text-text-secondary mb-2">No active tasks</p>
+              <Link href="/app/tasks/new" className="text-sm text-primary-400 hover:underline">
                 Create your first task
               </Link>
             </div>
           ) : (
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
-              {recentTasks.slice(0, 3).map((task) => (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="block p-3 hover:bg-gray-50 dark:hover:bg-gray-900"
-                >
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <StatusBadge status={task.status} />
-                      <span className="font-medium truncate">{task.title}</span>
-                      <span className="text-sm text-gray-400 truncate hidden sm:inline">{task.workspace?.name}</span>
-                      {task.workspace?.team?.name && (
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hidden sm:inline">{task.workspace.team.name}</span>
-                      )}
+            <div className="border border-border-default rounded-[10px] overflow-hidden">
+              {recentTasks.slice(0, 3).map((task) => {
+                const iconStyle = TASK_ICONS[task.status] || DEFAULT_ICON;
+                return (
+                  <Link
+                    key={task.id}
+                    href={`/app/tasks/${task.id}`}
+                    className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
+                  >
+                    <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
+                      {iconStyle.icon}
                     </div>
-                  </div>
-                </Link>
-              ))}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-text-primary truncate">{task.title}</div>
+                      <div className="font-mono text-[11px] text-text-muted truncate">
+                        {task.workspace?.name}
+                        {task.workspace?.team?.name && ` \u00B7 ${task.workspace.team.name}`}
+                      </div>
+                    </div>
+                    <StatusBadge status={task.status} />
+                    <span className="hidden sm:block font-mono text-[11px] text-text-muted whitespace-nowrap">
+                      {timeAgo(task.updatedAt)}
+                    </span>
+                  </Link>
+                );
+              })}
             </div>
           )}
         </div>
@@ -439,141 +445,70 @@ export default async function DashboardPage() {
         {/* Connected Agents */}
         {connectedAgents.length > 0 && (
           <div className="mb-8">
-            <h2 className="text-xl font-semibold mb-4">Connected Agents</h2>
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+              Connected Agents
+            </div>
+            <div className="border border-border-default rounded-[10px] overflow-hidden">
               {connectedAgents.map((agent) => (
                 <div
                   key={agent.localUiUrl}
-                  className="p-4"
+                  className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0"
                 >
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                      <div>
-                        <span className="font-medium">{agent.accountName}</span>
-                        <span className="text-sm text-gray-400 ml-2">
-                          {agent.activeWorkers}/{agent.maxConcurrent} workers
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-400">
-                        {agent.maxConcurrent - agent.activeWorkers > 0
-                          ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
-                          : 'At capacity'}
-                      </span>
-                      {/^https?:\/\/(localhost|127\.0\.0\.1)/.test(agent.localUiUrl) ? (
-                        <a
-                          href={agent.localUiUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hidden sm:inline-block px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Open
-                        </a>
-                      ) : (
-                        <a
-                          href={agent.localUiUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Open
-                        </a>
-                      )}
-                    </div>
+                  <div className="w-2 h-2 rounded-full bg-status-success animate-pulse flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[13px] font-medium text-text-primary">{agent.accountName}</span>
+                    <span className="font-mono text-[11px] text-text-muted ml-2">
+                      {agent.activeWorkers}/{agent.maxConcurrent} workers
+                    </span>
                   </div>
+                  <span className="hidden sm:block font-mono text-[11px] text-text-muted">
+                    {agent.maxConcurrent - agent.activeWorkers > 0
+                      ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
+                      : 'At capacity'}
+                  </span>
+                  {/^https?:\/\/(localhost|127\.0\.0\.1)/.test(agent.localUiUrl) ? (
+                    <a
+                      href={agent.localUiUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hidden sm:inline-block px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+                    >
+                      Open
+                    </a>
+                  ) : (
+                    <a
+                      href={agent.localUiUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+                    >
+                      Open
+                    </a>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Active Workers */}
-        <div>
-          <h2 className="text-xl font-semibold mb-4">Active Workers</h2>
-
-          {activeWorkers.length === 0 ? (
-            <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-              <p className="text-gray-500">No active workers</p>
-              <p className="text-sm text-gray-400 mt-2">
+        {/* Empty Workers State */}
+        {activeWorkers.length === 0 && (
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+              Active Workers
+            </div>
+            <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
+              <p className="text-text-secondary">No active workers</p>
+              <p className="text-sm text-text-muted mt-2">
                 {connectedAgents.length > 0
-                  ? 'Agents are connected and ready — create a task to get started'
+                  ? 'Agents are connected and ready \u2014 create a task to get started'
                   : 'Start a local-ui instance to connect agents'}
               </p>
             </div>
-          ) : (
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
-              {activeWorkers.map((worker) => (
-                <div
-                  key={worker.id}
-                  className="p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-medium">{worker.name}</h3>
-                        <StatusBadge status={worker.status} />
-                      </div>
-                      <p className="text-sm text-gray-500">{worker.task?.title}</p>
-                      {worker.currentAction && (
-                        <p className="text-xs text-gray-400 mt-1">{worker.currentAction}</p>
-                      )}
-                      {/* Milestone progress */}
-                      {worker.milestones && (worker.milestones as any[]).length > 0 && (
-                        <div className="flex items-center gap-1 mt-2">
-                          {Array.from({ length: Math.min((worker.milestones as any[]).length, 10) }).map((_, i) => (
-                            <div
-                              key={i}
-                              className="w-6 h-2 bg-blue-500 rounded-sm"
-                            />
-                          ))}
-                          {Array.from({ length: Math.max(0, 10 - (worker.milestones as any[]).length) }).map((_, i) => (
-                            <div
-                              key={i}
-                              className="w-6 h-2 bg-gray-200 dark:bg-gray-700 rounded-sm"
-                            />
-                          ))}
-                          <span className="text-xs text-gray-500 ml-2">
-                            {(worker.milestones as any[]).length}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {/* PR link */}
-                      {worker.prUrl && (
-                        <a
-                          href={worker.prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-800"
-                        >
-                          PR #{worker.prNumber}
-                        </a>
-                      )}
-                      {/* Jump to local-ui link (hide localhost on mobile) */}
-                      {worker.localUiUrl && (
-                        <a
-                          href={`${worker.localUiUrl}/worker/${worker.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
-                        >
-                          Open Terminal
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        </div>{/* End desktop-only wrapper */}
       </div>
     </main>
   );
 }
-
