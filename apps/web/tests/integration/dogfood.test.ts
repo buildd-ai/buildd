@@ -130,35 +130,61 @@ async function createTask(workspaceId: string, title: string, description: strin
   return task;
 }
 
+/** Claim a task via local-ui. Retries on 429 (capacity full from parallel tests). */
 async function triggerClaim(taskId: string): Promise<string> {
-  const res = await fetch(`${LOCAL_UI}/api/claim`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskId }),
-  });
-  if (!res.ok) {
-    throw new Error(`Local-ui claim failed: ${res.status} ${await res.text()}`);
+  const maxAttempts = 10;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`${LOCAL_UI}/api/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      // Local-ui wraps server 429 as a 400 error
+      if (text.includes('429') && attempt < maxAttempts - 1) {
+        await sleep(3_000 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`Local-ui claim failed: ${res.status} ${text}`);
+    }
+    const data = await res.json();
+    const workerId = data.worker?.id;
+    if (!workerId) {
+      throw new Error('Local-ui claim returned no worker ID');
+    }
+    console.log(`  Claimed -> worker ${workerId}`);
+    cleanupWorkerIds.push(workerId);
+    return workerId;
   }
-  const data = await res.json();
-  const workerId = data.worker?.id;
-  if (!workerId) {
-    throw new Error('Local-ui claim returned no worker ID');
-  }
-  console.log(`  Claimed -> worker ${workerId}`);
-  cleanupWorkerIds.push(workerId);
-  return workerId;
+  throw new Error('triggerClaim: unreachable');
 }
 
-/** Claim a task directly on the server (creates a DB worker, no local-ui) */
+/** Claim a task directly on the server (creates a DB worker, no local-ui).
+ *  Retries on 429 (capacity full from parallel tests) with backoff. */
 async function serverClaim(workspaceId: string, taskId: string): Promise<string> {
-  const res = await api('/api/workers/claim', {
-    method: 'POST',
-    body: JSON.stringify({ workspaceId, taskId, runner: 'dogfood-test' }),
-  });
-  const worker = res.workers?.[0];
-  if (!worker) throw new Error(`Server claim returned no worker for task ${taskId}`);
-  cleanupWorkerIds.push(worker.id);
-  return worker.id;
+  const maxAttempts = 10;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const { status, body } = await apiRaw('/api/workers/claim', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId, taskId, runner: 'dogfood-test' }),
+    });
+    if (status === 429) {
+      if (attempt === maxAttempts - 1) {
+        throw new Error(`Server claim 429 after ${maxAttempts} attempts: ${JSON.stringify(body)}`);
+      }
+      await sleep(3_000 * (attempt + 1));
+      continue;
+    }
+    if (status >= 400) {
+      throw new Error(`Server claim failed: ${status} ${JSON.stringify(body)}`);
+    }
+    const worker = body.workers?.[0];
+    if (!worker) throw new Error(`Server claim returned no worker for task ${taskId}`);
+    cleanupWorkerIds.push(worker.id);
+    return worker.id;
+  }
+  throw new Error('serverClaim: unreachable');
 }
 
 async function getTaskStatus(taskId: string): Promise<any> {
@@ -548,14 +574,33 @@ describe('dogfood', () => {
   test('concurrent limit — rejects claims beyond capacity', async () => {
     await cleanupStaleWorkers();
 
-    const { activeLocalUis } = await api('/api/workers/active');
-    const maxConcurrent = activeLocalUis?.[0]?.maxConcurrent || 3;
-    console.log(`  Max concurrent: ${maxConcurrent}`);
+    // Use account-level maxConcurrentWorkers (what the claim endpoint actually enforces)
+    const account = await api('/api/accounts/me');
+    const maxConcurrent = account.maxConcurrentWorkers || 3;
+
+    // Check how many workers are already active (other test files run in parallel)
+    const { workers: currentActive } = await api('/api/workers/mine?status=running,starting,waiting_input');
+    const alreadyActive = currentActive?.length || 0;
+    const slotsToFill = maxConcurrent - alreadyActive;
+    console.log(`  Max concurrent: ${maxConcurrent}, already active: ${alreadyActive}, filling: ${slotsToFill}`);
+
+    if (slotsToFill <= 0) {
+      // Already at capacity from parallel tests — just verify overflow is rejected
+      const overflowTask = await createTask(workspaceId, '[DOGFOOD] Overflow', 'Should be rejected');
+      const { status, body } = await apiRaw('/api/workers/claim', {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId, taskId: overflowTask.id, runner: 'dogfood-test' }),
+      });
+      expect(status).toBe(429);
+      expect(body.error).toContain('Max concurrent workers');
+      console.log(`  Correctly rejected: ${body.current}/${body.limit}`);
+      return;
+    }
 
     // Create server-side workers directly (not through local-ui)
     // These stay "running" because nothing will complete them
     const fillerWorkers: string[] = [];
-    for (let i = 0; i < maxConcurrent; i++) {
+    for (let i = 0; i < slotsToFill; i++) {
       const task = await createTask(workspaceId, `[DOGFOOD] Filler ${i}`, 'Filler task');
       const workerId = await serverClaim(workspaceId, task.id);
       // Transition to running so they count against the limit

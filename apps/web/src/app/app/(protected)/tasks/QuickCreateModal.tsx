@@ -250,15 +250,15 @@ export default function QuickCreateModal({
       onClick={(e) => e.target === e.currentTarget && assignmentStatus === 'idle' && onClose()}
       onKeyDown={handleKeyDown}
     >
-      <div className="bg-white dark:bg-gray-900 md:bg-white md:dark:bg-gray-900 rounded-t-2xl md:rounded-lg shadow-xl w-full md:max-w-md md:mx-4 animate-slide-up md:animate-none">
+      <div className="bg-surface-2 rounded-t-2xl md:rounded-lg shadow-xl w-full md:max-w-md md:mx-4 animate-slide-up md:animate-none">
         {assignmentStatus === 'waiting' ? (
           // Waiting for worker to accept
           <div className="p-6 text-center">
-            <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
-            <p className="text-gray-700 dark:text-gray-300 mb-2">
+            <div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+            <p className="text-text-primary mb-2">
               Waiting for worker to accept...
             </p>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-text-secondary">
               Auto-reassigning in {countdown}s
             </p>
           </div>
@@ -266,15 +266,15 @@ export default function QuickCreateModal({
           // Task accepted by worker
           <div className="p-6">
             <div className="text-center mb-4">
-              <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-10 h-10 bg-status-success/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-status-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <p className="text-gray-700 dark:text-gray-300 font-medium">
+              <p className="text-text-primary font-medium">
                 Task started!
               </p>
-              <p className="text-sm text-gray-500 mt-1">
+              <p className="text-sm text-text-secondary mt-1">
                 A worker has picked up your task
               </p>
             </div>
@@ -284,7 +284,7 @@ export default function QuickCreateModal({
                   href={`${claimedWorker.localUiUrl}/worker/${claimedWorker.id}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-gradient-to-r from-purple-600 to-cyan-600 text-white rounded-lg hover:opacity-90 transition-opacity"
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-lg hover:opacity-90 transition-opacity"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -297,7 +297,7 @@ export default function QuickCreateModal({
                   onClick={() => {
                     onCreated(createdTaskId);
                   }}
-                  className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-3"
                 >
                   View in Dashboard
                 </button>
@@ -308,15 +308,15 @@ export default function QuickCreateModal({
           // Task reassigned to any worker
           <div className="p-6">
             <div className="text-center mb-4">
-              <div className="w-10 h-10 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
               </div>
-              <p className="text-gray-700 dark:text-gray-300 font-medium">
+              <p className="text-text-primary font-medium">
                 Queued for any worker
               </p>
-              <p className="text-sm text-gray-500 mt-1">
+              <p className="text-sm text-text-secondary mt-1">
                 The specific worker didn&apos;t respond, task is now available to all workers
               </p>
             </div>
@@ -325,7 +325,7 @@ export default function QuickCreateModal({
                 onClick={() => {
                   onCreated(createdTaskId);
                 }}
-                className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-3"
               >
                 View in Dashboard
               </button>
@@ -334,15 +334,15 @@ export default function QuickCreateModal({
         ) : (
           // Normal form
           <form onSubmit={handleSubmit}>
-            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+            <div className="p-4 border-b border-border-default">
               <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-500">
-                  New task in <span className="font-medium text-gray-700 dark:text-gray-300">{workspaceName}</span>
+                <div className="text-sm text-text-secondary">
+                  New task in <span className="font-medium text-text-primary">{workspaceName}</span>
                 </div>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  className="text-text-muted hover:text-text-primary"
                 >
                   &times;
                 </button>
@@ -351,7 +351,7 @@ export default function QuickCreateModal({
 
             <div className="p-4 space-y-3">
               {error && (
-                <div className="p-2 text-sm bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">
+                <div className="p-2 text-sm bg-status-error/10 text-status-error rounded">
                   {error}
                 </div>
               )}
@@ -363,7 +363,7 @@ export default function QuickCreateModal({
                 onChange={(e) => setTitle(e.target.value)}
                 onPaste={handlePaste}
                 placeholder="Task title"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
 
@@ -374,8 +374,8 @@ export default function QuickCreateModal({
                   onClick={() => setMode('execution')}
                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                     mode === 'execution'
-                      ? 'border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                      ? 'border-primary/30 bg-primary-subtle text-primary'
+                      : 'border-border-default text-text-muted hover:text-text-secondary'
                   }`}
                 >
                   Execute
@@ -385,8 +385,8 @@ export default function QuickCreateModal({
                   onClick={() => setMode('planning')}
                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                     mode === 'planning'
-                      ? 'border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                      ? 'border-primary/30 bg-primary-subtle text-primary'
+                      : 'border-border-default text-text-muted hover:text-text-secondary'
                   }`}
                 >
                   Plan first
@@ -396,8 +396,8 @@ export default function QuickCreateModal({
                   onClick={() => setRecurring(!recurring)}
                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                     recurring
-                      ? 'border-fuchsia-300 dark:border-fuchsia-700 bg-fuchsia-50 dark:bg-fuchsia-900/20 text-fuchsia-700 dark:text-fuchsia-300'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                      ? 'border-primary/30 bg-primary-subtle text-primary'
+                      : 'border-border-default text-text-muted hover:text-text-secondary'
                   }`}
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -410,7 +410,7 @@ export default function QuickCreateModal({
                     type="text"
                     value={cronExpression}
                     onChange={(e) => setCronExpression(e.target.value)}
-                    className="flex-1 px-2 py-1 text-xs font-mono border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-800"
+                    className="flex-1 px-2 py-1 text-xs font-mono border border-border-default rounded-md bg-surface-1"
                     placeholder="0 9 * * *"
                   />
                 )}
@@ -423,14 +423,14 @@ export default function QuickCreateModal({
                   onPaste={handlePaste}
                   placeholder="Description (optional) — paste images here"
                   rows={3}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                  className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
                   disabled={loading}
                 />
               ) : (
                 <button
                   type="button"
                   onClick={() => setShowDescription(true)}
-                  className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                  className="text-xs text-text-muted hover:text-text-secondary"
                 >
                   + Add description
                 </button>
@@ -443,12 +443,12 @@ export default function QuickCreateModal({
                       <img
                         src={img.data}
                         alt={img.filename}
-                        className="max-h-20 rounded border border-gray-200 dark:border-gray-700"
+                        className="max-h-20 rounded border border-border-default"
                       />
                       <button
                         type="button"
                         onClick={() => removeImage(i)}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         &times;
                       </button>
@@ -460,13 +460,13 @@ export default function QuickCreateModal({
               {/* Worker assignment */}
               {activeLocalUis.length > 0 && (
                 <div className="space-y-1">
-                  <label className="text-xs text-gray-500 dark:text-gray-400">
+                  <label className="text-xs text-text-secondary">
                     Assign to worker (optional)
                   </label>
                   <select
                     value={selectedLocalUi}
                     onChange={(e) => setSelectedLocalUi(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
                     disabled={loading}
                   >
                     <option value="">Queue for any worker</option>
@@ -477,7 +477,7 @@ export default function QuickCreateModal({
                     ))}
                   </select>
                   {selectedLocalUi && (
-                    <p className="text-xs text-green-600 dark:text-green-400">
+                    <p className="text-xs text-status-success">
                       Task will be sent directly (auto-reassigns after {ASSIGNMENT_TIMEOUT_MS / 1000}s if not accepted)
                     </p>
                   )}
@@ -485,19 +485,19 @@ export default function QuickCreateModal({
               )}
             </div>
 
-            <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex flex-col md:flex-row md:justify-end gap-2">
+            <div className="p-4 border-t border-border-default flex flex-col md:flex-row md:justify-end gap-2">
               <button
                 type="button"
                 onClick={onClose}
                 disabled={loading}
-                className="hidden md:block px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                className="hidden md:block px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-3 rounded"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !title.trim()}
-                className="w-full md:w-auto py-3 md:py-1.5 px-3 text-sm bg-violet-600 hover:bg-violet-700 md:bg-black md:dark:bg-white text-white md:dark:text-black rounded-lg md:rounded hover:opacity-80 disabled:opacity-50 font-medium md:font-normal"
+                className="w-full md:w-auto py-3 md:py-1.5 px-3 text-sm bg-primary hover:bg-primary-hover text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
               >
                 {loading
                   ? 'Creating...'

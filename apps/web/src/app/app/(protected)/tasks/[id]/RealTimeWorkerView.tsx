@@ -157,7 +157,7 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
 
   if (sent) {
     return (
-      <span className="px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+      <span className="px-3 py-2 text-xs text-status-warning font-mono">
         Plan requested
       </span>
     );
@@ -166,22 +166,22 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
   if (showConfirm) {
     return (
       <div className="flex flex-col gap-2">
-        <div className="text-xs text-gray-700 dark:text-gray-300 max-w-md">
+        <div className="text-xs text-text-primary max-w-md">
           <p className="mb-1 font-medium">Request Plan Mode?</p>
-          <p className="mb-2">The agent will pause, investigate the codebase, and write a plan in the output below. You'll then see a prompt to approve or request changes before it continues.</p>
-          <p className="text-gray-500 dark:text-gray-400 text-[11px]">The session stays alive — no restart needed.</p>
+          <p className="mb-2 text-text-secondary">The agent will pause, investigate the codebase, and write a plan in the output below. You'll then see a prompt to approve or request changes before it continues.</p>
+          <p className="text-text-muted text-[11px]">The session stays alive — no restart needed.</p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={handleRequestPlan}
             disabled={loading}
-            className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+            className="px-3 py-1.5 text-xs bg-status-warning text-surface-1 rounded hover:opacity-90 disabled:opacity-50"
           >
             Confirm
           </button>
           <button
             onClick={() => setShowConfirm(false)}
-            className="px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+            className="px-3 py-1.5 text-xs border border-border-default text-text-secondary rounded hover:bg-surface-3"
           >
             Cancel
           </button>
@@ -194,7 +194,7 @@ function RequestPlanButton({ workerId }: { workerId: string }) {
     <button
       onClick={() => setShowConfirm(true)}
       disabled={loading}
-      className="px-3 py-2 text-xs border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-50 whitespace-nowrap"
+      className="px-3 py-2 text-xs border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 disabled:opacity-50 whitespace-nowrap"
       title="Ask the agent to pause and propose a plan before continuing implementation"
     >
       {loading ? '...' : 'Request Plan'}
@@ -269,11 +269,11 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
 
   return (
-    <div className="border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 rounded-lg p-4">
+    <div className="border border-border-default bg-surface-2 rounded-md p-4">
       <div className="flex justify-between items-start mb-3">
         <div>
           <h3 className="font-medium text-lg">{worker.name}</h3>
-          <p className="text-sm text-gray-500">Branch: {worker.branch}</p>
+          <p className="text-sm text-text-secondary font-mono">Branch: {worker.branch}</p>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={worker.status} />
@@ -281,10 +281,10 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             <div className={`flex items-center gap-1.5${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:flex' : ''}`}>
               {directStatus === 'connected' && (
                 <span
-                  className="flex items-center gap-1 px-2 py-1 text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-full"
+                  className="flex items-center gap-1 px-2 py-1 text-[10px] text-status-success bg-status-success/10 border border-status-success/20 rounded-full font-mono"
                   title="Direct connection to local-ui available (Tailscale/LAN)"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
                   Direct
                 </span>
               )}
@@ -292,7 +292,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
                 href={`${worker.localUiUrl}/worker/${worker.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800"
+                className="px-3 py-1 text-xs bg-surface-3 text-text-secondary rounded-full hover:bg-surface-4"
               >
                 Open Terminal
               </a>
@@ -304,8 +304,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       {/* Current action */}
       {worker.currentAction && (
         <div className="mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" aria-hidden="true" />
-          <p className="text-sm text-gray-600 dark:text-gray-400">{worker.currentAction}</p>
+          <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true" />
+          <p className="text-sm text-text-secondary">{worker.currentAction}</p>
         </div>
       )}
 
@@ -313,21 +313,21 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       {worker.status === 'waiting_input' && worker.waitingFor && (
         <div
           data-testid="worker-needs-input-banner"
-          className="mb-3 border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 rounded-lg p-3"
+          className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3"
         >
           <div className="flex items-center gap-2 mb-2">
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
             </span>
-            <span data-testid="worker-needs-input-label" className="text-xs font-medium text-purple-700 dark:text-purple-300 uppercase">Needs input</span>
+            <span data-testid="worker-needs-input-label" className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
             {directStatus === 'connected' && (
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400">instant delivery</span>
+              <span className="text-[10px] text-status-success font-mono">instant delivery</span>
             )}
           </div>
-          <p data-testid="worker-needs-input-prompt" className="text-sm text-gray-800 dark:text-gray-200">{worker.waitingFor.prompt}</p>
+          <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
           {answerSent ? (
-            <p className="mt-2 text-sm text-green-600 dark:text-green-400">Answer sent</p>
+            <p className="mt-2 text-sm text-status-success">Answer sent</p>
           ) : worker.waitingFor.options && worker.waitingFor.options.length > 0 ? (
             <div data-testid="worker-needs-input-options" className="flex flex-wrap gap-2 mt-3">
               {worker.waitingFor.options.map((opt, i) => (
@@ -335,7 +335,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
                   key={i}
                   onClick={() => handleAnswer(opt)}
                   disabled={answerSending !== null}
-                  className="px-3 py-1.5 text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 rounded-lg border border-purple-200 dark:border-purple-700 hover:bg-purple-200 dark:hover:bg-purple-800/60 hover:border-purple-400 dark:hover:border-purple-500 transition-colors disabled:opacity-50 cursor-pointer"
+                  className="px-3 py-1.5 text-xs bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   {answerSending === opt ? 'Sending...' : opt}
                 </button>
@@ -347,9 +347,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
       {/* Last question context (visible on completed/failed workers) */}
       {!isActive && worker.waitingFor && (
-        <div className="mb-3 border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 rounded-lg p-3">
-          <p className="text-xs font-medium text-gray-500 mb-1">Last question before {worker.status === 'completed' ? 'completion' : 'failure'}</p>
-          <p className="text-sm text-gray-700 dark:text-gray-300">{worker.waitingFor.prompt}</p>
+        <div className="mb-3 border border-border-default bg-surface-3 rounded-md p-3">
+          <p className="font-mono text-[10px] font-medium text-text-muted uppercase tracking-[2.5px] mb-1">Last question before {worker.status === 'completed' ? 'completion' : 'failure'}</p>
+          <p className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
         </div>
       )}
 
@@ -360,7 +360,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       />
 
       {/* Stats row */}
-      <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">
+      <div className="flex items-center gap-4 mt-3 font-mono text-xs text-text-muted">
         <span>Turns: {worker.turns}</span>
         {worker.account?.authType === 'oauth' ? (
           <span>
@@ -379,7 +379,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             href={worker.prUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-green-600 hover:underline"
+            className="text-status-success hover:underline"
           >
             PR #{worker.prNumber}
           </a>
@@ -388,26 +388,26 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
       {/* Git stats */}
       {((worker.commitCount ?? 0) > 0 || (worker.filesChanged ?? 0) > 0) && (
-        <div className="flex items-center gap-4 mt-2 text-xs">
+        <div className="flex items-center gap-4 mt-2 font-mono text-xs">
           {(worker.commitCount ?? 0) > 0 && (
-            <span className="text-gray-500">
+            <span className="text-text-muted">
               {worker.commitCount} commit{worker.commitCount !== 1 ? 's' : ''}
             </span>
           )}
           {(worker.filesChanged ?? 0) > 0 && (
-            <span className="text-gray-500">
+            <span className="text-text-muted">
               {worker.filesChanged} file{worker.filesChanged !== 1 ? 's' : ''}
             </span>
           )}
           {((worker.linesAdded ?? 0) > 0 || (worker.linesRemoved ?? 0) > 0) && (
             <span>
-              <span className="text-green-600">+{worker.linesAdded ?? 0}</span>
+              <span className="text-status-success">+{worker.linesAdded ?? 0}</span>
               {' / '}
-              <span className="text-red-500">-{worker.linesRemoved ?? 0}</span>
+              <span className="text-status-error">-{worker.linesRemoved ?? 0}</span>
             </span>
           )}
           {worker.lastCommitSha && (
-            <span className="text-gray-400 font-mono">
+            <span className="text-text-muted">
               {worker.lastCommitSha.slice(0, 7)}
             </span>
           )}

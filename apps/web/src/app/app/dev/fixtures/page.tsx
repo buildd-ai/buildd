@@ -164,11 +164,11 @@ export default function DevFixturesPage({
     const worker = mockWorkers[state] || mockWorkers['waiting-input'];
 
     return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-8">
+        <div className="min-h-screen bg-surface-1 p-8">
             <div className="max-w-4xl mx-auto">
                 <div className="mb-6">
                     <h1 className="text-2xl font-bold mb-2">Dev Fixtures: Worker States</h1>
-                    <p className="text-gray-600 dark:text-gray-400 mb-4">
+                    <p className="text-text-secondary mb-4">
                         Use these fixtures to test UI components in isolation without database dependencies.
                     </p>
 
@@ -178,9 +178,9 @@ export default function DevFixturesPage({
                             <a
                                 key={s}
                                 href={`?state=${s}`}
-                                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${state === s
-                                    ? 'bg-blue-500 text-white'
-                                    : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
+                                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${state === s
+                                    ? 'bg-primary text-white'
+                                    : 'bg-surface-3 text-text-secondary hover:bg-surface-4'
                                     }`}
                             >
                                 {s}
@@ -189,26 +189,26 @@ export default function DevFixturesPage({
                     </div>
                 </div>
 
-                <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6">
+                <div className="bg-surface-2 rounded-xl shadow-lg p-6">
                     <h2 className="text-lg font-semibold mb-4">
-                        Active Worker: <span className="text-blue-500">{state}</span>
+                        Active Worker: <span className="text-primary">{state}</span>
                     </h2>
                     <RealTimeWorkerView
                         initialWorker={worker as any}
                         statusColors={{
-                            pending: 'bg-yellow-100 text-yellow-800',
-                            assigned: 'bg-blue-100 text-blue-800',
-                            running: 'bg-green-100 text-green-800',
-                            waiting_input: 'bg-purple-100 text-purple-800',
-                            completed: 'bg-gray-100 text-gray-800',
-                            failed: 'bg-red-100 text-red-800',
+                            pending: 'bg-status-warning/10 text-status-warning',
+                            assigned: 'bg-status-info/10 text-status-info',
+                            running: 'bg-status-success/10 text-status-success',
+                            waiting_input: 'bg-status-running/10 text-status-running',
+                            completed: 'bg-surface-3 text-text-secondary',
+                            failed: 'bg-status-error/10 text-status-error',
                         }}
                     />
                 </div>
 
-                <div className="mt-6 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                <div className="mt-6 p-4 bg-surface-3 rounded-lg">
                     <h3 className="font-medium mb-2">Raw Worker Data</h3>
-                    <pre className="text-xs overflow-auto max-h-64 p-2 bg-gray-900 text-green-400 rounded">
+                    <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
                         {JSON.stringify(worker, null, 2)}
                     </pre>
                 </div>

@@ -62,9 +62,9 @@ export default async function TeamsPage() {
   }
 
   const roleColors: Record<string, string> = {
-    owner: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-    admin: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-    member: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
+    owner: 'bg-primary/10 text-primary',
+    admin: 'bg-status-info/10 text-status-info',
+    member: 'bg-surface-3 text-text-primary',
   };
 
   return (
@@ -72,57 +72,57 @@ export default async function TeamsPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/app/dashboard" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+            <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
               &larr; Dashboard
             </Link>
             <h1 className="text-3xl font-bold">Teams</h1>
-            <p className="text-gray-500">Manage your teams and collaborators</p>
+            <p className="text-text-secondary">Manage your teams and collaborators</p>
           </div>
           <Link
             href="/app/teams/new"
-            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            className="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
           >
             + New Team
           </Link>
         </div>
 
         {userTeams.length === 0 ? (
-          <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center">
+          <div className="border border-dashed border-border-default rounded-lg p-12 text-center">
             <h2 className="text-xl font-semibold mb-2">No teams yet</h2>
-            <p className="text-gray-500 mb-6">
+            <p className="text-text-secondary mb-6">
               Create a team to collaborate with others
             </p>
             <Link
               href="/app/teams/new"
-              className="px-6 py-3 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+              className="px-6 py-3 bg-primary text-white rounded-md hover:bg-primary-hover"
             >
               Create Team
             </Link>
           </div>
         ) : (
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+          <div className="border border-border-default rounded-lg divide-y divide-border-default">
             {userTeams.map((team) => {
               const isPersonal = team.slug.startsWith('personal-');
               return (
                 <Link
                   key={team.id}
                   href={`/app/teams/${team.id}`}
-                  className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  className="block p-4 hover:bg-surface-3"
                 >
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <h3 className="font-medium">{team.name}</h3>
                         {isPersonal && (
-                          <span className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400 rounded">
+                          <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded">
                             Personal
                           </span>
                         )}
                       </div>
-                      <p className="text-sm text-gray-500">{team.slug}</p>
+                      <p className="text-sm text-text-secondary">{team.slug}</p>
                     </div>
                     <div className="flex items-center gap-3 text-sm">
-                      <span className="text-gray-500">
+                      <span className="text-text-secondary">
                         {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
                       </span>
                       <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>

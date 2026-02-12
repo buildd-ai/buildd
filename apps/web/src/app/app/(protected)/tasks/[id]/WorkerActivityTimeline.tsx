@@ -41,7 +41,7 @@ export default function WorkerActivityTimeline({
 
   return (
     <div className="mt-4">
-      <h4 className="text-sm font-medium text-gray-500 mb-2">Activity</h4>
+      <h4 className="text-sm font-medium text-text-secondary mb-2">Activity</h4>
 
       {/* Milestones timeline */}
       {visibleMilestones.length > 0 && (
@@ -66,7 +66,7 @@ export default function WorkerActivityTimeline({
       {hasMore && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="mt-2 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
+          className="mt-2 text-xs text-primary hover:text-primary-hover"
         >
           {expanded
             ? 'Show less'
@@ -91,28 +91,28 @@ function PhaseRow({
       <span className="mt-1 flex-shrink-0">
         {milestone.pending ? (
           <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-running opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-status-running" />
           </span>
         ) : (
-          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-gray-400 dark:bg-gray-500" />
+          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-text-muted" />
         )}
       </span>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
-          <span className={`text-sm truncate ${milestone.pending ? 'text-blue-700 dark:text-blue-300 font-medium' : 'text-gray-700 dark:text-gray-300'}`}>
+          <span className={`text-sm truncate ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
             {milestone.label}
           </span>
-          <span className="text-xs text-gray-400 flex-shrink-0 tabular-nums">
+          <span className="text-xs text-text-muted flex-shrink-0 tabular-nums">
             {milestone.toolCount} tool{milestone.toolCount !== 1 ? 's' : ''}
           </span>
-          <span className="text-xs text-gray-400 flex-shrink-0">
+          <span className="text-xs text-text-muted flex-shrink-0">
             {formatTime(milestone.ts)}
           </span>
         </div>
         {/* Show currentAction as sub-line for live phase */}
         {milestone.pending && currentAction && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+          <p className="text-xs text-text-secondary truncate mt-0.5">
             {currentAction}
           </p>
         )}
@@ -147,19 +147,19 @@ function StatusRow({
   return (
     <div className="flex items-start gap-2 py-1 text-sm">
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
-        isError ? 'text-red-500' : isComplete ? 'text-green-500' : 'text-gray-400'
+        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-muted'
       }`}>
         {icon}
       </span>
       <span className={`flex-1 truncate ${
-        isError ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-400'
+        isError ? 'text-status-error' : 'text-text-secondary'
       }`}>
         {milestone.label}
         {typeof milestone.progress === 'number' && (
-          <span className="ml-2 text-xs text-gray-400">{milestone.progress}%</span>
+          <span className="ml-2 text-xs text-text-muted">{milestone.progress}%</span>
         )}
       </span>
-      <span className="text-xs text-gray-400 flex-shrink-0">
+      <span className="text-xs text-text-muted flex-shrink-0">
         {formatTime(milestone.ts)}
       </span>
     </div>

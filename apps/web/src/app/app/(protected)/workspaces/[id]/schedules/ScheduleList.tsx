@@ -91,7 +91,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
 
   if (schedules.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500">
+      <div className="text-center py-12 text-text-muted">
         <p className="text-lg mb-2">No schedules yet</p>
         <p className="text-sm">Create a schedule to automatically run tasks on a cron cadence.</p>
       </div>
@@ -99,7 +99,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   }
 
   return (
-    <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+    <div className="border border-border-default rounded-lg divide-y divide-border-default">
       {schedules.map((schedule) => (
         <div key={schedule.id} className="p-4">
           <div className="flex items-start justify-between">
@@ -107,38 +107,38 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               <div className="flex items-center gap-2">
                 <h3 className="font-medium truncate">{schedule.name}</h3>
                 {!schedule.enabled && (
-                  <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">
                     Paused
                   </span>
                 )}
                 {schedule.consecutiveFailures > 0 && (
-                  <span className="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-status-error/10 text-status-error">
                     {schedule.consecutiveFailures} failure{schedule.consecutiveFailures !== 1 ? 's' : ''}
                   </span>
                 )}
               </div>
-              <p className="text-sm text-gray-500 mt-0.5">
-                <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">{schedule.cronExpression}</code>
+              <p className="text-sm text-text-muted mt-0.5">
+                <code className="text-xs bg-surface-3 px-1 py-0.5 rounded">{schedule.cronExpression}</code>
                 {' '}{schedule.timezone}
               </p>
-              <p className="text-sm text-gray-500 mt-0.5">
+              <p className="text-sm text-text-muted mt-0.5">
                 Creates: {schedule.taskTemplate.title}
               </p>
-              <div className="flex items-center gap-4 mt-1 text-xs text-gray-400">
+              <div className="flex items-center gap-4 mt-1 text-xs text-text-muted">
                 <span>Next: {formatRelative(schedule.nextRunAt)}</span>
                 <span>Last: {formatRelative(schedule.lastRunAt)}</span>
                 <span>{schedule.totalRuns} total runs</span>
                 {schedule.lastTaskId && (
                   <a
                     href={`/app/tasks/${schedule.lastTaskId}`}
-                    className="text-blue-500 hover:underline"
+                    className="text-primary hover:underline"
                   >
                     Last task
                   </a>
                 )}
               </div>
               {schedule.lastError && (
-                <p className="text-xs text-red-500 mt-1 truncate">{schedule.lastError}</p>
+                <p className="text-xs text-status-error mt-1 truncate">{schedule.lastError}</p>
               )}
             </div>
 
@@ -151,7 +151,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 onClick={() => toggleEnabled(schedule)}
                 disabled={toggling === schedule.id}
                 className={`relative w-10 h-6 rounded-full transition-colors ${
-                  schedule.enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'
+                  schedule.enabled ? 'bg-status-success' : 'bg-surface-4'
                 } ${toggling === schedule.id ? 'opacity-50' : ''}`}
               >
                 <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
@@ -162,7 +162,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               {/* Edit */}
               <button
                 onClick={() => router.push(`/app/workspaces/${workspaceId}/schedules?edit=${schedule.id}`)}
-                className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                className="p-1.5 text-text-muted hover:text-text-secondary"
                 title="Edit"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -174,7 +174,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               <button
                 onClick={() => deleteSchedule(schedule.id)}
                 disabled={deleting === schedule.id}
-                className="p-1.5 text-gray-400 hover:text-red-500"
+                className="p-1.5 text-text-muted hover:text-status-error"
                 title="Delete"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

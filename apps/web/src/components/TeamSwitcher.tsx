@@ -35,7 +35,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
   // Single team - show as plain text
   if (teams.length <= 1) {
     return (
-      <span className="text-sm text-gray-500 dark:text-gray-400">
+      <span className="text-sm text-text-secondary">
         {currentTeam.name}
       </span>
     );
@@ -46,7 +46,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        className="flex items-center gap-1.5 text-sm text-text-secondary hover:text-text-primary px-2 py-1 rounded-md hover:bg-surface-3 transition-colors"
       >
         <span>{currentTeam.name}</span>
         <svg
@@ -61,15 +61,15 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
+        <div className="absolute top-full left-0 mt-1 w-48 bg-surface-2 border border-border-default rounded-md shadow-lg z-50 py-1">
           {teams.map(team => (
             <button
               key={team.id}
               onClick={() => switchTeam(team.id)}
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 ${
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-surface-3 ${
                 team.id === currentTeam.id
-                  ? 'text-black dark:text-white font-medium'
-                  : 'text-gray-600 dark:text-gray-400'
+                  ? 'text-text-primary font-medium'
+                  : 'text-text-secondary'
               }`}
             >
               {team.name}

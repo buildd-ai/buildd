@@ -201,19 +201,19 @@ export default function NewTaskPage() {
   return (
     <div className="p-4 md:p-8 overflow-auto h-full">
       <div className="max-w-xl mx-auto md:mx-0">
-        <nav aria-label="Breadcrumb" className="text-sm text-gray-500 mb-4">
-          <Link href="/app/tasks" className="hover:text-gray-700 dark:hover:text-gray-300">Tasks</Link>
+        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+          <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
           <span className="mx-2">/</span>
-          <span className="text-gray-900 dark:text-gray-100">New Task</span>
+          <span className="text-text-primary">New Task</span>
         </nav>
         <h1 className="text-2xl font-bold mb-6">New Task</h1>
 
         {workspaces.length === 0 && !loadingWorkspaces ? (
-          <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-            <p className="text-gray-500 mb-4">You need a workspace first</p>
+          <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
+            <p className="text-text-secondary mb-4">You need a workspace first</p>
             <Link
               href="/app/workspaces/new"
-              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover"
             >
               Create Workspace
             </Link>
@@ -221,20 +221,20 @@ export default function NewTaskPage() {
         ) : (
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
-              <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
+              <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
                 {error}
               </div>
             )}
 
             {/* Run once / Recurring toggle */}
-            <div className="flex items-center gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+            <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
               <button
                 type="button"
                 onClick={() => setRecurring(false)}
                 className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
                   !recurring
-                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                    ? 'bg-surface-1 text-text-primary shadow-sm'
+                    : 'text-text-secondary hover:text-text-primary'
                 }`}
               >
                 Run once
@@ -244,8 +244,8 @@ export default function NewTaskPage() {
                 onClick={() => setRecurring(true)}
                 className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
                   recurring
-                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                    ? 'bg-surface-1 text-text-primary shadow-sm'
+                    : 'text-text-secondary hover:text-text-primary'
                 }`}
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -266,7 +266,7 @@ export default function NewTaskPage() {
                 disabled={loadingWorkspaces}
                 value={selectedWorkspaceId}
                 onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               >
                 <option value="">Select a workspace</option>
                 {workspaces.map((ws) => (
@@ -289,9 +289,9 @@ export default function NewTaskPage() {
                   value={scheduleName}
                   onChange={(e) => setScheduleName(e.target.value)}
                   placeholder="e.g. Nightly test suite"
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 />
-                <p className="text-xs text-gray-500 mt-1">Optional. Defaults to task title.</p>
+                <p className="text-xs text-text-secondary mt-1">Optional. Defaults to task title.</p>
               </div>
             )}
 
@@ -305,7 +305,7 @@ export default function NewTaskPage() {
                 name="title"
                 required
                 placeholder={recurring ? "Run full test suite" : "Fix login bug"}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
             </div>
 
@@ -323,7 +323,7 @@ export default function NewTaskPage() {
                   : "Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
                 }
                 onPaste={handlePaste}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
               {pastedImages.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
@@ -332,12 +332,12 @@ export default function NewTaskPage() {
                       <img
                         src={img.data}
                         alt={img.filename}
-                        className="max-h-24 rounded border border-gray-200 dark:border-gray-700"
+                        className="max-h-24 rounded border border-border-default"
                       />
                       <button
                         type="button"
                         onClick={() => removeImage(i)}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         &times;
                       </button>
@@ -358,13 +358,13 @@ export default function NewTaskPage() {
                 min="0"
                 max="10"
                 defaultValue="5"
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
             </div>
 
             {/* Cron fields (recurring only) */}
             {recurring && (
-              <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4 space-y-4 bg-gray-50 dark:bg-gray-900/50">
+              <div className="border border-border-default rounded-lg p-4 space-y-4 bg-surface-2">
                 <div>
                   <label htmlFor="cron" className="block text-sm font-medium mb-2">
                     Schedule
@@ -374,7 +374,7 @@ export default function NewTaskPage() {
                     id="cron"
                     value={cronExpression}
                     onChange={(e) => setCronExpression(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
                     placeholder="0 9 * * *"
                     required
                   />
@@ -382,9 +382,9 @@ export default function NewTaskPage() {
                     <div className="mt-2">
                       {cronPreview.valid ? (
                         <div className="text-sm">
-                          <p className="text-green-600 dark:text-green-400">{cronPreview.description}</p>
+                          <p className="text-status-success">{cronPreview.description}</p>
                           {cronPreview.nextRuns && cronPreview.nextRuns.length > 0 && (
-                            <div className="text-gray-500 mt-1 space-y-0.5">
+                            <div className="text-text-secondary mt-1 space-y-0.5">
                               {cronPreview.nextRuns.map((run, i) => (
                                 <p key={i} className="text-xs">{run}</p>
                               ))}
@@ -392,11 +392,11 @@ export default function NewTaskPage() {
                           )}
                         </div>
                       ) : (
-                        <p className="text-sm text-red-600 dark:text-red-400">{cronPreview.description}</p>
+                        <p className="text-sm text-status-error">{cronPreview.description}</p>
                       )}
                     </div>
                   )}
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-text-secondary mt-1">
                     minute hour day-of-month month day-of-week
                   </p>
                 </div>
@@ -409,7 +409,7 @@ export default function NewTaskPage() {
                     id="timezone"
                     value={timezone}
                     onChange={(e) => setTimezone(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
                   >
                     <option value="UTC">UTC</option>
                     <option value="America/New_York">Eastern (America/New_York)</option>
@@ -430,7 +430,7 @@ export default function NewTaskPage() {
               <button
                 type="submit"
                 disabled={loading || loadingWorkspaces || (recurring && cronPreview !== null && !cronPreview.valid)}
-                className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+                className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
               >
                 {loading
                   ? (recurring ? 'Creating Schedule...' : 'Creating...')
@@ -439,7 +439,7 @@ export default function NewTaskPage() {
               </button>
               <Link
                 href="/app/tasks"
-                className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
               >
                 Cancel
               </Link>

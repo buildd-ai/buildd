@@ -22,8 +22,8 @@ export default function InstructionHistory({ history, pendingInstruction }: Inst
   };
 
   return (
-    <div className="mt-4 pt-4 border-t border-green-200 dark:border-green-800">
-      <h4 className="text-sm font-medium text-gray-500 mb-2">Communication</h4>
+    <div className="mt-4 pt-4 border-t border-border-default">
+      <h4 className="text-sm font-medium text-text-secondary mb-2">Communication</h4>
 
       <div className="space-y-2 max-h-48 overflow-y-auto">
         {history.map((entry, i) => (
@@ -36,15 +36,15 @@ export default function InstructionHistory({ history, pendingInstruction }: Inst
             <div
               className={`max-w-[80%] px-3 py-2 rounded-lg ${
                 entry.type === 'instruction'
-                  ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-200'
-                  : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200'
+                  ? 'bg-primary/10 text-primary'
+                  : 'bg-surface-3 text-text-primary'
               }`}
             >
               <p className="break-words">{entry.message}</p>
               <p className={`text-xs mt-1 ${
                 entry.type === 'instruction'
-                  ? 'text-blue-500'
-                  : 'text-gray-500'
+                  ? 'text-primary/60'
+                  : 'text-text-muted'
               }`}>
                 {entry.type === 'instruction' ? 'You' : 'Worker'} · {formatTime(entry.timestamp)}
               </p>
@@ -55,9 +55,9 @@ export default function InstructionHistory({ history, pendingInstruction }: Inst
         {/* Pending instruction indicator */}
         {pendingInstruction && (
           <div className="flex gap-2 justify-end">
-            <div className="max-w-[80%] px-3 py-2 rounded-lg bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border border-yellow-300 dark:border-yellow-700">
+            <div className="max-w-[80%] px-3 py-2 rounded-lg bg-status-warning/10 text-status-warning border border-status-warning/20">
               <p className="break-words">{pendingInstruction}</p>
-              <p className="text-xs mt-1 text-yellow-600 dark:text-yellow-400">
+              <p className="text-xs mt-1 text-status-warning/70">
                 Pending delivery...
               </p>
             </div>

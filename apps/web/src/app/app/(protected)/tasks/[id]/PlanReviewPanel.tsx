@@ -84,44 +84,44 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
 
   if (loading) {
     return (
-      <div className="mb-3 border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 rounded-lg p-4">
-        <p className="text-sm text-gray-500">Loading plan...</p>
+      <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-lg p-4">
+        <p className="text-sm text-text-secondary">Loading plan...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="mb-3 border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 rounded-lg p-4">
-        <p className="text-sm text-red-600">{error}</p>
+      <div className="mb-3 border border-status-error/30 bg-status-error/5 rounded-lg p-4">
+        <p className="text-sm text-status-error">{error}</p>
       </div>
     );
   }
 
   if (!plan) {
     return (
-      <div className="mb-3 border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 rounded-lg p-4">
-        <p className="text-sm text-gray-500">Awaiting plan submission...</p>
+      <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-lg p-4">
+        <p className="text-sm text-text-secondary">Awaiting plan submission...</p>
       </div>
     );
   }
 
   return (
-    <div className="mb-3 border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 rounded-lg p-4">
+    <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-lg p-4">
       <div className="flex items-center gap-2 mb-3">
         <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
         </span>
-        <span className="text-xs font-medium text-amber-700 dark:text-amber-300 uppercase">Plan Review</span>
+        <span className="text-xs font-medium text-status-warning uppercase">Plan Review</span>
       </div>
 
-      <div className="bg-white dark:bg-gray-900 rounded-lg p-4 mb-3 max-h-[60vh] md:max-h-96 overflow-y-auto border border-amber-100 dark:border-amber-900">
+      <div className="bg-surface-1 rounded-md p-4 mb-3 max-h-[60vh] md:max-h-96 overflow-y-auto border border-status-warning/20">
         <MarkdownContent content={plan} />
       </div>
 
       {actionResult && (
-        <div className={`mb-3 text-sm ${actionResult.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+        <div className={`mb-3 text-sm ${actionResult.type === 'success' ? 'text-status-success' : 'text-status-error'}`}>
           {actionResult.message}
         </div>
       )}
@@ -132,14 +132,14 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
             <button
               onClick={handleApprove}
               disabled={actionLoading}
-              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm bg-status-success text-surface-1 rounded-md hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {actionLoading ? 'Processing...' : 'Approve Plan'}
             </button>
             <button
               onClick={() => setShowFeedback(!showFeedback)}
               disabled={actionLoading}
-              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 md:flex-none px-4 py-3 md:py-2 text-sm border border-status-warning/30 text-status-warning rounded-md hover:bg-status-warning/10 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Request Changes
             </button>
@@ -150,7 +150,7 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
               setShowFeedback(true);
             }}
             disabled={actionLoading}
-            className="w-full py-3 md:py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-3 md:py-2 text-sm text-status-error hover:bg-status-error/10 rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Reject Plan
           </button>
@@ -161,14 +161,14 @@ export default function PlanReviewPanel({ workerId }: PlanReviewPanelProps) {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="Describe what changes you'd like to the plan..."
-                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-amber-500 focus:border-transparent min-h-[80px] md:min-h-0"
+                className="w-full px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary min-h-[80px] md:min-h-0"
                 rows={3}
                 disabled={actionLoading}
               />
               <button
                 onClick={handleRevise}
                 disabled={actionLoading || !feedback.trim()}
-                className="mt-2 px-4 py-3 md:py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="mt-2 px-4 py-3 md:py-2 text-sm bg-status-warning text-surface-1 rounded-md hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {actionLoading ? 'Sending...' : 'Send Feedback'}
               </button>

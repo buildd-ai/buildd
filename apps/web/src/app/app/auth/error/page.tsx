@@ -21,13 +21,13 @@ function ErrorContent() {
     <main className="flex min-h-screen flex-col items-center justify-center p-24">
       <div className="w-full max-w-md space-y-8 text-center">
         <div>
-          <h1 className="text-3xl font-bold text-red-600">Authentication Error</h1>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">{message}</p>
+          <h1 className="text-3xl font-bold text-status-error">Authentication Error</h1>
+          <p className="mt-4 text-text-secondary">{message}</p>
         </div>
 
         <Link
           href="/auth/signin"
-          className="inline-block px-6 py-3 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 transition-opacity"
+          className="inline-block px-6 py-3 bg-primary text-white rounded-md hover:bg-primary-hover transition-opacity"
         >
           Try Again
         </Link>

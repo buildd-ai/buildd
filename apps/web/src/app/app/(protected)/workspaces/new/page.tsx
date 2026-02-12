@@ -53,11 +53,11 @@ function NameModal({
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
+        className="bg-surface-2 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold">Workspace Name</h2>
-        <p className="text-sm text-gray-500">Choose how to name this workspace</p>
+        <p className="text-sm text-text-muted">Choose how to name this workspace</p>
 
         <div className="space-y-2">
           {repo && (
@@ -65,8 +65,8 @@ function NameModal({
               <label
                 className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
                   mode === 'repo'
-                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border-default hover:border-primary/50'
                 }`}
                 onClick={() => setMode('repo')}
               >
@@ -79,15 +79,15 @@ function NameModal({
                 />
                 <div>
                   <div className="font-medium">{repoName}</div>
-                  <div className="text-xs text-gray-500">Repository name only</div>
+                  <div className="text-xs text-text-muted">Repository name only</div>
                 </div>
               </label>
 
               <label
                 className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
                   mode === 'full'
-                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border-default hover:border-primary/50'
                 }`}
                 onClick={() => setMode('full')}
               >
@@ -100,7 +100,7 @@ function NameModal({
                 />
                 <div>
                   <div className="font-medium">{fullName}</div>
-                  <div className="text-xs text-gray-500">Include organization</div>
+                  <div className="text-xs text-text-muted">Include organization</div>
                 </div>
               </label>
             </>
@@ -109,8 +109,8 @@ function NameModal({
           <label
             className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
               mode === 'custom'
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                ? 'border-primary bg-primary/10'
+                : 'border-border-default hover:border-primary/50'
             }`}
             onClick={() => setMode('custom')}
           >
@@ -130,7 +130,7 @@ function NameModal({
                   onChange={(e) => setCustomName(e.target.value)}
                   placeholder="Enter custom name"
                   autoFocus
-                  className="mt-2 w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="mt-2 w-full px-3 py-1.5 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 />
               )}
             </div>
@@ -143,13 +143,13 @@ function NameModal({
               const name = mode === 'repo' ? repoName : mode === 'full' ? fullName : customName;
               onSelect(name, mode);
             }}
-            className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
           >
             Apply
           </button>
           <button
             onClick={onClose}
-            className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
           >
             Cancel
           </button>
@@ -343,14 +343,14 @@ export default function NewWorkspacePage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/workspaces" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Workspaces
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Workspace</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
+            <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
               {error}
             </div>
           )}
@@ -364,7 +364,7 @@ export default function NewWorkspacePage() {
               <select
                 value={selectedTeamId}
                 onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1"
               >
                 {userTeams.map((team) => (
                   <option key={team.id} value={team.id}>
@@ -372,7 +372,7 @@ export default function NewWorkspacePage() {
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-text-muted mt-1">
                 Which team owns this workspace
               </p>
             </div>
@@ -397,8 +397,8 @@ export default function NewWorkspacePage() {
                         }}
                         className={`px-3 py-2 rounded-lg border text-sm transition-all ${
                           selectedInstallation === inst.id
-                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
-                            : 'border-gray-300 dark:border-gray-700 hover:border-gray-400'
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-border-default hover:border-primary/50'
                         }`}
                       >
                         {inst.accountLogin}
@@ -423,7 +423,7 @@ export default function NewWorkspacePage() {
               <button
                 type="button"
                 onClick={() => setUseManual(true)}
-                className="text-sm text-blue-600 hover:underline"
+                className="text-sm text-primary hover:underline"
               >
                 Or enter repository URL manually
               </button>
@@ -437,7 +437,7 @@ export default function NewWorkspacePage() {
                 <button
                   type="button"
                   onClick={() => setUseManual(false)}
-                  className="text-sm text-blue-600 hover:underline"
+                  className="text-sm text-primary hover:underline"
                 >
                   &larr; Back to repository picker
                 </button>
@@ -461,14 +461,14 @@ export default function NewWorkspacePage() {
                     }
                   }}
                   placeholder="org/repo or https://github.com/org/repo"
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 />
-                <p className="text-xs text-gray-500 mt-1">Optional - agents will clone this repo</p>
+                <p className="text-xs text-text-muted mt-1">Optional - agents will clone this repo</p>
               </div>
 
               {!githubConfigured && (
-                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-                  <p className="text-sm text-blue-700 dark:text-blue-300">
+                <div className="p-3 bg-primary/10 border border-primary/30 rounded-lg">
+                  <p className="text-sm text-primary">
                     <a href="/api/github/install" className="font-medium hover:underline">
                       Connect GitHub
                     </a>
@@ -486,18 +486,18 @@ export default function NewWorkspacePage() {
                 Workspace Name
               </label>
               <div className="flex items-center gap-2">
-                <div className="flex-1 px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg font-mono text-sm">
+                <div className="flex-1 px-4 py-2 bg-surface-3 border border-border-default rounded-lg font-mono text-sm">
                   {workspaceName || selectedRepo?.name || extractRepoInfo(manualRepoUrl)?.name || 'unnamed'}
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowNameModal(true)}
-                  className="px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  className="px-3 py-2 text-sm text-text-secondary hover:text-text-primary border border-border-default rounded-lg hover:bg-surface-3 transition-colors"
                 >
                   Edit
                 </button>
               </div>
-              <p className="text-xs text-gray-500 mt-1">Auto-derived from repository</p>
+              <p className="text-xs text-text-muted mt-1">Auto-derived from repository</p>
             </div>
           )}
 
@@ -516,7 +516,7 @@ export default function NewWorkspacePage() {
                   className="w-4 h-4"
                 />
                 <span className="text-sm">Open</span>
-                <span className="text-xs text-gray-500">Any token can claim tasks</span>
+                <span className="text-xs text-text-muted">Any token can claim tasks</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -528,7 +528,7 @@ export default function NewWorkspacePage() {
                   className="w-4 h-4"
                 />
                 <span className="text-sm">Restricted</span>
-                <span className="text-xs text-gray-500">Only linked tokens</span>
+                <span className="text-xs text-text-muted">Only linked tokens</span>
               </label>
             </div>
           </div>
@@ -537,13 +537,13 @@ export default function NewWorkspacePage() {
             <button
               type="submit"
               disabled={loading || (hasGitHub && !useManual && !selectedRepo)}
-              className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+              className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg disabled:opacity-50"
             >
               {loading ? 'Creating...' : 'Create Workspace'}
             </button>
             <Link
               href="/app/workspaces"
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
             >
               Cancel
             </Link>

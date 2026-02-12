@@ -6,6 +6,9 @@
   <title>buildd</title>
   <link rel="icon" type="image/png" href="/icon.png">
   <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
@@ -23,13 +26,13 @@
   <div id="setup" class="setup hidden min-h-screen flex items-center justify-center p-5">
     <div class="max-w-[400px] w-full text-center">
       <div class="mb-2">
-        <img src="/icon.png" alt="buildd" class="w-16 h-16 rounded-lg mb-4 inline-block">
+        <img src="/icon.png" alt="buildd" class="w-16 h-16 rounded-md mb-4 inline-block">
         <h1 class="text-[32px] font-semibold">buildd</h1>
       </div>
       <p class="text-text-secondary mb-8">Local task runner for AI agents</p>
 
       <div class="flex flex-col gap-4">
-        <a href="/auth/login" class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-6 text-base rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-2.5 no-underline hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]">
+        <a href="/auth/login" class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-6 text-base rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-2.5 no-underline hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
             <polyline points="10 17 15 12 10 7"/>
@@ -40,13 +43,13 @@
         <div class="setup-divider flex items-center gap-4 text-text-secondary">
           <span>or</span>
         </div>
-        <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="manualKeyBtn">
+        <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200" id="manualKeyBtn">
           Enter API Key Manually
         </button>
         <div class="setup-divider flex items-center gap-4 text-text-secondary">
           <span>or</span>
         </div>
-        <button class="btn bg-transparent border border-border-default text-text-secondary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-surface hover:text-text-primary" id="serverlessBtn">
+        <button class="btn bg-transparent border border-border-default text-text-secondary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 hover:bg-surface hover:text-text-primary" id="serverlessBtn">
           Use Local Only (no server)
         </button>
       </div>
@@ -54,16 +57,16 @@
       <div id="manualKeyForm" class="hidden mt-6 text-left">
         <div class="mb-4">
           <label class="block text-sm mb-2 text-text-secondary">API Key</label>
-          <input type="password" id="apiKeyInput" class="input w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="bld_xxxxxx...">
+          <input type="password" id="apiKeyInput" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="bld_xxxxxx...">
         </div>
         <div class="flex gap-3">
-          <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex-1" id="cancelKeyBtn">Cancel</button>
-          <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex-1 hover:bg-brand-hover" id="saveKeyBtn">Save</button>
+          <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 flex-1" id="cancelKeyBtn">Cancel</button>
+          <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 flex-1 hover:bg-brand-hover" id="saveKeyBtn">Save</button>
         </div>
         <p class="mt-4 text-[13px] text-text-secondary">Get your API key from the <a href="https://buildd.dev" target="_blank" class="text-brand no-underline hover:underline">buildd dashboard</a></p>
       </div>
 
-      <p id="setupError" class="hidden mt-4 p-3 bg-red-500/10 border border-red-500 rounded-lg text-red-500 text-sm"></p>
+      <p id="setupError" class="hidden mt-4 p-3 bg-red-500/10 border border-red-500 rounded-md text-red-500 text-sm"></p>
 
       <p class="mt-8 text-xs text-text-secondary">Built with <a href="https://github.com/anthropics/anthropic-sdk-python/tree/main/src/anthropic/experimental/claude_agent" target="_blank" class="text-text-secondary underline decoration-border-default underline-offset-2 hover:text-text-primary hover:decoration-text-secondary">Claude Agent SDK</a>, <a href="https://bun.sh" target="_blank" class="text-text-secondary underline decoration-border-default underline-offset-2 hover:text-text-primary hover:decoration-text-secondary">Bun</a>, and <a href="https://pusher.com" target="_blank" class="text-text-secondary underline decoration-border-default underline-offset-2 hover:text-text-primary hover:decoration-text-secondary">Pusher</a></p>
     </div>
@@ -71,20 +74,20 @@
 
   <div id="app" class="hidden">
     <!-- Header -->
-    <header class="flex items-center justify-between p-4 border-b border-border-default sticky top-0 bg-base z-[100] md:px-6">
+    <header class="flex items-center justify-between p-4 border-b border-border-default sticky top-0 bg-surface z-[100] md:px-6">
       <div class="flex items-center gap-2.5 font-semibold text-lg">
-        <img src="/icon.png" alt="buildd" class="w-8 h-8 rounded-lg">
+        <img src="/icon.png" alt="buildd" class="w-8 h-8 rounded-md">
         <span>buildd</span>
       </div>
       <div class="flex gap-2">
-        <button class="hidden relative w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="outboxBtn" title="Pending sync" aria-label="Pending sync" onclick="handleOutboxFlush()">
+        <button class="hidden relative w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="outboxBtn" title="Pending sync" aria-label="Pending sync" onclick="handleOutboxFlush()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 2v10l4 2"/>
             <circle cx="12" cy="12" r="10"/>
           </svg>
           <span id="outboxBadge" class="absolute -top-0.5 -right-0.5 bg-status-warning text-white text-[10px] font-bold min-w-[16px] h-4 rounded-full flex items-center justify-center px-1">0</span>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+        <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
           <svg class="w-5 h-5 dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
           </svg>
@@ -96,18 +99,18 @@
             <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="refreshBtn" title="Refresh" aria-label="Refresh">
+        <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="refreshBtn" title="Refresh" aria-label="Refresh">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
             <path d="M21 3v5h-5"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="addBtn" title="New Task" aria-label="New Task">
+        <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="addBtn" title="New Task" aria-label="New Task">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12 5v14M5 12h14"/>
           </svg>
         </button>
-        <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings" aria-label="Settings">
+        <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
             <circle cx="12" cy="12" r="3"/>
@@ -119,20 +122,20 @@
     <!-- Main content -->
     <main class="p-4 md:max-w-[800px] md:mx-auto md:p-6">
       <!-- Stats bar -->
-      <div class="flex items-center justify-center p-3 px-4 bg-surface rounded-xl mb-5" id="statsBar" aria-live="polite" aria-atomic="true">
+      <div class="flex items-center justify-center p-3 px-4 bg-surface border border-border-default rounded-[10px] mb-5" id="statsBar" aria-live="polite" aria-atomic="true">
         <div class="flex flex-col items-center flex-1 gap-0.5">
-          <span class="text-xl font-bold text-text-primary leading-none" id="statActive">0</span>
-          <span class="text-[11px] text-text-secondary uppercase tracking-wide font-medium">Active</span>
+          <span class="text-xl font-semibold text-text-primary leading-none" id="statActive">0</span>
+          <span class="text-[10px] font-mono text-text-tertiary uppercase tracking-[1.5px]">Active</span>
         </div>
         <div class="w-px h-7 bg-border-default"></div>
         <div class="flex flex-col items-center flex-1 gap-0.5">
-          <span class="text-xl font-bold text-text-primary leading-none" id="statPending">0</span>
-          <span class="text-[11px] text-text-secondary uppercase tracking-wide font-medium">Pending</span>
+          <span class="text-xl font-semibold text-text-primary leading-none" id="statPending">0</span>
+          <span class="text-[10px] font-mono text-text-tertiary uppercase tracking-[1.5px]">Pending</span>
         </div>
         <div class="w-px h-7 bg-border-default"></div>
         <div class="flex flex-col items-center flex-1 gap-0.5">
-          <span class="text-xl font-bold text-text-primary leading-none" id="statCompleted">0</span>
-          <span class="text-[11px] text-text-secondary uppercase tracking-wide font-medium">Done</span>
+          <span class="text-xl font-semibold text-text-primary leading-none" id="statCompleted">0</span>
+          <span class="text-[10px] font-mono text-text-tertiary uppercase tracking-[1.5px]">Done</span>
         </div>
       </div>
 
@@ -145,7 +148,7 @@
         </div>
         <h2 class="text-[22px] font-semibold text-text-primary mb-2">Ready to build</h2>
         <p class="text-[15px] text-text-secondary mb-7 max-w-[280px] leading-relaxed">Create a task and an AI agent will start working on it</p>
-        <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-7 text-[15px] rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]" id="heroCreateBtn">
+        <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-7 text-[15px] rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]" id="heroCreateBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
             <path d="M12 5v14M5 12h14"/>
           </svg>
@@ -162,14 +165,14 @@
 
         <!-- Active workers -->
         <section class="mb-6" id="activeSection">
-          <h2 class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide mb-3">Active</h2>
+          <h2 class="text-[10px] font-mono font-medium text-text-tertiary uppercase tracking-[2.5px] mb-3 pb-2 border-b border-border-default">Active</h2>
           <div id="workers" class="flex flex-col gap-3" aria-live="polite"></div>
         </section>
 
         <!-- Pending tasks -->
         <section class="mb-6" id="pendingSection">
           <div class="flex items-center justify-between mb-3">
-            <h2 class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide">Pending</h2>
+            <h2 class="text-[10px] font-mono font-medium text-text-tertiary uppercase tracking-[2.5px]">Pending</h2>
             <button class="bg-none border-none text-brand text-[13px] font-medium cursor-pointer py-1 px-2 rounded transition-colors duration-150 hover:bg-brand/10" id="inlineAddBtn">+ New</button>
           </div>
           <div id="tasks" class="flex flex-col gap-3" aria-live="polite"></div>
@@ -184,15 +187,15 @@
 
     <!-- Worker detail modal -->
     <div id="workerModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
-      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[640px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)] sm:h-[80vh]">
+      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-[16px] sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[640px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)] sm:h-[80vh]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalBack" aria-label="Back">
+          <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
           <h2 class="flex-1 text-[17px] font-semibold" id="modalTitle">Worker</h2>
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalClose" aria-label="Close">
+          <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="modalClose" aria-label="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M18 6L6 18M6 6l12 12"/>
             </svg>
@@ -204,26 +207,26 @@
           <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
         </div>
         <div class="flex gap-2 py-3 px-4 border-t border-border-default bg-surface">
-          <input type="text" id="messageInput" class="input flex-1 w-full bg-surface border border-border-default rounded-lg py-2.5 px-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Send a message to the agent...">
-          <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-2.5 px-4 rounded-lg font-medium cursor-pointer transition-all duration-200 shrink-0 hover:bg-brand-hover" id="sendMessageBtn">Send</button>
+          <input type="text" id="messageInput" class="input flex-1 w-full bg-surface border border-border-default rounded-md py-2.5 px-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Send a message to the agent...">
+          <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-2.5 px-4 rounded-md font-medium cursor-pointer transition-all duration-200 shrink-0 hover:bg-brand-hover" id="sendMessageBtn">Send</button>
         </div>
         <footer class="flex gap-3 p-4 border-t border-border-default" id="modalFooter">
-          <button class="btn flex-1 bg-transparent text-red-500 border border-red-500/30 rounded-lg py-3 px-6 font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-1.5 hover:bg-red-500/10 hover:border-red-500/50" id="modalAbortBtn">
+          <button class="btn flex-1 bg-transparent text-red-500 border border-red-500/30 rounded-md py-3 px-6 font-medium cursor-pointer transition-all duration-200 flex items-center justify-center gap-1.5 hover:bg-red-500/10 hover:border-red-500/50" id="modalAbortBtn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
               <rect x="3" y="3" width="18" height="18" rx="2"/>
             </svg>
             Stop Task
           </button>
-          <button class="btn flex-1 bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-brand-hover" id="modalDoneBtn">Mark Done</button>
+          <button class="btn flex-1 bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 hover:bg-brand-hover" id="modalDoneBtn">Mark Done</button>
         </footer>
       </div>
     </div>
 
     <!-- New task modal -->
     <div id="taskModal" role="dialog" aria-modal="true" aria-label="New Task" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
-      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[520px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
+      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-[16px] sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[520px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="taskModalBack" aria-label="Back">
+          <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="taskModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
@@ -236,7 +239,7 @@
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Workspace</label>
             <div class="flex gap-2 items-center">
               <div class="custom-select flex-1" id="workspaceSelect">
-                <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-surface border border-border-default rounded-lg text-text-primary text-sm cursor-pointer transition-all duration-150 hover:border-border-hover" id="workspaceSelectTrigger">
+                <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-surface border border-border-default rounded-md text-text-primary text-sm cursor-pointer transition-all duration-150 hover:border-border-hover" id="workspaceSelectTrigger">
                   <span class="custom-select-value flex-1 text-left whitespace-nowrap overflow-hidden text-ellipsis placeholder text-text-secondary">Select workspace...</span>
                   <svg class="custom-select-arrow shrink-0 ml-2 text-text-secondary transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                     <polyline points="6 9 12 15 18 9"/>
@@ -246,7 +249,7 @@
                   <div class="custom-select-options p-2" id="workspaceSelectOptions"></div>
                 </div>
               </div>
-              <button type="button" class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="manageWorkspacesBtn">
+              <button type="button" class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="manageWorkspacesBtn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
@@ -258,16 +261,16 @@
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Title</label>
-            <input type="text" id="taskTitle" class="input w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Fix the bug...">
+            <input type="text" id="taskTitle" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Fix the bug...">
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Description</label>
-            <textarea id="taskDescription" class="input w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
+            <textarea id="taskDescription" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Attachments</label>
             <div class="flex flex-wrap gap-3" id="attachments">
-              <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-surface border-2 border-dashed border-border-default flex items-center justify-center cursor-pointer">
+              <label class="w-20 h-20 rounded-md overflow-hidden relative bg-surface border-2 border-dashed border-border-default flex items-center justify-center cursor-pointer">
                 <input type="file" id="fileInput" accept="image/*" multiple hidden>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 text-text-secondary">
                   <path d="M12 5v14M5 12h14"/>
@@ -277,18 +280,18 @@
           </div>
         </div>
         <footer class="flex gap-3 p-4 border-t border-border-default">
-          <button class="btn flex-1 bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="taskModalCancel">Cancel</button>
-          <button class="btn flex-1 bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200" id="taskModalCreate">Create</button>
-          <button class="btn flex-[1.5] bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-brand-hover" id="taskModalStart">Start Task</button>
+          <button class="btn flex-1 bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200" id="taskModalCancel">Cancel</button>
+          <button class="btn flex-1 bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200" id="taskModalCreate">Create</button>
+          <button class="btn flex-[1.5] bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 hover:bg-brand-hover" id="taskModalStart">Start Task</button>
         </footer>
       </div>
     </div>
 
     <!-- Settings modal -->
     <div id="settingsModal" role="dialog" aria-modal="true" aria-label="Settings" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
-      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[420px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
+      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-[16px] sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[420px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsModalBack" aria-label="Back">
+          <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
@@ -299,19 +302,19 @@
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">Projects Root</label>
-            <input type="text" id="settingsRoot" class="input w-full bg-inset border border-border-default rounded-lg p-3 text-[15px] text-text-secondary outline-none cursor-default" readonly>
+            <input type="text" id="settingsRoot" class="input w-full bg-inset border border-border-default rounded-md p-3 text-[15px] text-text-secondary outline-none cursor-default" readonly>
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">buildd Server</label>
             <div class="flex gap-2 items-center">
-              <input type="text" id="settingsServer" class="input flex-1 w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev">
-              <button id="settingsServerSave" class="hidden btn bg-brand text-white py-1.5 px-3 text-[13px] rounded-lg font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()">Save</button>
+              <input type="text" id="settingsServer" class="input flex-1 w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev">
+              <button id="settingsServerSave" class="hidden btn bg-brand text-white py-1.5 px-3 text-[13px] rounded-md font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()">Save</button>
             </div>
             <p class="text-xs text-text-secondary mt-1.5" id="settingsServerHint">Reinitializes connection when changed</p>
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">Model</label>
-            <select id="settingsModel" class="input w-full bg-surface border border-border-default rounded-lg p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring">
+            <select id="settingsModel" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring">
               <option value="">Default (recommended)</option>
               <option value="claude-opus-4-6">Claude Opus 4.6</option>
               <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
@@ -351,15 +354,15 @@
 
     <!-- Workspace management modal -->
     <div id="workspaceModal" role="dialog" aria-modal="true" aria-label="Manage Workspaces" class="modal hidden fixed inset-0 bg-base z-[200] flex flex-col sm:bg-black/60 sm:backdrop-blur-sm sm:items-center sm:justify-center sm:p-6">
-      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-xl sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[560px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
+      <div class="modal-content flex flex-col h-full sm:bg-base sm:rounded-[16px] sm:border sm:border-border-default sm:max-h-[90vh] sm:w-full sm:max-w-[560px] sm:shadow-[0_16px_48px_rgb(var(--color-overlay)/0.3)]">
         <header class="flex items-center gap-3 p-4 border-b border-border-default">
-          <button class="w-10 h-10 border-none bg-surface rounded-lg text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="workspaceModalBack" aria-label="Back">
+          <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="workspaceModalBack" aria-label="Back">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
           <h2 class="flex-1 text-[17px] font-semibold">Manage Workspaces</h2>
-          <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-lg font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="rescanBtn" title="Rescan local repositories">
+          <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap" id="rescanBtn" title="Rescan local repositories">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
               <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
               <path d="M21 3v5h-5"/>
@@ -400,9 +403,9 @@
   </div>
   <!-- Confirm dialog -->
   <div id="confirmDialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in">
-    <div class="bg-surface border border-border-default rounded-xl w-full max-w-[380px] mx-4 overflow-hidden">
+    <div class="bg-surface border border-border-default rounded-[16px] w-full max-w-[380px] mx-4 overflow-hidden">
       <div class="p-6 flex gap-4 items-start">
-        <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-red-500/10 text-red-500">
+        <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-status-error/10 text-status-error">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
             <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
           </svg>
@@ -413,8 +416,8 @@
         </div>
       </div>
       <div class="flex gap-3 py-4 px-6 bg-surface-hover border-t border-border-default justify-end">
-        <button class="btn bg-surface-hover text-text-primary py-2 px-4 text-sm rounded-lg font-medium cursor-pointer transition-all duration-200" id="confirmCancel">Cancel</button>
-        <button class="btn bg-red-500 text-white py-2 px-4 text-sm rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-red-600" id="confirmAction">Stop Task</button>
+        <button class="btn bg-surface-hover text-text-primary py-2 px-4 text-sm rounded-md font-medium cursor-pointer transition-all duration-200" id="confirmCancel">Cancel</button>
+        <button class="btn bg-status-error text-white py-2 px-4 text-sm rounded-md font-medium cursor-pointer transition-all duration-200 hover:opacity-90" id="confirmAction">Stop Task</button>
       </div>
     </div>
   </div>

@@ -16,13 +16,13 @@ interface Props {
 }
 
 const STATUS_DOT_COLORS: Record<string, string> = {
-  running: 'bg-emerald-500',
-  starting: 'bg-emerald-500',
-  waiting_input: 'bg-amber-500',
-  awaiting_plan_approval: 'bg-amber-500',
-  completed: 'bg-blue-500',
-  failed: 'bg-red-500',
-  idle: 'bg-slate-500',
+  running: 'bg-status-success',
+  starting: 'bg-status-success',
+  waiting_input: 'bg-status-warning',
+  awaiting_plan_approval: 'bg-status-warning',
+  completed: 'bg-status-info',
+  failed: 'bg-status-error',
+  idle: 'bg-text-muted',
 };
 
 function formatElapsed(startedAt: string | null): string {
@@ -49,28 +49,28 @@ export default function MobileWorkerCard({
   return (
     <Link href={`/app/tasks/${taskId}`} className="block">
       <div
-        className={`rounded-xl bg-slate-800 p-4 border border-slate-700 animate-card-enter ${
+        className={`rounded-md bg-surface-2 p-4 border border-border-default animate-card-enter ${
           isWaiting ? 'animate-pulse-border' : ''
         }`}
       >
         {/* Header: status dot + name */}
         <div className="flex items-center gap-2 mb-1">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${STATUS_DOT_COLORS[status] || 'bg-slate-500'}`} />
-          <span className="text-base font-semibold text-white truncate">
+          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${STATUS_DOT_COLORS[status] || 'bg-text-muted'}`} />
+          <span className="text-base font-semibold text-text-primary truncate">
             {taskTitle || name}
           </span>
         </div>
 
         {/* Workspace name */}
         {workspaceName && (
-          <p className="text-sm text-slate-400 mb-3 truncate">{workspaceName}</p>
+          <p className="text-sm text-text-secondary mb-3 truncate">{workspaceName}</p>
         )}
 
         {/* Progress bar */}
         <div className="mb-3">
-          <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+          <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
             <div
-              className="h-full bg-violet-500 rounded-full transition-all duration-500 ease-in-out"
+              className="h-full bg-primary rounded-full transition-all duration-500 ease-in-out"
               style={{ width: `${progressWidth}%` }}
             />
           </div>
@@ -78,14 +78,14 @@ export default function MobileWorkerCard({
 
         {/* Stats row */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-xs text-slate-400">
+          <div className="flex items-center gap-3 font-mono text-xs text-text-muted">
             <span>${parseFloat(costUsd || '0').toFixed(2)}</span>
             <span>{turns} turns</span>
             <span>{formatElapsed(startedAt)}</span>
           </div>
 
           {isWaiting && (
-            <span className="text-xs font-medium text-amber-400">
+            <span className="text-xs font-medium text-status-warning">
               Review Plan &rarr;
             </span>
           )}

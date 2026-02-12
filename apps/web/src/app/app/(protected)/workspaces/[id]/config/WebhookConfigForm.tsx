@@ -82,18 +82,18 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
                 <div className="flex items-center justify-between mb-4">
                     <h3 className="font-medium">Webhook Endpoint</h3>
                     <label className="flex items-center gap-2 cursor-pointer">
-                        <span className="text-sm text-gray-500">{enabled ? 'Active' : 'Disabled'}</span>
+                        <span className="text-sm text-text-muted">{enabled ? 'Active' : 'Disabled'}</span>
                         <button
                             type="button"
                             role="switch"
                             aria-checked={enabled}
                             onClick={() => setEnabled(!enabled)}
                             className={`relative w-10 h-6 rounded-full transition-colors ${
-                                enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'
+                                enabled ? 'bg-status-success' : 'bg-surface-4'
                             }`}
                         >
                             <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
@@ -110,10 +110,10 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                             type="url"
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
                             placeholder="http://localhost:18789/hooks/agent"
                         />
-                        <p className="text-xs text-gray-500 mt-1">
+                        <p className="text-xs text-text-muted mt-1">
                             For OpenClaw, use your Gateway's <code>/hooks/agent</code> endpoint
                         </p>
                     </div>
@@ -124,10 +124,10 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                             type="password"
                             value={token}
                             onChange={(e) => setToken(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
                             placeholder="your-webhook-secret"
                         />
-                        <p className="text-xs text-gray-500 mt-1">
+                        <p className="text-xs text-text-muted mt-1">
                             The <code>hooks.token</code> value from your agent config
                         </p>
                     </div>
@@ -138,12 +138,12 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                                 type="button"
                                 onClick={handleTest}
                                 disabled={testing}
-                                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                                className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50"
                             >
                                 {testing ? 'Testing...' : 'Test Connection'}
                             </button>
                             {testResult && (
-                                <span className={`text-sm ${testResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                <span className={`text-sm ${testResult.ok ? 'text-status-success' : 'text-status-error'}`}>
                                     {testResult.message}
                                 </span>
                             )}
@@ -153,8 +153,8 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
             </div>
 
             {enabled && url.trim() && (
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                    <p className="text-sm text-blue-800 dark:text-blue-200">
+                <div className="bg-primary/10 border border-primary/30 rounded-lg p-4">
+                    <p className="text-sm text-primary">
                         When enabled, new tasks created in this workspace will be sent to the webhook.
                         The agent receives the task description and can report progress back via the Buildd API.
                     </p>
@@ -166,17 +166,17 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                 <button
                     type="submit"
                     disabled={saving}
-                    className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+                    className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
                 >
                     {saving ? 'Saving...' : 'Save Webhook'}
                 </button>
 
                 {saved && (
-                    <span className="text-green-600 dark:text-green-400 text-sm">Saved</span>
+                    <span className="text-status-success text-sm">Saved</span>
                 )}
 
                 {error && (
-                    <span className="text-red-600 dark:text-red-400 text-sm">{error}</span>
+                    <span className="text-status-error text-sm">{error}</span>
                 )}
             </div>
         </form>

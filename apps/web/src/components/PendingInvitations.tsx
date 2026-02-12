@@ -56,11 +56,11 @@ export default function PendingInvitations({ teamId }: { teamId: string }) {
   }
 
   if (loading) {
-    return <p className="text-sm text-gray-500 dark:text-gray-400">Loading invitations...</p>;
+    return <p className="text-sm text-text-secondary">Loading invitations...</p>;
   }
 
   if (invitations.length === 0) {
-    return <p className="text-sm text-gray-500 dark:text-gray-400">No pending invitations.</p>;
+    return <p className="text-sm text-text-secondary">No pending invitations.</p>;
   }
 
   return (
@@ -72,13 +72,13 @@ export default function PendingInvitations({ teamId }: { teamId: string }) {
         return (
           <div
             key={inv.id}
-            className="flex items-center justify-between p-3 bg-gray-50 dark:bg-zinc-800 rounded-lg"
+            className="flex items-center justify-between p-3 bg-surface-3 rounded-md"
           >
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+              <p className="text-sm font-medium text-text-primary truncate">
                 {inv.email}
               </p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-xs text-text-muted">
                 <span className="capitalize">{inv.role}</span>
                 {' '}&middot;{' '}
                 {inv.inviter?.name || inv.inviter?.email ? `Invited by ${inv.inviter.name || inv.inviter.email}` : 'Invited'}
@@ -89,7 +89,7 @@ export default function PendingInvitations({ teamId }: { teamId: string }) {
             <button
               onClick={() => handleRevoke(inv.id)}
               disabled={revoking === inv.id}
-              className="ml-3 px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded disabled:opacity-50"
+              className="ml-3 px-3 py-1 text-sm text-status-error hover:bg-status-error/10 rounded disabled:opacity-50"
             >
               {revoking === inv.id ? 'Revoking...' : 'Revoke'}
             </button>

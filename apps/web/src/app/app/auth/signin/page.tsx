@@ -40,13 +40,13 @@ function SignInContent() {
         <div className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-2xl p-8 shadow-2xl">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-white mb-2">buildd</h1>
-            <p className="text-gray-300">
+            <p className="text-text-secondary">
               AI Dev Team Orchestration
             </p>
           </div>
 
           {error && (
-            <div className="mb-6 bg-red-500/20 border border-red-500/30 rounded-lg p-4 text-red-200">
+            <div className="mb-6 bg-status-error/10 border border-status-error/30 rounded-lg p-4 text-status-error">
               {error === 'AccessDenied'
                 ? 'Access denied. Your email is not on the allowed list.'
                 : 'An error occurred during sign in.'}
@@ -56,7 +56,7 @@ function SignInContent() {
           <div className="space-y-4">
             <button
               onClick={() => signIn('google', { callbackUrl })}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-white text-gray-800 font-medium rounded-lg hover:bg-gray-100 transition-colors shadow-lg"
+              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-surface-1 text-text-primary font-medium rounded-md hover:bg-surface-3 transition-colors shadow-lg"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path
@@ -99,7 +99,7 @@ function SignInContent() {
             )}
           </div>
 
-          <p className="mt-6 text-center text-sm text-gray-400">
+          <p className="mt-6 text-center text-sm text-text-muted">
             Free for personal use
           </p>
         </div>

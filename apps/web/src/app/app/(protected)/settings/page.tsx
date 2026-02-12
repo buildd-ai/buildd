@@ -90,7 +90,7 @@ export default function SettingsPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-2xl mx-auto">
-        <Link href="/app/dashboard" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Dashboard
         </Link>
         <h1 className="text-3xl font-bold mb-8">Settings</h1>
@@ -98,8 +98,8 @@ export default function SettingsPage() {
         {message && (
           <div className={`mb-6 p-4 rounded-lg ${
             message.type === 'success'
-              ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
-              : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'
+              ? 'bg-status-success/10 text-status-success border border-status-success/30'
+              : 'bg-status-error/10 text-status-error border border-status-error/30'
           }`}>
             {message.text}
           </div>
@@ -111,26 +111,26 @@ export default function SettingsPage() {
             <h2 className="text-xl font-semibold">GitHub</h2>
             <a
               href="/api/github/install"
-              className="px-4 py-2 text-sm bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+              className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
             >
               + Connect Org
             </a>
           </div>
 
           {loading ? (
-            <div className="text-gray-500">Loading...</div>
+            <div className="text-text-secondary">Loading...</div>
           ) : installations.length === 0 ? (
-            <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-              <p className="text-gray-500 mb-4">No GitHub organizations connected</p>
+            <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
+              <p className="text-text-secondary mb-4">No GitHub organizations connected</p>
               <a
                 href="/api/github/install"
-                className="text-blue-600 hover:underline"
+                className="text-primary hover:underline"
               >
                 Connect your first org
               </a>
             </div>
           ) : (
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+            <div className="border border-border-default rounded-lg divide-y divide-border-default">
               {installations.map((inst) => (
                 <div key={inst.id} className="p-4">
                   <div className="flex items-center gap-4">
@@ -144,16 +144,16 @@ export default function SettingsPage() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{inst.accountLogin}</span>
-                        <span className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
+                        <span className="text-xs text-text-secondary bg-surface-3 px-2 py-0.5 rounded">
                           {inst.accountType}
                         </span>
                         {inst.suspendedAt && (
-                          <span className="text-xs text-red-500 bg-red-100 dark:bg-red-900/30 px-2 py-0.5 rounded">
+                          <span className="text-xs text-status-error bg-status-error/10 px-2 py-0.5 rounded">
                             Suspended
                           </span>
                         )}
                       </div>
-                      <div className="text-sm text-gray-500">
+                      <div className="text-sm text-text-secondary">
                         {inst.repoCount} repos &bull; {inst.repositorySelection === 'all' ? 'All repos' : 'Selected repos'}
                       </div>
                     </div>
@@ -161,13 +161,13 @@ export default function SettingsPage() {
                       <button
                         onClick={() => syncRepos(inst.id)}
                         disabled={syncing === inst.id}
-                        className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+                        className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50"
                       >
                         {syncing === inst.id ? 'Syncing...' : 'Sync'}
                       </button>
                       <button
                         onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                        className="px-3 py-1.5 text-sm text-red-600 border border-red-300 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
+                        className="px-3 py-1.5 text-sm text-status-error border border-status-error/30 rounded-md hover:bg-status-error/10"
                       >
                         Disconnect
                       </button>
@@ -178,13 +178,13 @@ export default function SettingsPage() {
             </div>
           )}
 
-          <p className="text-xs text-gray-500 mt-3">
+          <p className="text-xs text-text-secondary mt-3">
             To modify repo access, visit{' '}
             <a
               href="https://github.com/settings/installations"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:underline"
+              className="text-primary hover:underline"
             >
               GitHub Settings
             </a>
@@ -194,10 +194,10 @@ export default function SettingsPage() {
         {/* Account Section */}
         <section>
           <h2 className="text-xl font-semibold mb-4">Account</h2>
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
+          <div className="border border-border-default rounded-lg p-4">
+            <p className="text-text-secondary text-sm">
               Manage API keys and billing on the{' '}
-              <Link href="/app/accounts" className="text-blue-600 hover:underline">
+              <Link href="/app/accounts" className="text-primary hover:underline">
                 Accounts page
               </Link>
             </p>

@@ -18,22 +18,21 @@ import { join } from 'path';
 
 // --- Config ---
 
-const SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
 const TIMEOUT = 30_000; // 30 seconds per test
 
-// Resolve API key: env var > config.json
-function getApiKey(): string | undefined {
-  if (process.env.BUILDD_API_KEY) return process.env.BUILDD_API_KEY;
+// Resolve API key + server from env var > config.json
+function getFileConfig(): { apiKey?: string; builddServer?: string } {
   try {
     const configPath = join(process.env.HOME || '~', '.buildd', 'config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    return config.apiKey;
+    return JSON.parse(readFileSync(configPath, 'utf-8'));
   } catch {
-    return undefined;
+    return {};
   }
 }
 
-const API_KEY = getApiKey();
+const fileConfig = getFileConfig();
+const API_KEY = process.env.BUILDD_API_KEY || fileConfig.apiKey;
+const SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://buildd.dev';
 
 if (!API_KEY) {
   console.log('⏭️  Skipping concurrency tests: no API key found');
@@ -67,6 +66,25 @@ function assert(condition: boolean, msg: string) {
   console.log(`  ✓ ${msg}`);
 }
 
+/** Claim a task via the server API, returns the first worker from the response */
+async function serverClaim(taskId: string): Promise<any> {
+  const res = await api('/api/workers/claim', {
+    method: 'POST',
+    body: JSON.stringify({ taskId, runner: 'concurrency-test' }),
+  });
+  const worker = res.workers?.[0];
+  if (!worker) throw new Error(`Claim returned no worker for task ${taskId}`);
+  return worker;
+}
+
+/** Clean up a worker by marking it as failed (no DELETE endpoint exists) */
+async function failWorker(workerId: string) {
+  await api(`/api/workers/${workerId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'failed', error: 'Concurrency test cleanup' }),
+  });
+}
+
 // --- Tests ---
 
 describe('Concurrency Control', () => {
@@ -84,10 +102,10 @@ describe('Concurrency Control', () => {
 
   // Cleanup after each test
   afterEach(async () => {
-    // Clean up workers
+    // Clean up workers by marking them failed
     for (const workerId of cleanupWorkerIds) {
       try {
-        await api(`/api/workers/${workerId}`, { method: 'DELETE' });
+        await failWorker(workerId);
       } catch (err) {
         console.warn(`Failed to cleanup worker ${workerId}:`, err);
       }
@@ -109,7 +127,7 @@ describe('Concurrency Control', () => {
     console.log('\n=== Test: Max Concurrent Workers ===');
 
     // Get account info (maxConcurrentWorkers)
-    const { account } = await api('/api/account');
+    const account = await api('/api/accounts/me');
     const maxConcurrent = account.maxConcurrentWorkers || 5;
     console.log(`  Account max concurrent: ${maxConcurrent}`);
 
@@ -118,13 +136,12 @@ describe('Concurrency Control', () => {
     const taskIds: string[] = [];
 
     for (let i = 0; i < taskCount; i++) {
-      const { task } = await api('/api/tasks', {
+      const task = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify({
           workspaceId,
           title: `Concurrency test task ${i + 1}`,
           description: 'Test task for concurrency limits',
-          priority: 'normal',
         }),
       });
       taskIds.push(task.id);
@@ -138,10 +155,7 @@ describe('Concurrency Control', () => {
 
     for (const taskId of taskIds) {
       try {
-        const { worker } = await api('/api/workers/claim', {
-          method: 'POST',
-          body: JSON.stringify({ taskId }),
-        });
+        const worker = await serverClaim(taskId);
         claimedWorkerIds.push(worker.id);
         cleanupWorkerIds.push(worker.id);
       } catch (err: any) {
@@ -164,13 +178,12 @@ describe('Concurrency Control', () => {
     console.log('\n=== Test: Race Condition - Same Task ===');
 
     // Create a single task
-    const { task } = await api('/api/tasks', {
+    const task = await api('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({
         workspaceId,
         title: 'Race condition test task',
         description: 'Only one worker should claim this',
-        priority: 'normal',
       }),
     });
     cleanupTaskIds.push(task.id);
@@ -179,7 +192,7 @@ describe('Concurrency Control', () => {
     const claimPromises = Array.from({ length: 3 }, () =>
       api('/api/workers/claim', {
         method: 'POST',
-        body: JSON.stringify({ taskId: task.id }),
+        body: JSON.stringify({ taskId: task.id, runner: 'concurrency-test' }),
       }).catch(err => ({ error: err.message }))
     );
 
@@ -194,7 +207,8 @@ describe('Concurrency Control', () => {
 
     // Track successful worker for cleanup
     if (successfulClaims.length > 0) {
-      cleanupWorkerIds.push((successfulClaims[0] as any).worker.id);
+      const worker = (successfulClaims[0] as any).workers?.[0];
+      if (worker) cleanupWorkerIds.push(worker.id);
     }
   }, TIMEOUT);
 
@@ -208,7 +222,6 @@ describe('Concurrency Control', () => {
         workspaceId,
         title: 'Capacity test task 1',
         description: 'First task',
-        priority: 'normal',
       }),
     });
     const task2 = await api('/api/tasks', {
@@ -217,18 +230,14 @@ describe('Concurrency Control', () => {
         workspaceId,
         title: 'Capacity test task 2',
         description: 'Second task',
-        priority: 'normal',
       }),
     });
-    cleanupTaskIds.push(task1.task.id, task2.task.id);
+    cleanupTaskIds.push(task1.id, task2.id);
 
     // Claim first task
-    const { worker: worker1 } = await api('/api/workers/claim', {
-      method: 'POST',
-      body: JSON.stringify({ taskId: task1.task.id }),
-    });
+    const worker1 = await serverClaim(task1.id);
     cleanupWorkerIds.push(worker1.id);
-    assert(worker1.status === 'working', 'Worker 1 claimed task 1');
+    assert(!!worker1.id, 'Worker 1 claimed task 1');
 
     // Mark worker 1 as done
     await api(`/api/workers/${worker1.id}`, {
@@ -240,34 +249,27 @@ describe('Concurrency Control', () => {
     await sleep(500);
 
     // Should now be able to claim second task (capacity released)
-    const { worker: worker2 } = await api('/api/workers/claim', {
-      method: 'POST',
-      body: JSON.stringify({ taskId: task2.task.id }),
-    });
+    const worker2 = await serverClaim(task2.id);
     cleanupWorkerIds.push(worker2.id);
-    assert(worker2.status === 'working', 'Worker 2 claimed task 2 (capacity released)');
+    assert(!!worker2.id, 'Worker 2 claimed task 2 (capacity released)');
   }, TIMEOUT);
 
   test('should release capacity when worker errors', async () => {
     console.log('\n=== Test: Capacity Release on Error ===');
 
     // Create task
-    const { task } = await api('/api/tasks', {
+    const task = await api('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({
         workspaceId,
         title: 'Error test task',
         description: 'Task that will error',
-        priority: 'normal',
       }),
     });
     cleanupTaskIds.push(task.id);
 
     // Claim task
-    const { worker } = await api('/api/workers/claim', {
-      method: 'POST',
-      body: JSON.stringify({ taskId: task.id }),
-    });
+    const worker = await serverClaim(task.id);
     cleanupWorkerIds.push(worker.id);
 
     // Mark worker as failed

@@ -2,46 +2,76 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Buildd Design Tokens ── */
+
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
+  /* Light mode */
+  --surface-1: #f8fafc;
+  --surface-2: #ffffff;
+  --surface-3: #f1f5f9;
+  --surface-4: #e2e8f0;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+
+  /* Primary (shared) */
+  --primary: #7c3aed;
+  --primary-hover: #6d28d9;
+  --primary-subtle: rgba(124, 58, 237, 0.08);
+  --primary-ring: rgba(124, 58, 237, 0.25);
+
+  /* Status (shared) */
+  --status-success: #34d399;
+  --status-running: #a78bfa;
+  --status-warning: #fbbf24;
+  --status-error: #f87171;
+  --status-info: #60a5fa;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
+    --surface-1: #16171f;
+    --surface-2: #1e1f2b;
+    --surface-3: #282a3a;
+    --surface-4: #323447;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #475569;
+    --border: #334155;
+  }
+}
+
+/* Mobile: force dark mode */
+@media (max-width: 767px) {
+  :root {
+    --surface-1: #16171f;
+    --surface-2: #1e1f2b;
+    --surface-3: #282a3a;
+    --surface-4: #323447;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #475569;
+    --border: #334155;
+  }
+
+  body {
+    color-scheme: dark;
   }
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  background-color: var(--surface-1);
+  color: var(--text-primary);
 }
 
-/* Mobile dark mode: force dark theme on small screens */
-@media (max-width: 767px) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 15, 23, 42;
-    --background-end-rgb: 15, 23, 42;
-  }
+/* Status dot pulse animation */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
-  body {
-    background: #0f172a;
-    color: #f8fafc;
-    color-scheme: dark;
-  }
-
-  /* Force dark mode class for Tailwind dark: variants */
-  .dark\:bg-gray-900, .dark\:bg-gray-800 {
-    background-color: inherit;
-  }
+.animate-status-pulse {
+  animation: status-pulse 1.5s ease-in-out infinite;
 }

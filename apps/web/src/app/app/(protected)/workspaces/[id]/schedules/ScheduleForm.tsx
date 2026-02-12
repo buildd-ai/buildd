@@ -115,7 +115,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-6">
+      <div className="border border-border-default rounded-lg p-6">
         <h3 className="font-semibold text-lg mb-4">{isEdit ? 'Edit Schedule' : 'New Schedule'}</h3>
 
         <div className="space-y-4">
@@ -126,7 +126,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               placeholder="Nightly test suite"
               required
             />
@@ -139,7 +139,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               type="text"
               value={cronExpression}
               onChange={(e) => setCronExpression(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 font-mono text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
               placeholder="0 9 * * *"
               required
             />
@@ -147,9 +147,9 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               <div className="mt-2">
                 {cronPreview.valid ? (
                   <div className="text-sm">
-                    <p className="text-green-600 dark:text-green-400">{cronPreview.description}</p>
+                    <p className="text-status-success">{cronPreview.description}</p>
                     {cronPreview.nextRuns && cronPreview.nextRuns.length > 0 && (
-                      <div className="text-gray-500 mt-1">
+                      <div className="text-text-muted mt-1">
                         <p className="text-xs font-medium">Next runs:</p>
                         {cronPreview.nextRuns.map((run, i) => (
                           <p key={i} className="text-xs">{run}</p>
@@ -158,11 +158,11 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                     )}
                   </div>
                 ) : (
-                  <p className="text-sm text-red-600 dark:text-red-400">{cronPreview.description}</p>
+                  <p className="text-sm text-status-error">{cronPreview.description}</p>
                 )}
               </div>
             )}
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-text-muted mt-1">
               Standard 5-field cron: minute hour day-of-month month day-of-week
             </p>
           </div>
@@ -173,7 +173,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
             <select
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
             >
               <option value="UTC">UTC</option>
               <option value="America/New_York">Eastern (America/New_York)</option>
@@ -191,7 +191,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
       </div>
 
       {/* Task Template */}
-      <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-6">
+      <div className="border border-border-default rounded-lg p-6">
         <h3 className="font-semibold text-lg mb-4">Task Template</h3>
 
         <div className="space-y-4">
@@ -201,7 +201,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               placeholder="Run nightly tests"
               required
             />
@@ -213,7 +213,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               placeholder="Run the full test suite and report any failures..."
             />
           </div>
@@ -224,7 +224,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               <select
                 value={mode}
                 onChange={(e) => setMode(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               >
                 <option value="execution">Execution</option>
                 <option value="planning">Planning</option>
@@ -239,7 +239,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={10}
                 value={priority}
                 onChange={(e) => setPriority(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               />
             </div>
           </div>
@@ -251,13 +251,13 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="text-sm text-gray-500 hover:text-gray-700"
+          className="text-sm text-text-muted hover:text-text-secondary"
         >
           {showAdvanced ? 'Hide' : 'Show'} advanced options
         </button>
 
         {showAdvanced && (
-          <div className="mt-4 border border-gray-200 dark:border-gray-800 rounded-lg p-6 space-y-4">
+          <div className="mt-4 border border-border-default rounded-lg p-6 space-y-4">
             <div>
               <label className="block text-sm font-medium mb-1">Max Concurrent Tasks</label>
               <input
@@ -266,9 +266,9 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={10}
                 value={maxConcurrent}
                 onChange={(e) => setMaxConcurrent(parseInt(e.target.value) || 1)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-text-muted mt-1">
                 Skip creating new tasks if this many are already active. 0 = no limit.
               </p>
             </div>
@@ -281,9 +281,9 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={100}
                 value={pauseAfterFailures}
                 onChange={(e) => setPauseAfterFailures(parseInt(e.target.value) || 5)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-text-muted mt-1">
                 Auto-disable schedule after this many consecutive failures. 0 = never pause.
               </p>
             </div>
@@ -296,20 +296,20 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
         <button
           type="submit"
           disabled={saving}
-          className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+          className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
         >
           {saving ? 'Saving...' : isEdit ? 'Update Schedule' : 'Create Schedule'}
         </button>
 
         <a
           href={`/app/workspaces/${workspaceId}/schedules`}
-          className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+          className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
         >
           Cancel
         </a>
 
         {error && (
-          <span className="text-red-600 dark:text-red-400 text-sm">{error}</span>
+          <span className="text-status-error text-sm">{error}</span>
         )}
       </div>
     </form>

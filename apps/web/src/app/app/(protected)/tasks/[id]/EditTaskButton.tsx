@@ -19,7 +19,7 @@ export default function EditTaskButton({ task }: Props) {
     <>
       <button
         onClick={() => setShowModal(true)}
-        className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+        className="px-4 py-2 text-sm border border-border-default rounded-md hover:bg-surface-3"
       >
         Edit
       </button>

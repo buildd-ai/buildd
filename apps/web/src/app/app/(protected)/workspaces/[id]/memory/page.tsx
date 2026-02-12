@@ -20,7 +20,7 @@ export default async function WorkspaceMemoryPage({
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-gray-500">Development mode - no database</p>
+          <p className="text-text-muted">Development mode - no database</p>
         </div>
       </main>
     );
@@ -55,14 +55,14 @@ export default async function WorkspaceMemoryPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href={`/app/workspaces/${id}`} className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; {workspace.name}
         </Link>
 
         <div className="flex justify-between items-start mb-8">
           <div>
             <h1 className="text-3xl font-bold">Memory</h1>
-            <p className="text-gray-500 mt-1">{totalCount} observations</p>
+            <p className="text-text-muted mt-1">{totalCount} observations</p>
           </div>
         </div>
 

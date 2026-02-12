@@ -23,7 +23,7 @@ export default async function TeamDetailPage({
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-gray-500">Dev mode - no team data</p>
+          <p className="text-text-secondary">Dev mode - no team data</p>
         </div>
       </main>
     );
@@ -72,7 +72,7 @@ export default async function TeamDetailPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href="/app/teams" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/teams" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Teams
         </Link>
 

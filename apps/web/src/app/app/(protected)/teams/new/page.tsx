@@ -51,14 +51,14 @@ export default function NewTeamPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/teams" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/teams" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Teams
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Team</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
+            <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
               {error}
             </div>
           )}
@@ -80,7 +80,7 @@ export default function NewTeamPage() {
                   setSlug(slugify(e.target.value));
                 }
               }}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             />
           </div>
 
@@ -99,9 +99,9 @@ export default function NewTeamPage() {
                 setSlug(e.target.value);
                 setSlugEdited(true);
               }}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 font-mono text-sm"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-text-secondary mt-1">
               Lowercase letters, numbers, and hyphens only. Used in URLs.
             </p>
           </div>
@@ -110,13 +110,13 @@ export default function NewTeamPage() {
             <button
               type="submit"
               disabled={loading || !name || !slug}
-              className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+              className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
               {loading ? 'Creating...' : 'Create Team'}
             </button>
             <Link
               href="/app/teams"
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
             >
               Cancel
             </Link>

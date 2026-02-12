@@ -6,8 +6,16 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['var(--font-dm-sans)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-jetbrains)', 'ui-monospace', 'monospace'],
+      },
       colors: {
         primary: {
+          DEFAULT: 'var(--primary)',
+          hover: 'var(--primary-hover)',
+          subtle: 'var(--primary-subtle)',
+          ring: 'var(--primary-ring)',
           50: '#f5f3ff',
           100: '#ede9fe',
           200: '#ddd6fe',
@@ -20,6 +28,29 @@ const config: Config = {
           900: '#4c1d95',
           950: '#2e1065',
         },
+        surface: {
+          1: 'var(--surface-1)',
+          2: 'var(--surface-2)',
+          3: 'var(--surface-3)',
+          4: 'var(--surface-4)',
+        },
+        'text-primary': 'var(--text-primary)',
+        'text-secondary': 'var(--text-secondary)',
+        'text-muted': 'var(--text-muted)',
+        'border-default': 'var(--border)',
+        status: {
+          success: 'var(--status-success)',
+          running: 'var(--status-running)',
+          warning: 'var(--status-warning)',
+          error: 'var(--status-error)',
+          info: 'var(--status-info)',
+        },
+      },
+      borderRadius: {
+        sm: '6px',
+        md: '10px',
+        lg: '16px',
+        xl: '24px',
       },
       animation: {
         'pulse-border': 'pulse-border 2s ease-in-out infinite',

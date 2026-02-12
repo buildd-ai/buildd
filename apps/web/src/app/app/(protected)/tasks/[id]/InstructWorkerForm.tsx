@@ -44,32 +44,32 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
   }
 
   return (
-    <div className="mt-4 pt-4 border-t border-green-200 dark:border-green-800">
+    <div className="mt-4 pt-4 border-t border-border-default">
       <form onSubmit={handleSubmit} className="flex gap-2 mt-3">
         <input
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="e.g., Focus on edge cases, add more tests..."
-          className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          className="flex-1 px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
           disabled={loading}
         />
         <button
           type="submit"
           disabled={loading || !message.trim()}
-          className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Sending...' : 'Send'}
         </button>
       </form>
 
       {sent && (
-        <p className="mt-2 text-sm text-green-600 dark:text-green-400">
+        <p className="mt-2 text-sm text-status-success">
           Instruction queued for delivery
         </p>
       )}
       {error && (
-        <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <p className="mt-2 text-sm text-status-error">
           {error}
         </p>
       )}

@@ -36,7 +36,7 @@ export default function DeleteAccountButton({ accountId, accountName }: { accoun
       <button
         onClick={() => setShowConfirm(true)}
         disabled={deleting}
-        className="text-red-600 hover:text-red-800 text-sm disabled:opacity-50"
+        className="text-status-error hover:text-status-error/80 text-sm disabled:opacity-50"
       >
         {deleting ? 'Deleting...' : 'Delete'}
       </button>

@@ -17,12 +17,12 @@ interface Observation {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  discovery: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-  decision: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-  gotcha: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-  pattern: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-  architecture: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
-  summary: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
+  discovery: 'bg-primary/10 text-primary',
+  decision: 'bg-primary/10 text-primary',
+  gotcha: 'bg-status-error/10 text-status-error',
+  pattern: 'bg-status-success/10 text-status-success',
+  architecture: 'bg-status-warning/10 text-status-warning',
+  summary: 'bg-surface-3 text-text-primary',
 };
 
 const TYPES = ['all', 'discovery', 'decision', 'gotcha', 'pattern', 'architecture', 'summary'];
@@ -199,7 +199,7 @@ export default function ObservationList({
 
     if (isEditing && editForm) {
       return (
-        <div key={obs.id} className="border border-blue-300 dark:border-blue-700 rounded-lg p-4 bg-blue-50/50 dark:bg-blue-900/20">
+        <div key={obs.id} className="border border-primary/30 rounded-lg p-4 bg-primary/5">
           <div className="space-y-3">
             {/* Type selector */}
             <div className="flex gap-2 flex-wrap">
@@ -210,8 +210,8 @@ export default function ObservationList({
                   onClick={() => setEditForm({ ...editForm, type: t })}
                   className={`px-2 py-1 text-xs rounded ${
                     editForm.type === t
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
+                      ? 'bg-primary text-white'
+                      : 'bg-surface-3 text-text-secondary'
                   }`}
                 >
                   {t}
@@ -224,7 +224,7 @@ export default function ObservationList({
               type="text"
               value={editForm.title}
               onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
               placeholder="Title"
             />
 
@@ -233,7 +233,7 @@ export default function ObservationList({
               value={editForm.content}
               onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
               rows={4}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-sm resize-y"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm resize-y"
               placeholder="Content"
             />
 
@@ -242,7 +242,7 @@ export default function ObservationList({
               type="text"
               value={editForm.filesInput}
               onChange={(e) => setEditForm({ ...editForm, filesInput: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
               placeholder="Files (comma-separated)"
             />
 
@@ -251,7 +251,7 @@ export default function ObservationList({
               type="text"
               value={editForm.conceptsInput}
               onChange={(e) => setEditForm({ ...editForm, conceptsInput: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
               placeholder="Concepts (comma-separated)"
             />
 
@@ -259,14 +259,14 @@ export default function ObservationList({
             <div className="flex justify-end gap-2">
               <button
                 onClick={cancelEditing}
-                className="px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                className="px-3 py-1 text-sm text-text-secondary hover:text-text-primary"
               >
                 Cancel
               </button>
               <button
                 onClick={() => saveEdit(obs.id)}
                 disabled={saving}
-                className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>
@@ -277,7 +277,7 @@ export default function ObservationList({
     }
 
     return (
-      <div key={obs.id} className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+      <div key={obs.id} className="border border-border-default rounded-lg p-4">
         <div className="flex justify-between items-start mb-2">
           <div className="flex items-center gap-2">
             <span className={`px-2 py-0.5 text-xs rounded-full ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
@@ -286,30 +286,30 @@ export default function ObservationList({
             <h3 className="font-medium">{obs.title}</h3>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">{timeAgo(obs.createdAt)}</span>
+            <span className="text-xs text-text-muted">{timeAgo(obs.createdAt)}</span>
             <button
               onClick={() => startEditing(obs)}
-              className="text-xs text-blue-500 hover:text-blue-700"
+              className="text-xs text-primary hover:text-primary-hover"
             >
               Edit
             </button>
             <button
               onClick={() => handleDelete(obs.id)}
-              className="text-xs text-red-500 hover:text-red-700"
+              className="text-xs text-status-error hover:opacity-80"
             >
               Delete
             </button>
           </div>
         </div>
         <div
-          className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap cursor-pointer"
+          className="text-sm text-text-secondary whitespace-pre-wrap cursor-pointer"
           onClick={() => setExpandedId(isExpanded ? null : obs.id)}
         >
           {isExpanded || obs.content.length <= 300
             ? obs.content
             : obs.content.slice(0, 300) + '...'}
           {obs.content.length > 300 && (
-            <span className="text-blue-500 ml-1">
+            <span className="text-primary ml-1">
               {isExpanded ? '(collapse)' : '(expand)'}
             </span>
           )}
@@ -317,19 +317,19 @@ export default function ObservationList({
         {obs.files && Array.isArray(obs.files) && obs.files.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">
             {obs.files.slice(0, 8).map((f, i) => (
-              <span key={i} className="px-2 py-0.5 text-xs bg-gray-100 dark:bg-gray-800 rounded">
+              <span key={i} className="px-2 py-0.5 text-xs bg-surface-3 rounded">
                 {f.split('/').pop()}
               </span>
             ))}
             {obs.files.length > 8 && (
-              <span className="px-2 py-0.5 text-xs text-gray-500">+{obs.files.length - 8} more</span>
+              <span className="px-2 py-0.5 text-xs text-text-muted">+{obs.files.length - 8} more</span>
             )}
           </div>
         )}
         {obs.concepts && Array.isArray(obs.concepts) && obs.concepts.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">
             {obs.concepts.map((c, i) => (
-              <span key={i} className="px-2 py-0.5 text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
+              <span key={i} className="px-2 py-0.5 text-xs bg-primary/10 text-primary rounded">
                 #{c}
               </span>
             ))}
@@ -351,7 +351,7 @@ export default function ObservationList({
         <select
           value={typeFilter}
           onChange={(e) => handleTypeChange(e.target.value)}
-          className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm"
+          className="px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
         >
           {TYPES.map(t => (
             <option key={t} value={t}>{t === 'all' ? 'All types' : t}</option>
@@ -362,25 +362,25 @@ export default function ObservationList({
           placeholder="Search observations..."
           value={search}
           onChange={(e) => handleSearch(e.target.value)}
-          className="flex-1 min-w-[200px] px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm"
+          className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
         />
-        <div className="flex rounded-lg border border-gray-300 dark:border-gray-700 overflow-hidden">
+        <div className="flex rounded-lg border border-border-default overflow-hidden">
           <button
             onClick={() => setViewMode('list')}
             className={`px-3 py-2 text-sm ${
               viewMode === 'list'
-                ? 'bg-gray-100 dark:bg-gray-800 font-medium'
-                : 'bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-surface-3 font-medium'
+                : 'bg-surface-1 hover:bg-surface-3'
             }`}
           >
             List
           </button>
           <button
             onClick={() => setViewMode('files')}
-            className={`px-3 py-2 text-sm border-l border-gray-300 dark:border-gray-700 ${
+            className={`px-3 py-2 text-sm border-l border-border-default ${
               viewMode === 'files'
-                ? 'bg-gray-100 dark:bg-gray-800 font-medium'
-                : 'bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-surface-3 font-medium'
+                : 'bg-surface-1 hover:bg-surface-3'
             }`}
           >
             By File
@@ -390,9 +390,9 @@ export default function ObservationList({
 
       {/* List */}
       {loading ? (
-        <div className="text-center py-8 text-gray-500">Loading...</div>
+        <div className="text-center py-8 text-text-muted">Loading...</div>
       ) : observations.length === 0 ? (
-        <div className="text-center py-8 text-gray-500">
+        <div className="text-center py-8 text-text-muted">
           No observations yet. Add observations manually or let workers record them as they complete tasks.
         </div>
       ) : viewMode === 'list' ? (
@@ -402,10 +402,10 @@ export default function ObservationList({
       ) : (
         <div className="space-y-6">
           {fileGrouped.map(([file, obs]) => (
-            <div key={file} className="border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden">
-              <div className="px-4 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
+            <div key={file} className="border border-border-default rounded-lg overflow-hidden">
+              <div className="px-4 py-2 bg-surface-3 border-b border-border-default">
                 <code className="text-sm font-mono">{file}</code>
-                <span className="text-xs text-gray-500 ml-2">({obs.length})</span>
+                <span className="text-xs text-text-muted ml-2">({obs.length})</span>
               </div>
               <div className="p-3 space-y-3">
                 {obs.map(o => renderObservationCard(o))}

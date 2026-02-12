@@ -33,10 +33,10 @@ export default function MobileTasksLayout({ sidebar, children }: Props) {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Mobile header bar */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-30 flex items-center gap-3 px-4 py-3 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
+      <div className="md:hidden fixed top-0 left-0 right-0 z-30 flex items-center gap-3 px-4 py-3 bg-surface-2 border-b border-border-default">
         <button
           onClick={() => setSidebarOpen(true)}
-          className="p-1.5 -ml-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+          className="p-1.5 -ml-1.5 text-text-secondary hover:bg-surface-3 rounded-lg"
           aria-label="Open sidebar"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -46,7 +46,7 @@ export default function MobileTasksLayout({ sidebar, children }: Props) {
         <span className="text-sm font-semibold truncate">Tasks</span>
         <Link
           href="/app/tasks/new"
-          className="ml-auto text-xs px-2.5 py-1.5 bg-black dark:bg-white text-white dark:text-black rounded hover:opacity-80"
+          className="ml-auto text-xs px-2.5 py-1.5 bg-primary text-white rounded hover:bg-primary-hover"
         >
           + New
         </Link>

@@ -70,15 +70,15 @@ export default function EditTaskModal({ task, onClose }: Props) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
       onKeyDown={handleKeyDown}
     >
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full max-w-lg">
+      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-lg">
         <form onSubmit={handleSubmit}>
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="p-4 border-b border-border-default">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Edit Task</h2>
               <button
                 type="button"
                 onClick={onClose}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                className="text-text-muted hover:text-text-secondary"
               >
                 &times;
               </button>
@@ -87,7 +87,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
 
           <div className="p-4 space-y-4">
             {error && (
-              <div className="p-2 text-sm bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">
+              <div className="p-2 text-sm bg-status-error/10 text-status-error rounded">
                 {error}
               </div>
             )}
@@ -102,7 +102,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
             </div>
@@ -116,7 +116,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={4}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
             </div>
@@ -132,25 +132,25 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 max="10"
                 value={priority}
                 onChange={(e) => setPriority(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
             </div>
           </div>
 
-          <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
+          <div className="p-4 border-t border-border-default flex justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+              className="px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-3 rounded"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !title.trim()}
-              className="px-3 py-1.5 text-sm bg-black dark:bg-white text-white dark:text-black rounded hover:opacity-80 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
             >
               {loading ? 'Saving...' : 'Save Changes'}
             </button>

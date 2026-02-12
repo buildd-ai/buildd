@@ -10,52 +10,32 @@ const STATUS_LABELS: Record<string, string> = {
   idle: 'Idle',
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
-  assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-  running: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-  starting: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-  waiting_input: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-  awaiting_plan_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
-  completed: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-  idle: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
+// Moodboard: status colors at 10% opacity bg, status color text, pill shape
+const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> = {
+  pending:                { dot: 'bg-status-warning',                        bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  assigned:               { dot: 'bg-status-info',                           bg: 'bg-status-info/10',    text: 'text-status-info' },
+  running:                { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
+  starting:               { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
+  waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  awaiting_plan_approval: { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
+  failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
+  idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
 };
 
-function StatusIcon({ status }: { status: string }) {
-  switch (status) {
-    case 'running':
-    case 'starting':
-      return <span className="w-1.5 h-1.5 rounded-full border border-current border-t-transparent animate-spin" />;
-    case 'assigned':
-      return <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60" />;
-    case 'pending':
-      return <span className="w-1.5 h-1.5 rounded-full border border-current" />;
-    case 'waiting_input':
-      return <span className="w-1.5 h-1.5 rotate-45 bg-current" />;
-    case 'awaiting_plan_approval':
-      return <span className="w-1.5 h-1.5 rounded-sm border border-current" />;
-    case 'completed':
-      return (
-        <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-        </svg>
-      );
-    case 'failed':
-      return (
-        <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      );
-    default:
-      return null;
-  }
-}
+const DEFAULT_STYLE = STATUS_STYLES.pending;
+
+// Legacy export for components that reference STATUS_COLORS directly
+const STATUS_COLORS: Record<string, string> = Object.fromEntries(
+  Object.entries(STATUS_STYLES).map(([key, val]) => [key, `${val.bg} ${val.text}`])
+);
 
 export default function StatusBadge({ status }: { status: string }) {
+  const style = STATUS_STYLES[status] || DEFAULT_STYLE;
+
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full transition-colors duration-200 ${STATUS_COLORS[status] || STATUS_COLORS.pending}`}>
-      <StatusIcon status={status} />
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-medium ${style.bg} ${style.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
       {STATUS_LABELS[status] || status}
     </span>
   );

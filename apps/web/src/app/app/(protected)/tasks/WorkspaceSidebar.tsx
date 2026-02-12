@@ -34,26 +34,22 @@ interface Props {
 function getStatusIndicator(status: string): React.ReactNode {
   switch (status) {
     case 'running':
-      // Actively running - spinning indicator
       return (
-        <span className="h-2 w-2 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+        <span className="h-2 w-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" />
       );
     case 'assigned':
-      // Claimed but not actively running - pulsing amber
       return (
         <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-info opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-status-info"></span>
         </span>
       );
     case 'pending':
-      // Awaiting claim - solid gray
-      return <span className="h-2 w-2 rounded-full bg-gray-400 dark:bg-gray-500" />;
+      return <span className="h-2 w-2 rounded-full bg-text-muted" />;
     case 'completed':
-      // Done/pushed - checkmark icon
       return (
         <svg
-          className="h-3.5 w-3.5 text-green-500"
+          className="h-3.5 w-3.5 text-status-success"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -68,16 +64,14 @@ function getStatusIndicator(status: string): React.ReactNode {
         </svg>
       );
     case 'waiting_input':
-      // Waiting for user input - pulsing purple
       return (
         <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning"></span>
         </span>
       );
     case 'failed':
-      // Failed - red circle
-      return <span className="h-2 w-2 rounded-full bg-red-500" />;
+      return <span className="h-2 w-2 rounded-full bg-status-error" />;
     default:
       return null;
   }
@@ -327,16 +321,16 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
   return (
     <>
-      <aside className="w-64 border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 flex flex-col h-full">
+      <aside className="w-64 border-r border-border-default bg-surface-2 flex flex-col h-full">
         {/* Header */}
-        <div className="p-4 border-b border-gray-200 dark:border-gray-800">
+        <div className="p-4 border-b border-border-default">
           <div className="flex items-center justify-between">
-            <Link href="/app/dashboard" className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+            <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary">
               &larr; Dashboard
             </Link>
             <Link
               href="/app/tasks/new"
-              className="text-xs px-2 py-1 bg-black dark:bg-white text-white dark:text-black rounded hover:opacity-80"
+              className="text-xs px-2 py-1 bg-primary text-white rounded hover:bg-primary-hover"
             >
               + New
             </Link>
@@ -351,18 +345,18 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search tasks..."
-            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400"
+            className="w-full px-2.5 py-1.5 text-sm border border-border-default rounded bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary placeholder-text-muted"
           />
         </div>
 
         {/* Workspace list */}
         <nav className="flex-1 overflow-y-auto p-2">
           {sortedWorkspaces.length === 0 && hiddenCount === 0 ? (
-            <div className="text-sm text-gray-500 p-4 text-center">
+            <div className="text-sm text-text-secondary p-4 text-center">
               No workspaces yet
             </div>
           ) : sortedWorkspaces.length === 0 ? (
-            <div className="text-sm text-gray-500 p-4 text-center">
+            <div className="text-sm text-text-secondary p-4 text-center">
               All workspaces hidden
             </div>
           ) : (
@@ -385,24 +379,24 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       <button
                         onClick={() => toggleCollapse(ws.id)}
                         aria-expanded={!isCollapsed}
-                        className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                        className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-3 rounded"
                       >
-                        <span className="text-gray-400 w-4">
+                        <span className="text-text-muted w-4">
                           {isCollapsed ? '›' : '▼'}
                         </span>
                         <span className="truncate">{ws.name}</span>
                         {activeCount > 0 && (
                           <span className="ml-auto flex items-center gap-1">
                             <span className="relative flex h-2 w-2">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-running opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-status-running"></span>
                             </span>
                           </span>
                         )}
                       </button>
                       <button
                         onClick={() => setQuickCreateWorkspaceId(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Quick create task"
                         aria-label={`Quick create task in ${ws.name}`}
                       >
@@ -410,7 +404,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       </button>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Hide workspace"
                         aria-label={`Hide ${ws.name}`}
                       >
@@ -436,7 +430,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       return (
                         <div className="ml-4 mt-0.5 space-y-0.5">
                           {activeTasks.length === 0 && completedTasks.length === 0 ? (
-                            <div className="px-2 py-1 text-xs text-gray-400">
+                            <div className="px-2 py-1 text-xs text-text-muted">
                               No tasks
                             </div>
                           ) : (
@@ -450,15 +444,15 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                   data-task-id={task.id}
                                   data-status={task.status}
                                   className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
-                                      ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
-                                      : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                      ? 'bg-primary-subtle text-text-primary'
+                                      : 'text-text-secondary hover:bg-surface-3'
                                     }`}
                                 >
                                   <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
                                   <span className="flex-1 min-w-0">
                                     <span className="truncate block">{task.title}</span>
                                     {task.waitingFor?.prompt && (
-                                      <span data-testid="sidebar-task-question" className="text-xs text-purple-600 dark:text-purple-400 truncate block">
+                                      <span data-testid="sidebar-task-question" className="text-xs text-status-warning truncate block">
                                         {task.waitingFor.prompt.length > 60
                                           ? task.waitingFor.prompt.slice(0, 60) + '...'
                                           : task.waitingFor.prompt}
@@ -474,7 +468,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                   <button
                                     onClick={() => toggleCompletedCollapsed(ws.id)}
                                     aria-expanded={!isCompletedHidden}
-                                    className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
+                                    className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text-secondary w-full"
                                   >
                                     <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
                                     <span>Completed ({totalCompletedCount})</span>
@@ -484,8 +478,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                       key={task.id}
                                       href={`/app/tasks/${task.id}`}
                                       className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
-                                          ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-100'
-                                          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                          ? 'bg-primary-subtle text-text-primary'
+                                          : 'text-text-secondary hover:bg-surface-3'
                                         }`}
                                     >
                                       {getStatusIndicator(task.status)}
@@ -515,7 +509,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 return (
                                   <button
                                     onClick={() => toggleShowAll(ws.id)}
-                                    className="px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                    className="px-2 py-1 text-xs text-text-muted hover:text-text-secondary"
                                   >
                                     {shouldShowLess
                                       ? 'Show less'
@@ -536,11 +530,11 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
           {/* Hidden workspaces section */}
           {hiddenCount > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <div className="mt-4 pt-4 border-t border-border-default">
               <button
                 onClick={() => setShowHiddenSection(!showHiddenSection)}
                 aria-expanded={showHiddenSection}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 w-full"
+                className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text-secondary w-full"
               >
                 <span className="w-3 text-[10px]">{showHiddenSection ? '▼' : '›'}</span>
                 <span>Hidden ({hiddenCount})</span>
@@ -549,12 +543,12 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                 <div className="mt-1 space-y-1">
                   {hiddenWorkspacesList.map((ws) => (
                     <div key={ws.id} className="flex items-center gap-1 group">
-                      <span className="px-2 py-1.5 text-sm text-gray-400 truncate flex-1">
+                      <span className="px-2 py-1.5 text-sm text-text-muted truncate flex-1">
                         {ws.name}
                       </span>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Show workspace"
                         aria-label={`Show ${ws.name}`}
                       >

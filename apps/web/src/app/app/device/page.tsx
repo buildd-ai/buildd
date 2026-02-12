@@ -51,7 +51,7 @@ function DeviceContent() {
   }
 
   return (
-    <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">
+    <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-surface-1">
       {/* Hero Background */}
       <div className="absolute inset-0 z-0">
         <picture>
@@ -72,31 +72,31 @@ function DeviceContent() {
             className="w-full h-full object-cover scale-110 blur-sm opacity-40"
           />
         </picture>
-        <div className="absolute inset-0 bg-gradient-to-b from-[#2a2d3a]/60 via-[#2a2d3a]/80 to-[#2a2d3a]/95" />
+        <div className="absolute inset-0 bg-surface-1/90" />
       </div>
 
       {/* Card */}
       <div className="relative z-10 w-full max-w-md">
-        <div className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-2xl p-8 shadow-2xl">
+        <div className="backdrop-blur-xl bg-surface-2/80 border border-border-default rounded-2xl p-8 shadow-2xl">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-white mb-2">buildd</h1>
-            <p className="text-gray-300">Authorize Device</p>
+            <h1 className="text-4xl font-bold text-text-primary mb-2">buildd</h1>
+            <p className="text-text-secondary">Authorize Device</p>
           </div>
 
           {status === 'success' ? (
             <div className="text-center">
-              <div className="mb-4 bg-green-500/20 border border-green-500/30 rounded-lg p-4 text-green-200">
+              <div className="mb-4 bg-status-success/10 border border-status-success/20 rounded-lg p-4 text-status-success">
                 Device authorized! You can close this tab and return to your terminal.
               </div>
             </div>
           ) : (
             <form onSubmit={handleSubmit}>
-              <p className="text-gray-300 text-sm mb-4">
+              <p className="text-text-secondary text-sm mb-4">
                 Enter the code shown in your terminal to link this device.
               </p>
 
               {status === 'error' && errorMessage && (
-                <div className="mb-4 bg-red-500/20 border border-red-500/30 rounded-lg p-4 text-red-200 text-sm">
+                <div className="mb-4 bg-status-error/10 border border-status-error/20 rounded-lg p-4 text-status-error text-sm">
                   {errorMessage}
                 </div>
               )}
@@ -108,20 +108,20 @@ function DeviceContent() {
                 placeholder="ABCD-1234"
                 autoFocus
                 maxLength={9}
-                className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white text-center text-2xl font-mono tracking-widest placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
+                className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-lg text-text-primary text-center text-2xl font-mono tracking-widest placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
 
               <button
                 type="submit"
                 disabled={status === 'submitting' || !code.trim()}
-                className="mt-4 w-full px-4 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                className="mt-4 w-full px-4 py-3 bg-primary text-white font-medium rounded-md hover:bg-primary-hover transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {status === 'submitting' ? 'Authorizing...' : 'Authorize'}
               </button>
             </form>
           )}
 
-          <p className="mt-6 text-center text-sm text-gray-400">
+          <p className="mt-6 text-center text-sm text-text-muted">
             Only approve codes you initiated from your own terminal.
           </p>
         </div>
@@ -134,7 +134,7 @@ export default function DevicePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-[#2a2d3a] text-white">
+        <div className="flex min-h-screen items-center justify-center bg-surface-1 text-text-primary">
           Loading...
         </div>
       }

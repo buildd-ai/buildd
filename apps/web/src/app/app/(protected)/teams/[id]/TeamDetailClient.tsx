@@ -27,9 +27,9 @@ interface TeamDetailClientProps {
 }
 
 const roleColors: Record<string, string> = {
-  owner: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
-  admin: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-  member: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
+  owner: 'bg-primary/10 text-primary',
+  admin: 'bg-status-info/10 text-status-info',
+  member: 'bg-surface-3 text-text-primary',
 };
 
 export default function TeamDetailClient({
@@ -140,7 +140,7 @@ export default function TeamDetailClient({
   return (
     <div>
       {error && (
-        <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
+        <div className="mb-4 p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
           {error}
           <button onClick={() => setError('')} className="ml-2 text-sm underline">dismiss</button>
         </div>
@@ -157,7 +157,7 @@ export default function TeamDetailClient({
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1"
                 />
               </div>
               <div>
@@ -166,14 +166,14 @@ export default function TeamDetailClient({
                   type="text"
                   value={editSlug}
                   onChange={(e) => setEditSlug(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 font-mono text-sm"
+                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
                 />
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={handleSaveEdit}
                   disabled={saving}
-                  className="px-3 py-1.5 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 text-sm disabled:opacity-50"
+                  className="px-3 py-1.5 bg-primary text-white rounded-md hover:bg-primary-hover text-sm disabled:opacity-50"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>
@@ -183,7 +183,7 @@ export default function TeamDetailClient({
                     setEditName(team.name);
                     setEditSlug(team.slug);
                   }}
-                  className="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm"
+                  className="px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
                 >
                   Cancel
                 </button>
@@ -194,13 +194,13 @@ export default function TeamDetailClient({
               <div className="flex items-center gap-2">
                 <h1 className="text-3xl font-bold">{team.name}</h1>
                 {isPersonal && (
-                  <span className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400 rounded">
+                  <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded">
                     Personal
                   </span>
                 )}
               </div>
-              <p className="text-gray-500 font-mono text-sm">{team.slug}</p>
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-text-secondary font-mono text-sm">{team.slug}</p>
+              <p className="text-xs text-text-muted mt-1">
                 Created {new Date(team.createdAt).toLocaleDateString()}
               </p>
             </>
@@ -210,7 +210,7 @@ export default function TeamDetailClient({
           <div className="flex gap-2">
             <button
               onClick={() => setEditing(true)}
-              className="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm"
+              className="px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
             >
               Edit
             </button>
@@ -218,7 +218,7 @@ export default function TeamDetailClient({
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-3 py-1.5 border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-sm disabled:opacity-50"
+                className="px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
               >
                 {deleting ? 'Deleting...' : 'Delete Team'}
               </button>
@@ -232,7 +232,7 @@ export default function TeamDetailClient({
         <h2 className="text-xl font-semibold mb-4">
           Members ({members.length})
         </h2>
-        <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+        <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
             <div key={member.userId} className="p-4 flex justify-between items-center">
               <div className="flex items-center gap-3">
@@ -243,7 +243,7 @@ export default function TeamDetailClient({
                     className="w-8 h-8 rounded-full"
                   />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-sm font-medium text-gray-600 dark:text-gray-400">
+                  <div className="w-8 h-8 rounded-full bg-surface-4 flex items-center justify-center text-sm font-medium text-text-secondary">
                     {(member.name || member.email)[0]?.toUpperCase()}
                   </div>
                 )}
@@ -251,10 +251,10 @@ export default function TeamDetailClient({
                   <div className="font-medium">
                     {member.name || member.email}
                     {member.userId === currentUserId && (
-                      <span className="text-xs text-gray-400 ml-1">(you)</span>
+                      <span className="text-xs text-text-muted ml-1">(you)</span>
                     )}
                   </div>
-                  <div className="text-sm text-gray-500">{member.email}</div>
+                  <div className="text-sm text-text-secondary">{member.email}</div>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -262,7 +262,7 @@ export default function TeamDetailClient({
                   <select
                     value={member.role}
                     onChange={(e) => handleRoleChange(member.userId, e.target.value)}
-                    className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
+                    className="text-xs px-2 py-1 border border-border-default rounded bg-surface-1"
                   >
                     <option value="owner">owner</option>
                     <option value="admin">admin</option>
@@ -276,7 +276,7 @@ export default function TeamDetailClient({
                 {canManage && member.userId !== currentUserId && (
                   <button
                     onClick={() => handleRemoveMember(member.userId, member.name)}
-                    className="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-400"
+                    className="text-xs text-status-error hover:text-status-error/80"
                   >
                     Remove
                   </button>

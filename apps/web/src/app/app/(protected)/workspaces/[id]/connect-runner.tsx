@@ -53,50 +53,50 @@ The workflow should:
       <div className="grid grid-cols-3 gap-4 mb-4">
         <button
           onClick={() => setShowSetup(showSetup === 'action' ? null : 'action')}
-          className={`p-4 border rounded-lg text-left hover:border-orange-500 transition-colors ${showSetup === 'action' ? 'border-orange-500 bg-orange-50 dark:bg-orange-950' : 'border-gray-200 dark:border-gray-800'}`}
+          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'action' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
         >
           <div className="font-medium">GitHub Actions</div>
-          <div className="text-xs text-gray-500 mt-1">CI/CD runner for automated tasks</div>
+          <div className="text-xs text-text-muted mt-1">CI/CD runner for automated tasks</div>
         </button>
 
         <button
           onClick={() => setShowSetup(showSetup === 'service' ? null : 'service')}
-          className={`p-4 border rounded-lg text-left hover:border-purple-500 transition-colors ${showSetup === 'service' ? 'border-purple-500 bg-purple-50 dark:bg-purple-950' : 'border-gray-200 dark:border-gray-800'}`}
+          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'service' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
         >
           <div className="font-medium">Service Worker</div>
-          <div className="text-xs text-gray-500 mt-1">Always-on VM or server</div>
+          <div className="text-xs text-text-muted mt-1">Always-on VM or server</div>
         </button>
 
         <button
           onClick={() => setShowSetup(showSetup === 'user' ? null : 'user')}
-          className={`p-4 border rounded-lg text-left hover:border-blue-500 transition-colors ${showSetup === 'user' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950' : 'border-gray-200 dark:border-gray-800'}`}
+          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'user' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
         >
           <div className="font-medium">User Worker</div>
-          <div className="text-xs text-gray-500 mt-1">Your laptop via Claude Code</div>
+          <div className="text-xs text-text-muted mt-1">Your laptop via Claude Code</div>
         </button>
       </div>
 
       {showSetup === 'action' && (
-        <div className="border border-orange-200 dark:border-orange-800 rounded-lg p-4 bg-orange-50 dark:bg-orange-950/30">
+        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up GitHub Actions Runner</h3>
 
           <div className="space-y-4">
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create an Action account &amp; get OAuth token</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
+              <p className="text-sm text-text-secondary mb-2">
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
               </p>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                You&apos;ll also need a <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription for the official <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">claude-code-action</code>.
+              <p className="text-sm text-text-secondary">
+                You&apos;ll also need a <code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription for the official <code className="bg-surface-4 px-1 rounded">claude-code-action</code>.
               </p>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Connect account to this workspace</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+              <p className="text-sm text-text-secondary mb-2">
                 After creating the account, use the API to connect it to this workspace:
               </p>
-              <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
 {`curl -X POST https://buildd.dev/api/workspaces/${workspaceId}/accounts \\
   -H "Content-Type: application/json" \\
   -d '{"accountId": "YOUR_ACCOUNT_ID", "canClaim": true}'`}
@@ -105,10 +105,10 @@ The workflow should:
 
             <div>
               <div className="text-sm font-medium mb-2">Step 3: Add GitHub Actions workflow</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                Create <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">.github/workflows/buildd.yml</code>:
+              <p className="text-sm text-text-secondary mb-2">
+                Create <code className="bg-surface-4 px-1 rounded">.github/workflows/buildd.yml</code>:
               </p>
-              <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre">
+              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto whitespace-pre">
 {`name: Buildd Agent
 
 on:
@@ -166,25 +166,25 @@ jobs:
 
             <div>
               <div className="text-sm font-medium mb-2">Step 4: Add secrets</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-text-secondary">
                 In your GitHub repo, go to Settings &rarr; Secrets &rarr; Actions and add:
               </p>
-              <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside mt-1">
-                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">BUILDD_API_KEY</code> - Your action account API key (for task claim/report)</li>
-                <li><code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> - Claude Pro/Max OAuth token (for running Claude Code)</li>
+              <ul className="text-sm text-text-secondary list-disc list-inside mt-1">
+                <li><code className="bg-surface-4 px-1 rounded">BUILDD_API_KEY</code> - Your action account API key (for task claim/report)</li>
+                <li><code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> - Claude Pro/Max OAuth token (for running Claude Code)</li>
               </ul>
             </div>
 
-            <div className="pt-2 border-t border-orange-200 dark:border-orange-800">
+            <div className="pt-2 border-t border-primary/30">
               {taskCreated ? (
-                <div className="text-sm text-green-600 dark:text-green-400">
+                <div className="text-sm text-status-success">
                   Setup task created! Check the tasks list.
                 </div>
               ) : (
                 <button
                   onClick={createSetupTask}
                   disabled={creatingTask}
-                  className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 text-sm"
+                  className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover disabled:opacity-50 text-sm"
                 >
                   {creatingTask ? 'Creating...' : 'Create setup task for an agent to help'}
                 </button>
@@ -195,23 +195,23 @@ jobs:
       )}
 
       {showSetup === 'service' && (
-        <div className="border border-purple-200 dark:border-purple-800 rounded-lg p-4 bg-purple-50 dark:bg-purple-950/30">
+        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up Service Worker</h3>
 
           <div className="space-y-4">
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a Service account</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
+              <p className="text-sm text-text-secondary">
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
               </p>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Run the agent</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+              <p className="text-sm text-text-secondary mb-2">
                 On your server, clone your repo and run:
               </p>
-              <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
 {`cd your-repo
 export BUILDD_API_KEY=bld_xxx
 export BUILDD_SERVER=https://buildd.dev
@@ -224,7 +224,7 @@ bun run ~/buildd/apps/agent/src/index.ts --workspace-id=${workspaceId}`}
 
             <div>
               <div className="text-sm font-medium mb-2">Or use systemd for persistent running:</div>
-              <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
 {`# /etc/systemd/system/buildd-agent.service
 [Unit]
 Description=Buildd Agent
@@ -249,33 +249,33 @@ WantedBy=multi-user.target`}
       )}
 
       {showSetup === 'user' && (
-        <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-950/30">
+        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up User Worker (Claude Code)</h3>
 
           <div className="space-y-4">
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a User account</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Go to <a href="/app/accounts/new" className="text-blue-600 hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
+              <p className="text-sm text-text-secondary">
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
               </p>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Add MCP server to Claude Code</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+              <p className="text-sm text-text-secondary mb-2">
                 Run this command in your terminal:
               </p>
-              <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
 {`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd.dev"}}'`}
               </pre>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Step 3: Use Claude Code</div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-text-secondary">
                 Open Claude Code in your repo and say:
               </p>
-              <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside mt-1">
+              <ul className="text-sm text-text-secondary list-disc list-inside mt-1">
                 <li>&quot;Check buildd for tasks&quot;</li>
                 <li>&quot;Claim a task from buildd&quot;</li>
                 <li>&quot;Work on the buildd task&quot;</li>

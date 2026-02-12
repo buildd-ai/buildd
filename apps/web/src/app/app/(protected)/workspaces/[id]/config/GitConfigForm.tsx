@@ -90,15 +90,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
         <form onSubmit={handleSubmit} className="space-y-6">
             {/* Status Banner */}
             {configStatus === 'unconfigured' && (
-                <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-                    <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                        ⚠️ This workspace hasn't been configured yet. Set up your git workflow below.
+                <div className="bg-status-warning/10 border border-status-warning/30 rounded-lg p-4">
+                    <p className="text-sm text-status-warning">
+                        This workspace hasn't been configured yet. Set up your git workflow below.
                     </p>
                 </div>
             )}
 
             {/* Branching Section */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Branching</h3>
 
                 <div className="space-y-4">
@@ -108,7 +108,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             type="text"
                             value={defaultBranch}
                             onChange={(e) => setDefaultBranch(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                             placeholder="main"
                         />
                     </div>
@@ -118,7 +118,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         <select
                             value={branchingStrategy}
                             onChange={(e) => setBranchingStrategy(e.target.value as GitConfig['branchingStrategy'])}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                         >
                             <option value="none">None (use CLAUDE.md / project conventions)</option>
                             <option value="trunk">Trunk-based (commit directly to default branch)</option>
@@ -134,10 +134,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             type="text"
                             value={branchPrefix}
                             onChange={(e) => setBranchPrefix(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                             placeholder="feature/"
                         />
-                        <p className="text-xs text-gray-500 mt-1">Leave empty to let agent follow project conventions</p>
+                        <p className="text-xs text-text-muted mt-1">Leave empty to let agent follow project conventions</p>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -156,7 +156,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
             </div>
 
             {/* Commit Section */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Commits</h3>
 
                 <div>
@@ -164,7 +164,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <select
                         value={commitStyle}
                         onChange={(e) => setCommitStyle(e.target.value as GitConfig['commitStyle'])}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                        className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                     >
                         <option value="freeform">Freeform</option>
                         <option value="conventional">Conventional Commits (feat:, fix:, etc.)</option>
@@ -174,7 +174,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
             </div>
 
             {/* PR Section */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Pull Requests</h3>
 
                 <div className="space-y-4">
@@ -199,7 +199,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                                     type="text"
                                     value={targetBranch}
                                     onChange={(e) => setTargetBranch(e.target.value)}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                                     placeholder={defaultBranch || 'main'}
                                 />
                             </div>
@@ -222,7 +222,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
             </div>
 
             {/* Agent Instructions Section */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Agent Instructions</h3>
 
                 <div className="space-y-4">
@@ -242,12 +242,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <div>
                         <label className="block text-sm font-medium mb-1">
                             Additional Instructions
-                            <span className="text-gray-500 font-normal ml-1">(prepended to every task)</span>
+                            <span className="text-text-muted font-normal ml-1">(prepended to every task)</span>
                         </label>
                         <textarea
                             value={agentInstructions}
                             onChange={(e) => setAgentInstructions(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 min-h-[120px] font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[120px] font-mono text-sm"
                             placeholder="Always run tests before committing.&#10;Use npm run lint to check code style."
                         />
                     </div>
@@ -264,7 +264,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             Bypass permission prompts
                         </label>
                     </div>
-                    <p className="text-xs text-gray-500 -mt-2">
+                    <p className="text-xs text-text-muted -mt-2">
                         Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
                     </p>
                 </div>
@@ -275,17 +275,17 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                 <button
                     type="submit"
                     disabled={saving}
-                    className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+                    className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
                 >
                     {saving ? 'Saving...' : 'Save Configuration'}
                 </button>
 
                 {saved && (
-                    <span className="text-green-600 dark:text-green-400 text-sm">✓ Saved</span>
+                    <span className="text-status-success text-sm">Saved</span>
                 )}
 
                 {error && (
-                    <span className="text-red-600 dark:text-red-400 text-sm">{error}</span>
+                    <span className="text-status-error text-sm">{error}</span>
                 )}
             </div>
         </form>

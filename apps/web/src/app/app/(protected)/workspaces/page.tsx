@@ -88,62 +88,62 @@ export default async function WorkspacesPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/app/dashboard" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+            <Link href="/app/dashboard" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
               ← Dashboard
             </Link>
             <h1 className="text-3xl font-bold">Workspaces</h1>
           </div>
           <Link
             href="/app/workspaces/new"
-            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
           >
             + New Workspace
           </Link>
         </div>
 
         {allWorkspaces.length === 0 ? (
-          <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center">
+          <div className="border border-dashed border-border-default rounded-lg p-12 text-center">
             <h2 className="text-xl font-semibold mb-2">No workspaces yet</h2>
-            <p className="text-gray-500 mb-6">
+            <p className="text-text-muted mb-6">
               Connect a GitHub repository to start creating tasks
             </p>
             <Link
               href="/app/workspaces/new"
-              className="px-6 py-3 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+              className="px-6 py-3 bg-primary text-white hover:bg-primary-hover rounded-lg"
             >
               Create Workspace
             </Link>
           </div>
         ) : (
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+          <div className="border border-border-default rounded-lg divide-y divide-border-default">
             {allWorkspaces.map((workspace) => (
               <Link
                 key={workspace.id}
                 href={`/app/workspaces/${workspace.id}`}
-                className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                className="block p-4 hover:bg-surface-3"
               >
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="font-medium">{workspace.name}</h3>
                       {workspace.teamName && (
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">{workspace.teamName}</span>
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">{workspace.teamName}</span>
                       )}
                     </div>
                     {workspace.repo && (
-                      <p className="text-sm text-gray-500">{workspace.repo}</p>
+                      <p className="text-sm text-text-muted">{workspace.repo}</p>
                     )}
                   </div>
                   <div className="flex gap-3 items-center text-xs">
-                    <div className={`flex items-center gap-1 ${workspace.runners.action ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} title="GitHub Actions">
+                    <div className={`flex items-center gap-1 ${workspace.runners.action ? 'text-status-success' : 'text-text-muted'}`} title="GitHub Actions">
                       {workspace.runners.action ? <CheckIcon /> : <XIcon />}
                       <span>GH Action</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${workspace.runners.service ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} title="Service Worker">
+                    <div className={`flex items-center gap-1 ${workspace.runners.service ? 'text-status-success' : 'text-text-muted'}`} title="Service Worker">
                       {workspace.runners.service ? <CheckIcon /> : <XIcon />}
                       <span>Service</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${workspace.runners.user ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} title="User Worker">
+                    <div className={`flex items-center gap-1 ${workspace.runners.user ? 'text-status-success' : 'text-text-muted'}`} title="User Worker">
                       {workspace.runners.user ? <CheckIcon /> : <XIcon />}
                       <span>User</span>
                     </div>

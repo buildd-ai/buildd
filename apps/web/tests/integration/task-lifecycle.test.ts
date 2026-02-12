@@ -132,23 +132,34 @@ async function createTask(workspaceId: string, title: string, description: strin
   return task;
 }
 
+/** Claim a task via local-ui. Retries on 429 (capacity full from parallel tests). */
 async function triggerClaim(taskId: string): Promise<string> {
-  const res = await fetch(`${LOCAL_UI}/api/claim`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskId }),
-  });
-  if (!res.ok) {
-    throw new Error(`Local-ui claim failed: ${res.status} ${await res.text()}`);
+  const maxAttempts = 10;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`${LOCAL_UI}/api/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      // Local-ui wraps server 429 as a 400 error
+      if (text.includes('429') && attempt < maxAttempts - 1) {
+        await sleep(3_000 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`Local-ui claim failed: ${res.status} ${text}`);
+    }
+    const data = await res.json();
+    const workerId = data.worker?.id;
+    if (!workerId) {
+      throw new Error('Local-ui claim returned no worker ID');
+    }
+    console.log(`  Claimed -> worker ${workerId}`);
+    cleanupWorkerIds.push(workerId);
+    return workerId;
   }
-  const data = await res.json();
-  const workerId = data.worker?.id;
-  if (!workerId) {
-    throw new Error('Local-ui claim returned no worker ID');
-  }
-  console.log(`  Claimed -> worker ${workerId}`);
-  cleanupWorkerIds.push(workerId);
-  return workerId;
+  throw new Error('triggerClaim: unreachable');
 }
 
 async function getTaskStatus(taskId: string): Promise<any> {
@@ -529,17 +540,43 @@ describe('Task Lifecycle', () => {
   // ---------------------------------------------------------------
 
   test('concurrent limit — rejects claims beyond capacity', async () => {
-    // First, ensure we know the limit
-    const { activeLocalUis } = await api('/api/workers/active');
-    const maxConcurrent = activeLocalUis?.[0]?.maxConcurrent || 3;
-    console.log(`  Max concurrent: ${maxConcurrent}`);
+    // Use account-level maxConcurrentWorkers (what the claim endpoint actually enforces)
+    const account = await api('/api/accounts/me');
+    const maxConcurrent = account.maxConcurrentWorkers || 3;
 
     // Clean up before filling slots
     await cleanupStaleWorkers();
 
-    // Fill all slots with long-running tasks
+    // Check how many workers are already active (other test files run in parallel)
+    const { workers: currentActive } = await api('/api/workers/mine?status=running,starting,waiting_input');
+    const alreadyActive = currentActive?.length || 0;
+    const slotsToFill = maxConcurrent - alreadyActive;
+    console.log(`  Max concurrent: ${maxConcurrent}, already active: ${alreadyActive}, filling: ${slotsToFill}`);
+
+    if (slotsToFill <= 0) {
+      // Already at capacity from parallel tests — just verify overflow is rejected
+      const overflowTask = await createTask(
+        workspaceId,
+        ' Overflow',
+        'Reply with "OVERFLOW". Do not use any tools.',
+      );
+      const { status, body } = await apiRaw(`/api/workers/claim`, {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId,
+          taskId: overflowTask.id,
+          runner: 'integration-test',
+        }),
+      });
+      expect(status).toBe(429);
+      expect(body.error).toContain('Max concurrent workers');
+      console.log(`  Correctly rejected: ${body.current}/${body.limit}`);
+      return;
+    }
+
+    // Fill remaining slots with long-running tasks via local-ui
     const fillerWorkers: string[] = [];
-    for (let i = 0; i < maxConcurrent; i++) {
+    for (let i = 0; i < slotsToFill; i++) {
       const task = await createTask(
         workspaceId,
         ` Filler ${i}`,

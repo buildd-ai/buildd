@@ -85,32 +85,32 @@ export default function NewAccountPage() {
         <div className="max-w-xl mx-auto">
           <h1 className="text-3xl font-bold mb-8">Account Created</h1>
 
-          <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 mb-6">
-            <p className="text-green-800 dark:text-green-200 font-medium">
+          <div className="bg-status-success/10 border border-status-success/30 rounded-lg p-4 mb-6">
+            <p className="text-status-success font-medium">
               Save this API key - it won't be shown again!
             </p>
           </div>
 
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4 mb-6">
-            <div className="text-sm text-gray-500 mb-1">Account</div>
+          <div className="border border-border-default rounded-lg p-4 mb-6">
+            <div className="text-sm text-text-secondary mb-1">Account</div>
             <div className="font-medium mb-4">{createdAccount.name}</div>
 
-            <div className="text-sm text-gray-500 mb-1">API Key</div>
-            <div className="bg-gray-100 dark:bg-gray-800 rounded p-3 font-mono text-sm break-all">
+            <div className="text-sm text-text-secondary mb-1">API Key</div>
+            <div className="bg-surface-3 rounded p-3 font-mono text-sm break-all">
               <code>{createdAccount.apiKey}</code>
             </div>
           </div>
 
-          <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4 mb-6">
+          <div className="bg-surface-2 rounded-lg p-4 mb-6">
             <h3 className="font-medium mb-2">Environment Variable</h3>
-            <pre className="bg-gray-800 text-gray-100 p-3 rounded text-xs overflow-x-auto">
+            <pre className="bg-surface-4 text-text-primary p-3 rounded text-xs overflow-x-auto">
               BUILDD_API_KEY={createdAccount.apiKey}
             </pre>
           </div>
 
           <Link
             href="/app/accounts"
-            className="block text-center px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+            className="block text-center px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
           >
             View All Accounts
           </Link>
@@ -122,14 +122,14 @@ export default function NewAccountPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/accounts" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/accounts" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           ← Accounts
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Account</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400">
+            <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
               {error}
             </div>
           )}
@@ -143,7 +143,7 @@ export default function NewAccountPage() {
                 id="team"
                 value={selectedTeamId}
                 onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
               >
                 {teams.map((team) => (
                   <option key={team.id} value={team.id}>
@@ -151,7 +151,7 @@ export default function NewAccountPage() {
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-text-secondary mt-1">
                 Which team owns this account
               </p>
             </div>
@@ -167,7 +167,7 @@ export default function NewAccountPage() {
               name="name"
               required
               placeholder="my-laptop-agent"
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             />
           </div>
 
@@ -179,13 +179,13 @@ export default function NewAccountPage() {
               id="type"
               name="type"
               required
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             >
               <option value="user">User - Personal laptop/workstation</option>
               <option value="service">Service - Always-on server/VM</option>
               <option value="action">Action - GitHub Actions runner</option>
             </select>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-text-secondary mt-1">
               Affects task routing with runnerPreference
             </p>
           </div>
@@ -198,7 +198,7 @@ export default function NewAccountPage() {
               id="authType"
               name="authType"
               required
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             >
               <option value="oauth">OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)</option>
               <option value="api">API - Uses ANTHROPIC_API_KEY (pay-per-token)</option>
@@ -213,12 +213,12 @@ export default function NewAccountPage() {
               id="level"
               name="level"
               required
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             >
               <option value="worker">Worker - Can claim and execute tasks</option>
               <option value="admin">Admin - Can also reassign and manage tasks</option>
             </select>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-text-secondary mt-1">
               Admin tokens can reassign stuck tasks via MCP
             </p>
           </div>
@@ -234,7 +234,7 @@ export default function NewAccountPage() {
               min="1"
               max="10"
               defaultValue="3"
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             />
           </div>
 
@@ -242,13 +242,13 @@ export default function NewAccountPage() {
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80 disabled:opacity-50"
+              className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
               {loading ? 'Creating...' : 'Create Account'}
             </button>
             <Link
               href="/app/accounts"
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
             >
               Cancel
             </Link>

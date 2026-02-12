@@ -23,7 +23,7 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
           code: ({ children, className }) => {
             const isInline = !className;
             return isInline ? (
-              <code className="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-sm font-mono">
+              <code className="px-1 py-0.5 bg-surface-3 rounded text-sm font-mono">
                 {children}
               </code>
             ) : (
@@ -31,7 +31,7 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
             );
           },
           pre: ({ children }) => (
-            <pre className="bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto my-2 text-sm">
+            <pre className="bg-surface-1 text-text-primary p-3 rounded-md overflow-x-auto my-2 text-sm">
               {children}
             </pre>
           ),
@@ -40,13 +40,13 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 dark:text-blue-400 hover:underline"
+              className="text-primary hover:underline"
             >
               {children}
             </a>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-gray-300 dark:border-gray-600 pl-4 my-2 italic text-gray-600 dark:text-gray-400">
+            <blockquote className="border-l-4 border-border-default pl-4 my-2 italic text-text-secondary">
               {children}
             </blockquote>
           ),

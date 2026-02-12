@@ -4,6 +4,10 @@ export default {
   content: ['./ui/index.html', './ui/app.js'],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['DM Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+        mono: ['JetBrains Mono', 'SF Mono', 'Monaco', 'monospace'],
+      },
       colors: {
         brand: {
           DEFAULT: 'rgb(var(--color-brand) / <alpha-value>)',
@@ -25,6 +29,7 @@ export default {
         'status-error': 'rgb(var(--color-status-error) / <alpha-value>)',
         'status-warning': 'rgb(var(--color-status-warning) / <alpha-value>)',
         'status-info': 'rgb(var(--color-status-info) / <alpha-value>)',
+        'status-running': 'rgb(var(--color-status-running) / <alpha-value>)',
         'focus-ring': 'rgb(var(--color-focus-ring) / <alpha-value>)',
       },
       borderColor: {
@@ -33,7 +38,7 @@ export default {
       keyframes: {
         pulse: {
           '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0.5' },
+          '50%': { opacity: '0.3' },
         },
         'chat-fade-in': {
           from: { opacity: '0', transform: 'translateY(4px)' },

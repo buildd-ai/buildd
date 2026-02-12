@@ -21,7 +21,7 @@ export default async function WorkspaceDetailPage({
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-gray-500">Development mode - no database</p>
+          <p className="text-text-muted">Development mode - no database</p>
         </div>
       </main>
     );
@@ -83,7 +83,7 @@ export default async function WorkspaceDetailPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href="/app/workspaces" className="text-sm text-gray-500 hover:text-gray-700 mb-2 block">
+        <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Workspaces
         </Link>
 
@@ -91,32 +91,32 @@ export default async function WorkspaceDetailPage({
           <div>
             <h1 className="text-3xl font-bold">{workspace.name}</h1>
             {workspace.repo && (
-              <p className="text-gray-500 mt-1">{workspace.repo}</p>
+              <p className="text-text-muted mt-1">{workspace.repo}</p>
             )}
           </div>
           <div className="flex gap-2">
             <Link
               href={`/app/workspaces/${workspace.id}/schedules`}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
             >
               Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
             </Link>
             <Link
               href={`/app/workspaces/${workspace.id}/memory`}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
             >
               Memory{observationCount > 0 ? ` (${observationCount})` : ''}
             </Link>
             <Link
               href={`/app/workspaces/${workspace.id}/config`}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900"
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
             >
               Configure
             </Link>
             <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
             <Link
               href={`/app/tasks/new?workspaceId=${workspace.id}`}
-              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg hover:opacity-80"
+              className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
             >
               + New Task
             </Link>
@@ -125,21 +125,21 @@ export default async function WorkspaceDetailPage({
 
         {/* Task Stats */}
         <div className="grid grid-cols-4 gap-4 mb-8">
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+          <div className="border border-border-default rounded-lg p-4">
             <div className="text-2xl font-bold">{taskCountMap['pending'] || 0}</div>
-            <div className="text-sm text-gray-500">Pending</div>
+            <div className="text-sm text-text-muted">Pending</div>
           </div>
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+          <div className="border border-border-default rounded-lg p-4">
             <div className="text-2xl font-bold">{taskCountMap['assigned'] || 0}</div>
-            <div className="text-sm text-gray-500">Assigned</div>
+            <div className="text-sm text-text-muted">Assigned</div>
           </div>
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+          <div className="border border-border-default rounded-lg p-4">
             <div className="text-2xl font-bold">{taskCountMap['completed'] || 0}</div>
-            <div className="text-sm text-gray-500">Completed</div>
+            <div className="text-sm text-text-muted">Completed</div>
           </div>
-          <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+          <div className="border border-border-default rounded-lg p-4">
             <div className="text-2xl font-bold">{taskCountMap['failed'] || 0}</div>
-            <div className="text-sm text-gray-500">Failed</div>
+            <div className="text-sm text-text-muted">Failed</div>
           </div>
         </div>
 
@@ -149,10 +149,10 @@ export default async function WorkspaceDetailPage({
 
           <div className="space-y-4">
             {/* GitHub Actions */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.action.length > 0 ? 'bg-green-100 text-green-600 dark:bg-green-900 dark:text-green-400' : 'bg-gray-100 text-gray-400 dark:bg-gray-800'}`}>
+                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.action.length > 0 ? 'bg-status-success/10 text-status-success' : 'bg-surface-3 text-text-muted'}`}>
                     {runners.action.length > 0 ? (
                       <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -164,25 +164,25 @@ export default async function WorkspaceDetailPage({
                     )}
                   </span>
                   <span className="font-medium">GitHub Actions</span>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.action.length > 0 ? 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}`}>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.action.length > 0 ? 'bg-status-warning/10 text-status-warning' : 'bg-surface-3 text-text-secondary'}`}>
                     {runners.action.length} connected
                   </span>
                 </div>
               </div>
               {runners.action.length > 0 ? (
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-text-muted">
                   {runners.action.map((r) => r.account?.name).join(', ')}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No GitHub Action runners connected yet</p>
+                <p className="text-sm text-text-muted">No GitHub Action runners connected yet</p>
               )}
             </div>
 
             {/* Service Workers */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.service.length > 0 ? 'bg-green-100 text-green-600 dark:bg-green-900 dark:text-green-400' : 'bg-gray-100 text-gray-400 dark:bg-gray-800'}`}>
+                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.service.length > 0 ? 'bg-status-success/10 text-status-success' : 'bg-surface-3 text-text-muted'}`}>
                     {runners.service.length > 0 ? (
                       <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -194,25 +194,25 @@ export default async function WorkspaceDetailPage({
                     )}
                   </span>
                   <span className="font-medium">Service Workers</span>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.service.length > 0 ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}`}>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.service.length > 0 ? 'bg-primary/10 text-primary' : 'bg-surface-3 text-text-secondary'}`}>
                     {runners.service.length} connected
                   </span>
                 </div>
               </div>
               {runners.service.length > 0 ? (
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-text-muted">
                   {runners.service.map((r) => r.account?.name).join(', ')}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No service runners connected</p>
+                <p className="text-sm text-text-muted">No service runners connected</p>
               )}
             </div>
 
             {/* User Workers */}
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4">
+            <div className="border border-border-default rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.user.length > 0 ? 'bg-green-100 text-green-600 dark:bg-green-900 dark:text-green-400' : 'bg-gray-100 text-gray-400 dark:bg-gray-800'}`}>
+                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${runners.user.length > 0 ? 'bg-status-success/10 text-status-success' : 'bg-surface-3 text-text-muted'}`}>
                     {runners.user.length > 0 ? (
                       <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -224,17 +224,17 @@ export default async function WorkspaceDetailPage({
                     )}
                   </span>
                   <span className="font-medium">User Workers</span>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.user.length > 0 ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}`}>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${runners.user.length > 0 ? 'bg-primary/10 text-primary' : 'bg-surface-3 text-text-secondary'}`}>
                     {runners.user.length} connected
                   </span>
                 </div>
               </div>
               {runners.user.length > 0 ? (
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-text-muted">
                   {runners.user.map((r) => r.account?.name).join(', ')}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No user workers connected</p>
+                <p className="text-sm text-text-muted">No user workers connected</p>
               )}
             </div>
           </div>
@@ -248,26 +248,26 @@ export default async function WorkspaceDetailPage({
           <div>
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-semibold">Recent Tasks</h2>
-              <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="text-sm text-blue-600 hover:underline">
+              <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="text-sm text-primary hover:underline">
                 View all
               </Link>
             </div>
-            <div className="border border-gray-200 dark:border-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-800">
+            <div className="border border-border-default rounded-lg divide-y divide-border-default">
               {workspace.tasks.map((task) => (
                 <Link
                   key={task.id}
                   href={`/app/tasks/${task.id}`}
-                  className="block p-4 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  className="block p-4 hover:bg-surface-3"
                 >
                   <div className="flex justify-between items-start">
                     <div>
                       <h3 className="font-medium">{task.title}</h3>
-                      <p className="text-sm text-gray-500 line-clamp-1">{task.description}</p>
+                      <p className="text-sm text-text-muted line-clamp-1">{task.description}</p>
                     </div>
-                    <span className={`px-2 py-1 text-xs rounded-full ${task.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
-                      task.status === 'failed' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
-                        task.status === 'assigned' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
-                          'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                    <span className={`px-2 py-1 text-xs rounded-full ${task.status === 'completed' ? 'bg-status-success/10 text-status-success' :
+                      task.status === 'failed' ? 'bg-status-error/10 text-status-error' :
+                        task.status === 'assigned' ? 'bg-primary/10 text-primary' :
+                          'bg-status-warning/10 text-status-warning'
                       }`}>
                       {task.status}
                     </span>

@@ -103,15 +103,15 @@ function showClaudeAuthWarning() {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'claudeAuthBanner';
-    banner.className = 'bg-red-500/10 border border-red-500/30 rounded-lg py-3 px-4 mb-4';
+    banner.className = 'bg-status-error/10 border border-status-error/30 rounded-lg py-3 px-4 mb-4';
     banner.innerHTML = `
-      <div class="flex items-center gap-3 text-red-500 text-sm">
+      <div class="flex items-center gap-3 text-status-error text-sm">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" class="shrink-0">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        <span>Claude credentials not found. Run <code class="bg-red-500/20 py-0.5 px-1.5 rounded font-mono text-[13px]">claude login</code> in terminal, then restart buildd.</span>
+        <span>Claude credentials not found. Run <code class="bg-status-error/20 py-0.5 px-1.5 rounded font-mono text-[13px]">claude login</code> in terminal, then restart buildd.</span>
       </div>
     `;
     document.querySelector('main')?.prepend(banner);
@@ -230,7 +230,7 @@ function showConnectionStatus(connected) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'connectionBanner';
-    banner.className = 'fixed top-0 left-0 right-0 z-[9999] bg-status-warning/90 text-white text-center py-1.5 text-xs font-medium backdrop-blur-sm';
+    banner.className = 'fixed top-0 left-0 right-0 z-[9999] bg-status-warning/90 text-white text-center py-1.5 text-xs font-mono font-medium backdrop-blur-sm';
     banner.textContent = 'Connection lost. Reconnecting...';
     document.body.prepend(banner);
   }
@@ -425,13 +425,13 @@ function renderWaitingCard(w) {
   const badgeLabel = isPlan ? 'plan review' : 'needs input';
   // Use complete class strings so Tailwind's JIT scanner can detect them
   const cardClasses = isPlan
-    ? 'from-cyan-500/[0.12] to-cyan-500/[0.04] border-cyan-500/30 hover:border-cyan-500'
-    : 'from-orange-500/[0.12] to-orange-500/[0.04] border-orange-500/30 hover:border-orange-500';
+    ? 'bg-status-info/[0.08] border-status-info/30 hover:border-status-info'
+    : 'bg-status-warning/[0.08] border-status-warning/30 hover:border-status-warning';
   const badgeClasses = isPlan
-    ? 'text-cyan-500 bg-cyan-500/15'
-    : 'text-orange-500 bg-orange-500/15';
+    ? 'text-status-info bg-status-info/15'
+    : 'text-status-warning bg-status-warning/15';
   return `
-    <div class="waiting-banner bg-gradient-to-br ${cardClasses} border rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98]" data-id="${w.id}">
+    <div class="waiting-banner ${cardClasses} border rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98]" data-id="${w.id}">
       <div class="flex items-center gap-2.5 mb-1.5">
         <div class="status-dot w-2.5 h-2.5 rounded-full shrink-0 waiting"></div>
         <div class="flex-1 text-[15px] font-medium text-text-primary">${escapeHtml(w.taskTitle)}</div>
@@ -460,7 +460,7 @@ function renderCompletedSection(completed) {
 
   completedEl.innerHTML = `
     <div class="section-header-collapsible flex items-center justify-between py-2 cursor-pointer select-none hover:opacity-80 ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
-      <span class="text-[13px] font-semibold text-text-secondary uppercase tracking-wide">Completed (${completed.length})</span>
+      <span class="text-[10px] font-mono font-medium text-text-tertiary uppercase tracking-[2.5px]">Completed (${completed.length})</span>
       <svg class="chevron text-text-secondary transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
@@ -609,7 +609,7 @@ function renderTasks() {
         <div class="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-3">Assigned Elsewhere (${assigned.length})</div>
         ${assigned.map(t => {
           const isStale = t.expiresAt && new Date(t.expiresAt) < new Date();
-          const staleLabel = isStale ? '<span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-amber-400/15 text-orange-500">Stale</span>' : '';
+          const staleLabel = isStale ? '<span class="py-1 px-2 text-[11px] font-mono font-medium rounded-full uppercase bg-status-warning/10 text-status-warning">Stale</span>' : '';
           return `
             <div class="bg-surface rounded-xl p-4 cursor-default opacity-80 hover:opacity-100" data-id="${t.id}" data-stale="${isStale}">
               <div class="flex items-start gap-3 mb-2">
@@ -622,7 +622,7 @@ function renderTasks() {
                 <button class="btn py-1.5 px-3 text-[13px] bg-surface-hover text-text-primary rounded-lg font-medium cursor-pointer transition-all duration-200 takeover-btn" data-id="${t.id}" data-stale="${isStale}">
                   Take Over
                 </button>
-                <button class="btn py-1.5 px-3 text-[13px] bg-red-500 text-white rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-red-600 delete-btn" data-id="${t.id}" title="Delete task">
+                <button class="btn py-1.5 px-3 text-[13px] bg-status-error text-white rounded-lg font-medium cursor-pointer transition-all duration-200 hover:opacity-90 delete-btn" data-id="${t.id}" title="Delete task">
                   Delete
                 </button>
               </div>
@@ -786,8 +786,8 @@ function renderWorkerDetail(worker) {
   // Stale worker indicator
   if (worker.status === 'stale') {
     timelineEl.innerHTML += `
-      <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
-        <div class="flex items-center gap-2 text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">
+      <div class="bg-status-warning/[0.08] border border-status-warning/30 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-status-warning font-mono font-medium uppercase tracking-wide mb-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="8" x2="12" y2="12"/>
@@ -806,20 +806,20 @@ function renderWorkerDetail(worker) {
     if (worker.waitingFor.type === 'plan_approval') {
       // Dedicated plan review UI with cyan accent
       timelineEl.innerHTML += `
-        <div class="bg-gradient-to-br from-cyan-500/15 to-cyan-500/5 border border-cyan-500 rounded-xl p-4 my-4">
-          <div class="text-xs text-cyan-400 font-semibold uppercase tracking-wide mb-3">
+        <div class="bg-status-info/[0.08] border border-status-info/30 rounded-xl p-4 my-4">
+          <div class="text-xs text-status-info font-mono font-medium uppercase tracking-wide mb-3">
             Plan ready for review
           </div>
           <div class="text-sm text-text-secondary mb-4">
             Review the plan above, then approve to execute with a fresh context window or request changes.
           </div>
           <div class="flex flex-wrap gap-2">
-            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-cyan-500/10 border border-cyan-500/50 rounded-lg text-cyan-50 text-[13px] font-medium cursor-pointer transition-all hover:bg-cyan-500/20 hover:border-cyan-400 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
               onclick="sendQuestionAnswer('Approve & implement')">
               Approve & implement
-              <span class="text-[11px] text-cyan-400/70 font-normal">Fresh context — plan only</span>
+              <span class="text-[11px] text-text-secondary font-normal">Fresh context — plan only</span>
             </button>
-            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-orange-500 focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:outline-none"
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-status-warning focus-visible:ring-2 focus-visible:ring-status-warning focus-visible:outline-none"
               onclick="promptPlanChanges()">
               Request changes
               <span class="text-[11px] text-text-secondary font-normal">Ask the agent to revise</span>
@@ -830,13 +830,13 @@ function renderWorkerDetail(worker) {
       // Standard question UI
       const options = worker.waitingFor.options || [];
       timelineEl.innerHTML += `
-        <div class="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border border-orange-500 rounded-xl p-4 my-4">
-          <div class="text-xs text-orange-500 font-semibold uppercase tracking-wide mb-2">Agent is asking:</div>
+        <div class="bg-status-warning/[0.08] border border-status-warning/30 rounded-xl p-4 my-4">
+          <div class="text-xs text-status-warning font-mono font-medium uppercase tracking-wide mb-2">Agent is asking:</div>
           <div class="text-sm text-text-primary leading-normal mb-3">${escapeHtml(worker.waitingFor.prompt)}</div>
           ${options.length > 0 ? `
             <div class="flex flex-wrap gap-2">
               ${options.map((opt, i) => `
-                <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-surface hover:border-orange-500" data-option="${i}"
+                <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-surface hover:border-brand" data-option="${i}"
                   onclick="sendQuestionAnswer('${escapeHtml(opt.label)}')">
                   ${escapeHtml(opt.label)}
                   ${opt.description ? `<span class="text-[11px] text-text-secondary font-normal">${escapeHtml(opt.description)}</span>` : ''}
@@ -851,8 +851,8 @@ function renderWorkerDetail(worker) {
   // Error indicator for failed/aborted workers
   if (worker.status === 'error') {
     timelineEl.innerHTML += `
-      <div class="bg-gradient-to-br from-red-500/15 to-red-500/5 border border-red-500 rounded-xl p-4 my-4">
-        <div class="flex items-center gap-2 text-xs text-red-500 font-semibold uppercase tracking-wide mb-2">
+      <div class="bg-status-error/[0.08] border border-status-error/30 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-status-error font-mono font-medium uppercase tracking-wide mb-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="8" x2="12" y2="12"/>
@@ -870,8 +870,8 @@ function renderWorkerDetail(worker) {
     const commitCount = worker.commits.length;
     const commitMsgs = worker.commits.slice(-3).map(c => escapeHtml(c.message)).join(', ');
     timelineEl.innerHTML += `
-      <div class="bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border border-emerald-500/50 rounded-xl p-4 my-4">
-        <div class="flex items-center gap-2 text-xs text-emerald-400 font-semibold uppercase tracking-wide mb-2">
+      <div class="bg-status-success/[0.08] border border-status-success/30 rounded-xl p-4 my-4">
+        <div class="flex items-center gap-2 text-xs text-status-success font-mono font-medium uppercase tracking-wide mb-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
             <polyline points="22 4 12 14.01 9 11.01"/>
@@ -1383,10 +1383,10 @@ function showToast(message, type = 'info') {
   };
 
   const borderColors = {
-    success: 'border-l-green-500',
-    error: 'border-l-red-500',
-    warning: 'border-l-orange-500',
-    info: 'border-l-blue-500',
+    success: 'border-l-status-success',
+    error: 'border-l-status-error',
+    warning: 'border-l-status-warning',
+    info: 'border-l-status-info',
   };
 
   const toast = document.createElement('div');
@@ -1763,7 +1763,7 @@ async function renderWorkspaceModal() {
         <div class="font-medium whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.name)}</div>
         <div class="text-xs text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.localPath)}</div>
       </div>
-      <span class="py-1 px-2 text-[11px] font-medium rounded uppercase bg-green-500/15 text-green-500">Ready</span>
+      <span class="py-1 px-2 text-[11px] font-mono font-medium rounded-full uppercase bg-status-success/10 text-status-success">Ready</span>
     </div>
   `).join('') : '<div class="text-[13px] text-text-secondary py-2">None</div>';
 
@@ -2329,7 +2329,7 @@ function renderAttachments() {
   container.innerHTML = attachments.map((a, i) => `
     <div class="w-20 h-20 rounded-lg overflow-hidden relative">
       <img src="${a.data}" alt="${a.filename}" class="w-full h-full object-cover">
-      <div class="remove absolute top-1 right-1 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-sm cursor-pointer" data-index="${i}">&times;</div>
+      <div class="remove absolute top-1 right-1 w-6 h-6 bg-status-error rounded-full flex items-center justify-center text-white text-sm cursor-pointer" data-index="${i}">&times;</div>
     </div>
   `).join('') + `
     <label class="w-20 h-20 rounded-lg overflow-hidden relative bg-surface border-2 border-dashed border-border-default flex items-center justify-center cursor-pointer">

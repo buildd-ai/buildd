@@ -21,12 +21,12 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   if (!invitation) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">Invitation Not Found</h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
+        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
+          <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Not Found</h1>
+          <p className="text-text-secondary mb-6">
             This invitation link is invalid or has been revoked.
           </p>
-          <Link href="/app/workspaces" className="text-violet-600 hover:text-violet-500 font-medium">
+          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to Dashboard
           </Link>
         </div>
@@ -51,12 +51,12 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   if (invitation.status === 'accepted') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">Already Accepted</h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
+        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
+          <h1 className="text-xl font-semibold text-text-primary mb-2">Already Accepted</h1>
+          <p className="text-text-secondary mb-6">
             This invitation has already been accepted. You are a member of <strong>{team?.name}</strong>.
           </p>
-          <Link href="/app/workspaces" className="text-violet-600 hover:text-violet-500 font-medium">
+          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to Dashboard
           </Link>
         </div>
@@ -69,12 +69,12 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   if (isExpired) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">Invitation Expired</h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
+        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
+          <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Expired</h1>
+          <p className="text-text-secondary mb-6">
             This invitation has expired. Please ask the team admin to send a new invitation.
           </p>
-          <Link href="/app/workspaces" className="text-violet-600 hover:text-violet-500 font-medium">
+          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to Dashboard
           </Link>
         </div>
@@ -84,15 +84,15 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   return (
     <div className="min-h-screen flex items-center justify-center">
-      <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">Team Invitation</h1>
-        <p className="text-gray-600 dark:text-gray-400 mb-1">
+      <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
+        <h1 className="text-xl font-semibold text-text-primary mb-2">Team Invitation</h1>
+        <p className="text-text-secondary mb-1">
           {inviterName ? <>{inviterName} has invited you to join</> : <>You have been invited to join</>}
         </p>
-        <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
+        <p className="text-lg font-semibold text-text-primary mb-1">
           {team?.name}
         </p>
-        <p className="text-sm text-gray-500 dark:text-gray-500 mb-6">
+        <p className="text-sm text-text-muted mb-6">
           as <span className="font-medium capitalize">{invitation.role}</span>
         </p>
         <AcceptInvitationButton token={token} />

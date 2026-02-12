@@ -83,7 +83,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+        className="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover text-sm font-medium"
       >
         + Add Observation
       </button>
@@ -91,20 +91,20 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
   }
 
   return (
-    <form onSubmit={handleSubmit} className="border border-gray-200 dark:border-gray-800 rounded-lg p-4 mb-6">
+    <form onSubmit={handleSubmit} className="border border-border-default rounded-lg p-4 mb-6">
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-medium">New Observation</h3>
         <button
           type="button"
           onClick={() => setIsOpen(false)}
-          className="text-gray-500 hover:text-gray-700 text-sm"
+          className="text-text-muted hover:text-text-secondary text-sm"
         >
           Cancel
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 p-2 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded text-sm">
+        <div className="mb-4 p-2 bg-status-error/10 text-status-error rounded text-sm">
           {error}
         </div>
       )}
@@ -119,17 +119,17 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
                 key={t}
                 type="button"
                 onClick={() => setType(t)}
-                className={`px-3 py-2 text-xs rounded-lg border transition-colors ${
+                className={`px-3 py-2 text-xs rounded-md border transition-colors ${
                   type === t
-                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border-default hover:border-primary/50'
                 }`}
               >
                 {t}
               </button>
             ))}
           </div>
-          <p className="text-xs text-gray-500 mt-1">{TYPE_DESCRIPTIONS[type]}</p>
+          <p className="text-xs text-text-muted mt-1">{TYPE_DESCRIPTIONS[type]}</p>
         </div>
 
         {/* Title */}
@@ -141,7 +141,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Short descriptive title"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
           />
         </div>
 
@@ -154,14 +154,14 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             onChange={(e) => setContent(e.target.value)}
             placeholder="Detailed observation content..."
             rows={4}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm resize-y"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm resize-y"
           />
         </div>
 
         {/* Files */}
         <div>
           <label htmlFor="obs-files" className="block text-sm font-medium mb-1">
-            Related Files <span className="text-gray-400 font-normal">(optional)</span>
+            Related Files <span className="text-text-muted font-normal">(optional)</span>
           </label>
           <input
             id="obs-files"
@@ -169,14 +169,14 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={filesInput}
             onChange={(e) => setFilesInput(e.target.value)}
             placeholder="src/api/auth.ts, lib/utils.ts (comma-separated)"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
           />
         </div>
 
         {/* Concepts */}
         <div>
           <label htmlFor="obs-concepts" className="block text-sm font-medium mb-1">
-            Concepts/Tags <span className="text-gray-400 font-normal">(optional)</span>
+            Concepts/Tags <span className="text-text-muted font-normal">(optional)</span>
           </label>
           <input
             id="obs-concepts"
@@ -184,7 +184,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={conceptsInput}
             onChange={(e) => setConceptsInput(e.target.value)}
             placeholder="authentication, caching, performance (comma-separated)"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
           />
         </div>
 
@@ -193,7 +193,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
           <button
             type="submit"
             disabled={saving}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50"
+            className="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover text-sm font-medium disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save Observation'}
           </button>

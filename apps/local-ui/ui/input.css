@@ -4,50 +4,53 @@
 
 /* ============================================================
    Base layer - resets, global styles, and CSS custom properties
+   Aligned to buildd brand moodboard (blue-tinted slate surfaces)
    ============================================================ */
 @layer base {
   /* --- Light theme (default) --- */
   :root {
-    --color-brand: 124 58 237;         /* violet-600 */
-    --color-brand-hover: 109 40 217;   /* violet-700 */
-    --color-bg-base: 255 255 255;      /* white */
-    --color-bg-surface: 250 250 250;   /* zinc-50 */
-    --color-bg-surface-hover: 244 244 245; /* zinc-100 */
-    --color-bg-elevated: 255 255 255;  /* white */
-    --color-bg-inset: 244 244 245;     /* zinc-100 */
-    --color-border: 228 228 231;       /* zinc-200 */
-    --color-border-hover: 161 161 170; /* zinc-400 */
-    --color-text-primary: 24 24 27;    /* zinc-900 */
-    --color-text-secondary: 113 113 122; /* zinc-500 */
-    --color-text-tertiary: 161 161 170;  /* zinc-400 */
-    --color-status-success: 34 197 94;
-    --color-status-error: 239 68 68;
-    --color-status-warning: 249 115 22;
-    --color-status-info: 59 130 246;
-    --color-focus-ring: 124 58 237;    /* matches brand */
+    --color-brand: 124 58 237;           /* violet-600  --primary */
+    --color-brand-hover: 109 40 217;     /* violet-700  --primary-hover */
+    --color-bg-base: 248 250 252;        /* slate-50    --light-surface-1 */
+    --color-bg-surface: 255 255 255;     /* white       --light-surface-2 */
+    --color-bg-surface-hover: 241 245 249; /* slate-100 --light-surface-3 */
+    --color-bg-elevated: 255 255 255;    /* white */
+    --color-bg-inset: 241 245 249;       /* slate-100 */
+    --color-border: 226 232 240;         /* slate-200   --border-light */
+    --color-border-hover: 148 163 184;   /* slate-400 */
+    --color-text-primary: 15 23 42;      /* slate-900   --text-primary-light */
+    --color-text-secondary: 100 116 139; /* slate-500   --text-secondary-light */
+    --color-text-tertiary: 148 163 184;  /* slate-400 */
+    --color-status-success: 52 211 153;  /* emerald-400 */
+    --color-status-error: 248 113 113;   /* red-400 */
+    --color-status-warning: 251 191 36;  /* amber-400 */
+    --color-status-info: 96 165 250;     /* blue-400 */
+    --color-status-running: 167 139 250; /* violet-400 */
+    --color-focus-ring: 124 58 237;      /* matches brand */
     --color-overlay: 0 0 0;
     --shadow-strength: 0.08;
   }
 
-  /* --- Dark theme --- */
+  /* --- Dark theme (blue-tinted slate surfaces) --- */
   .dark {
-    --color-brand: 139 92 246;         /* violet-500 */
-    --color-brand-hover: 124 58 237;   /* violet-600 */
-    --color-bg-base: 9 9 11;           /* zinc-950 */
-    --color-bg-surface: 24 24 27;      /* zinc-900 */
-    --color-bg-surface-hover: 39 39 42; /* zinc-800 */
-    --color-bg-elevated: 24 24 27;     /* zinc-900 */
-    --color-bg-inset: 9 9 11;          /* zinc-950 */
-    --color-border: 63 63 70;          /* zinc-700 */
-    --color-border-hover: 113 113 122; /* zinc-500 */
-    --color-text-primary: 250 250 250; /* zinc-50 */
-    --color-text-secondary: 161 161 170; /* zinc-400 */
-    --color-text-tertiary: 113 113 122;  /* zinc-500 */
-    --color-status-success: 34 197 94;
-    --color-status-error: 239 68 68;
-    --color-status-warning: 249 115 22;
-    --color-status-info: 59 130 246;
-    --color-focus-ring: 139 92 246;    /* matches brand */
+    --color-brand: 124 58 237;           /* violet-600  --primary */
+    --color-brand-hover: 109 40 217;     /* violet-700  --primary-hover */
+    --color-bg-base: 22 23 31;           /* #16171f     --surface-1 */
+    --color-bg-surface: 30 31 43;        /* #1e1f2b     --surface-2 */
+    --color-bg-surface-hover: 40 42 58;  /* #282a3a     --surface-3 */
+    --color-bg-elevated: 30 31 43;       /* #1e1f2b     --surface-2 */
+    --color-bg-inset: 22 23 31;          /* #16171f     --surface-1 */
+    --color-border: 51 65 85;            /* slate-700   --border-dark */
+    --color-border-hover: 148 163 184;   /* slate-400 */
+    --color-text-primary: 241 245 249;   /* slate-100   --text-primary-dark */
+    --color-text-secondary: 148 163 184; /* slate-400   --text-secondary-dark */
+    --color-text-tertiary: 71 85 105;    /* slate-600   --text-muted-dark */
+    --color-status-success: 52 211 153;  /* emerald-400 */
+    --color-status-error: 248 113 113;   /* red-400 */
+    --color-status-warning: 251 191 36;  /* amber-400 */
+    --color-status-info: 96 165 250;     /* blue-400 */
+    --color-status-running: 167 139 250; /* violet-400 */
+    --color-focus-ring: 124 58 237;      /* matches brand */
     --color-overlay: 0 0 0;
     --shadow-strength: 0.4;
   }
@@ -57,9 +60,11 @@
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: rgb(var(--color-bg-base));
     color: rgb(var(--color-text-primary));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   /* --- Reduced motion --- */
@@ -94,7 +99,7 @@
 
   .custom-select.open .custom-select-trigger {
     border-color: rgb(var(--color-focus-ring));
-    box-shadow: 0 0 0 2px rgb(var(--color-focus-ring) / 0.2);
+    box-shadow: 0 0 0 3px rgb(var(--color-focus-ring) / 0.25);
   }
 
   .custom-select.open .custom-select-arrow {
@@ -108,7 +113,7 @@
     right: 0;
     background: rgb(var(--color-bg-surface));
     border: 1px solid rgb(var(--color-border));
-    border-radius: 12px;
+    border-radius: 10px;
     box-shadow: 0 8px 32px rgb(var(--color-overlay) / var(--shadow-strength));
     z-index: 1000;
     max-height: 280px;
@@ -145,23 +150,24 @@
 
   .custom-select-search-input {
     width: 100%;
-    padding: 10px 12px;
+    padding: 9px 14px;
     background: rgb(var(--color-bg-inset));
     border: 1px solid rgb(var(--color-border));
-    border-radius: 8px;
+    border-radius: 6px;
     color: rgb(var(--color-text-primary));
-    font-size: 14px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
     outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .custom-select-search-input:focus {
     border-color: rgb(var(--color-focus-ring));
-    box-shadow: 0 0 0 2px rgb(var(--color-focus-ring) / 0.15);
+    box-shadow: 0 0 0 3px rgb(var(--color-focus-ring) / 0.25);
   }
 
   .custom-select-search-input::placeholder {
-    color: rgb(var(--color-text-secondary));
+    color: rgb(var(--color-text-tertiary));
   }
 
   /* Keyboard hint in dropdown */
@@ -170,7 +176,8 @@
     display: block;
     padding: 8px 12px;
     font-size: 11px;
-    color: rgb(var(--color-text-secondary));
+    font-family: 'JetBrains Mono', monospace;
+    color: rgb(var(--color-text-tertiary));
     text-align: center;
     border-top: 1px solid rgb(var(--color-border));
     margin-top: 4px;
@@ -178,7 +185,7 @@
 
   /* --- Markdown content (rendered by marked.js) --- */
   .markdown-content {
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
     color: rgb(var(--color-text-primary));
   }
@@ -219,16 +226,17 @@
     background: rgb(var(--color-bg-surface-hover));
     padding: 2px 6px;
     border-radius: 4px;
-    font-family: 'SF Mono', Monaco, monospace;
+    font-family: 'JetBrains Mono', monospace;
     font-size: 0.9em;
   }
 
   .markdown-content pre {
-    background: rgb(var(--color-bg-surface));
+    background: rgb(var(--color-bg-inset));
     padding: 12px;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow-x: auto;
     margin: 8px 0;
+    border: 1px solid rgb(var(--color-border));
   }
 
   .markdown-content pre code {
@@ -308,17 +316,23 @@
   }
 
   /* --- Status dot variants --- */
-  .status-dot.new { background: rgb(var(--color-brand)); animation: pulse 2s infinite; }
-  .status-dot.working { background: rgb(var(--color-text-secondary)); animation: spin 1s linear infinite; }
+  .status-dot.new { background: rgb(var(--color-status-running)); animation: pulse-dot 1.5s ease-in-out infinite; }
+  .status-dot.working { background: rgb(var(--color-status-running)); animation: spin 1s linear infinite; }
   .status-dot.done { background: rgb(var(--color-status-success)); }
   .status-dot.error { background: rgb(var(--color-status-error)); }
-  .status-dot.stale { background: rgb(var(--color-bg-surface-hover)); }
-  .status-dot.pending { background: rgb(var(--color-status-warning)); }
-  .status-dot.waiting { background: rgb(var(--color-status-warning)); animation: pulse 1.5s ease-in-out infinite; }
+  .status-dot.stale { background: rgb(var(--color-status-warning)); }
+  .status-dot.pending { background: rgb(var(--color-text-tertiary)); }
+  .status-dot.waiting { background: rgb(var(--color-status-warning)); animation: pulse-dot 1.5s ease-in-out infinite; }
   .status-dot.assigned { background: rgb(var(--color-status-info)); }
   .status-dot.status-ready { background: rgb(var(--color-status-success)); }
   .status-dot.status-clone { background: rgb(var(--color-status-warning)); }
   .status-dot.status-local { background: rgb(var(--color-status-info)); }
+
+  /* --- Pulse dot animation (moodboard spec) --- */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
 
   /* --- Segmented control active state --- */
   .segmented-control .segment.active {
@@ -329,7 +343,7 @@
   /* --- Select input arrow --- */
   select.input {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 12px center;
     padding-right: 40px;
@@ -348,17 +362,27 @@
   /* --- Meta tag status colors --- */
   .meta-tag.status-done {
     color: rgb(var(--color-status-success));
-    background: rgb(var(--color-status-success) / 0.15);
+    background: rgb(var(--color-status-success) / 0.1);
   }
 
   .meta-tag.status-error {
     color: rgb(var(--color-status-error));
-    background: rgb(var(--color-status-error) / 0.15);
+    background: rgb(var(--color-status-error) / 0.1);
   }
 
   .meta-tag.status-stale {
     color: rgb(var(--color-status-warning));
-    background: rgb(var(--color-status-warning) / 0.15);
+    background: rgb(var(--color-status-warning) / 0.1);
+  }
+
+  .meta-tag.status-working {
+    color: rgb(var(--color-status-running));
+    background: rgb(var(--color-status-running) / 0.1);
+  }
+
+  .meta-tag.status-waiting {
+    color: rgb(var(--color-status-warning));
+    background: rgb(var(--color-status-warning) / 0.1);
   }
 
   /* --- Setup divider lines --- */
@@ -368,5 +392,16 @@
     flex: 1;
     height: 1px;
     background: rgb(var(--color-border));
+  }
+
+  /* --- Section labels (moodboard pattern) --- */
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    color: rgb(var(--color-text-tertiary));
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgb(var(--color-border));
   }
 }
