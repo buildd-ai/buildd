@@ -156,11 +156,23 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.taskId).toBe('task-123');
     expect(data.targetLocalUiUrl).toBeNull();
 
-    // Should trigger TASK_ASSIGNED event
+    // Should trigger TASK_ASSIGNED event with minimal payload (Pusher 10KB limit)
     expect(mockTriggerEvent).toHaveBeenCalledWith(
       'workspace-ws-1',
       'task:assigned',
-      { task: mockTask, targetLocalUiUrl: null }
+      {
+        task: {
+          id: 'task-123',
+          title: 'Test Task',
+          description: undefined,
+          workspaceId: 'ws-1',
+          status: 'pending',
+          mode: undefined,
+          priority: undefined,
+          workspace: { name: undefined, repo: undefined },
+        },
+        targetLocalUiUrl: null,
+      }
     );
   });
 
@@ -186,11 +198,23 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.started).toBe(true);
     expect(data.targetLocalUiUrl).toBe('http://localhost:3456');
 
-    // Should trigger TASK_ASSIGNED with the targetLocalUiUrl
+    // Should trigger TASK_ASSIGNED with the targetLocalUiUrl and minimal payload
     expect(mockTriggerEvent).toHaveBeenCalledWith(
       'workspace-ws-1',
       'task:assigned',
-      { task: mockTask, targetLocalUiUrl: 'http://localhost:3456' }
+      {
+        task: {
+          id: 'task-123',
+          title: 'Test Task',
+          description: undefined,
+          workspaceId: 'ws-1',
+          status: 'pending',
+          mode: undefined,
+          priority: undefined,
+          workspace: { name: undefined, repo: undefined },
+        },
+        targetLocalUiUrl: 'http://localhost:3456',
+      }
     );
   });
 

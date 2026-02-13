@@ -53,18 +53,34 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.buildd.d
  * Handles: TASK_CREATED event, webhook check, TASK_ASSIGNED fallback.
  */
 export async function dispatchNewTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string },
+  task: { id: string; title: string; description: string | null; workspaceId: string; status?: string; mode?: string; priority?: number; workspace?: { name?: string; repo?: string | null } },
   workspace: { webhookConfig?: WorkspaceWebhookConfig | null },
   options?: {
     assignToLocalUiUrl?: string;
     runnerPreference?: string;
   }
 ): Promise<void> {
+  // Build a minimal task payload for Pusher events (10KB limit).
+  // Local-ui fetches the full task (with context/attachments) via the claim API.
+  const taskPayload = {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    workspaceId: task.workspaceId,
+    status: task.status,
+    mode: task.mode,
+    priority: task.priority,
+    workspace: task.workspace ? {
+      name: task.workspace.name,
+      repo: task.workspace.repo,
+    } : undefined,
+  };
+
   // Trigger realtime event
   await triggerEvent(
     channels.workspace(task.workspaceId),
     events.TASK_CREATED,
-    { task }
+    { task: taskPayload }
   );
 
   // If assigning to a specific local-ui, trigger assignment event
@@ -72,7 +88,7 @@ export async function dispatchNewTask(
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task, targetLocalUiUrl: options.assignToLocalUiUrl }
+      { task: taskPayload, targetLocalUiUrl: options.assignToLocalUiUrl }
     );
     return;
   }
@@ -95,7 +111,7 @@ export async function dispatchNewTask(
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task, targetLocalUiUrl: null }
+      { task: taskPayload, targetLocalUiUrl: null }
     );
   }
 }

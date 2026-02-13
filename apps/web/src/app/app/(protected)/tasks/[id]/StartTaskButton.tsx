@@ -33,6 +33,22 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   }, []);
 
   const pollTaskStatus = useCallback(async (startTime: number, targetLocalUiUrl: string) => {
+    // Update countdown and check timeout regardless of API response
+    const elapsed = Date.now() - startTime;
+    const remaining = Math.max(0, Math.ceil((ASSIGNMENT_TIMEOUT_MS - elapsed) / 1000));
+    setCountdown(remaining);
+
+    if (elapsed >= ASSIGNMENT_TIMEOUT_MS) {
+      // Timeout - assignment failed
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      setStatus('failed');
+      setError('No worker claimed the task. Try again or select a different worker.');
+      return;
+    }
+
+    // Check task status via API
     try {
       const res = await fetch(`/api/tasks/${taskId}`);
       if (!res.ok) return;
@@ -68,22 +84,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         setStatus('accepted');
         return;
       }
-
-      // Update countdown
-      const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, Math.ceil((ASSIGNMENT_TIMEOUT_MS - elapsed) / 1000));
-      setCountdown(remaining);
-
-      if (elapsed >= ASSIGNMENT_TIMEOUT_MS) {
-        // Timeout - assignment failed
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-        }
-        setStatus('failed');
-        setError('No worker claimed the task. Try again or select a different worker.');
-      }
     } catch {
-      // Ignore polling errors
+      // Ignore polling errors - countdown still ticks
     }
   }, [taskId]);
 

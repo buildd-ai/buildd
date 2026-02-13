@@ -94,10 +94,28 @@ export async function POST(
     // Broadcast to workers
     // If targetLocalUiUrl is provided, only that worker will claim it
     // Otherwise, any available worker can claim it
+    // Note: Only send fields needed by local-ui to stay within Pusher's 10KB event limit.
+    // Full task object (with workspace relation, context/attachments) can easily exceed this,
+    // causing silent event delivery failure. The local-ui fetches the full task via the claim API.
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task, targetLocalUiUrl: targetLocalUiUrl || null }
+      {
+        task: {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          workspaceId: task.workspaceId,
+          status: task.status,
+          mode: task.mode,
+          priority: task.priority,
+          workspace: task.workspace ? {
+            name: task.workspace.name,
+            repo: task.workspace.repo,
+          } : undefined,
+        },
+        targetLocalUiUrl: targetLocalUiUrl || null,
+      }
     );
 
     return NextResponse.json({

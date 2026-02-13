@@ -4,7 +4,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import Pusher from 'pusher-js';
@@ -544,14 +544,26 @@ export class WorkerManager {
 
     const claimedWorker = claimed[0];
 
+    // Use the full task from the claim response if available (has context, attachments, etc.)
+    // The Pusher event only sends minimal task data to stay within the 10KB event limit,
+    // so the claim response is the source of truth for the full task.
+    const fullTask: BuilddTask = claimedWorker.task
+      ? { ...task, ...claimedWorker.task }
+      : task;
+
+    // Attach skill bundles from claim response to the task object for delivery
+    if (claimedWorker.skills && claimedWorker.skills.length > 0) {
+      fullTask.skillBundles = claimedWorker.skills;
+    }
+
     // Create local worker
     const worker: LocalWorker = {
       id: claimedWorker.id,
-      taskId: task.id,
-      taskTitle: task.title,
-      taskDescription: task.description,
-      workspaceId: task.workspaceId,
-      workspaceName: task.workspace?.name || 'unknown',
+      taskId: fullTask.id,
+      taskTitle: fullTask.title,
+      taskDescription: fullTask.description,
+      workspaceId: fullTask.workspaceId,
+      workspaceName: fullTask.workspace?.name || 'unknown',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
@@ -579,7 +591,7 @@ export class WorkerManager {
     }
 
     // Start SDK session (async, runs in background)
-    this.startSession(worker, workspacePath, task).catch(err => {
+    this.startSession(worker, workspacePath, fullTask).catch(err => {
       console.error(`[Worker ${worker.id}] Session error:`, err);
     });
 
@@ -964,9 +976,40 @@ export class WorkerManager {
         };
       }
 
+      // Write skill files to .claude/skills/{slug}/SKILL.md before agent starts
+      const skillDirs: string[] = [];
+      const skillBundles = task.skillBundles || [];
+      if (skillBundles.length > 0) {
+        for (const skill of skillBundles) {
+          const skillDir = join(cwd, '.claude', 'skills', skill.slug);
+          mkdirSync(skillDir, { recursive: true });
+
+          writeFileSync(join(skillDir, 'SKILL.md'), skill.content, 'utf-8');
+          skillDirs.push(skillDir);
+
+          // Write any additional reference files
+          if (skill.referenceFiles) {
+            for (const [filename, fileContent] of Object.entries(skill.referenceFiles)) {
+              writeFileSync(join(skillDir, filename), fileContent, 'utf-8');
+            }
+          }
+
+          console.log(`[Worker ${worker.id}] Wrote skill: ${skill.slug} -> ${skillDir}`);
+        }
+        this.addMilestone(worker, `Skills: ${skillBundles.map(s => s.slug).join(', ')}`);
+
+        // Add skills context to prompt
+        const skillContext = ['## Skills'];
+        skillContext.push('The following skills are installed in `.claude/skills/`:');
+        for (const skill of skillBundles) {
+          skillContext.push(`- **${skill.name}** (\`.claude/skills/${skill.slug}/SKILL.md\`)`);
+        }
+        promptParts.push(skillContext.join('\n'));
+      }
+
       // Start query with full options
       const queryInstance = query({
-        prompt: promptText,
+        prompt: skillBundles.length > 0 ? promptParts.join('\n\n') : promptText,
         options: queryOptions,
       });
 
@@ -1094,6 +1137,16 @@ export class WorkerManager {
       if (session) {
         session.inputStream.end();
         this.sessions.delete(worker.id);
+      }
+
+      // Clean up skill files to avoid polluting the project repo
+      for (const skillDir of skillDirs) {
+        try {
+          rmSync(skillDir, { recursive: true, force: true });
+          console.log(`[Worker ${worker.id}] Cleaned up skill dir: ${skillDir}`);
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] Failed to clean skill dir ${skillDir}:`, err);
+        }
       }
     }
   }
