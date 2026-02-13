@@ -73,11 +73,22 @@ export async function dispatchNewTask(
     runnerPreference?: string;
   }
 ): Promise<void> {
+  // Build minimal task payload for Pusher events (10KB limit).
+  // Local-ui fetches the full task (with context/attachments) via the claim API.
+  const taskPayload = {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    workspaceId: task.workspaceId,
+    mode: task.mode,
+    priority: task.priority,
+  };
+
   // Trigger realtime event
   await triggerEvent(
     channels.workspace(task.workspaceId),
     events.TASK_CREATED,
-    { task }
+    { task: taskPayload }
   );
 
   // If assigning to a specific local-ui, trigger assignment event
@@ -85,7 +96,7 @@ export async function dispatchNewTask(
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task, targetLocalUiUrl: options.assignToLocalUiUrl }
+      { task: taskPayload, targetLocalUiUrl: options.assignToLocalUiUrl }
     );
     return;
   }
@@ -113,7 +124,7 @@ export async function dispatchNewTask(
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task, targetLocalUiUrl: null }
+      { task: taskPayload, targetLocalUiUrl: null }
     );
   }
 }

@@ -13,9 +13,17 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  // Dev mode returns mock
+  // Dev mode returns mock task data so polling doesn't break
   if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ error: 'Development mode' }, { status: 404 });
+    return NextResponse.json({
+      id,
+      title: 'Development mode task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'dev-workspace',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   const user = await getCurrentUser();

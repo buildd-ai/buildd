@@ -545,14 +545,17 @@ export class WorkerManager {
 
     const claimedWorker = claimed[0];
 
+    // Prefer claim response task data (full) over Pusher event task data (minimal payload)
+    const fullTask = claimedWorker.task || task;
+
     // Create local worker
     const worker: LocalWorker = {
       id: claimedWorker.id,
-      taskId: task.id,
-      taskTitle: task.title,
-      taskDescription: task.description,
-      workspaceId: task.workspaceId,
-      workspaceName: task.workspace?.name || 'unknown',
+      taskId: fullTask.id,
+      taskTitle: fullTask.title,
+      taskDescription: fullTask.description,
+      workspaceId: fullTask.workspaceId,
+      workspaceName: fullTask.workspace?.name || task.workspace?.name || 'unknown',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
@@ -584,7 +587,7 @@ export class WorkerManager {
     }
 
     // Start SDK session (async, runs in background)
-    this.startSession(worker, workspacePath, task).catch(err => {
+    this.startSession(worker, workspacePath, fullTask).catch(err => {
       console.error(`[Worker ${worker.id}] Session failed to start:`, err);
 
       // Critical: notify server that session failed to start
