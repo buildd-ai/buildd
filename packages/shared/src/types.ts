@@ -100,6 +100,15 @@ export const ObservationType = {
 
 export type ObservationTypeValue = typeof ObservationType[keyof typeof ObservationType];
 
+export const SkillSource = {
+  MANUAL: 'manual',
+  GIT: 'git',
+  NPM: 'npm',
+  LOCAL_SCAN: 'local_scan',
+} as const;
+
+export type SkillSourceValue = typeof SkillSource[keyof typeof SkillSource];
+
 // ============================================================================
 // ENTITIES
 // ============================================================================
@@ -194,6 +203,7 @@ export interface Task {
   mode: TaskModeValue;
   runnerPreference: RunnerPreferenceValue;
   requiredCapabilities: string[];
+  skills: string[];
   claimedBy: string | null;
   claimedAt: Date | null;
   expiresAt: Date | null;
@@ -270,6 +280,39 @@ export interface Observation {
   createdAt: Date;
 }
 
+export interface SkillMetadata {
+  version?: string;
+  author?: string;
+  description?: string;
+  repoUrl?: string;
+  repoPath?: string;
+  commitSha?: string;
+  npmPackage?: string;
+  npmVersion?: string;
+  referenceFiles?: Record<string, string>;
+}
+
+export interface Skill {
+  id: string;
+  workspaceId: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  content: string;
+  source: SkillSourceValue;
+  metadata: SkillMetadata;
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SkillBundle {
+  slug: string;
+  name: string;
+  content: string;
+  referenceFiles?: Record<string, string>;
+}
+
 export interface TaskScheduleTemplate {
   title: string;
   description?: string;
@@ -277,6 +320,7 @@ export interface TaskScheduleTemplate {
   priority?: number;
   runnerPreference?: RunnerPreferenceValue;
   requiredCapabilities?: string[];
+  skills?: string[];
   context?: Record<string, unknown>;
 }
 
@@ -321,6 +365,7 @@ export interface CreateTaskInput {
   context?: Record<string, unknown>;
   priority?: number;
   mode?: TaskModeValue;
+  skills?: string[];
   // Optional creator tracking (typically set by API)
   createdByWorkerId?: string;
   parentTaskId?: string;
@@ -377,7 +422,27 @@ export interface ClaimTasksResponse {
     taskId: string;
     branch: string;
     task: Task;
+    skills?: SkillBundle[];
   }>;
+}
+
+export interface CreateSkillInput {
+  name: string;
+  slug?: string;
+  description?: string;
+  content: string;
+  source?: SkillSourceValue;
+  metadata?: SkillMetadata;
+  enabled?: boolean;
+}
+
+export interface UpdateSkillInput {
+  name?: string;
+  slug?: string;
+  description?: string;
+  content?: string;
+  metadata?: SkillMetadata;
+  enabled?: boolean;
 }
 
 export interface CreateObservationInput {

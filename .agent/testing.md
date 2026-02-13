@@ -107,6 +107,41 @@ const prompt = await page.locator('[data-testid="worker-needs-input-prompt"]').t
 expect(prompt).toContain('authentication method');
 ```
 
+## Automated Test Suites
+
+| Suite | Command | Requires | Agent? | Tests |
+|-------|---------|----------|--------|-------|
+| Unit tests | `bun test` | Nothing | No | 255 tests — route handlers, utilities, logic |
+| Integration (config) | `bun run test:integration-config` | local-ui running | No | Server URL, SSE, error handling |
+| Integration (API) | `bun run test:integration` | local-ui running + API key | No | Health, config, edge cases |
+| Worker waiting flow | `bun run apps/web/tests/integration/worker-waiting.test.ts` | API key | No | Worker waitingFor state machine |
+| Dogfood (E2E) | `bun run test:dogfood` | API key + running worker | **Yes** | Full task→claim→execute→verify |
+
+### Dogfood Tests (test:dogfood)
+
+These tests exercise the full buildd pipeline by creating real tasks on the server
+and waiting for a connected worker to execute them. This is "eating our own dogfood" —
+the system tests itself through its own task coordination.
+
+**Prerequisites:**
+- `BUILDD_API_KEY` set (or in `~/.buildd/config.json`)
+- At least one worker connected (local-ui or other runner)
+- Worker must have Claude credentials
+
+**What it tests:**
+- Task creation via server API
+- Task claiming by any available worker
+- Agent execution and completion
+- Result verification (output content, status transitions)
+- CLAUDE.md project context loading
+
+**Usage:**
+```bash
+BUILDD_API_KEY=bld_xxx bun run test:dogfood
+# Timeout: 5 minutes per test (agents take time)
+# Skips gracefully if no API key
+```
+
 ## Best Practices
 
 1. **Always use data-testid for E2E tests** - Don't rely on CSS classes (they change with styling)

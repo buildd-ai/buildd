@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { tasks, workspaces, accountWorkspaces, skills } from '@buildd/core/db/schema';
+import { desc, eq, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
       mode,  // 'execution' (default) or 'planning'
       runnerPreference,
       requiredCapabilities,
+      skills: requestedSkills,
       attachments,
       // New creator tracking fields
       createdByWorkerId,
@@ -129,6 +130,26 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
 
+    // Validate skill slugs if provided
+    if (requestedSkills && Array.isArray(requestedSkills) && requestedSkills.length > 0) {
+      const validSkills = await db.query.skills.findMany({
+        where: and(
+          eq(skills.workspaceId, workspaceId),
+          inArray(skills.slug, requestedSkills),
+          eq(skills.enabled, true)
+        ),
+        columns: { slug: true },
+      });
+      const validSlugs = new Set(validSkills.map(s => s.slug));
+      const invalid = requestedSkills.filter((s: string) => !validSlugs.has(s));
+      if (invalid.length > 0) {
+        return NextResponse.json(
+          { error: `Unknown or disabled skills: ${invalid.join(', ')}` },
+          { status: 400 }
+        );
+      }
+    }
+
     // Process attachments - store as base64 in context
     const processedAttachments: Array<{ filename: string; mimeType: string; data: string }> = [];
     if (attachments && Array.isArray(attachments)) {
@@ -155,6 +176,7 @@ export async function POST(req: NextRequest) {
         mode: mode || 'execution',  // Default to execution mode
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
+        skills: requestedSkills || [],
         context: processedAttachments.length > 0 ? { attachments: processedAttachments } : {},
         // Creator tracking (from service)
         ...creatorContext,

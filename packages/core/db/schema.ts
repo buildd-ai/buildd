@@ -111,6 +111,7 @@ export interface TaskScheduleTemplate {
   priority?: number;
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
   requiredCapabilities?: string[];
+  skills?: string[];
   context?: Record<string, unknown>;
 }
 
@@ -183,6 +184,7 @@ export const tasks = pgTable('tasks', {
   mode: text('mode').default('execution').notNull().$type<'execution' | 'planning'>(),
   runnerPreference: text('runner_preference').default('any').notNull().$type<'any' | 'user' | 'service' | 'action'>(),
   requiredCapabilities: jsonb('required_capabilities').default([]).$type<string[]>(),
+  skills: jsonb('skills').default([]).$type<string[]>(),  // Skill slugs to deliver to workers
   claimedBy: uuid('claimed_by').references(() => accounts.id, { onDelete: 'set null' }),
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
@@ -287,6 +289,40 @@ export const observations = pgTable('observations', {
   typeIdx: index('observations_type_idx').on(t.type),
   workerIdx: index('observations_worker_idx').on(t.workerId),
   taskIdx: index('observations_task_idx').on(t.taskId),
+}));
+
+// Workspace skills registry - installable skill packages for agents
+export interface SkillMetadata {
+  version?: string;
+  author?: string;
+  description?: string;
+  // For git-sourced skills
+  repoUrl?: string;
+  repoPath?: string;
+  commitSha?: string;
+  // For npm-sourced skills
+  npmPackage?: string;
+  npmVersion?: string;
+  // Additional reference files (filename -> content)
+  referenceFiles?: Record<string, string>;
+}
+
+export const skills = pgTable('skills', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  slug: text('slug').notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  content: text('content').notNull(),  // SKILL.md content
+  source: text('source').default('manual').notNull().$type<'manual' | 'git' | 'npm' | 'local_scan'>(),
+  metadata: jsonb('metadata').default({}).$type<SkillMetadata>(),
+  enabled: boolean('enabled').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('skills_workspace_idx').on(t.workspaceId),
+  workspaceSlugIdx: uniqueIndex('skills_workspace_slug_idx').on(t.workspaceId, t.slug),
+  enabledIdx: index('skills_enabled_idx').on(t.enabled),
 }));
 
 // Worker heartbeats - tracks local-ui instance availability independent of worker records
@@ -398,6 +434,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
   observations: many(observations),
+  skills: many(skills),
   taskSchedules: many(taskSchedules),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
@@ -438,6 +475,10 @@ export const observationsRelations = relations(observations, ({ one }) => ({
   workspace: one(workspaces, { fields: [observations.workspaceId], references: [workspaces.id] }),
   worker: one(workers, { fields: [observations.workerId], references: [workers.id] }),
   task: one(tasks, { fields: [observations.taskId], references: [tasks.id] }),
+}));
+
+export const skillsRelations = relations(skills, ({ one }) => ({
+  workspace: one(workspaces, { fields: [skills.workspaceId], references: [workspaces.id] }),
 }));
 
 export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({

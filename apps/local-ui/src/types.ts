@@ -80,6 +80,9 @@ export interface BuilddTask {
   claimedBy?: string | null;
   claimedAt?: string | null;
   expiresAt?: string | null;
+  // Skills
+  skills?: string[];  // Skill slugs attached to this task
+  skillBundles?: SkillBundle[];  // Resolved skill content from claim response
   // Deliverable snapshot
   result?: {
     summary?: string;
@@ -117,6 +120,14 @@ export interface WorkspaceGitConfig {
 
   // Permission mode
   bypassPermissions?: boolean;
+}
+
+// Skill bundle for delivery
+export interface SkillBundle {
+  slug: string;
+  name: string;
+  content: string;
+  referenceFiles?: Record<string, string>;
 }
 
 // SSE event types

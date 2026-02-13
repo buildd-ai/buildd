@@ -33,6 +33,10 @@ export default function NewTaskPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
 
+  // Skills state
+  const [availableSkills, setAvailableSkills] = useState<Array<{ slug: string; name: string; description: string | null }>>([]);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+
   // Recurring schedule state
   const [recurring, setRecurring] = useState(false);
   const [scheduleName, setScheduleName] = useState('');
@@ -94,6 +98,19 @@ export default function NewTaskPage() {
       .catch(() => setWorkspaces([]))
       .finally(() => setLoadingWorkspaces(false));
   }, []);
+
+  // Fetch available skills when workspace changes
+  useEffect(() => {
+    if (!selectedWorkspaceId) {
+      setAvailableSkills([]);
+      setSelectedSkills([]);
+      return;
+    }
+    fetch(`/api/workspaces/${selectedWorkspaceId}/skills?enabled=true`)
+      .then(res => res.json())
+      .then(data => setAvailableSkills(data.skills || []))
+      .catch(() => setAvailableSkills([]));
+  }, [selectedWorkspaceId]);
 
   // Validate cron expression with live preview
   useEffect(() => {
@@ -166,6 +183,7 @@ export default function NewTaskPage() {
             description,
             priority,
             ...(pastedImages.length > 0 && { attachments: pastedImages }),
+            ...(selectedSkills.length > 0 && { skills: selectedSkills }),
           }),
         });
 
@@ -343,6 +361,42 @@ export default function NewTaskPage() {
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
             </div>
+
+            {/* Skills selector */}
+            {availableSkills.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Skills
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {availableSkills.map((skill) => (
+                    <button
+                      key={skill.slug}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSkills(prev =>
+                          prev.includes(skill.slug)
+                            ? prev.filter(s => s !== skill.slug)
+                            : [...prev, skill.slug]
+                        );
+                      }}
+                      className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                        selectedSkills.includes(skill.slug)
+                          ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white'
+                          : 'border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      {skill.name}
+                    </button>
+                  ))}
+                </div>
+                {selectedSkills.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {selectedSkills.length} skill{selectedSkills.length !== 1 ? 's' : ''} selected — agents will receive these instructions
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Cron fields (recurring only) */}
             {recurring && (

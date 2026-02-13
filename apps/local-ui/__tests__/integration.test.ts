@@ -1,7 +1,8 @@
 /**
- * Integration Tests for Local-UI
+ * Integration Tests for Local-UI (API-only)
  *
- * Tests the full task execution flow via HTTP API.
+ * Tests health, config, and edge cases via HTTP API.
+ * Does NOT require a Claude agent — agent-driven tests live in test:dogfood.
  * Requires: local-ui running on port 8766
  *
  * Run: bun test:integration
@@ -31,31 +32,6 @@ async function api<T = any>(path: string, method = 'GET', body?: any): Promise<T
   }
 
   return res.json();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-async function waitForWorker(
-  workerId: string,
-  options: { timeout?: number; pollInterval?: number } = {}
-): Promise<any> {
-  const { timeout = TEST_TIMEOUT, pollInterval = 1000 } = options;
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < timeout) {
-    const { workers } = await api<{ workers: any[] }>('/api/workers');
-    const worker = workers.find(w => w.id === workerId);
-
-    if (worker?.status === 'done' || worker?.status === 'error') {
-      return worker;
-    }
-
-    await sleep(pollInterval);
-  }
-
-  throw new Error(`Worker ${workerId} did not complete within ${timeout}ms`);
 }
 
 // --- Test Setup ---
@@ -124,85 +100,80 @@ describe('Local-UI Integration', () => {
     });
   });
 
-  describe('Task Execution', () => {
-    test('creates and executes a simple task', async () => {
-      const marker = `TEST_${Date.now()}`;
+});
 
-      // Create task
-      const { task } = await api('/api/tasks', 'POST', {
-        title: 'Integration Test',
-        description: `Reply with exactly: "${marker}". Nothing else.`,
-        workspaceId: testWorkspaceId,
-      });
-      createdTaskIds.push(task.id);
-      expect(task.id).toBeTruthy();
+// --- Skill Scanning ---
 
-      // Claim and start
-      const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
-      createdWorkerIds.push(worker.id);
-      expect(worker.status).toBe('working');
+describe('Skill Scanning', () => {
+  test('scan returns skills array (may be empty if no .claude/skills/ exists)', async () => {
+    const data = await api('/api/skills/scan', 'POST', {
+      workspaceId: testWorkspaceId,
+    });
 
-      // Wait for completion
-      const finalWorker = await waitForWorker(worker.id);
-
-      expect(finalWorker.status).toBe('done');
-      expect(finalWorker.output).toContain(marker);
-      expect(finalWorker.milestones.length).toBeGreaterThan(0);
-    }, TEST_TIMEOUT);
-
-    test('worker can be aborted', async () => {
-      // Create a task that would take a while
-      const { task } = await api('/api/tasks', 'POST', {
-        title: 'Abort Test',
-        description: 'Count from 1 to 100, one number per line, slowly.',
-        workspaceId: testWorkspaceId,
-      });
-      createdTaskIds.push(task.id);
-
-      // Start it
-      const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
-      createdWorkerIds.push(worker.id);
-
-      // Wait briefly then abort
-      await sleep(2000);
-      await api('/api/abort', 'POST', { workerId: worker.id });
-
-      // Verify aborted
-      const { workers } = await api('/api/workers');
-      const abortedWorker = workers.find((w: any) => w.id === worker.id);
-
-      expect(abortedWorker?.status).toBe('error');
-      expect(abortedWorker?.error?.toLowerCase()).toContain('aborted');
-    }, TEST_TIMEOUT);
+    expect(Array.isArray(data.skills)).toBe(true);
+    // Each skill should have required fields
+    for (const skill of data.skills) {
+      expect(skill.slug).toBeTruthy();
+      expect(skill.name).toBeTruthy();
+      expect(typeof skill.content).toBe('string');
+      expect(typeof skill.path).toBe('string');
+      expect(['new', 'modified', 'registered']).toContain(skill.status);
+    }
   });
 
-  describe('CLAUDE.md Loading', () => {
-    test('agent has access to project context', async () => {
-      // This test verifies settingSources: ['project'] works
-      const { task } = await api('/api/tasks', 'POST', {
-        title: 'Context Test',
-        description: 'What is the primary stack used in this project? Reply in 10 words or less.',
-        workspaceId: testWorkspaceId,
+  test('scan fails with missing workspaceId', async () => {
+    try {
+      await api('/api/skills/scan', 'POST', {});
+      expect(true).toBe(false); // Should not reach here
+    } catch (err: any) {
+      expect(err.message).toMatch(/400/);
+    }
+  });
+
+  test('scan fails with invalid workspaceId', async () => {
+    try {
+      await api('/api/skills/scan', 'POST', {
+        workspaceId: 'non-existent-workspace-id',
       });
-      createdTaskIds.push(task.id);
+      expect(true).toBe(false); // Should not reach here
+    } catch (err: any) {
+      expect(err.message).toMatch(/404/);
+    }
+  });
 
-      const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
-      createdWorkerIds.push(worker.id);
+  test('register fails with missing required fields', async () => {
+    try {
+      await api('/api/skills/register', 'POST', {
+        workspaceId: testWorkspaceId,
+        // Missing slug, name, content
+      });
+      expect(true).toBe(false); // Should not reach here
+    } catch (err: any) {
+      expect(err.message).toMatch(/400/);
+    }
+  });
 
-      const finalWorker = await waitForWorker(worker.id);
+  test('register creates skill with source=local_scan and enabled=false', async () => {
+    const uniqueSlug = `test-scan-${Date.now()}`;
+    try {
+      const data = await api('/api/skills/register', 'POST', {
+        workspaceId: testWorkspaceId,
+        slug: uniqueSlug,
+        name: 'Integration Test Skill',
+        description: 'Created by integration test',
+        content: '# Test\n\nThis is a test skill.',
+      });
 
-      expect(finalWorker.status).toBe('done');
-      // If CLAUDE.md is loaded, agent should know about Next.js/Drizzle/etc
-      const output = finalWorker.output?.join(' ').toLowerCase() || '';
-      const hasProjectContext =
-        output.includes('next') ||
-        output.includes('drizzle') ||
-        output.includes('postgres') ||
-        output.includes('turborepo') ||
-        output.includes('monorepo');
-
-      expect(hasProjectContext).toBe(true);
-    }, TEST_TIMEOUT);
+      expect(data.skill).toBeTruthy();
+      expect(data.skill.slug).toBe(uniqueSlug);
+      expect(data.skill.source).toBe('local_scan');
+      expect(data.skill.enabled).toBe(false);
+    } catch (err: any) {
+      // 409 is acceptable if slug already exists from previous test run
+      if (!err.message?.includes('409')) {
+        throw err;
+      }
+    }
   });
 });
 

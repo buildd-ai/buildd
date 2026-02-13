@@ -448,6 +448,19 @@ const baseTools = [
       required: ["type", "title", "content"],
     },
   },
+  {
+    name: "buildd_list_skills",
+    description: "List available skills for the current workspace. Shows skill names, descriptions, and slugs that can be attached to tasks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+    },
+  },
 ];
 
 // Admin-only tools
@@ -474,6 +487,11 @@ const adminTools = [
           type: "number",
           description: "Priority (0-10, higher = more urgent)",
           default: 5,
+        },
+        skills: {
+          type: "array",
+          items: { type: "string" },
+          description: "Skill slugs to attach to this task. Agents will receive skill instructions (SKILL.md) when claiming. Use buildd_list_skills to see available skills.",
         },
       },
       required: ["title", "description"],
@@ -592,6 +610,32 @@ const adminTools = [
       required: ["taskId"],
     },
   },
+  {
+    name: "buildd_register_skill",
+    description: "Register a new skill in the workspace. Provide the skill name and SKILL.md content. Skills are delivered to agents as .claude/skills/{slug}/SKILL.md when they claim tasks that require them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Skill name (e.g., 'Code Review Standards')",
+        },
+        content: {
+          type: "string",
+          description: "Full SKILL.md content - instructions the agent will receive",
+        },
+        description: {
+          type: "string",
+          description: "Short description for discovery (optional)",
+        },
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+      required: ["name", "content"],
+    },
+  },
 ];
 
 // List available tools (dynamically based on account level)
@@ -670,9 +714,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        const claimed = workers.map((w: Worker) =>
-          `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
-        ).join("\n\n---\n\n");
+        const claimed = workers.map((w: any) => {
+          let entry = `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`;
+          if (w.skills && w.skills.length > 0) {
+            entry += `\n**Skills:** ${w.skills.map((s: { slug: string; name: string }) => `${s.name} (\`${s.slug}\`)`).join(', ')}`;
+          }
+          return entry;
+        }).join("\n\n---\n\n");
 
         // Generate env export commands for hooks integration
         const firstWorker = workers[0];
@@ -909,16 +957,22 @@ export BUILDD_SERVER=${SERVER_URL}`;
           // parentTaskId will be auto-derived from worker's current task by the API
         }
 
+        // Attach skills if provided
+        if (args.skills && Array.isArray(args.skills) && args.skills.length > 0) {
+          taskBody.skills = args.skills;
+        }
+
         const task = await apiCall("/api/tasks", {
           method: "POST",
           body: JSON.stringify(taskBody),
         });
 
+        const skillsNote = task.skills?.length > 0 ? `\nSkills: ${task.skills.join(', ')}` : '';
         return {
           content: [
             {
               type: "text",
-              text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${WORKER_ID ? `\nCreated by worker: ${WORKER_ID}` : ''}`,
+              text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${skillsNote}${WORKER_ID ? `\nCreated by worker: ${WORKER_ID}` : ''}`,
             },
           ],
         };
@@ -1263,6 +1317,67 @@ export BUILDD_SERVER=${SERVER_URL}`;
             {
               type: "text",
               text: `Observation saved: "${data.observation.title}" (${data.observation.type})\nID: ${data.observation.id}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_list_skills": {
+        const workspaceId = args?.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/skills?enabled=true`);
+        const skillsList = data.skills || [];
+
+        if (skillsList.length === 0) {
+          return {
+            content: [{ type: "text", text: "No skills registered in this workspace. Use buildd_register_skill to add one." }],
+          };
+        }
+
+        const summary = skillsList.map((s: { slug: string; name: string; description?: string }) =>
+          `- **${s.name}** (\`${s.slug}\`)\n  ${s.description || 'No description'}`
+        ).join("\n\n");
+
+        return {
+          content: [{ type: "text", text: `${skillsList.length} skill(s) available:\n\n${summary}\n\nAttach skills to tasks via \`buildd_create_task\` with the \`skills\` parameter.` }],
+        };
+      }
+
+      case "buildd_register_skill": {
+        // Admin-only tool - verify level first
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.name || !args?.content) {
+          throw new Error("name and content are required");
+        }
+
+        const workspaceId = args.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const skill = await apiCall(`/api/workspaces/${workspaceId}/skills`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: args.name,
+            content: args.content,
+            description: args.description || null,
+            source: 'manual',
+          }),
+        });
+
+        const created = skill.skill || skill;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Skill registered: "${created.name}" (slug: \`${created.slug}\`)\n\nAttach to tasks with: \`skills: ["${created.slug}"]\` in buildd_create_task.`,
             },
           ],
         };

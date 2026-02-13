@@ -19,7 +19,7 @@ function generateApiKey(): string {
 }
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
-  trustHost: true,
+  
   cookies: cookieDomain
     ? {
         pkceCodeVerifier: {

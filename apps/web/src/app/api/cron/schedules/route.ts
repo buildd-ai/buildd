@@ -107,6 +107,7 @@ export async function GET(req: NextRequest) {
             mode: template.mode || 'execution',
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
+            skills: template.skills || [],
             context: {
               ...(template.context || {}),
               scheduleId: schedule.id,

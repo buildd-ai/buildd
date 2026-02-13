@@ -1,11 +1,13 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { createHash } from 'crypto';
 import type { LocalUIConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
+import { scanSkills } from './skills';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -999,6 +1001,100 @@ const server = Bun.serve({
     if (path === '/api/rescan' && req.method === 'POST') {
       const repos = getRepos(true); // Force rescan
       return Response.json({ ok: true, count: repos.length }, { headers: corsHeaders });
+    }
+
+    // Scan local .claude/skills/ for a workspace
+    if (path === '/api/skills/scan' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { workspaceId } = body;
+
+      if (!workspaceId) {
+        return Response.json({ error: 'workspaceId required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        // Get workspace info to resolve local path
+        const workspaces = buildd ? await buildd.listWorkspaces() : [];
+        const workspace = workspaces.find((ws: any) => ws.id === workspaceId);
+
+        if (!workspace) {
+          return Response.json({ error: 'Workspace not found' }, { status: 404, headers: corsHeaders });
+        }
+
+        const workspacePath = resolver.resolve({ id: workspace.id, name: workspace.name, repo: workspace.repo });
+        if (!workspacePath) {
+          return Response.json({ error: 'Could not resolve workspace to local path' }, { status: 400, headers: corsHeaders });
+        }
+
+        // Scan local skills
+        const localSkills = scanSkills(workspacePath);
+
+        // Fetch existing registered skills
+        let existingSkills: any[] = [];
+        if (buildd) {
+          try {
+            existingSkills = await buildd.listSkills(workspaceId);
+          } catch {
+            // Continue without existing skills comparison
+          }
+        }
+
+        // Compare by slug
+        const skills = localSkills.map(local => {
+          const existing = existingSkills.find((s: any) => s.slug === local.slug);
+          let status: 'new' | 'modified' | 'registered' = 'new';
+
+          if (existing) {
+            // Compare content hash to detect modifications
+            const localHash = createHash('md5').update(local.content).digest('hex');
+            const existingHash = createHash('md5').update(existing.content || '').digest('hex');
+            status = localHash === existingHash ? 'registered' : 'modified';
+          }
+
+          return {
+            ...local,
+            status,
+            existingEnabled: existing?.enabled,
+          };
+        });
+
+        return Response.json({ skills }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Skill scan failed:', err);
+        return Response.json({ error: err.message || 'Scan failed' }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Register a scanned skill to workspace
+    if (path === '/api/skills/register' && req.method === 'POST') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { workspaceId, slug, name, description, content, referenceFiles } = body;
+
+      if (!workspaceId || !slug || !name || !content) {
+        return Response.json({ error: 'workspaceId, slug, name, and content are required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        const skill = await buildd.createSkill(workspaceId, {
+          name,
+          slug,
+          description: description || undefined,
+          content,
+          source: 'local_scan',
+          enabled: false,
+          metadata: referenceFiles && Object.keys(referenceFiles).length > 0
+            ? { referenceFiles }
+            : undefined,
+        });
+        return Response.json({ skill }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Skill registration failed:', err);
+        return Response.json({ error: err.message || 'Registration failed' }, { status: 500, headers: corsHeaders });
+      }
     }
 
     // Combined workspaces endpoint - merges server workspaces with local repos

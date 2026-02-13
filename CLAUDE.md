@@ -100,6 +100,14 @@ Key components have `data-testid` attributes for E2E testing:
 
 See `.agent/testing.md` for details.
 
+### Test Suites
+
+See `.agent/testing.md` for full details. Quick reference:
+
+- `bun test` — unit tests (no deps, runs in CI)
+- `bun run test:integration` — API tests (needs local-ui running)
+- `bun run test:dogfood` — full E2E via buildd (needs running worker)
+
 ## Local Docs
 
 See `.agent/` for architecture deep-dives.

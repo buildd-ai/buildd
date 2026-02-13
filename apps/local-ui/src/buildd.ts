@@ -64,7 +64,11 @@ export class BuilddClient {
       method: 'POST',
       body: JSON.stringify({ maxTasks, workspaceId, taskId, runner: runner || 'local-ui' }),
     });
-    return data.workers || [];
+    // Pass through skill bundles from claim response
+    return (data.workers || []).map((w: any) => ({
+      ...w,
+      skills: w.skills || [],
+    }));
   }
 
   async updateWorker(workerId: string, update: {
@@ -308,5 +312,26 @@ export class BuilddClient {
     } catch {
       return null;
     }
+  }
+
+  async listSkills(workspaceId: string): Promise<any[]> {
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/skills`);
+    return data.skills || [];
+  }
+
+  async createSkill(workspaceId: string, skill: {
+    name: string;
+    slug: string;
+    description?: string;
+    content: string;
+    source?: string;
+    metadata?: any;
+    enabled?: boolean;
+  }): Promise<any> {
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/skills`, {
+      method: 'POST',
+      body: JSON.stringify(skill),
+    });
+    return data.skill;
   }
 }

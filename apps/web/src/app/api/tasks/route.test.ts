@@ -1,3 +1,6 @@
+// Ensure test mode — routes short-circuit in development
+process.env.NODE_ENV = 'test';
+
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 

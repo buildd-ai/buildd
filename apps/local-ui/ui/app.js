@@ -1685,6 +1685,34 @@ async function renderWorkspaceModal() {
       </button>
     </div>
   `).join('') : '<div class="text-[13px] text-zinc-400 py-2">None</div>';
+
+  // Update skills scan section
+  updateSkillsScanSection();
+
+  // If there are multiple ready workspaces, show a workspace picker for skills scan
+  if (ready.length > 1) {
+    const scanSection = document.getElementById('skillsScanSection');
+    if (scanSection) {
+      const existingPicker = document.getElementById('skillsWorkspacePicker');
+      if (!existingPicker) {
+        const pickerHtml = `
+          <div id="skillsWorkspacePicker" class="mb-3">
+            <label class="block text-[11px] text-zinc-400 mb-1">Scan workspace:</label>
+            <select class="w-full bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-sm text-zinc-50 outline-none" id="skillsWorkspaceSelect">
+              ${ready.map(w => `<option value="${w.id}" ${w.id === selectedScanWorkspaceId ? 'selected' : ''}>${escapeHtml(w.name)}</option>`).join('')}
+            </select>
+          </div>
+        `;
+        const resultsEl = document.getElementById('skillsScanResults');
+        resultsEl.insertAdjacentHTML('beforebegin', pickerHtml);
+        document.getElementById('skillsWorkspaceSelect').addEventListener('change', (e) => {
+          selectedScanWorkspaceId = e.target.value;
+          // Clear previous results
+          document.getElementById('skillsScanResults').innerHTML = '';
+        });
+      }
+    }
+  }
 }
 
 async function cloneWorkspace(workspaceId, repoUrl) {
@@ -1744,6 +1772,229 @@ async function syncWorkspace(localPath, name) {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Sync';
+  }
+}
+
+// Skills scanning
+let selectedScanWorkspaceId = null;
+
+// Show skills section when workspace modal has ready workspaces
+function updateSkillsScanSection() {
+  const section = document.getElementById('skillsScanSection');
+  if (!section) return;
+
+  // Show if there are any ready workspaces
+  const ready = (combinedWorkspaces || []).filter(w => w.status === 'ready');
+  if (ready.length > 0) {
+    section.classList.remove('hidden');
+    // Default to first ready workspace
+    if (!selectedScanWorkspaceId && ready[0]?.id) {
+      selectedScanWorkspaceId = ready[0].id;
+    }
+  } else {
+    section.classList.add('hidden');
+  }
+}
+
+const scanSkillsBtn = document.getElementById('scanSkillsBtn');
+if (scanSkillsBtn) {
+  scanSkillsBtn.addEventListener('click', async () => {
+    // Find the first ready workspace with an id
+    const ready = (combinedWorkspaces || []).filter(w => w.status === 'ready' && w.id);
+    if (ready.length === 0) {
+      showToast('No ready workspaces to scan', 'error');
+      return;
+    }
+
+    // If multiple ready workspaces, use the selected one or first
+    const workspaceId = selectedScanWorkspaceId || ready[0].id;
+    if (!workspaceId) {
+      showToast('No workspace selected for scanning', 'error');
+      return;
+    }
+
+    scanSkillsBtn.disabled = true;
+    const originalText = scanSkillsBtn.innerHTML;
+    scanSkillsBtn.innerHTML = `
+      <svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+        <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+        <path d="M21 3v5h-5"/>
+      </svg>
+      Scanning...
+    `;
+
+    try {
+      const res = await fetch('/api/skills/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showToast(data.error || 'Scan failed', 'error');
+        return;
+      }
+
+      renderSkillScanResults(workspaceId, data.skills || []);
+    } catch (err) {
+      console.error('Skill scan failed:', err);
+      showToast('Skill scan failed', 'error');
+    } finally {
+      scanSkillsBtn.disabled = false;
+      scanSkillsBtn.innerHTML = originalText;
+    }
+  });
+}
+
+function renderSkillScanResults(workspaceId, skills) {
+  const container = document.getElementById('skillsScanResults');
+  if (!container) return;
+
+  if (skills.length === 0) {
+    container.innerHTML = `
+      <div class="text-[13px] text-zinc-400 py-4 text-center bg-zinc-900 rounded-lg">
+        No SKILL.md files found in .claude/skills/
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = skills.map((skill, idx) => {
+    const statusBadge = getSkillStatusBadge(skill);
+    const canRegister = skill.status === 'new' || skill.status === 'modified';
+    const isPendingReview = skill.status === 'registered' && skill.existingEnabled === false;
+    const descPreview = skill.description
+      ? `<p class="text-xs text-zinc-400 mt-1 line-clamp-2">${escapeHtml(skill.description)}</p>`
+      : '';
+    const contentPreview = skill.content.length > 200
+      ? escapeHtml(skill.content.slice(0, 200)) + '...'
+      : escapeHtml(skill.content);
+
+    return `
+      <div class="p-3 bg-zinc-900 rounded-lg mb-2" id="skill-card-${idx}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-medium text-sm">${escapeHtml(skill.name)}</span>
+              <code class="text-[11px] px-1.5 py-0.5 bg-zinc-800 text-zinc-300 rounded">${escapeHtml(skill.slug)}</code>
+              ${statusBadge}
+              ${isPendingReview ? '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-orange-500/15 text-orange-400">Pending Review</span>' : ''}
+            </div>
+            ${descPreview}
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${canRegister ? `
+              <button class="btn py-1 px-3 text-[12px] bg-gradient-primary text-white rounded-lg font-medium cursor-pointer transition-all duration-200"
+                      onclick="registerSkill('${workspaceId}', ${idx})" id="register-btn-${idx}">
+                Register
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        <details class="mt-2">
+          <summary class="text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-300">Preview content</summary>
+          <pre class="text-[11px] text-zinc-400 mt-1 p-2 bg-zinc-800 rounded overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap font-mono">${contentPreview}</pre>
+        </details>
+      </div>
+    `;
+  }).join('');
+
+  // Store skills data for registration
+  window._scannedSkills = skills;
+}
+
+function getSkillStatusBadge(skill) {
+  if (skill.status === 'new') {
+    return '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-green-500/15 text-green-500">New</span>';
+  }
+  if (skill.status === 'modified') {
+    return '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-yellow-500/15 text-yellow-500">Modified</span>';
+  }
+  if (skill.status === 'registered') {
+    return '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-zinc-700/50 text-zinc-400">Registered</span>';
+  }
+  return '';
+}
+
+async function registerSkill(workspaceId, skillIdx) {
+  const skill = window._scannedSkills?.[skillIdx];
+  if (!skill) return;
+
+  const btn = document.getElementById(`register-btn-${skillIdx}`);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Registering...';
+  }
+
+  try {
+    const res = await fetch('/api/skills/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId,
+        slug: skill.slug,
+        name: skill.name,
+        description: skill.description,
+        content: skill.content,
+        referenceFiles: Object.keys(skill.referenceFiles || {}).length > 0 ? skill.referenceFiles : undefined,
+      }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'Registration failed', 'error');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Register';
+      }
+      return;
+    }
+
+    // Update the card to show Pending Review
+    skill.status = 'registered';
+    skill.existingEnabled = false;
+    window._scannedSkills[skillIdx] = skill;
+
+    const card = document.getElementById(`skill-card-${skillIdx}`);
+    if (card) {
+      // Re-render this card
+      const statusBadge = getSkillStatusBadge(skill);
+      const descPreview = skill.description
+        ? `<p class="text-xs text-zinc-400 mt-1 line-clamp-2">${escapeHtml(skill.description)}</p>`
+        : '';
+      const contentPreview = skill.content.length > 200
+        ? escapeHtml(skill.content.slice(0, 200)) + '...'
+        : escapeHtml(skill.content);
+
+      card.innerHTML = `
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-medium text-sm">${escapeHtml(skill.name)}</span>
+              <code class="text-[11px] px-1.5 py-0.5 bg-zinc-800 text-zinc-300 rounded">${escapeHtml(skill.slug)}</code>
+              ${statusBadge}
+              <span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-orange-500/15 text-orange-400">Pending Review</span>
+            </div>
+            ${descPreview}
+            <p class="text-[11px] text-zinc-500 mt-1">Admin must enable this skill from the dashboard</p>
+          </div>
+        </div>
+        <details class="mt-2">
+          <summary class="text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-300">Preview content</summary>
+          <pre class="text-[11px] text-zinc-400 mt-1 p-2 bg-zinc-800 rounded overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap font-mono">${contentPreview}</pre>
+        </details>
+      `;
+    }
+
+    showToast(`Skill "${skill.name}" registered (pending review)`, 'success');
+  } catch (err) {
+    console.error('Registration failed:', err);
+    showToast('Registration failed', 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Register';
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, skills } from '@buildd/core/db/schema';
+import type { SkillMetadata } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -255,5 +256,30 @@ export async function POST(req: NextRequest) {
       .where(eq(accounts.id, account.id));
   }
 
-  return NextResponse.json({ workers: claimedWorkers });
+  // Resolve skill content for claimed workers
+  const workersWithSkills = await Promise.all(
+    claimedWorkers.map(async (cw) => {
+      const taskSkills = (cw.task as any).skills || [];
+      if (taskSkills.length === 0) return cw;
+
+      const skillRecords = await db.query.skills.findMany({
+        where: and(
+          eq(skills.workspaceId, cw.task.workspaceId),
+          inArray(skills.slug, taskSkills),
+          eq(skills.enabled, true)
+        ),
+      });
+
+      const skillBundles = skillRecords.map(s => ({
+        slug: s.slug,
+        name: s.name,
+        content: s.content,
+        referenceFiles: (s.metadata as SkillMetadata)?.referenceFiles,
+      }));
+
+      return { ...cw, skills: skillBundles };
+    })
+  );
+
+  return NextResponse.json({ workers: workersWithSkills });
 }
