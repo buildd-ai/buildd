@@ -6,27 +6,18 @@ import { redirect, notFound } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import TeamDetailClient from './TeamDetailClient';
 
+export const dynamic = 'force-dynamic';
+
 export default async function TeamDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
-  if (!isDev && !user) {
+  if (!user) {
     redirect('/app/auth/signin');
-  }
-
-  if (isDev) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-text-secondary">Dev mode - no team data</p>
-        </div>
-      </main>
-    );
   }
 
   // Verify user is a member

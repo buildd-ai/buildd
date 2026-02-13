@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
+export const dynamic = 'force-dynamic';
+
 interface TeamWithRole {
   id: string;
   name: string;
@@ -15,50 +17,50 @@ interface TeamWithRole {
 }
 
 export default async function TeamsPage() {
-  const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
+
+  if (!user) {
+    redirect('/app/auth/signin');
+  }
 
   let userTeams: TeamWithRole[] = [];
 
-  if (!isDev) {
-    if (!user) {
-      redirect('/app/auth/signin');
-    }
+  try {
+    const memberships = await db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, user.id),
+      with: {
+        team: true,
+      },
+    });
 
-    try {
-      const memberships = await db.query.teamMembers.findMany({
-        where: eq(teamMembers.userId, user.id),
-        with: {
-          team: true,
-        },
-      });
+    // Filter out any orphaned memberships where team was deleted
+    const validMemberships = memberships.filter(m => m.team != null);
 
-      // Get member counts
-      const teamIds = memberships.map(m => m.teamId);
-      const memberCounts = teamIds.length > 0
-        ? await db
-            .select({
-              teamId: teamMembers.teamId,
-              count: sql<number>`count(*)::int`,
-            })
-            .from(teamMembers)
-            .where(sql`${teamMembers.teamId} = ANY(${teamIds})`)
-            .groupBy(teamMembers.teamId)
-        : [];
+    // Get member counts
+    const teamIds = validMemberships.map(m => m.teamId);
+    const memberCounts = teamIds.length > 0
+      ? await db
+          .select({
+            teamId: teamMembers.teamId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(teamMembers)
+          .where(sql`${teamMembers.teamId} = ANY(${teamIds})`)
+          .groupBy(teamMembers.teamId)
+      : [];
 
-      const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+    const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
 
-      userTeams = memberships.map(m => ({
-        id: m.team.id,
-        name: m.team.name,
-        slug: m.team.slug,
-        createdAt: m.team.createdAt,
-        role: m.role,
-        memberCount: countMap.get(m.teamId) || 1,
-      }));
-    } catch (error) {
-      console.error('Teams query error:', error);
-    }
+    userTeams = validMemberships.map(m => ({
+      id: m.team.id,
+      name: m.team.name,
+      slug: m.team.slug,
+      createdAt: m.team.createdAt,
+      role: m.role,
+      memberCount: countMap.get(m.teamId) || 1,
+    }));
+  } catch (error) {
+    console.error('Teams query error:', error);
   }
 
   const roleColors: Record<string, string> = {

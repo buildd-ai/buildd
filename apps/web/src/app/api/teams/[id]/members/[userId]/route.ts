@@ -18,10 +18,6 @@ export async function PATCH(
 ) {
   const { id: teamId, userId: targetUserId } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ success: true });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -96,10 +92,6 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string; userId: string }> }
 ) {
   const { id: teamId, userId: targetUserId } = await params;
-
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ success: true });
-  }
 
   const user = await getCurrentUser();
   if (!user) {

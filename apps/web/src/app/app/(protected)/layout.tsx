@@ -15,11 +15,13 @@ async function getUserTeams(userId: string) {
     },
   });
 
-  return memberships.map(m => ({
-    id: m.team.id,
-    name: m.team.name,
-    slug: m.team.slug,
-  }));
+  return memberships
+    .filter(m => m.team != null)
+    .map(m => ({
+      id: m.team.id,
+      name: m.team.name,
+      slug: m.team.slug,
+    }));
 }
 
 export default async function ProtectedLayout({

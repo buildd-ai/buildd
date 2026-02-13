@@ -5,10 +5,6 @@ import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
 export async function GET() {
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ teams: [] });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -23,8 +19,11 @@ export async function GET() {
       },
     });
 
+    // Filter out any orphaned memberships
+    const validMemberships = memberships.filter(m => m.team != null);
+
     // Get member counts for each team
-    const teamIds = memberships.map(m => m.teamId);
+    const teamIds = validMemberships.map(m => m.teamId);
     const memberCounts = teamIds.length > 0
       ? await db
           .select({
@@ -38,7 +37,7 @@ export async function GET() {
 
     const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
 
-    const result = memberships.map(m => ({
+    const result = validMemberships.map(m => ({
       ...m.team,
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
@@ -52,10 +51,6 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ id: 'dev-team', name: 'Dev Team', slug: 'dev-team' });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
