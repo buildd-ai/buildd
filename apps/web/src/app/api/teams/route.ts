@@ -5,10 +5,6 @@ import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
 export async function GET() {
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ teams: [] });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -52,10 +48,6 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ id: 'dev-team', name: 'Dev Team', slug: 'dev-team' });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

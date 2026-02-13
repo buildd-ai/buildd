@@ -41,10 +41,6 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ team: null });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -98,10 +94,6 @@ export async function PATCH(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ success: true });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -154,10 +146,6 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ success: true });
-  }
 
   const user = await getCurrentUser();
   if (!user) {

@@ -18,10 +18,6 @@ export async function GET(
 ) {
   const { id: teamId } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ members: [] });
-  }
-
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -68,10 +64,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: teamId } = await params;
-
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.json({ success: true });
-  }
 
   const user = await getCurrentUser();
   if (!user) {
