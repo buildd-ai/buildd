@@ -102,13 +102,29 @@ describe('GET /api/workers/[id]/plan', () => {
     mockArtifactsFindFirst.mockReset();
   });
 
-  it('returns 401 when no API key', async () => {
+  it('returns 401 when no auth at all', async () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
 
     const req = createMockRequest();
     const res = await GET(req, { params: mockParams });
 
     expect(res.status).toBe(401);
+  });
+
+  it('allows session auth to fetch plan', async () => {
+    const mockPlan = { id: 'artifact-1', type: 'task_plan', content: 'Plan via session' };
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1' });
+    mockArtifactsFindFirst.mockResolvedValue(mockPlan);
+
+    const req = createMockRequest(); // No API key - session only
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.plan.content).toBe('Plan via session');
   });
 
   it('returns 404 when worker not found', async () => {
@@ -175,13 +191,33 @@ describe('POST /api/workers/[id]/plan', () => {
     });
   });
 
-  it('returns 401 when no API key', async () => {
+  it('returns 401 when no auth at all', async () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
 
     const req = createMockRequest({ method: 'POST', body: { plan: 'test' } });
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(401);
+  });
+
+  it('allows session auth to submit plan', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      task: { title: 'Test Task' },
+    });
+    mockArtifactsFindFirst.mockResolvedValue(null);
+
+    const req = createMockRequest({ method: 'POST', body: { plan: 'Session plan' } });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.message).toBe('Plan submitted successfully');
   });
 
   it('returns 404 when worker not found', async () => {

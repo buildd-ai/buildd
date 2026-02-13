@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
+const mockGetCurrentUser = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsUpdate = mock(() => ({
@@ -25,6 +26,10 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -83,6 +88,7 @@ const mockParams = Promise.resolve({ id: 'worker-1' });
 describe('POST /api/workers/[id]/plan/approve', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
+    mockGetCurrentUser.mockReset();
     mockWorkersFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockTriggerEvent.mockReset();
@@ -115,6 +121,31 @@ describe('POST /api/workers/[id]/plan/approve', () => {
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(401);
+  });
+
+  it('allows session auth (no API key)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'awaiting_plan_approval',
+      taskId: 'task-1',
+      workspaceId: 'ws-1',
+      task: { title: 'Test Task' },
+    });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      type: 'task_plan',
+      content: 'Step 1',
+      metadata: {},
+    });
+
+    const req = createMockRequest();
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.message).toContain('Plan approved');
   });
 
   it('returns 404 when worker not found', async () => {
