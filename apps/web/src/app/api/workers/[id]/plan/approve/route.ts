@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 
 // POST /api/workers/[id]/plan/approve - Approve the plan and continue to execution
 export async function POST(
@@ -13,11 +14,13 @@ export async function POST(
 ) {
   const { id } = await params;
 
+  // Dual auth: API key or session
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
+  const user = !account ? await getCurrentUser() : null;
 
-  if (!account) {
+  if (!account && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -57,7 +60,7 @@ export async function POST(
       metadata: {
         ...((plan.metadata as Record<string, unknown>) || {}),
         approvedAt: new Date().toISOString(),
-        approvedBy: account.id,
+        approvedBy: account?.id || user?.id,
       },
     })
     .where(eq(artifacts.id, plan.id));

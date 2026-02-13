@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
+const mockGetCurrentUser = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsInsert = mock(() => ({
@@ -27,6 +28,10 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -92,6 +97,7 @@ const mockParams = Promise.resolve({ id: 'worker-1' });
 describe('GET /api/workers/[id]/plan', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
+    mockGetCurrentUser.mockReset();
     mockWorkersFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
   });
@@ -148,6 +154,7 @@ describe('GET /api/workers/[id]/plan', () => {
 describe('POST /api/workers/[id]/plan', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
+    mockGetCurrentUser.mockReset();
     mockWorkersFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
