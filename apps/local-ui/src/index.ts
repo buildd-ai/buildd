@@ -6,6 +6,7 @@ import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
+import { scanSkills } from './skills';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -1249,6 +1250,47 @@ const server = Bun.serve({
         return Response.json({ workspace }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Scan local skills from a project path
+    if (path === '/api/skills/scan' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const localPath = body.localPath || config.projectsRoot;
+
+      if (!localPath || !existsSync(localPath)) {
+        return Response.json({ error: 'Invalid or missing localPath' }, { status: 400, headers: corsHeaders });
+      }
+
+      const skills = scanSkills(localPath);
+      return Response.json({ skills }, { headers: corsHeaders });
+    }
+
+    // Register a discovered skill to a workspace
+    if (path === '/api/skills/register' && req.method === 'POST') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { workspaceId, skill } = body;
+
+      if (!workspaceId || !skill?.slug || !skill?.name || !skill?.content || !skill?.contentHash) {
+        return Response.json({ error: 'workspaceId and skill (slug, name, content, contentHash) required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        const result = await buildd.syncWorkspaceSkills(workspaceId, [{
+          slug: skill.slug,
+          name: skill.name,
+          description: skill.description,
+          content: skill.content,
+          contentHash: skill.contentHash,
+          source: skill.source || 'local-scan',
+        }]);
+        return Response.json(result, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to register skill' }, { status: 502, headers: corsHeaders });
       }
     }
 

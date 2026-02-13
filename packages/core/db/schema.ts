@@ -395,7 +395,7 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
-// Skill registry — stores hash + metadata, NOT content (content lives on worker filesystem)
+// Skill registry — team-level canonical definitions
 export const skills = pgTable('skills', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -403,6 +403,7 @@ export const skills = pgTable('skills', {
   name: text('name').notNull(),
   description: text('description'),
   contentHash: text('content_hash').notNull(), // SHA-256 hex of SKILL.md
+  content: text('content'), // Full SKILL.md content (nullable for backward compat with hash-only records)
   source: text('source'), // e.g. 'npm:uxtools/ui-audit' or 'github:owner/repo/path'
   sourceVersion: text('source_version'), // npm version or git ref
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -410,6 +411,28 @@ export const skills = pgTable('skills', {
 }, (t) => ({
   teamSlugIdx: uniqueIndex('skills_team_slug_idx').on(t.teamId, t.slug),
   teamIdx: index('skills_team_idx').on(t.teamId),
+}));
+
+// Workspace-scoped skills — per-project bindings, discovered locally or manually registered
+export const workspaceSkills = pgTable('workspace_skills', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  skillId: uuid('skill_id').references(() => skills.id, { onDelete: 'set null' }), // Links to team skill when promoted
+  slug: text('slug').notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  content: text('content').notNull(), // Full SKILL.md content
+  contentHash: text('content_hash').notNull(), // SHA-256 for verification
+  source: text('source'), // 'local_scan', 'manual', 'github:owner/repo', etc.
+  enabled: boolean('enabled').default(true).notNull(),
+  origin: text('origin').default('manual').notNull().$type<'scan' | 'manual' | 'promoted'>(),
+  metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
+  workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
+  skillIdx: index('workspace_skills_skill_idx').on(t.skillId),
 }));
 
 // Team invitations for multi-tenancy
@@ -494,6 +517,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   accountWorkspaces: many(accountWorkspaces),
   observations: many(observations),
   taskSchedules: many(taskSchedules),
+  workspaceSkills: many(workspaceSkills),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
@@ -554,8 +578,14 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
   workspaces: many(workspaces),
 }));
 
-export const skillsRelations = relations(skills, ({ one }) => ({
+export const skillsRelations = relations(skills, ({ one, many }) => ({
   team: one(teams, { fields: [skills.teamId], references: [teams.id] }),
+  workspaceSkills: many(workspaceSkills),
+}));
+
+export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
+  workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
+  skill: one(skills, { fields: [workspaceSkills.skillId], references: [skills.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({

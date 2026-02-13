@@ -474,6 +474,19 @@ const baseTools = [
       required: ["type", "title", "content"],
     },
   },
+  {
+    name: "buildd_list_skills",
+    description: "List available skills for the workspace. Shows workspace-scoped skills merged with team-level skills. Use to discover reusable skills before starting work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+    },
+  },
 ];
 
 // Admin-only tools
@@ -616,6 +629,36 @@ const adminTools = [
         },
       },
       required: ["taskId"],
+    },
+  },
+  {
+    name: "buildd_register_skill",
+    description: "Register or update a workspace skill. Takes skill name and content (SKILL.md), creates/updates the skill in the workspace. Admin-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Skill display name (e.g., 'UI Audit')",
+        },
+        content: {
+          type: "string",
+          description: "Full SKILL.md content for the skill",
+        },
+        description: {
+          type: "string",
+          description: "Short description of what the skill does",
+        },
+        source: {
+          type: "string",
+          description: "Source identifier (e.g., 'manual', 'github:owner/repo')",
+        },
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID (optional - uses detected workspace if not provided)",
+        },
+      },
+      required: ["name", "content"],
     },
   },
 ];
@@ -1330,6 +1373,93 @@ export BUILDD_SERVER=${SERVER_URL}`;
             {
               type: "text",
               text: `Observation saved: "${data.observation.title}" (${data.observation.type})\nID: ${data.observation.id}`,
+            },
+          ],
+        };
+      }
+
+      case "buildd_list_skills": {
+        const workspaceId = args?.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        // Fetch workspace skills and team skills in parallel
+        const [wsData, teamData] = await Promise.all([
+          apiCall(`/api/workspaces/${workspaceId}/skills`),
+          apiCall(`/api/skills`),
+        ]);
+
+        const wsSkills: Array<{ slug: string; name: string; enabled: boolean; origin: string; description?: string }> = wsData.skills || [];
+        const teamSkills: Array<{ slug: string; name: string; description?: string }> = teamData.skills || [];
+
+        // Merge: workspace skills take precedence by slug
+        const seen = new Set(wsSkills.map((s) => s.slug));
+        const merged = [
+          ...wsSkills.map((s) => ({
+            slug: s.slug,
+            name: s.name,
+            origin: s.origin || 'workspace',
+            enabled: s.enabled,
+            description: s.description || '',
+          })),
+          ...teamSkills
+            .filter((s) => !seen.has(s.slug))
+            .map((s) => ({
+              slug: s.slug,
+              name: s.name,
+              origin: 'team',
+              enabled: true,
+              description: s.description || '',
+            })),
+        ];
+
+        if (merged.length === 0) {
+          return {
+            content: [{ type: "text", text: "No skills registered for this workspace or team." }],
+          };
+        }
+
+        const summary = merged.map((s) =>
+          `- **${s.name}** (\`${s.slug}\`) [${s.origin}]${s.enabled ? '' : ' (disabled)'}${s.description ? `\n  ${s.description}` : ''}`
+        ).join("\n");
+
+        return {
+          content: [{ type: "text", text: `${merged.length} skill(s):\n\n${summary}` }],
+        };
+      }
+
+      case "buildd_register_skill": {
+        const level = await getAccountLevel();
+        if (level !== 'admin') {
+          throw new Error("This operation requires an admin-level token");
+        }
+
+        if (!args?.name || !args?.content) {
+          throw new Error("name and content are required");
+        }
+
+        const workspaceId = args.workspaceId || await getWorkspaceId();
+        if (!workspaceId) {
+          throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+        }
+
+        const data = await apiCall(`/api/workspaces/${workspaceId}/skills`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: args.name,
+            content: args.content,
+            description: args.description || undefined,
+            source: args.source || 'mcp',
+          }),
+        });
+
+        const skill = data.skill;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`,
             },
           ],
         };

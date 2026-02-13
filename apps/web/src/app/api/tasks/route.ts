@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, skills } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, skills, workspaceSkills } from '@buildd/core/db/schema';
 import { desc, eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -105,6 +105,8 @@ export async function POST(req: NextRequest) {
       assignToLocalUiUrl,
       // Skill reference
       skillRef,
+      // Skill slugs (new: array of skill slugs)
+      skillSlugs: rawSkillSlugs,
     } = body;
 
     if (!workspaceId || !title) {
@@ -136,29 +138,66 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
 
-    // Resolve skill reference if provided
+    // Normalize skill slugs: merge old skillRef.slug into skillSlugs for unified handling
+    const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
+    if (skillRef?.slug && !skillSlugs.includes(skillRef.slug)) {
+      skillSlugs.push(skillRef.slug);
+    }
+
+    // Resolve skill references if any slugs provided
     let resolvedSkillRef: { skillId: string; slug: string; contentHash: string } | undefined;
-    if (skillRef?.slug) {
+    const resolvedSkillRefs: Array<{ skillId: string; slug: string; contentHash: string }> = [];
+
+    if (skillSlugs.length > 0) {
       if (!targetWorkspace.teamId) {
         return NextResponse.json(
           { error: 'Workspace has no team — cannot resolve skills' },
           { status: 400 }
         );
       }
-      const skill = await db.query.skills.findFirst({
-        where: and(eq(skills.teamId, targetWorkspace.teamId), eq(skills.slug, skillRef.slug)),
-      });
-      if (!skill) {
-        return NextResponse.json(
-          { error: `Skill "${skillRef.slug}" not registered` },
-          { status: 400 }
-        );
+
+      for (const slug of skillSlugs) {
+        // Check workspace-level skills first (enabled only)
+        const wsSkill = await db.query.workspaceSkills.findFirst({
+          where: and(
+            eq(workspaceSkills.workspaceId, workspaceId),
+            eq(workspaceSkills.slug, slug),
+            eq(workspaceSkills.enabled, true),
+          ),
+        });
+
+        if (wsSkill) {
+          resolvedSkillRefs.push({
+            skillId: wsSkill.id,
+            slug: wsSkill.slug,
+            contentHash: wsSkill.contentHash,
+          });
+          continue;
+        }
+
+        // Fall back to team-level skill registry
+        const teamSkill = await db.query.skills.findFirst({
+          where: and(eq(skills.teamId, targetWorkspace.teamId), eq(skills.slug, slug)),
+        });
+
+        if (!teamSkill) {
+          return NextResponse.json(
+            { error: `Skill "${slug}" not registered` },
+            { status: 400 }
+          );
+        }
+
+        resolvedSkillRefs.push({
+          skillId: teamSkill.id,
+          slug: teamSkill.slug,
+          contentHash: teamSkill.contentHash,
+        });
       }
-      resolvedSkillRef = {
-        skillId: skill.id,
-        slug: skill.slug,
-        contentHash: skill.contentHash,
-      };
+
+      // Keep backward compat: set resolvedSkillRef to the first one (or the skillRef.slug match)
+      if (skillRef?.slug) {
+        resolvedSkillRef = resolvedSkillRefs.find(r => r.slug === skillRef.slug);
+      }
     }
 
     // Process attachments - accept both R2 references and legacy inline base64
@@ -200,6 +239,8 @@ export async function POST(req: NextRequest) {
         context: {
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(resolvedSkillRef ? { skillRef: resolvedSkillRef } : {}),
+          ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
+          ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },
         // Creator tracking (from service)
         ...creatorContext,

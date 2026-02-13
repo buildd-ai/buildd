@@ -346,6 +346,7 @@ export interface Skill {
   name: string;
   description: string | null;
   contentHash: string;
+  content: string | null;
   source: string | null;
   sourceVersion: string | null;
   createdAt: Date;
@@ -356,6 +357,40 @@ export interface SkillRef {
   skillId: string;
   slug: string;
   contentHash: string;
+}
+
+export type WorkspaceSkillOrigin = 'scan' | 'manual' | 'promoted';
+
+export interface WorkspaceSkill {
+  id: string;
+  workspaceId: string;
+  skillId: string | null;
+  slug: string;
+  name: string;
+  description: string | null;
+  content: string;
+  contentHash: string;
+  source: string | null;
+  enabled: boolean;
+  origin: WorkspaceSkillOrigin;
+  metadata: SkillMetadata;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SkillBundle {
+  slug: string;
+  name: string;
+  content: string;
+  referenceFiles?: Record<string, string>;
+}
+
+export interface SkillMetadata {
+  version?: string;
+  author?: string;
+  referenceFiles?: Record<string, string>;
+  repoUrl?: string;
+  commitSha?: string;
 }
 
 // ============================================================================
@@ -436,6 +471,7 @@ export interface ClaimTasksResponse {
     taskId: string;
     branch: string;
     task: Task;
+    skillBundles?: SkillBundle[];
   }>;
 }
 
@@ -464,6 +500,7 @@ export interface RegisterSkillInput {
   name: string;
   description?: string;
   contentHash: string;
+  content?: string;
   source?: string;
   sourceVersion?: string;
 }
@@ -472,8 +509,30 @@ export interface UpdateSkillInput {
   name?: string;
   description?: string;
   contentHash?: string;
+  content?: string;
   source?: string;
   sourceVersion?: string;
+}
+
+export interface CreateWorkspaceSkillInput {
+  slug?: string;
+  name: string;
+  description?: string;
+  content: string;
+  source?: string;
+  metadata?: SkillMetadata;
+  enabled?: boolean;
+}
+
+export interface SyncWorkspaceSkillsInput {
+  skills: Array<{
+    slug: string;
+    name: string;
+    description?: string;
+    content: string;
+    contentHash: string;
+    source?: string;
+  }>;
 }
 
 export interface UpdateScheduleInput {

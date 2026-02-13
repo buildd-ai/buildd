@@ -100,7 +100,7 @@ Key components have `data-testid` attributes for E2E testing:
 
 See `.agent/testing.md` for details.
 
-## Local Docs
+## Docs
 
-See `.agent/` for architecture deep-dives.
-i.e .agent/claude-agent-sdk.md
+- **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)
+- **Product documentation**: If available, check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.

@@ -1,5 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
+import type { WorkspaceSkill, SyncWorkspaceSkillsInput } from '@buildd/shared';
 
 export class BuilddClient {
   private config: LocalUIConfig;
@@ -308,5 +309,20 @@ export class BuilddClient {
     } catch {
       return null;
     }
+  }
+
+  async syncWorkspaceSkills(workspaceId: string, skills: SyncWorkspaceSkillsInput['skills']): Promise<any> {
+    return this.fetch(`/api/workspaces/${workspaceId}/skills/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ skills }),
+    });
+  }
+
+  async listWorkspaceSkills(workspaceId: string, enabled?: boolean): Promise<WorkspaceSkill[]> {
+    const params = new URLSearchParams();
+    if (enabled !== undefined) params.set('enabled', String(enabled));
+    const qs = params.toString();
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/skills${qs ? `?${qs}` : ''}`);
+    return data.skills || [];
   }
 }

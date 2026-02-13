@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, observations, taskSchedules } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, observations, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, desc, and, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -80,6 +80,12 @@ export default async function WorkspaceDetailPage({
     .where(eq(taskSchedules.workspaceId, id));
   const scheduleCount = Number(schedCount?.count || 0);
 
+  const [skillCount] = await db
+    .select({ count: count() })
+    .from(workspaceSkills)
+    .where(eq(workspaceSkills.workspaceId, id));
+  const skillsCount = Number(skillCount?.count || 0);
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -100,6 +106,12 @@ export default async function WorkspaceDetailPage({
               className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
             >
               Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
+            </Link>
+            <Link
+              href={`/app/workspaces/${workspace.id}/skills`}
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
+            >
+              Skills{skillsCount > 0 ? ` (${skillsCount})` : ''}
             </Link>
             <Link
               href={`/app/workspaces/${workspace.id}/memory`}

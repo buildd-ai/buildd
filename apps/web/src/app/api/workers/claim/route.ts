@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -287,6 +287,71 @@ export async function POST(req: NextRequest) {
           })
         );
       }
+    }
+  }
+
+  // Resolve skill bundles for claimed workers
+  for (const cw of claimedWorkers) {
+    const ctx = (cw.task as any)?.context as { skillSlugs?: string[] } | undefined;
+    if (!ctx?.skillSlugs || ctx.skillSlugs.length === 0) continue;
+
+    const taskObj = filteredTasks.find(t => t.id === cw.taskId);
+    const wsId = taskObj?.workspaceId;
+    const teamId = taskObj?.workspace?.teamId as string | undefined;
+    if (!wsId) continue;
+
+    const slugs = ctx.skillSlugs;
+    const bundles: SkillBundle[] = [];
+    const unmatchedSlugs: string[] = [];
+
+    // 1. Check workspace-level skills (enabled only)
+    if (slugs.length > 0) {
+      const wsSkills = await db.query.workspaceSkills.findMany({
+        where: and(
+          eq(workspaceSkills.workspaceId, wsId),
+          inArray(workspaceSkills.slug, slugs),
+          eq(workspaceSkills.enabled, true),
+        ),
+      });
+
+      const foundSlugs = new Set(wsSkills.map(s => s.slug));
+      for (const ws of wsSkills) {
+        const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
+        bundles.push({
+          slug: ws.slug,
+          name: ws.name,
+          content: ws.content,
+          ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
+        });
+      }
+
+      for (const slug of slugs) {
+        if (!foundSlugs.has(slug)) unmatchedSlugs.push(slug);
+      }
+    }
+
+    // 2. For unmatched slugs, fall back to team-level skills
+    if (unmatchedSlugs.length > 0 && teamId) {
+      const teamSkills = await db.query.skills.findMany({
+        where: and(
+          eq(skills.teamId, teamId),
+          inArray(skills.slug, unmatchedSlugs),
+        ),
+      });
+
+      for (const ts of teamSkills) {
+        if (ts.content) {
+          bundles.push({
+            slug: ts.slug,
+            name: ts.name,
+            content: ts.content,
+          });
+        }
+      }
+    }
+
+    if (bundles.length > 0) {
+      (cw as any).skillBundles = bundles;
     }
   }
 

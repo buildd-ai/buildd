@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { skills } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
@@ -50,11 +51,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { slug, name, description, contentHash, source, sourceVersion } = body;
+    const { slug, name, description, content, source, sourceVersion } = body;
+    let { contentHash } = body;
+
+    // Compute contentHash from content if not provided
+    if (!contentHash && content) {
+      contentHash = createHash('sha256').update(content).digest('hex');
+    }
 
     if (!slug || !name || !contentHash) {
       return NextResponse.json(
-        { error: 'slug, name, and contentHash are required' },
+        { error: 'slug, name, and either contentHash or content are required' },
         { status: 400 }
       );
     }
@@ -79,6 +86,7 @@ export async function POST(req: NextRequest) {
           name,
           description: description || null,
           contentHash,
+          content: content || existing.content,
           source: source || null,
           sourceVersion: sourceVersion || null,
           updatedAt: new Date(),
@@ -97,6 +105,7 @@ export async function POST(req: NextRequest) {
         name,
         description: description || null,
         contentHash,
+        content: content || null,
         source: source || null,
         sourceVersion: sourceVersion || null,
       })

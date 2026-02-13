@@ -828,30 +828,39 @@ export class WorkerManager {
         promptParts.push(memoryContext.join('\n'));
       }
 
-      // Resolve and verify skill if task has a skillRef
-      const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
-      if (skillRef) {
-        const skillDir = join(homedir(), '.buildd', 'skills', skillRef.slug);
-        const skillPath = join(skillDir, 'SKILL.md');
+      // Inject skill content: prefer server-delivered skillBundles, fall back to local skillRef
+      const skillBundles = (task.context as any)?.skillBundles as Array<{ slug: string; name: string; content: string; referenceFiles?: Record<string, string> }> | undefined;
+      if (skillBundles && skillBundles.length > 0) {
+        for (const bundle of skillBundles) {
+          this.addMilestone(worker, { type: 'status', label: `Skill: ${bundle.name}`, ts: Date.now() });
+          promptParts.push(`## Skill: ${bundle.name}\n${bundle.content}`);
+        }
+      } else {
+        // Fallback: resolve and verify skill via local file + hash check
+        const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
+        if (skillRef) {
+          const skillDir = join(homedir(), '.buildd', 'skills', skillRef.slug);
+          const skillPath = join(skillDir, 'SKILL.md');
 
-        if (!existsSync(skillPath)) {
-          const msg = `Skill "${skillRef.slug}" not installed locally. Run \`buildd skill install ${skillRef.slug}\` to install.`;
-          console.warn(`[Worker ${worker.id}] ${msg}`);
-          this.addMilestone(worker, { type: 'status', label: `⚠ Skill missing: ${skillRef.slug}`, ts: Date.now() });
-          promptParts.push(`## Skill Warning\n${msg}`);
-        } else {
-          const skillContent = readFileSync(skillPath, 'utf-8');
-          const localHash = createHash('sha256').update(skillContent).digest('hex');
-
-          if (localHash !== skillRef.contentHash) {
-            const msg = `Skill "${skillRef.slug}" hash mismatch — local copy is outdated. Run \`buildd skill install ${skillRef.slug}\` to update.`;
+          if (!existsSync(skillPath)) {
+            const msg = `Skill "${skillRef.slug}" not installed locally. Run \`buildd skill install ${skillRef.slug}\` to install.`;
             console.warn(`[Worker ${worker.id}] ${msg}`);
-            this.addMilestone(worker, { type: 'status', label: `⚠ Skill outdated: ${skillRef.slug}`, ts: Date.now() });
+            this.addMilestone(worker, { type: 'status', label: `⚠ Skill missing: ${skillRef.slug}`, ts: Date.now() });
             promptParts.push(`## Skill Warning\n${msg}`);
           } else {
-            // Hash matches — inject skill content into prompt
-            this.addMilestone(worker, { type: 'status', label: `Skill: ${skillRef.slug}`, ts: Date.now() });
-            promptParts.push(`## Skill Instructions\n${skillContent}`);
+            const skillContent = readFileSync(skillPath, 'utf-8');
+            const localHash = createHash('sha256').update(skillContent).digest('hex');
+
+            if (localHash !== skillRef.contentHash) {
+              const msg = `Skill "${skillRef.slug}" hash mismatch — local copy is outdated. Run \`buildd skill install ${skillRef.slug}\` to update.`;
+              console.warn(`[Worker ${worker.id}] ${msg}`);
+              this.addMilestone(worker, { type: 'status', label: `⚠ Skill outdated: ${skillRef.slug}`, ts: Date.now() });
+              promptParts.push(`## Skill Warning\n${msg}`);
+            } else {
+              // Hash matches — inject skill content into prompt
+              this.addMilestone(worker, { type: 'status', label: `Skill: ${skillRef.slug}`, ts: Date.now() });
+              promptParts.push(`## Skill Instructions\n${skillContent}`);
+            }
           }
         }
       }
