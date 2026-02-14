@@ -348,7 +348,7 @@ describe('WorkerManager — lifecycle', () => {
         branch: 'buildd/test',
         status: 'working',
         hasNewActivity: false,
-        lastActivity: Date.now() - 130_000, // 130s ago — beyond 120s threshold
+        lastActivity: Date.now() - 310_000, // 310s ago — beyond 300s threshold
         milestones: [],
         currentAction: 'Thinking...',
         commits: [],

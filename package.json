@@ -8,10 +8,9 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
-    "test": "bun test",
-    "test:run": "bun test",
-    "test:unit": "bun test apps/local-ui/__tests__/unit/",
-    "test:integration": "bun test apps/web/tests/integration/",
+    "test": "bun test apps/web/src apps/local-ui/__tests__/unit packages/core",
+    "test:all": "bun test",
+    "test:integration": "bun test apps/web/tests/integration/ apps/local-ui/__tests__/integration*",
     "test:e2e": "bun test --env-file tests/e2e/.env tests/e2e/",
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build",

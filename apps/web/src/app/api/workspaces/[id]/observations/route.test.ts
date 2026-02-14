@@ -4,6 +4,8 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockVerifyWorkspaceAccess = mock(() => ({ teamId: 'team-1', role: 'owner' }) as any);
+const mockVerifyAccountWorkspaceAccess = mock(() => true as any);
 const mockObservationsSelect = mock(() => ({
   from: mock(() => ({
     where: mock(() => ({
@@ -27,6 +29,11 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/api-auth', () => ({
   hashApiKey: (key: string) => `hashed_${key}`,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -82,6 +89,10 @@ describe('GET /api/workspaces/[id]/observations', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     process.env.NODE_ENV = 'production';
   });
 
@@ -128,6 +139,10 @@ describe('POST /api/workspaces/[id]/observations', () => {
     mockAccountsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockObservationsInsert.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     process.env.NODE_ENV = 'production';
 
     mockObservationsInsert.mockReturnValue({
