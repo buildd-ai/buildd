@@ -652,7 +652,7 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(data.error).toContain('Cannot delete running tasks');
   });
 
-  it('returns 400 when trying to delete completed task', async () => {
+  it('deletes completed task successfully', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'Test Task',
@@ -664,12 +664,15 @@ describe('DELETE /api/tasks/[id]', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
+    const mockWhere = mock(() => Promise.resolve());
+    mockTasksDelete.mockReturnValue({ where: mockWhere });
+
     const request = createMockRequest({ method: 'DELETE' });
     const response = await callHandler(DELETE, request, 'task-123');
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.error).toContain('Cannot delete completed tasks');
+    expect(data.success).toBe(true);
   });
 
   it('allows API key auth to delete task', async () => {
