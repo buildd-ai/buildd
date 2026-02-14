@@ -1354,7 +1354,8 @@ const server = Bun.serve({
     }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)
-    if (path.startsWith('/worker/')) {
+    // Exclude /worker/api/ to avoid silently serving HTML for misrouted API calls
+    if (path.startsWith('/worker/') && !path.includes('/api/')) {
       return serveStatic('index.html');
     }
 
