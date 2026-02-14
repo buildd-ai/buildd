@@ -150,17 +150,24 @@ export async function POST(
       });
     }
 
-    // Refetch task after potential update
-    const updatedTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
-      with: { workspace: true },
-    });
+    // Build minimal task payload for Pusher (10KB event limit).
+    // Full task data (with context, attachments, workspace config) is fetched
+    // via the claim API. Sending the full object can exceed Pusher's limit.
+    const taskPayload = {
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      workspaceId: task.workspaceId,
+      status: 'pending' as const,
+      mode: task.mode,
+      priority: task.priority,
+    };
 
     // Broadcast to all workers (no targetLocalUiUrl = any worker can claim)
     await triggerEvent(
       channels.workspace(task.workspaceId),
       events.TASK_ASSIGNED,
-      { task: updatedTask, targetLocalUiUrl: null }
+      { task: taskPayload, targetLocalUiUrl: null }
     );
 
     return NextResponse.json({

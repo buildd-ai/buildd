@@ -1250,7 +1250,10 @@ export class WorkerManager {
               toolUseId: planToolUseId,
             };
             worker.currentAction = 'Awaiting plan approval';
+            worker.hasNewActivity = true;
+            worker.lastActivity = Date.now();
             this.addMilestone(worker, { type: 'status', label: 'Plan ready for review', ts: Date.now() });
+            this.emit({ type: 'worker_update', worker });
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
