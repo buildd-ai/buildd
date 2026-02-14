@@ -131,7 +131,16 @@ export async function POST(
           );
         }
       }
-    } else if (task.status !== 'pending') {
+    } else if (task.status === 'pending') {
+      // For pending tasks with force flag, require workspace ownership
+      if (force && !isWorkspaceOwner) {
+        return NextResponse.json({
+          reassigned: false,
+          reason: 'Cannot force reassign: you are not the workspace owner',
+          status: task.status,
+        }, { status: 403 });
+      }
+    } else {
       // For completed/failed tasks, don't allow reassign
       return NextResponse.json({
         reassigned: false,

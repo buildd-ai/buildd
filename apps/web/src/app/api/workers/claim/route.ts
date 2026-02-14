@@ -185,6 +185,20 @@ export async function POST(req: NextRequest) {
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
   for (const task of filteredTasks) {
+    // Re-check concurrency limit before each claim to prevent race condition bypass
+    const currentActive = await db.query.workers.findMany({
+      where: and(
+        eq(workers.accountId, account.id),
+        inArray(workers.status, ['running', 'starting', 'waiting_input'])
+      ),
+      columns: { id: true },
+    });
+
+    if (currentActive.length >= account.maxConcurrentWorkers) {
+      // Limit reached during claim loop - stop claiming more tasks
+      break;
+    }
+
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
