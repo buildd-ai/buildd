@@ -2,13 +2,20 @@
 
 > **Version investigated**: 0.1.77 / 0.2.37
 
+### Recent Updates (2025-02)
+
+- ✅ **Agent Teams**: Enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var
+- ✅ **Skills-as-Subagents**: Convert skill bundles to agent definitions for Task delegation (see `apps/local-ui/src/workers.ts:936`)
+- ✅ **Stale Timeout**: Increased to 300s (from 120s) to accommodate agent coordination overhead
+- ✅ **Tests**: Comprehensive tests in `apps/local-ui/__tests__/unit/agent-teams*.test.ts`
+
 ---
 
 ## Local-UI Implementation
 
 **Location**: `apps/local-ui/src/workers.ts`
 
-Uses `query()` API for task execution:
+Uses `query()` API for task execution with agent teams support:
 
 ```typescript
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -20,6 +27,9 @@ const cleanEnv = Object.fromEntries(
   )
 );
 
+// Enable Agent Teams feature
+cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+
 const queryInstance = query({
   prompt: taskDescription,
   options: {
@@ -30,6 +40,14 @@ const queryInstance = query({
     settingSources: ['project'],  // Loads CLAUDE.md
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     permissionMode: 'acceptEdits',
+    agents: {                       // Skills converted to agents (if useSkillAgents)
+      'deploy': {
+        description: 'Handles deployment workflows',
+        prompt: '<skill content>',
+        tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+        model: 'inherit',
+      }
+    },
   },
 });
 
@@ -41,11 +59,13 @@ for await (const msg of queryInstance) {
 ```
 
 Key features used:
+- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` - Enables agent teams & Task delegation
 - `settingSources: ['project']` - Auto-loads workspace CLAUDE.md
 - `cwd` - Sets working directory for file operations
 - `env` - Filtered env to avoid expired OAuth tokens
 - `abortController` - Enables task cancellation
 - `permissionMode: 'acceptEdits'` - Autonomous execution without prompts
+- `agents` - Skills-as-subagents for Task tool delegation
 - Break on `result` message to avoid process exit errors
 
 ---
@@ -172,12 +192,17 @@ options: {
 
 ```
 
-### 3. Subagents & Delegation
+### 3. Agent Teams & Subagents
 
-Use subagents for specialized tasks to keep context clean.
+> **Status**: Agent teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var (as of SDK v0.2.37)
+
+Use subagents for specialized tasks to keep context clean. The SDK supports two patterns:
+
+#### A. Manual Agent Definitions
 
 ```typescript
 options: {
+  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
   allowedTools: ['Task', 'Read', ...], // 'Task' tool is required for delegation
   agents: {
     'security-auditor': {
@@ -188,8 +213,44 @@ options: {
     }
   }
 }
-
 ```
+
+#### B. Skills as Subagents (Buildd Pattern)
+
+**Implementation**: `apps/local-ui/src/workers.ts:936-947`
+
+Convert skill bundles into agent definitions to enable direct Task delegation instead of Skill tool scoping:
+
+```typescript
+// When useSkillAgents=true
+const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
+for (const bundle of skillBundles) {
+  agents[bundle.slug] = {
+    description: bundle.description || bundle.name,
+    prompt: bundle.content,           // Full skill instructions become agent prompt
+    tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+    model: 'inherit',                 // Use parent's model
+  };
+}
+
+options: {
+  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+  agents,                            // Skill bundles as agents
+  // Do NOT set allowedTools to Skill(slug) when using agents
+  // Do NOT append system prompt forcing Skill tool usage
+}
+```
+
+**Key Differences**:
+
+| Approach | Tool Delegation | System Prompt | When to Use |
+|----------|----------------|---------------|-------------|
+| **Skills as Agents** (`useSkillAgents: true`) | `Task` tool spawns named subagents | No forced skill usage | Agent can decide when to delegate |
+| **Skill Tool** (`useSkillAgents: false`) | `allowedTools: ['Skill(deploy)']` | Forces "MUST use X skill" | Task requires specific skill execution |
+
+**Tests**: See `apps/local-ui/__tests__/unit/agent-teams.test.ts` for full behavior verification.
+
+**Stale Timeout Note**: When using agent teams, increase stale worker timeout to 300s (from 120s) to account for subagent coordination overhead.
 
 ### 4. Observability via Hooks
 
