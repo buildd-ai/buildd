@@ -63,8 +63,8 @@ export default async function TeamDetailPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href="/app/teams" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          &larr; Teams
+        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+          &larr; Settings
         </Link>
 
         <TeamDetailClient

@@ -109,10 +109,10 @@ export default function NewAccountPage() {
           </div>
 
           <Link
-            href="/app/accounts"
+            href="/app/settings"
             className="block text-center px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
           >
-            View All Accounts
+            Back to Settings
           </Link>
         </div>
       </main>
@@ -122,8 +122,8 @@ export default function NewAccountPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/accounts" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          ← Accounts
+        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+          &larr; Settings
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Account</h1>
 
@@ -247,7 +247,7 @@ export default function NewAccountPage() {
               {loading ? 'Creating...' : 'Create Account'}
             </button>
             <Link
-              href="/app/accounts"
+              href="/app/settings"
               className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
             >
               Cancel

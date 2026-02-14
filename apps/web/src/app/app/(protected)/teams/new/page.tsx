@@ -51,8 +51,8 @@ export default function NewTeamPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/teams" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          &larr; Teams
+        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+          &larr; Settings
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Team</h1>
 
@@ -115,7 +115,7 @@ export default function NewTeamPage() {
               {loading ? 'Creating...' : 'Create Team'}
             </button>
             <Link
-              href="/app/teams"
+              href="/app/settings"
               className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
             >
               Cancel

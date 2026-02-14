@@ -1,220 +1,180 @@
-'use client';
-
-import { useState, useEffect } from 'react';
+import { db } from '@buildd/core/db';
+import { accounts, skills, teams, teamMembers, workspaces } from '@buildd/core/db/schema';
+import { desc, eq, inArray, sql, and } from 'drizzle-orm';
 import Link from 'next/link';
-import ConfirmDialog from '@/components/ConfirmDialog';
+import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import GitHubSection from './GitHubSection';
+import ApiKeysSection from './ApiKeysSection';
+import SkillsSection from './SkillsSection';
 
-interface Installation {
-  id: string;
-  installationId: number;
-  accountLogin: string;
-  accountAvatarUrl: string | null;
-  accountType: string;
-  repositorySelection: string | null;
-  repoCount: number;
-  suspendedAt: string | null;
-}
+export const dynamic = 'force-dynamic';
 
-export default function SettingsPage() {
-  const [installations, setInstallations] = useState<Installation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [disconnecting, setDisconnecting] = useState<{ id: string; login: string } | null>(null);
-  const [disconnectLoading, setDisconnectLoading] = useState(false);
+export default async function SettingsPage() {
+  const user = await getCurrentUser();
 
-  useEffect(() => {
-    loadInstallations();
-  }, []);
-
-  async function loadInstallations() {
-    try {
-      const res = await fetch('/api/github/installations');
-      if (res.ok) {
-        const data = await res.json();
-        setInstallations(data.installations || []);
-      }
-    } catch (err) {
-      console.error('Failed to load installations:', err);
-    } finally {
-      setLoading(false);
-    }
+  if (!user) {
+    redirect('/app/auth/signin');
   }
 
-  async function syncRepos(installationId: string) {
-    setSyncing(installationId);
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/github/installations/${installationId}/repos`, {
-        method: 'POST',
+  let allAccounts: any[] = [];
+  let userTeams: { id: string; name: string; slug: string; role: string; memberCount: number }[] = [];
+  let teamSkills: any[] = [];
+  let userWorkspaces: { id: string; name: string }[] = [];
+
+  try {
+    const teamIds = await getUserTeamIds(user.id);
+
+    // Fetch accounts
+    if (teamIds.length > 0) {
+      allAccounts = await db.query.accounts.findMany({
+        where: inArray(accounts.teamId, teamIds),
+        orderBy: desc(accounts.createdAt),
+        with: {
+          team: { columns: { name: true } },
+        },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setMessage({ type: 'success', text: `Synced ${data.synced} repositories` });
-        loadInstallations(); // Refresh counts
-      } else {
-        const err = await res.json();
-        setMessage({ type: 'error', text: err.error || 'Sync failed' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to sync repos' });
-    } finally {
-      setSyncing(null);
     }
-  }
 
-  async function handleDisconnect() {
-    if (!disconnecting) return;
+    // Fetch teams with member counts
+    const memberships = await db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, user.id),
+      with: { team: true },
+    });
 
-    setDisconnectLoading(true);
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/github/installations/${disconnecting.id}`, {
-        method: 'DELETE',
+    const validMemberships = memberships.filter(m => m.team != null);
+    const memberTeamIds = validMemberships.map(m => m.teamId);
+    const memberCounts = memberTeamIds.length > 0
+      ? await db
+          .select({
+            teamId: teamMembers.teamId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(teamMembers)
+          .where(sql`${teamMembers.teamId} = ANY(${memberTeamIds})`)
+          .groupBy(teamMembers.teamId)
+      : [];
+
+    const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+
+    userTeams = validMemberships.map(m => ({
+      id: m.team.id,
+      name: m.team.name,
+      slug: m.team.slug,
+      role: m.role,
+      memberCount: countMap.get(m.teamId) || 1,
+    }));
+
+    // Fetch team-level skills
+    if (teamIds.length > 0) {
+      teamSkills = await db.query.skills.findMany({
+        where: inArray(skills.teamId, teamIds),
+        orderBy: (s, { asc }) => [asc(s.slug)],
       });
-      if (res.ok) {
-        setMessage({ type: 'success', text: `Disconnected ${disconnecting.login}` });
-        setDisconnecting(null);
-        loadInstallations();
-      } else {
-        const err = await res.json();
-        setMessage({ type: 'error', text: err.error || 'Disconnect failed' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to disconnect' });
-    } finally {
-      setDisconnectLoading(false);
     }
+
+    // Fetch workspaces for skill management link
+    const wsIds = await getUserWorkspaceIds(user.id);
+    if (wsIds.length > 0) {
+      userWorkspaces = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
+        columns: { id: true, name: true },
+        limit: 1,
+      });
+    }
+  } catch (error) {
+    console.error('Settings query error:', error);
   }
+
+  const roleColors: Record<string, string> = {
+    owner: 'bg-primary/10 text-primary',
+    admin: 'bg-status-info/10 text-status-info',
+    member: 'bg-surface-3 text-text-primary',
+  };
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-2xl mx-auto">
         <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Dashboard
         </Link>
-        <h1 className="text-3xl font-bold mb-8">Settings</h1>
+        <h1 className="text-2xl font-bold mb-8">Settings</h1>
 
-        {message && (
-          <div className={`mb-6 p-4 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-status-success/10 text-status-success border border-status-success/30'
-              : 'bg-status-error/10 text-status-error border border-status-error/30'
-          }`}>
-            {message.text}
-          </div>
-        )}
+        <div className="space-y-10">
+          {/* GitHub */}
+          <GitHubSection />
 
-        {/* GitHub Section */}
-        <section className="mb-8">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">GitHub</h2>
-            <a
-              href="/api/github/install"
-              className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
-            >
-              + Connect Org
-            </a>
-          </div>
+          <hr className="border-border-default" />
 
-          {loading ? (
-            <div className="text-text-secondary">Loading...</div>
-          ) : installations.length === 0 ? (
-            <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
-              <p className="text-text-secondary mb-4">No GitHub organizations connected</p>
-              <a
-                href="/api/github/install"
-                className="text-primary hover:underline"
+          {/* API Keys */}
+          <ApiKeysSection accounts={allAccounts} />
+
+          <hr className="border-border-default" />
+
+          {/* Teams */}
+          <section>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold">Teams</h2>
+              <Link
+                href="/app/teams/new"
+                className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
               >
-                Connect your first org
-              </a>
-            </div>
-          ) : (
-            <div className="border border-border-default rounded-lg divide-y divide-border-default">
-              {installations.map((inst) => (
-                <div key={inst.id} className="p-4">
-                  <div className="flex items-center gap-4">
-                    {inst.accountAvatarUrl && (
-                      <img
-                        src={inst.accountAvatarUrl}
-                        alt={inst.accountLogin}
-                        className="w-10 h-10 rounded-full"
-                      />
-                    )}
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{inst.accountLogin}</span>
-                        <span className="text-xs text-text-secondary bg-surface-3 px-2 py-0.5 rounded">
-                          {inst.accountType}
-                        </span>
-                        {inst.suspendedAt && (
-                          <span className="text-xs text-status-error bg-status-error/10 px-2 py-0.5 rounded">
-                            Suspended
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-sm text-text-secondary">
-                        {inst.repoCount} repos &bull; {inst.repositorySelection === 'all' ? 'All repos' : 'Selected repos'}
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => syncRepos(inst.id)}
-                        disabled={syncing === inst.id}
-                        className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50"
-                      >
-                        {syncing === inst.id ? 'Syncing...' : 'Sync'}
-                      </button>
-                      <button
-                        onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                        className="px-3 py-1.5 text-sm text-status-error border border-status-error/30 rounded-md hover:bg-status-error/10"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <p className="text-xs text-text-secondary mt-3">
-            To modify repo access, visit{' '}
-            <a
-              href="https://github.com/settings/installations"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary hover:underline"
-            >
-              GitHub Settings
-            </a>
-          </p>
-        </section>
-
-        {/* Account Section */}
-        <section>
-          <h2 className="text-xl font-semibold mb-4">Account</h2>
-          <div className="border border-border-default rounded-lg p-4">
-            <p className="text-text-secondary text-sm">
-              Manage API keys and billing on the{' '}
-              <Link href="/app/accounts" className="text-primary hover:underline">
-                Accounts page
+                + New Team
               </Link>
-            </p>
-          </div>
-        </section>
-      </div>
+            </div>
 
-      <ConfirmDialog
-        open={!!disconnecting}
-        title={`Disconnect ${disconnecting?.login}?`}
-        message="This will remove all synced repos from buildd (not from GitHub)."
-        confirmLabel="Disconnect"
-        variant="warning"
-        loading={disconnectLoading}
-        onConfirm={handleDisconnect}
-        onCancel={() => setDisconnecting(null)}
-      />
+            {userTeams.length === 0 ? (
+              <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
+                <p className="text-text-secondary mb-3 text-sm">No teams yet</p>
+                <Link
+                  href="/app/teams/new"
+                  className="text-sm text-primary hover:underline"
+                >
+                  Create a team
+                </Link>
+              </div>
+            ) : (
+              <div className="border border-border-default rounded-lg divide-y divide-border-default">
+                {userTeams.map((team) => {
+                  const isPersonal = team.slug.startsWith('personal-');
+                  return (
+                    <Link
+                      key={team.id}
+                      href={`/app/teams/${team.id}`}
+                      className="block p-4 hover:bg-surface-3"
+                    >
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <h3 className="font-medium truncate">{team.name}</h3>
+                          {isPersonal && (
+                            <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded flex-shrink-0">
+                              Personal
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 text-sm flex-shrink-0">
+                          <span className="text-text-secondary">
+                            {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
+                          </span>
+                          <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>
+                            {team.role}
+                          </span>
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <hr className="border-border-default" />
+
+          {/* Skills */}
+          <SkillsSection skills={teamSkills} workspaces={userWorkspaces} />
+        </div>
+      </div>
     </main>
   );
 }
