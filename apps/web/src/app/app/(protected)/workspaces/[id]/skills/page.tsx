@@ -8,6 +8,8 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { SkillList } from './SkillList';
 import { SkillForm } from './SkillForm';
 
+export const dynamic = 'force-dynamic';
+
 export default async function WorkspaceSkillsPage({
   params,
   searchParams,
@@ -19,18 +21,7 @@ export default async function WorkspaceSkillsPage({
   const query = await searchParams;
   const showNew = query.new === '1';
 
-  const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
-
-  if (isDev) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode - no database</p>
-        </div>
-      </main>
-    );
-  }
 
   if (!user) {
     redirect('/app/auth/signin');
