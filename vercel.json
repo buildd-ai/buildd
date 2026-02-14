@@ -1,9 +1,4 @@
 {
   "bunVersion": "1.x",
-  "framework": "nextjs",
-  "git": {
-    "deploymentEnabled": {
-      "dev": false
-    }
-  }
+  "framework": "nextjs"
 }

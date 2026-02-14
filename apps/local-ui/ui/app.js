@@ -1629,6 +1629,7 @@ async function loadWorkspaces() {
         selectedWorkspaceId = value;
         hiddenInput.value = value;
         saveLastWorkspace(value);
+        loadTaskSkills(value);
       }, { searchable: true });
     }
 
@@ -2170,7 +2171,8 @@ async function createTask() {
       data: a.data,
       mimeType: a.mimeType,
       filename: a.filename
-    }))
+    })),
+    ...(selectedTaskSkills.length > 0 ? { context: { skillSlugs: [...selectedTaskSkills] } } : {})
   };
 
   // Optimistic: add temp task, close modal, show toast immediately
@@ -2234,7 +2236,8 @@ async function createAndStartTask() {
       data: a.data,
       mimeType: a.mimeType,
       filename: a.filename
-    }))
+    })),
+    ...(selectedTaskSkills.length > 0 ? { context: { skillSlugs: [...selectedTaskSkills] } } : {})
   };
 
   // Optimistic: show task as "Starting..." in active section immediately
@@ -2358,6 +2361,8 @@ function clearTaskForm() {
   selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();
+  selectedTaskSkills = [];
+  renderTaskSkillTags();
 }
 
 // Utils
@@ -2390,6 +2395,11 @@ document.addEventListener('keydown', (e) => {
   }
   if (!settingsModal.classList.contains('hidden')) {
     closeSettingsModal();
+    return;
+  }
+  const skillsModalEl = document.getElementById('skillsModal');
+  if (!skillsModalEl.classList.contains('hidden')) {
+    closeSkillsModal();
     return;
   }
   const wsModal = document.getElementById('workspaceModal');
@@ -2590,6 +2600,229 @@ window.onpopstate = () => {
     handleRoute();
   }
 };
+
+// ============================================================
+// Skills Management
+// ============================================================
+
+let workspaceSkills = [];
+let selectedTaskSkills = [];
+
+function openSkillsModal() {
+  const modal = document.getElementById('skillsModal');
+  modal.classList.remove('hidden');
+  // Populate workspace filter
+  const select = document.getElementById('skillsWorkspaceFilter');
+  select.innerHTML = '<option value="">Select workspace...</option>';
+  for (const ws of combinedWorkspaces.filter(w => w.id)) {
+    select.innerHTML += `<option value="${ws.id}">${escapeHtml(ws.name)}</option>`;
+  }
+  // Auto-select if only one workspace
+  if (combinedWorkspaces.filter(w => w.id).length === 1) {
+    select.value = combinedWorkspaces.find(w => w.id)?.id || '';
+    loadSkills();
+  }
+}
+
+function closeSkillsModal() {
+  document.getElementById('skillsModal').classList.add('hidden');
+}
+
+async function loadSkills() {
+  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  if (!workspaceId) {
+    document.getElementById('skillsList').innerHTML = '<p class="text-sm text-text-secondary">Select a workspace to view skills</p>';
+    return;
+  }
+  try {
+    const res = await fetch('/api/skills/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId })
+    });
+    const data = await res.json();
+    workspaceSkills = data.skills || [];
+    renderSkills();
+  } catch (err) {
+    document.getElementById('skillsList').innerHTML = '<p class="text-sm text-status-error">Failed to load skills</p>';
+  }
+}
+
+function renderSkills() {
+  const container = document.getElementById('skillsList');
+  const search = (document.getElementById('skillsSearch').value || '').toLowerCase();
+  const filtered = workspaceSkills.filter(s =>
+    !search || s.name.toLowerCase().includes(search) || s.slug.toLowerCase().includes(search)
+  );
+
+  if (filtered.length === 0) {
+    container.innerHTML = workspaceSkills.length === 0
+      ? '<p class="text-sm text-text-secondary">No skills registered. Use "Scan Local" to discover skills.</p>'
+      : '<p class="text-sm text-text-secondary">No matching skills</p>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(skill => `
+    <div class="p-3 bg-surface border border-border-default rounded-lg flex items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-medium text-sm text-text-primary">${escapeHtml(skill.name)}</span>
+          <span class="text-[10px] font-mono text-text-tertiary bg-surface-hover px-1.5 py-0.5 rounded">${escapeHtml(skill.slug)}</span>
+          ${skill.origin ? `<span class="text-[10px] text-text-secondary">${escapeHtml(skill.origin)}</span>` : ''}
+        </div>
+        ${skill.description ? `<p class="text-xs text-text-secondary mt-0.5 truncate">${escapeHtml(skill.description)}</p>` : ''}
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" ${skill.enabled ? 'checked' : ''} class="sr-only peer" onchange="toggleSkill('${skill.id}', this.checked)">
+        <div class="w-9 h-5 bg-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-brand after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+      </label>
+      <button class="text-text-secondary hover:text-status-error transition-colors" onclick="deleteSkill('${skill.id}')" title="Delete">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+        </svg>
+      </button>
+    </div>
+  `).join('');
+}
+
+function filterSkills() {
+  renderSkills();
+}
+
+async function toggleSkill(skillId, enabled) {
+  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  try {
+    await fetch('/api/skills/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, skillId, enabled })
+    });
+    const skill = workspaceSkills.find(s => s.id === skillId);
+    if (skill) skill.enabled = enabled;
+  } catch (err) {
+    showToast('Failed to toggle skill', 'error');
+    loadSkills();
+  }
+}
+
+async function deleteSkill(skillId) {
+  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  const skill = workspaceSkills.find(s => s.id === skillId);
+  if (!confirm(`Delete skill "${skill?.name || skillId}"?`)) return;
+  try {
+    await fetch('/api/skills/delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, skillId })
+    });
+    workspaceSkills = workspaceSkills.filter(s => s.id !== skillId);
+    renderSkills();
+    showToast('Skill deleted', 'success');
+  } catch (err) {
+    showToast('Failed to delete skill', 'error');
+  }
+}
+
+async function scanLocalSkills() {
+  try {
+    const res = await fetch('/api/skills/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    const discovered = data.skills || [];
+    const container = document.getElementById('scannedSkillsContent');
+    const section = document.getElementById('scannedSkillsList');
+
+    if (discovered.length === 0) {
+      section.classList.add('hidden');
+      showToast('No skills found in project directories', 'info');
+      return;
+    }
+
+    section.classList.remove('hidden');
+    container.innerHTML = discovered.map(skill => `
+      <div class="p-3 bg-surface border border-border-default rounded-lg flex items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-medium text-sm text-text-primary">${escapeHtml(skill.name)}</span>
+            <span class="text-[10px] font-mono text-text-tertiary bg-surface-hover px-1.5 py-0.5 rounded">${escapeHtml(skill.slug)}</span>
+          </div>
+          ${skill.description ? `<p class="text-xs text-text-secondary mt-0.5">${escapeHtml(skill.description)}</p>` : ''}
+          <p class="text-[10px] text-text-tertiary mt-0.5 truncate">${escapeHtml(skill.path)}</p>
+        </div>
+        <button class="btn bg-brand text-white py-1 px-3 text-xs rounded-md font-medium cursor-pointer" onclick="registerSkill(${JSON.stringify(skill).replace(/"/g, '&quot;')})">Register</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    showToast('Failed to scan for skills', 'error');
+  }
+}
+
+async function registerSkill(skill) {
+  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  if (!workspaceId) {
+    showToast('Select a workspace first', 'warning');
+    return;
+  }
+  try {
+    await fetch('/api/skills/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, skill })
+    });
+    showToast(`Skill "${skill.name}" registered`, 'success');
+    loadSkills();
+  } catch (err) {
+    showToast('Failed to register skill', 'error');
+  }
+}
+
+// Task skill picker
+async function loadTaskSkills(workspaceId) {
+  if (!workspaceId) {
+    document.getElementById('taskSkillSelect').innerHTML = '<option value="">+ Add skill...</option>';
+    return;
+  }
+  try {
+    const res = await fetch('/api/skills/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, enabled: true })
+    });
+    const data = await res.json();
+    const skills = data.skills || [];
+    const select = document.getElementById('taskSkillSelect');
+    select.innerHTML = '<option value="">+ Add skill...</option>';
+    for (const s of skills) {
+      select.innerHTML += `<option value="${escapeHtml(s.slug)}">${escapeHtml(s.name)}</option>`;
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+function addTaskSkill(slug) {
+  if (!slug || selectedTaskSkills.includes(slug)) return;
+  selectedTaskSkills.push(slug);
+  renderTaskSkillTags();
+}
+
+function removeTaskSkill(slug) {
+  selectedTaskSkills = selectedTaskSkills.filter(s => s !== slug);
+  renderTaskSkillTags();
+}
+
+function renderTaskSkillTags() {
+  const container = document.getElementById('taskSkillsTags');
+  container.innerHTML = selectedTaskSkills.map(slug => `
+    <span class="inline-flex items-center gap-1 px-2 py-1 bg-brand/10 text-brand text-xs rounded-md font-medium">
+      ${escapeHtml(slug)}
+      <button type="button" class="hover:text-status-error" onclick="removeTaskSkill('${escapeHtml(slug)}')">&times;</button>
+    </span>
+  `).join('');
+}
 
 // Initialize
 checkConfig().then(() => {

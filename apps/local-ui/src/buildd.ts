@@ -325,4 +325,24 @@ export class BuilddClient {
     const data = await this.fetch(`/api/workspaces/${workspaceId}/skills${qs ? `?${qs}` : ''}`);
     return data.skills || [];
   }
+
+  async patchWorkspaceSkill(workspaceId: string, skillId: string, update: {
+    name?: string;
+    description?: string;
+    content?: string;
+    source?: string;
+    enabled?: boolean;
+  }): Promise<WorkspaceSkill> {
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/skills/${skillId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    });
+    return data.skill;
+  }
+
+  async deleteWorkspaceSkill(workspaceId: string, skillId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/skills/${skillId}`, {
+      method: 'DELETE',
+    });
+  }
 }

@@ -165,12 +165,17 @@ export async function DELETE(
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Only allow deleting pending, assigned, or failed tasks (not running or completed)
-    if (!['pending', 'assigned', 'failed'].includes(task.status)) {
-      return NextResponse.json(
-        { error: `Cannot delete ${task.status} tasks. Wait for completion or use reassign.` },
-        { status: 400 }
-      );
+    // ?force=true skips status check (for test cleanup scripts)
+    const force = req.nextUrl.searchParams.get('force') === 'true';
+
+    if (!force) {
+      // Only allow deleting pending, assigned, failed, or completed tasks (not actively running)
+      if (!['pending', 'assigned', 'failed', 'completed'].includes(task.status)) {
+        return NextResponse.json(
+          { error: `Cannot delete ${task.status} tasks. Wait for completion or use reassign.` },
+          { status: 400 }
+        );
+      }
     }
 
     await db.delete(tasks).where(eq(tasks.id, id));

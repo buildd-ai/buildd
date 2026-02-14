@@ -1266,6 +1266,69 @@ const server = Bun.serve({
       return Response.json({ skills }, { headers: corsHeaders });
     }
 
+    // List workspace skills
+    if (path === '/api/skills/list' && req.method === 'POST') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { workspaceId, enabled } = body;
+
+      if (!workspaceId) {
+        return Response.json({ error: 'workspaceId required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        const skills = await buildd.listWorkspaceSkills(workspaceId, enabled);
+        return Response.json({ skills }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to list skills' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    // Toggle skill enabled status
+    if (path === '/api/skills/toggle' && req.method === 'POST') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { workspaceId, skillId, enabled } = body;
+
+      if (!workspaceId || !skillId || typeof enabled !== 'boolean') {
+        return Response.json({ error: 'workspaceId, skillId, and enabled (boolean) required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        const skill = await buildd.patchWorkspaceSkill(workspaceId, skillId, { enabled });
+        return Response.json({ skill }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to toggle skill' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    // Delete a workspace skill
+    if (path === '/api/skills/delete' && req.method === 'DELETE') {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+
+      const body = await parseBody(req);
+      const { workspaceId, skillId } = body;
+
+      if (!workspaceId || !skillId) {
+        return Response.json({ error: 'workspaceId and skillId required' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        await buildd.deleteWorkspaceSkill(workspaceId, skillId);
+        return Response.json({ success: true }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to delete skill' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     // Register a discovered skill to a workspace
     if (path === '/api/skills/register' && req.method === 'POST') {
       if (!buildd) {
