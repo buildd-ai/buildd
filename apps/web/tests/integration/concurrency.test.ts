@@ -198,9 +198,9 @@ describe('Concurrency Control', () => {
 
     const results = await Promise.all(claimPromises);
 
-    // Count successful claims
-    const successfulClaims = results.filter(r => !('error' in r));
-    const failedClaims = results.filter(r => 'error' in r);
+    // Count successful claims (must have at least one worker in response)
+    const successfulClaims = results.filter(r => !('error' in r) && (r as any).workers?.length > 0);
+    const failedClaims = results.filter(r => 'error' in r || (r as any).workers?.length === 0);
 
     assert(successfulClaims.length === 1, 'Exactly one worker claimed the task');
     assert(failedClaims.length === 2, 'Two claims were rejected');

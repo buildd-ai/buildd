@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   const activeWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, account.id),
-      inArray(workers.status, ['running', 'starting', 'waiting_input'])
+      inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
     ),
   });
 
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
     const currentActive = await db.query.workers.findMany({
       where: and(
         eq(workers.accountId, account.id),
-        inArray(workers.status, ['running', 'starting', 'waiting_input'])
+        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
       ),
       columns: { id: true },
     });

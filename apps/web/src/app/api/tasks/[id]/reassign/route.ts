@@ -48,12 +48,13 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Check if user has workspace access (admin access)
+    // Check if user has workspace owner/admin access (required for force reassignment)
     let isWorkspaceOwner = false;
     if (user) {
-      const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
+      const access = await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin');
       isWorkspaceOwner = !!access;
     } else if (apiAccount) {
+      // API accounts with workspace access can force reassign (they are service accounts)
       isWorkspaceOwner = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
     }
 
