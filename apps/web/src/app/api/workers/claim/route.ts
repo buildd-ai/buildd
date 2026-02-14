@@ -334,6 +334,7 @@ export async function POST(req: NextRequest) {
         bundles.push({
           slug: ws.slug,
           name: ws.name,
+          description: ws.description || undefined,
           content: ws.content,
           ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
         });
@@ -358,6 +359,7 @@ export async function POST(req: NextRequest) {
           bundles.push({
             slug: ts.slug,
             name: ts.name,
+            description: ts.description || undefined,
             content: ts.content,
           });
         }

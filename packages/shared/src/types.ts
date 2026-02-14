@@ -378,11 +378,21 @@ export interface WorkspaceSkill {
   updatedAt: Date;
 }
 
+export interface SkillBundleFile {
+  path: string;
+  content: string;
+  executable?: boolean;
+  encoding?: 'utf-8' | 'base64';
+}
+
 export interface SkillBundle {
   slug: string;
   name: string;
+  description?: string;
   content: string;
+  contentHash?: string;
   referenceFiles?: Record<string, string>;
+  files?: SkillBundleFile[];
 }
 
 export interface SkillMetadata {

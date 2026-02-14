@@ -39,13 +39,31 @@ export class WorkerRunner extends EventEmitter {
       const fullPrompt = this.buildPrompt(prompt, worker);
 
       // Build environment with LLM provider config
-      const env = { ...process.env };
+      const env: Record<string, string | undefined> = { ...process.env };
+      // Enable Agent Teams support
+      env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
       if (config.llmProvider === 'openrouter' || config.llmBaseUrl) {
         env.ANTHROPIC_BASE_URL = config.llmBaseUrl || 'https://openrouter.ai/api';
         if (config.llmApiKey) {
           env.ANTHROPIC_AUTH_TOKEN = config.llmApiKey;
           env.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
         }
+      }
+
+      // Extract skill slugs from task context for native SDK discovery
+      const skillSlugs: string[] = (worker.task as any)?.context?.skillSlugs || [];
+      const allowedTools: string[] = [];
+      if (skillSlugs.length > 0) {
+        for (const slug of skillSlugs) {
+          allowedTools.push(`Skill(${slug})`);
+        }
+      }
+
+      const systemPrompt: any = { type: 'preset', preset: 'claude_code' };
+      if (skillSlugs.length > 0) {
+        systemPrompt.append = skillSlugs.length === 1
+          ? `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`
+          : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
       }
 
       for await (const message of query({
@@ -56,6 +74,9 @@ export class WorkerRunner extends EventEmitter {
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
           env,
+          settingSources: ['user', 'project'],
+          systemPrompt,
+          ...(allowedTools.length > 0 ? { allowedTools } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],

@@ -34,6 +34,11 @@ export default function NewTaskPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
 
+  // Skills state
+  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string }[]>([]);
+  const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
+  const [useSkillAgents, setUseSkillAgents] = useState(false);
+
   // Recurring schedule state
   const [recurring, setRecurring] = useState(false);
   const [scheduleName, setScheduleName] = useState('');
@@ -95,6 +100,24 @@ export default function NewTaskPage() {
       .catch(() => setWorkspaces([]))
       .finally(() => setLoadingWorkspaces(false));
   }, []);
+
+  // Fetch enabled skills when workspace changes
+  useEffect(() => {
+    if (!selectedWorkspaceId) {
+      setAvailableSkills([]);
+      setSelectedSkillSlugs([]);
+      return;
+    }
+    fetch(`/api/workspaces/${selectedWorkspaceId}/skills?enabled=true`)
+      .then(res => res.json())
+      .then(data => {
+        setAvailableSkills(
+          (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name }))
+        );
+      })
+      .catch(() => setAvailableSkills([]));
+    setSelectedSkillSlugs([]);
+  }, [selectedWorkspaceId]);
 
   // Validate cron expression with live preview
   useEffect(() => {
@@ -178,6 +201,12 @@ export default function NewTaskPage() {
             description,
             priority,
             ...(attachments && { attachments }),
+            ...(selectedSkillSlugs.length > 0 && {
+              context: {
+                skillSlugs: selectedSkillSlugs,
+                ...(useSkillAgents && { useSkillAgents: true }),
+              },
+            }),
           }),
         });
 
@@ -346,6 +375,70 @@ export default function NewTaskPage() {
                 </div>
               )}
             </div>
+
+            {/* Skills picker */}
+            {availableSkills.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium mb-2">Skills</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {selectedSkillSlugs.map(slug => {
+                    const skill = availableSkills.find(s => s.slug === slug);
+                    return (
+                      <span
+                        key={slug}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 text-primary text-sm rounded-full"
+                      >
+                        {skill?.name || slug}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSkillSlugs(prev => prev.filter(s => s !== slug))}
+                          className="hover:text-primary-hover"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value && !selectedSkillSlugs.includes(e.target.value)) {
+                      setSelectedSkillSlugs(prev => [...prev, e.target.value]);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+                >
+                  <option value="">+ Add skill...</option>
+                  {availableSkills
+                    .filter(s => !selectedSkillSlugs.includes(s.slug))
+                    .map(s => (
+                      <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>
+                    ))
+                  }
+                </select>
+                <p className="text-xs text-text-secondary mt-1">
+                  Skills provide reusable instructions to the worker agent.
+                </p>
+                {selectedSkillSlugs.length > 0 && (
+                  <label className="flex items-start gap-2 mt-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useSkillAgents}
+                      onChange={(e) => setUseSkillAgents(e.target.checked)}
+                      className="mt-0.5 rounded border-border-default text-primary focus:ring-primary-ring"
+                    />
+                    <div>
+                      <span className="text-sm font-medium">Use skills as specialist agents</span>
+                      <p className="text-xs text-text-secondary mt-0.5">
+                        Skills will be available as autonomous sub-agents that the worker can delegate to.
+                      </p>
+                    </div>
+                  </label>
+                )}
+              </div>
+            )}
 
             <div>
               <label htmlFor="priority" className="block text-sm font-medium mb-2">

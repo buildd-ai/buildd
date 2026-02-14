@@ -2,11 +2,11 @@ import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
-import { createHash } from 'crypto';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle } from '@buildd/shared';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 
 type EventHandler = (event: any) => void;
@@ -495,7 +495,7 @@ export class WorkerManager {
   private checkStale() {
     const now = Date.now();
     for (const worker of this.workers.values()) {
-      if (worker.status === 'working' && now - worker.lastActivity > 120_000) {
+      if (worker.status === 'working' && now - worker.lastActivity > 300_000) {
         worker.status = 'stale';
         this.emit({ type: 'worker_update', worker });
       }
@@ -831,41 +831,29 @@ export class WorkerManager {
         promptParts.push(memoryContext.join('\n'));
       }
 
-      // Inject skill content: prefer server-delivered skillBundles, fall back to local skillRef
-      const skillBundles = (task.context as any)?.skillBundles as Array<{ slug: string; name: string; content: string; referenceFiles?: Record<string, string> }> | undefined;
+      // Sync skills to disk for native SDK discovery (no prompt injection)
+      const skillBundles = (task.context as any)?.skillBundles as SkillBundle[] | undefined;
+      const skillSlugs: string[] = (task.context as any)?.skillSlugs || [];
+
       if (skillBundles && skillBundles.length > 0) {
         for (const bundle of skillBundles) {
-          this.addMilestone(worker, { type: 'status', label: `Skill: ${bundle.name}`, ts: Date.now() });
-          promptParts.push(`## Skill: ${bundle.name}\n${bundle.content}`);
-        }
-      } else {
-        // Fallback: resolve and verify skill via local file + hash check
-        const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
-        if (skillRef) {
-          const skillDir = join(homedir(), '.buildd', 'skills', skillRef.slug);
-          const skillPath = join(skillDir, 'SKILL.md');
-
-          if (!existsSync(skillPath)) {
-            const msg = `Skill "${skillRef.slug}" not installed locally. Run \`buildd skill install ${skillRef.slug}\` to install.`;
-            console.warn(`[Worker ${worker.id}] ${msg}`);
-            this.addMilestone(worker, { type: 'status', label: `⚠ Skill missing: ${skillRef.slug}`, ts: Date.now() });
-            promptParts.push(`## Skill Warning\n${msg}`);
-          } else {
-            const skillContent = readFileSync(skillPath, 'utf-8');
-            const localHash = createHash('sha256').update(skillContent).digest('hex');
-
-            if (localHash !== skillRef.contentHash) {
-              const msg = `Skill "${skillRef.slug}" hash mismatch — local copy is outdated. Run \`buildd skill install ${skillRef.slug}\` to update.`;
-              console.warn(`[Worker ${worker.id}] ${msg}`);
-              this.addMilestone(worker, { type: 'status', label: `⚠ Skill outdated: ${skillRef.slug}`, ts: Date.now() });
-              promptParts.push(`## Skill Warning\n${msg}`);
-            } else {
-              // Hash matches — inject skill content into prompt
-              this.addMilestone(worker, { type: 'status', label: `Skill: ${skillRef.slug}`, ts: Date.now() });
-              promptParts.push(`## Skill Instructions\n${skillContent}`);
+          try {
+            await syncSkillToLocal(bundle);
+            this.addMilestone(worker, { type: 'status', label: `Skill synced: ${bundle.name}`, ts: Date.now() });
+            if (!skillSlugs.includes(bundle.slug)) {
+              skillSlugs.push(bundle.slug);
             }
+          } catch (err) {
+            console.error(`[Worker ${worker.id}] Failed to sync skill ${bundle.slug}:`, err);
+            this.addMilestone(worker, { type: 'status', label: `Skill sync failed: ${bundle.slug}`, ts: Date.now() });
           }
         }
+      }
+
+      // Also handle skillRef (single skill reference from task context)
+      const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
+      if (skillRef && !skillSlugs.includes(skillRef.slug)) {
+        skillSlugs.push(skillRef.slug);
       }
 
       // Add task description
@@ -908,6 +896,9 @@ export class WorkerManager {
         }
       }
 
+      // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
+      cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+
       // Determine whether to load CLAUDE.md
       // Default to true if not configured, respect admin setting if configured
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
@@ -918,6 +909,43 @@ export class WorkerManager {
         ? 'plan'
         : bypassPermissions ? 'bypassPermissions' : 'acceptEdits';
 
+      // Check if skills should be used as subagents
+      const useSkillAgents = !!(task.context as any)?.useSkillAgents;
+
+      // Build allowedTools with skill scoping
+      const allowedTools: string[] = [];
+      if (skillSlugs.length > 0 && !useSkillAgents) {
+        // Scoped: only allow assigned skills (unless using as subagents)
+        for (const slug of skillSlugs) {
+          allowedTools.push(`Skill(${slug})`);
+        }
+      }
+      // Note: when no skills assigned or useSkillAgents, don't add Skill to allowedTools — let SDK defaults apply
+
+      // Build system prompt with optional skill usage instruction
+      const systemPrompt: any = { type: 'preset', preset: 'claude_code' };
+      if (skillSlugs.length > 0 && !useSkillAgents) {
+        if (skillSlugs.length === 1) {
+          systemPrompt.append = `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`;
+        } else {
+          systemPrompt.append = `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
+        }
+      }
+
+      // Convert skills to subagent definitions when useSkillAgents is enabled
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> | undefined;
+      if (useSkillAgents && skillBundles && skillBundles.length > 0) {
+        agents = {};
+        for (const bundle of skillBundles) {
+          agents[bundle.slug] = {
+            description: bundle.description || bundle.name,
+            prompt: bundle.content,
+            tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+            model: 'inherit',
+          };
+        }
+      }
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         cwd,
@@ -926,7 +954,9 @@ export class WorkerManager {
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
         permissionMode,
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        systemPrompt,
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        ...(agents ? { agents } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
