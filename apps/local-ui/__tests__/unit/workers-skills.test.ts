@@ -22,16 +22,34 @@ function extractSkillSlugs(context: any): string[] {
   return skillSlugs;
 }
 
-function buildAllowedTools(skillSlugs: string[]): string[] {
+function buildAllowedTools(skillSlugs: string[], useSkillAgents = false): string[] {
+  if (useSkillAgents) return [];
   return skillSlugs.map(slug => `Skill(${slug})`);
 }
 
-function buildSystemPromptAppend(skillSlugs: string[]): string | undefined {
-  if (skillSlugs.length === 0) return undefined;
+function buildSystemPromptAppend(skillSlugs: string[], useSkillAgents = false): string | undefined {
+  if (skillSlugs.length === 0 || useSkillAgents) return undefined;
   if (skillSlugs.length === 1) {
     return `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`;
   }
   return `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
+}
+
+function buildAgentDefinitions(
+  skillBundles: SkillBundle[] | undefined,
+  useSkillAgents: boolean,
+): Record<string, { description: string; prompt: string; tools: string[]; model: string }> | undefined {
+  if (!useSkillAgents || !skillBundles || skillBundles.length === 0) return undefined;
+  const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
+  for (const bundle of skillBundles) {
+    agents[bundle.slug] = {
+      description: bundle.description || bundle.name,
+      prompt: bundle.content,
+      tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+      model: 'inherit',
+    };
+  }
+  return agents;
 }
 
 describe('extractSkillSlugs', () => {
@@ -157,5 +175,96 @@ describe('buildSystemPromptAppend', () => {
     const slugs = ['skill-one', 'skill-two'];
     const result = buildSystemPromptAppend(slugs);
     expect(result).toBe(`Use these skills for this task: ${slugs.join(', ')}. Invoke them with the Skill tool as needed.`);
+  });
+});
+
+describe('buildAllowedTools with useSkillAgents', () => {
+  test('returns empty when useSkillAgents is true', () => {
+    expect(buildAllowedTools(['deploy', 'review'], true)).toEqual([]);
+  });
+
+  test('returns Skill tools when useSkillAgents is false', () => {
+    expect(buildAllowedTools(['deploy'], false)).toEqual(['Skill(deploy)']);
+  });
+
+  test('defaults to false (normal behavior)', () => {
+    expect(buildAllowedTools(['deploy'])).toEqual(['Skill(deploy)']);
+  });
+});
+
+describe('buildSystemPromptAppend with useSkillAgents', () => {
+  test('returns undefined when useSkillAgents is true', () => {
+    expect(buildSystemPromptAppend(['deploy'], true)).toBeUndefined();
+  });
+
+  test('returns undefined when useSkillAgents is true with multiple slugs', () => {
+    expect(buildSystemPromptAppend(['a', 'b', 'c'], true)).toBeUndefined();
+  });
+
+  test('returns normal prompt when useSkillAgents is false', () => {
+    const result = buildSystemPromptAppend(['deploy'], false);
+    expect(result).toContain('MUST use the deploy skill');
+  });
+});
+
+describe('buildAgentDefinitions', () => {
+  test('returns undefined when useSkillAgents is false', () => {
+    const bundles: SkillBundle[] = [
+      { slug: 'deploy', name: 'Deploy', content: 'Instructions' },
+    ];
+    expect(buildAgentDefinitions(bundles, false)).toBeUndefined();
+  });
+
+  test('returns undefined when no skill bundles', () => {
+    expect(buildAgentDefinitions(undefined, true)).toBeUndefined();
+    expect(buildAgentDefinitions([], true)).toBeUndefined();
+  });
+
+  test('converts bundles to agent definitions', () => {
+    const bundles: SkillBundle[] = [
+      { slug: 'deploy', name: 'Deploy', description: 'Deploy desc', content: 'Deploy instructions' },
+      { slug: 'review', name: 'Review', content: 'Review instructions' },
+    ];
+    const agents = buildAgentDefinitions(bundles, true);
+
+    expect(agents).toBeDefined();
+    expect(Object.keys(agents!)).toEqual(['deploy', 'review']);
+
+    expect(agents!.deploy.description).toBe('Deploy desc');
+    expect(agents!.deploy.prompt).toBe('Deploy instructions');
+    expect(agents!.deploy.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write']);
+    expect(agents!.deploy.model).toBe('inherit');
+
+    // Falls back to name when description is missing
+    expect(agents!.review.description).toBe('Review');
+  });
+
+  test('uses name as fallback when description is undefined', () => {
+    const bundles: SkillBundle[] = [
+      { slug: 'test', name: 'Test Skill', content: 'test' },
+    ];
+    const agents = buildAgentDefinitions(bundles, true);
+    expect(agents!.test.description).toBe('Test Skill');
+  });
+
+  test('uses name as fallback when description is empty string', () => {
+    const bundles: SkillBundle[] = [
+      { slug: 'test', name: 'Test Skill', description: '', content: 'test' },
+    ];
+    const agents = buildAgentDefinitions(bundles, true);
+    expect(agents!.test.description).toBe('Test Skill');
+  });
+
+  test('all agents get same tool set and model', () => {
+    const bundles: SkillBundle[] = [
+      { slug: 'a', name: 'A', content: 'a' },
+      { slug: 'b', name: 'B', content: 'b' },
+      { slug: 'c', name: 'C', content: 'c' },
+    ];
+    const agents = buildAgentDefinitions(bundles, true)!;
+    for (const key of Object.keys(agents)) {
+      expect(agents[key].tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write']);
+      expect(agents[key].model).toBe('inherit');
+    }
   });
 });

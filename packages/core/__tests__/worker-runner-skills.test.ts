@@ -14,15 +14,16 @@ function buildSkillConfig(taskContext: any): {
   systemPromptAppend?: string;
 } {
   const skillSlugs: string[] = taskContext?.skillSlugs || [];
+  const useSkillAgents = !!taskContext?.useSkillAgents;
   const allowedTools: string[] = [];
-  if (skillSlugs.length > 0) {
+  if (skillSlugs.length > 0 && !useSkillAgents) {
     for (const slug of skillSlugs) {
       allowedTools.push(`Skill(${slug})`);
     }
   }
 
   let systemPromptAppend: string | undefined;
-  if (skillSlugs.length > 0) {
+  if (skillSlugs.length > 0 && !useSkillAgents) {
     systemPromptAppend =
       skillSlugs.length === 1
         ? `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`
@@ -263,6 +264,57 @@ describe('WorkerRunner skill configuration', () => {
         skillSlugs: ['deploy', 'deploy'],
       });
       expect(allowedTools).toEqual(['Skill(deploy)', 'Skill(deploy)']);
+    });
+  });
+
+  describe('useSkillAgents integration', () => {
+    test('useSkillAgents=true disables allowedTools', () => {
+      const { allowedTools } = buildSkillConfig({
+        skillSlugs: ['deploy', 'review'],
+        useSkillAgents: true,
+      });
+      expect(allowedTools).toEqual([]);
+    });
+
+    test('useSkillAgents=true disables systemPromptAppend', () => {
+      const { systemPromptAppend } = buildSkillConfig({
+        skillSlugs: ['deploy'],
+        useSkillAgents: true,
+      });
+      expect(systemPromptAppend).toBeUndefined();
+    });
+
+    test('useSkillAgents=false preserves normal behavior', () => {
+      const { allowedTools, systemPromptAppend } = buildSkillConfig({
+        skillSlugs: ['deploy'],
+        useSkillAgents: false,
+      });
+      expect(allowedTools).toEqual(['Skill(deploy)']);
+      expect(systemPromptAppend).toContain('MUST use the deploy skill');
+    });
+
+    test('query options omit allowedTools when useSkillAgents=true', () => {
+      const options = buildQueryOptions({
+        skillSlugs: ['deploy', 'test'],
+        useSkillAgents: true,
+      });
+      expect(options).toEqual({
+        settingSources: ['user', 'project'],
+      });
+      expect('allowedTools' in options).toBe(false);
+    });
+
+    test('end-to-end: useSkillAgents=true with skills', () => {
+      const taskContext = {
+        skillSlugs: ['deploy', 'test'],
+        useSkillAgents: true,
+      };
+      const config = buildSkillConfig(taskContext);
+      const options = buildQueryOptions(taskContext);
+
+      expect(config.allowedTools).toEqual([]);
+      expect(config.systemPromptAppend).toBeUndefined();
+      expect('allowedTools' in options).toBe(false);
     });
   });
 });
