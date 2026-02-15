@@ -76,16 +76,18 @@ jobs:
 
       - name: Start preview local-ui
         run: |
-          tailscale ssh coder@100.82.109.19 << 'SCRIPT'
-            export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
-            # Kill any existing test instance
-            screen -X -S buildd-test quit 2>/dev/null || true
-            screen -dmS buildd-test bash -c "
-              export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
-              export PORT=8767
-              export BUILDD_SERVER=${BUILDD_TEST_SERVER}
-              buildd >> /tmp/buildd-test.log 2>&1
-            "
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            docker exec coder-ai-run-my-claude-workspace bash -c '
+              export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+              # Kill any existing test instance
+              screen -X -S buildd-test quit 2>/dev/null || true
+              screen -dmS buildd-test bash -c "
+                export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
+                export PORT=8767
+                export BUILDD_SERVER='"${BUILDD_TEST_SERVER}"'
+                buildd >> /tmp/buildd-test.log 2>&1
+              "
+            '
           SCRIPT
           sleep 5
 
@@ -101,4 +103,4 @@ jobs:
 
       - name: Cleanup preview local-ui
         if: always()
-        run: tailscale ssh coder@100.82.109.19 'screen -X -S buildd-test quit' || true
+        run: tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace screen -X -S buildd-test quit' || true
