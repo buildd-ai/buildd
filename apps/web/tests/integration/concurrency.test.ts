@@ -66,16 +66,16 @@ describe('Concurrency Control', () => {
 
   // Cleanup after each test
   afterEach(async () => {
-    // Clean up workers by marking them failed
-    for (const workerId of cleanupWorkerIds) {
-      try {
-        await failWorker(workerId);
-      } catch (err) {
-        console.warn(`Failed to cleanup worker ${workerId}:`, err);
-      }
-    }
+    // Clean up workers by marking them failed (parallel to avoid timeout)
+    await Promise.all(
+      cleanupWorkerIds.map(workerId =>
+        failWorker(workerId).catch(err => {
+          // Silently ignore errors - likely already cleaned up
+        })
+      )
+    );
     cleanupWorkerIds.length = 0;
-  });
+  }, TIMEOUT);
 
   afterAll(async () => {
     await cleanup.runCleanup();

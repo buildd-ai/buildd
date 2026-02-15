@@ -132,25 +132,22 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
 
     console.log(`Cleanup: ${workerIds.length} workers, ${taskIds.length} tasks...`);
 
-    for (const wid of workerIds) {
-      try {
-        await api(`/api/workers/${wid}`, {
+    // Clean workers and tasks in parallel to avoid timeouts
+    await Promise.all([
+      ...workerIds.map(wid =>
+        api(`/api/workers/${wid}`, {
           method: 'PATCH',
           body: JSON.stringify({ status: 'failed', error: 'Test cleanup' }),
-        });
-      } catch (err: any) {
-        console.log(`  Warning: failed to clean worker ${wid}: ${err.message}`);
-      }
-    }
-
-    for (const tid of taskIds) {
-      try {
-        // Use ?force=true so completed/running tasks get cleaned up too
-        await api(`/api/tasks/${tid}?force=true`, { method: 'DELETE' });
-      } catch (err: any) {
-        console.log(`  Warning: failed to clean task ${tid}: ${err.message}`);
-      }
-    }
+        }).catch(err => {
+          console.log(`  Warning: failed to clean worker ${wid}: ${err.message}`);
+        })
+      ),
+      ...taskIds.map(tid =>
+        api(`/api/tasks/${tid}?force=true`, { method: 'DELETE' }).catch(err => {
+          console.log(`  Warning: failed to clean task ${tid}: ${err.message}`);
+        })
+      ),
+    ]);
   }
 
   // Register SIGINT handler so Ctrl+C still cleans up
