@@ -98,6 +98,10 @@ mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: async () => {},
 }));
 
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
+}));
+
 const { WorkerManager } = await import('../../src/workers');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
