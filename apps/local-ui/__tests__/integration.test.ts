@@ -99,13 +99,22 @@ async function sendMessage(workerId: string, message: string): Promise<void> {
 // --- Test Setup ---
 
 let testWorkspaceId: string;
+let originalServer: string | null = null;
 
 beforeAll(async () => {
   // Verify server is running
   try {
-    const config = await api<{ configured: boolean; hasClaudeCredentials: boolean }>('/api/config');
+    const config = await api<{ configured: boolean; hasClaudeCredentials: boolean; builddServer?: string }>('/api/config');
     if (!config.hasClaudeCredentials) {
       throw new Error('No Claude credentials configured');
+    }
+
+    // Repoint local-ui to the test server if needed
+    originalServer = config.builddServer || null;
+    const testServer = process.env.BUILDD_TEST_SERVER!;
+    if (config.builddServer !== testServer) {
+      console.log(`Repointing local-ui: ${config.builddServer} → ${testServer}`);
+      await api('/api/config/server', 'POST', { server: testServer });
     }
   } catch (err: any) {
     if (err.message?.includes('fetch failed')) {
@@ -134,6 +143,14 @@ afterAll(async () => {
     } catch {
       // Ignore - worker may already be done
     }
+  }
+
+  // Restore original server URL
+  if (originalServer) {
+    try {
+      await api('/api/config/server', 'POST', { server: originalServer });
+      console.log(`Restored local-ui server → ${originalServer}`);
+    } catch { /* best effort */ }
   }
 });
 
@@ -469,4 +486,146 @@ describe('Follow-up Message Handling', () => {
 
     expect(hasFollowUp).toBe(true);
   }, FOLLOW_UP_TIMEOUT);
+});
+
+// --- Agent Teams & P2P Endpoints ---
+
+const TEAM_TIMEOUT = 180_000; // Teams need extra time (multi-agent coordination)
+
+describe('Agent Teams (Dogfood)', () => {
+  test('agent can spawn a team and team state is accessible via P2P endpoint', async () => {
+    // This test verifies the full flow:
+    // 1. Agent receives a task that encourages team usage
+    // 2. Agent uses TeamCreate to create a team
+    // 3. Agent spawns subagents via Task tool
+    // 4. worker.teamState gets populated via PostToolUse hook
+    // 5. GET /api/workers/{id}/team returns the team state
+    //
+    // Note: Whether the agent actually uses TeamCreate depends on the model's
+    // judgment. We prompt it strongly but can't guarantee it.
+    // If it doesn't use teams, the test verifies graceful degradation.
+
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Team Test: Multi-agent research',
+      description: [
+        'You MUST use the TeamCreate tool to create a team called "research-team".',
+        'Then use the Task tool to spawn one subagent named "explorer" with subagent_type "Explore" to search for README files.',
+        'After spawning the subagent, use SendMessage to send a broadcast saying "Task started".',
+        'Then say "Team setup complete" and finish.',
+        '',
+        'IMPORTANT: You MUST call TeamCreate, Task, and SendMessage tools. Do not skip any of these steps.',
+      ].join('\n'),
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    // Wait for completion
+    const finalWorker = await waitForWorker(worker.id, { timeout: TEAM_TIMEOUT });
+
+    // Check if the agent used team tools
+    if (finalWorker.teamState) {
+      // Team was created — verify full P2P flow
+      expect(finalWorker.teamState.teamName).toBeTruthy();
+
+      // Test P2P endpoint
+      const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
+      expect(teamRes.ok).toBe(true);
+      const teamData = await teamRes.json();
+      expect(teamData.team).toBeDefined();
+      expect(teamData.team.teamName).toBe(finalWorker.teamState.teamName);
+
+      // If subagents were spawned, verify members
+      if (teamData.team.members?.length > 0) {
+        expect(teamData.team.members[0].name).toBeTruthy();
+        expect(teamData.team.members[0].spawnedAt).toBeGreaterThan(0);
+      }
+
+      // If messages were sent, verify messages array
+      if (teamData.team.messages?.length > 0) {
+        expect(teamData.team.messages[0].content).toBeTruthy();
+        expect(teamData.team.messages[0].timestamp).toBeGreaterThan(0);
+      }
+
+      // Verify milestones include team events
+      const milestoneLabels = finalWorker.milestones.map((m: any) => m.label);
+      const hasTeamMilestone = milestoneLabels.some(
+        (l: string) => l.includes('Team created') || l.includes('Subagent')
+      );
+      expect(hasTeamMilestone).toBe(true);
+
+      console.log(`  Team: ${teamData.team.teamName}`);
+      console.log(`  Members: ${teamData.team.members?.length || 0}`);
+      console.log(`  Messages: ${teamData.team.messages?.length || 0}`);
+    } else {
+      // Agent didn't use team tools — check that P2P endpoint returns null gracefully
+      const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
+      expect(teamRes.ok).toBe(true);
+      const teamData = await teamRes.json();
+      expect(teamData.team).toBeNull();
+      console.log('  Agent did not use TeamCreate — graceful degradation verified');
+    }
+  }, TEAM_TIMEOUT);
+
+  test('trace endpoint returns tool calls and messages', async () => {
+    // Create a simple task that generates tool calls
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'Trace Endpoint Test',
+      description: 'Read the file package.json in the current directory. Then say "done".',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    const finalWorker = await waitForWorker(worker.id);
+    expect(finalWorker.status).toBe('done');
+
+    // Test trace endpoint
+    const traceRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/trace`);
+    expect(traceRes.ok).toBe(true);
+    const traceData = await traceRes.json();
+
+    expect(Array.isArray(traceData.toolCalls)).toBe(true);
+    expect(Array.isArray(traceData.messages)).toBe(true);
+
+    // Should have at least some tool calls (Read at minimum)
+    expect(traceData.toolCalls.length).toBeGreaterThan(0);
+
+    // Should have messages (at least assistant text)
+    expect(traceData.messages.length).toBeGreaterThan(0);
+
+    // Verify structure
+    const firstToolCall = traceData.toolCalls[0];
+    expect(firstToolCall.name).toBeTruthy();
+    expect(firstToolCall.timestamp).toBeGreaterThan(0);
+
+    console.log(`  Tool calls: ${traceData.toolCalls.length}`);
+    console.log(`  Messages: ${traceData.messages.length}`);
+  }, TEST_TIMEOUT);
+
+  test('team endpoint returns null for worker without team', async () => {
+    // Simple task — no team usage expected
+    const { task } = await api('/api/tasks', 'POST', {
+      title: 'No Team Test',
+      description: 'Say "hello" and nothing else. Do not create any teams.',
+      workspaceId: testWorkspaceId,
+    });
+    createdTaskIds.push(task.id);
+
+    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
+    createdWorkerIds.push(worker.id);
+
+    const finalWorker = await waitForWorker(worker.id);
+    expect(finalWorker.status).toBe('done');
+
+    // Team endpoint should return null
+    const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
+    expect(teamRes.ok).toBe(true);
+    const teamData = await teamRes.json();
+    expect(teamData.team).toBeNull();
+  }, TEST_TIMEOUT);
 });
