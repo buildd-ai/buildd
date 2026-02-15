@@ -66,6 +66,10 @@ CI will **fail** if you change schema.ts without generating/committing migration
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
 
+### Releasing
+
+Run `bun release` from `dev`. It auto-determines the semver bump from conventional commit prefixes (`feat:` → minor, `fix:` → patch, `BREAKING CHANGE` → major), bumps `package.json`, tags, pushes, and creates the PR to `main`.
+
 ## When Modifying
 
 - **Schema changes** → run `bun db:generate` and commit migration files (see Database section)
