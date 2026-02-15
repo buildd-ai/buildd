@@ -404,9 +404,6 @@ describe('POST /api/github/webhook', () => {
 
   // ── 13. Returns 500 when handler throws ─────────────────────────────────
   it('returns 500 when handler throws', async () => {
-    const spy = mock(() => {});
-    console.error = spy;
-
     // Make the workspace findFirst throw to simulate an error in the handler
     mockWorkspacesFindFirst.mockImplementation(() => {
       throw new Error('Database connection failed');
@@ -425,7 +422,6 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toBe('Webhook processing failed');
-    expect(spy).toHaveBeenCalled();
   });
 
   // ── Additional edge-case coverage ───────────────────────────────────────

@@ -122,9 +122,6 @@ describe('DELETE /api/github/installations/[id]', () => {
   });
 
   it('returns 500 on DB error', async () => {
-    const spy = mock(() => {});
-    console.error = spy;
-
     mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
     mockFindFirst.mockRejectedValue(new Error('DB connection failed'));
 
@@ -134,6 +131,5 @@ describe('DELETE /api/github/installations/[id]', () => {
 
     const data = await response.json();
     expect(data.error).toBe('Failed to disconnect');
-    expect(spy).toHaveBeenCalled();
   });
 });

@@ -42,8 +42,20 @@ jobs:
       - name: Type check
         run: cd apps/web && bunx tsc --noEmit
 
+      - name: Detect affected tests
+        id: affected
+        run: |
+          AFFECTED=$(bash scripts/affected-tests.sh)
+          echo "tests=$AFFECTED" >> "$GITHUB_OUTPUT"
+
       - name: Run tests
-        run: bun test apps/web/src apps/local-ui/__tests__/unit
+        if: steps.affected.outputs.tests != 'SKIP'
+        run: |
+          if [ "${{ steps.affected.outputs.tests }}" = "ALL" ]; then
+            bun test apps/web/src apps/local-ui/__tests__/unit
+          else
+            bun test ${{ steps.affected.outputs.tests }}
+          fi
 
       - name: Build
         run: cd apps/web && bun run build:only

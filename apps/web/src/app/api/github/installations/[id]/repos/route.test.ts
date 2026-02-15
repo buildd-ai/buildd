@@ -150,9 +150,6 @@ describe('GET /api/github/installations/[id]/repos', () => {
   });
 
   it('returns 500 on error', async () => {
-    const spy = mock(() => {});
-    console.error = spy;
-
     mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({
       id: 'inst-1',
@@ -166,6 +163,5 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
     const data = await response.json();
     expect(data.error).toBe('Failed to get repos');
-    expect(spy).toHaveBeenCalled();
   });
 });

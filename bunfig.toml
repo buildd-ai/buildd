@@ -1,2 +1,2 @@
 [test]
-onlyFailures = true
+preload = ["./tests/setup.ts"]
