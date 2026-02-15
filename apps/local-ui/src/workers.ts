@@ -9,7 +9,7 @@ import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
-import { scanEnvironment, scanDotEnvKeys } from './env-scan';
+import { scanEnvironment } from './env-scan';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
@@ -697,18 +697,8 @@ export class WorkerManager {
       return null;
     }
 
-    // Enrich environment with workspace-specific .env keys for capability matching
-    let claimEnvironment = this.environment;
-    if (claimEnvironment) {
-      const dotEnvKeys = scanDotEnvKeys(workspacePath);
-      if (dotEnvKeys.length > 0) {
-        const allEnvKeys = [...new Set([...claimEnvironment.envKeys, ...dotEnvKeys])];
-        claimEnvironment = { ...claimEnvironment, envKeys: allEnvKeys };
-      }
-    }
-
     // Claim from buildd (pass taskId for targeted claiming)
-    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, claimEnvironment);
+    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
     if (claimed.length === 0) {
       console.log('No tasks claimed');
       return null;

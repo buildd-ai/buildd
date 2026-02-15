@@ -15,7 +15,7 @@ mock.module('fs', () => ({
   existsSync: () => true,
 }));
 
-import { scanEnvironment, scanDotEnvKeys, type ScanConfig } from './env-scan';
+import { scanEnvironment, type ScanConfig } from './env-scan';
 
 describe('scanEnvironment', () => {
   beforeEach(() => {
@@ -175,93 +175,5 @@ describe('scanEnvironment', () => {
       if (original === undefined) delete process.env.MY_CUSTOM_KEY;
       else process.env.MY_CUSTOM_KEY = original;
     }
-  });
-});
-
-describe('scanDotEnvKeys', () => {
-  beforeEach(() => {
-    mockReadFileSync.mockReset();
-    mockReadFileSync.mockImplementation(() => {
-      throw new Error('ENOENT');
-    });
-  });
-
-  it('extracts key names from .env file', () => {
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.endsWith('.env')) {
-        return 'DATABASE_URL=postgres://localhost/db\nVERCEL_TOKEN=tok_abc\n';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const keys = scanDotEnvKeys('/code/project');
-
-    expect(keys).toContain('DATABASE_URL');
-    expect(keys).toContain('VERCEL_TOKEN');
-    // Must NOT contain values
-    expect(keys.join(',')).not.toContain('postgres');
-    expect(keys.join(',')).not.toContain('tok_abc');
-  });
-
-  it('ignores comments and blank lines', () => {
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.endsWith('.env')) {
-        return '# This is a comment\n\nDB_HOST=localhost\n  # another comment\n\n';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const keys = scanDotEnvKeys('/code/project');
-
-    expect(keys).toEqual(['DB_HOST']);
-  });
-
-  it('reads both .env and .env.local', () => {
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.endsWith('.env.local')) {
-        return 'SECRET_KEY=abc\n';
-      }
-      if (typeof path === 'string' && path.endsWith('.env')) {
-        return 'PUBLIC_KEY=xyz\n';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const keys = scanDotEnvKeys('/code/project');
-
-    expect(keys).toContain('PUBLIC_KEY');
-    expect(keys).toContain('SECRET_KEY');
-  });
-
-  it('deduplicates keys across files', () => {
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && (path.endsWith('.env') || path.endsWith('.env.local'))) {
-        return 'DATABASE_URL=something\n';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const keys = scanDotEnvKeys('/code/project');
-
-    expect(keys.filter(k => k === 'DATABASE_URL')).toHaveLength(1);
-  });
-
-  it('returns empty array when no .env files exist', () => {
-    const keys = scanDotEnvKeys('/nonexistent/path');
-    expect(keys).toEqual([]);
-  });
-
-  it('handles keys with spaces around equals', () => {
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.endsWith('.env')) {
-        return 'MY_KEY = some_value\nOTHER_KEY=value\n';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const keys = scanDotEnvKeys('/code/project');
-
-    expect(keys).toContain('MY_KEY');
-    expect(keys).toContain('OTHER_KEY');
   });
 });
