@@ -3,22 +3,39 @@ import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
+
+/**
+ * Authenticate via session or admin-level API key.
+ */
+async function resolveAuth(req: NextRequest, workspaceId: string) {
+  const user = await getCurrentUser();
+  if (user) {
+    const access = await verifyWorkspaceAccess(user.id, workspaceId);
+    if (access) return { userId: user.id };
+  }
+
+  const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
+  const account = await authenticateApiKey(apiKey);
+  if (account) {
+    if (account.level !== 'admin') return null;
+    const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
+    if (hasAccess) return { accountId: account.id };
+  }
+
+  return null;
+}
 
 // GET /api/workspaces/[id]/schedules/[scheduleId] - Get a single schedule
 export async function GET(req: NextRequest, { params }: RouteParams) {
   const { id, scheduleId } = await params;
-  const user = await getCurrentUser();
-  if (!user) {
+  const authResult = await resolveAuth(req, id);
+  if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const access = await verifyWorkspaceAccess(user.id, id);
-  if (!access) {
-    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   const schedule = await db.query.taskSchedules.findFirst({
@@ -38,14 +55,9 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 // PATCH /api/workspaces/[id]/schedules/[scheduleId] - Update a schedule
 export async function PATCH(req: NextRequest, { params }: RouteParams) {
   const { id, scheduleId } = await params;
-  const user = await getCurrentUser();
-  if (!user) {
+  const authResult = await resolveAuth(req, id);
+  if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const patchAccess = await verifyWorkspaceAccess(user.id, id);
-  if (!patchAccess) {
-    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   // Verify schedule exists in this workspace
@@ -114,14 +126,9 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 // DELETE /api/workspaces/[id]/schedules/[scheduleId] - Delete a schedule
 export async function DELETE(req: NextRequest, { params }: RouteParams) {
   const { id, scheduleId } = await params;
-  const user = await getCurrentUser();
-  if (!user) {
+  const authResult = await resolveAuth(req, id);
+  if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const deleteAccess = await verifyWorkspaceAccess(user.id, id);
-  if (!deleteAccess) {
-    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   const [deleted] = await db
