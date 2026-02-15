@@ -51,10 +51,13 @@ jobs:
       - name: Run tests
         if: steps.affected.outputs.tests != 'SKIP'
         run: |
-          if [ "${{ steps.affected.outputs.tests }}" = "ALL" ]; then
+          TESTS="${{ steps.affected.outputs.tests }}"
+          if [ "$TESTS" = "ALL" ]; then
+            echo "Running all tests..."
             bun test apps/web/src apps/local-ui/__tests__/unit
           else
-            bun test ${{ steps.affected.outputs.tests }}
+            echo "Running affected tests: $TESTS"
+            bun test $TESTS
           fi
 
       - name: Build
