@@ -168,6 +168,12 @@ export default function NewTaskPage() {
               title,
               description: description || undefined,
               priority,
+              ...(selectedSkillSlugs.length > 0 && {
+                context: {
+                  skillSlugs: selectedSkillSlugs,
+                  ...(useSkillAgents && { useSkillAgents: true }),
+                },
+              }),
             },
           }),
         });

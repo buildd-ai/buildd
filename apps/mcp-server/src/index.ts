@@ -241,7 +241,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
 - update_task: { taskId (required), title?, description?, priority? }${level === 'admin' ? `
 - create_task: { title (required), description (required), workspaceId?, priority? }
-- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, workspaceId? }
+- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), workspaceId? }
 - list_schedules: { workspaceId? }
 - register_skill: { name (required), content (required), description?, source?, workspaceId? }` : ''}`,
           },
@@ -661,18 +661,25 @@ export BUILDD_SERVER=${SERVER_URL}`;
             throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
           }
 
+          const taskTemplate: Record<string, unknown> = {
+            title: params.title,
+            description: params.description,
+            priority: params.priority || 5,
+            mode: params.mode || 'execution',
+          };
+
+          // Attach skills via context if provided
+          if (params.skillSlugs && Array.isArray(params.skillSlugs) && params.skillSlugs.length > 0) {
+            taskTemplate.context = { skillSlugs: params.skillSlugs };
+          }
+
           const schedule = await apiCall(`/api/workspaces/${workspaceId}/schedules`, {
             method: "POST",
             body: JSON.stringify({
               name: params.name,
               cronExpression: params.cronExpression,
               timezone: params.timezone || 'UTC',
-              taskTemplate: {
-                title: params.title,
-                description: params.description,
-                priority: params.priority || 5,
-                mode: params.mode || 'execution',
-              },
+              taskTemplate,
             }),
           });
 
