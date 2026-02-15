@@ -1,6 +1,7 @@
+import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces, accountWorkspaces, teams } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -124,3 +125,51 @@ export async function getUserDefaultTeamId(userId: string): Promise<string | nul
 
   return team?.id || null;
 }
+
+export type UserTeam = {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
+  memberCount: number;
+};
+
+/**
+ * Get all teams a user belongs to with role and member counts.
+ * Cached per-request via React cache() so layout + page share the same result.
+ */
+export const getUserTeamsWithDetails = cache(async (userId: string): Promise<UserTeam[]> => {
+  const memberships = await db.query.teamMembers.findMany({
+    where: eq(teamMembers.userId, userId),
+    with: { team: true },
+  });
+
+  const validMemberships = memberships.filter(m => m.team != null);
+  if (validMemberships.length === 0) return [];
+
+  const memberTeamIds = validMemberships.map(m => m.teamId);
+
+  let countMap = new Map<string, number>();
+  try {
+    const memberCounts = await db
+      .select({
+        teamId: teamMembers.teamId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(teamMembers)
+      .where(inArray(teamMembers.teamId, memberTeamIds))
+      .groupBy(teamMembers.teamId);
+
+    countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+  } catch {
+    // Member counts are non-critical, default to 1
+  }
+
+  return validMemberships.map(m => ({
+    id: m.team.id,
+    name: m.team.name,
+    slug: m.team.slug,
+    role: m.role,
+    memberCount: countMap.get(m.teamId) || 1,
+  }));
+});
