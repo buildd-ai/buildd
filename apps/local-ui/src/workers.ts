@@ -1560,9 +1560,13 @@ export class WorkerManager {
               }));
             }
           } else if (toolName === 'ExitPlanMode') {
-            // Extract plan content from the last text message(s) before ExitPlanMode
+            // Extract plan content from recent text messages before ExitPlanMode
+            // Plans can span multiple text blocks, so grab the last few and join them
             const textMessages = worker.messages.filter(m => m.type === 'text');
-            worker.planContent = textMessages.slice(-1)[0]?.content || '';
+            // Take last 3 text messages to capture multi-block plans
+            const planParts = textMessages.slice(-3).map(m => m.content).filter(Boolean);
+            worker.planContent = planParts.join('\n\n') || '';
+            console.log(`[Worker ${worker.id}] ExitPlanMode — planContent length: ${worker.planContent.length} chars`);
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
             worker.status = 'waiting';
@@ -1941,64 +1945,72 @@ export class WorkerManager {
     if (worker.status === 'waiting' && worker.waitingFor?.type === 'plan_approval') {
       const isApproval = message === 'Approve & implement';
 
-      if (isApproval && worker.planContent) {
-        // Kill current session
-        session.abortController.abort();
-        session.inputStream.end();
-        this.sessions.delete(workerId);
+      if (isApproval) {
+        // Use planContent, fall back to last text message if somehow empty
+        const planText = worker.planContent || worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
+        if (!planText) {
+          console.error(`[Worker ${worker.id}] Plan approval but no plan content found — falling through to enqueue`);
+          // Fall through to normal enqueue so the message at least reaches the agent
+        } else {
+          // Kill current session
+          session.abortController.abort();
+          session.inputStream.end();
+          this.sessions.delete(workerId);
 
-        // Build execution task with plan as description
-        const executionPrompt = `Execute this plan:\n\n${worker.planContent}`;
-        const task: BuilddTask = {
-          id: worker.taskId,
-          title: worker.taskTitle,
-          description: executionPrompt,
-          workspaceId: worker.workspaceId,
-          workspace: { name: worker.workspaceName },
-          status: 'assigned',
-          priority: 1,
-          mode: 'execution',
-        };
+          // Build execution task with plan as description
+          const executionPrompt = `Execute this plan:\n\n${planText}`;
+          const task: BuilddTask = {
+            id: worker.taskId,
+            title: worker.taskTitle,
+            description: executionPrompt,
+            workspaceId: worker.workspaceId,
+            workspace: { name: worker.workspaceName },
+            status: 'assigned',
+            priority: 1,
+            mode: 'execution',
+          };
 
-        // Reset worker state
-        worker.status = 'working';
-        worker.waitingFor = undefined;
-        worker.planContent = undefined;
-        worker.currentAction = 'Executing plan...';
-        worker.hasNewActivity = true;
-        worker.lastActivity = Date.now();
-        this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
-        this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-        this.emit({ type: 'worker_update', worker });
+          // Reset worker state
+          worker.status = 'working';
+          worker.waitingFor = undefined;
+          worker.planContent = undefined;
+          worker.currentAction = 'Executing plan...';
+          worker.hasNewActivity = true;
+          worker.lastActivity = Date.now();
+          this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
+          this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
+          this.emit({ type: 'worker_update', worker });
 
-        // Start fresh session (no resumeSessionId = clean context)
-        const workspacePath = this.resolver.resolve({
-          id: worker.workspaceId,
-          name: worker.workspaceName,
-          repo: undefined,
-        });
-        if (workspacePath) {
-          this.startSession(worker, workspacePath, task).catch(err => {
-            console.error(`[Worker ${worker.id}] Fresh plan execution failed:`, err);
-            worker.status = 'error';
-            worker.error = err instanceof Error ? err.message : 'Plan execution failed';
-            worker.currentAction = 'Execution failed';
-            worker.hasNewActivity = true;
-            worker.completedAt = Date.now();
-            this.emit({ type: 'worker_update', worker });
+          // Start fresh session (no resumeSessionId = clean context)
+          // Must await to ensure session is registered before returning
+          const workspacePath = this.resolver.resolve({
+            id: worker.workspaceId,
+            name: worker.workspaceName,
+            repo: undefined,
           });
+          if (workspacePath) {
+            this.startSession(worker, workspacePath, task).catch(err => {
+              console.error(`[Worker ${worker.id}] Fresh plan execution failed:`, err);
+              worker.status = 'error';
+              worker.error = err instanceof Error ? err.message : 'Plan execution failed';
+              worker.currentAction = 'Execution failed';
+              worker.hasNewActivity = true;
+              worker.completedAt = Date.now();
+              this.emit({ type: 'worker_update', worker });
+            });
+          }
+
+          // Sync to server
+          this.buildd.updateWorker(worker.id, {
+            status: 'running',
+            currentAction: 'Executing plan...',
+            waitingFor: null,
+          }).catch(() => {});
+
+          return true;
         }
-
-        // Sync to server
-        this.buildd.updateWorker(worker.id, {
-          status: 'running',
-          currentAction: 'Executing plan...',
-          waitingFor: null,
-        }).catch(() => {});
-
-        return true;
       }
-      // else: "Request changes" or custom text — falls through to normal enqueue
+      // "Request changes", custom text, or empty plan — falls through to normal enqueue
     }
 
     try {
@@ -2281,6 +2293,23 @@ export class WorkerManager {
         fs.rmSync(worktreePath, { recursive: true, force: true });
         execSync('git worktree prune', execOpts);
       } catch {}
+    }
+
+    // Sync local tracking branches with remote to prevent divergence
+    try {
+      execSync('git fetch origin', { ...execOpts, timeout: 15000 });
+      const defaultBranch = execSync('git symbolic-ref refs/remotes/origin/HEAD', execOpts).trim().replace('refs/remotes/origin/', '') || 'main';
+      // Reset local default branch to match remote (only if not checked out)
+      try {
+        execSync(`git branch -f ${defaultBranch} origin/${defaultBranch}`, execOpts);
+      } catch {}
+      // Also sync dev if it exists
+      try {
+        execSync('git rev-parse --verify origin/dev', { ...execOpts, stdio: 'pipe' });
+        execSync('git branch -f dev origin/dev', execOpts);
+      } catch {}
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] Post-cleanup branch sync failed (non-fatal):`, err instanceof Error ? err.message : err);
     }
   }
 
