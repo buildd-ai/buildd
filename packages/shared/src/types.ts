@@ -404,6 +404,23 @@ export interface SkillMetadata {
 }
 
 // ============================================================================
+// WORKER ENVIRONMENT
+// ============================================================================
+
+export interface WorkerTool {
+  name: string;
+  version?: string;
+}
+
+export interface WorkerEnvironment {
+  tools: WorkerTool[];
+  envKeys: string[];
+  mcp: string[];
+  labels: Record<string, string>;
+  scannedAt: string;
+}
+
+// ============================================================================
 // API INPUT TYPES
 // ============================================================================
 
@@ -473,6 +490,7 @@ export interface ClaimTasksInput {
   capabilities?: string[];
   maxTasks?: number;
   runner: string;
+  environment?: WorkerEnvironment;
 }
 
 export interface ClaimTasksResponse {

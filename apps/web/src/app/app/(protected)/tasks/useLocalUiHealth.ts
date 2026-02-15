@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import type { WorkerEnvironment } from '@buildd/shared';
 
 interface HeartbeatData {
   localUiUrl: string;
@@ -12,6 +13,7 @@ interface HeartbeatData {
   capacity: number;
   workspaceIds: string[];
   workspaceNames: string[];
+  environment?: WorkerEnvironment;
 }
 
 interface HealthResponse {
@@ -32,6 +34,7 @@ export interface LocalUiInfo {
   capacity: number;
   workspaceIds: string[];
   workspaceNames: string[];
+  environment?: WorkerEnvironment;
   status: LocalUiStatus;
   live: boolean; // true = data from direct ping, false = heartbeat fallback
 }
@@ -88,6 +91,7 @@ export function useLocalUiHealth(workspaceId: string): UseLocalUiHealthResult {
         capacity: hb.capacity,
         workspaceIds: hb.workspaceIds,
         workspaceNames: hb.workspaceNames,
+        environment: hb.environment,
         status: 'checking' as LocalUiStatus,
         live: false,
       }));
@@ -143,6 +147,7 @@ export function useLocalUiHealth(workspaceId: string): UseLocalUiHealthResult {
             capacity: health.capacity,
             workspaceIds: hb.workspaceIds,
             workspaceNames: hb.workspaceNames,
+            environment: hb.environment,
             status: 'online' as LocalUiStatus,
             live: true,
           };
@@ -156,6 +161,7 @@ export function useLocalUiHealth(workspaceId: string): UseLocalUiHealthResult {
           capacity: hb.capacity,
           workspaceIds: hb.workspaceIds,
           workspaceNames: hb.workspaceNames,
+          environment: hb.environment,
           status: 'unreachable' as LocalUiStatus,
           live: false,
         };

@@ -254,4 +254,120 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers).toEqual([]);
   });
+
+  it('auto-derives capabilities from environment when none provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])   // stale workers
+      .mockResolvedValueOnce([]);  // active workers
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task with requiredCapabilities that should match auto-derived caps
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        requiredCapabilities: ['node', 'DATABASE_URL'],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    // Mock the claim flow (update + insert)
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    const environment = {
+      tools: [{ name: 'node', version: '22.1.0' }, { name: 'git', version: '2.43.0' }],
+      envKeys: ['DATABASE_URL', 'ANTHROPIC_API_KEY'],
+      mcp: ['slack'],
+      labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+      scannedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        runner: 'test-runner',
+        // No explicit capabilities — should be derived from environment
+        environment,
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    // The task with requiredCapabilities: ['node', 'DATABASE_URL'] should match
+    // because auto-derived capabilities include 'node' (from tools) and 'DATABASE_URL' (from envKeys)
+  });
+
+  it('does not auto-derive capabilities when explicit capabilities are provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task requires 'docker' which is NOT in explicit capabilities
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        requiredCapabilities: ['docker'],
+        workspace: { id: 'ws-1' },
+      },
+    ]);
+
+    const environment = {
+      tools: [{ name: 'docker', version: '24.0.0' }],
+      envKeys: [],
+      mcp: [],
+      labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+      scannedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        runner: 'test-runner',
+        capabilities: ['node'],  // Explicit capabilities — should NOT be overridden by environment
+        environment,
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Task requires 'docker' but explicit capabilities only has 'node'
+    // Even though environment has docker, it should NOT be used because explicit caps were provided
+    expect(data.workers).toEqual([]);
+  });
 });

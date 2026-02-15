@@ -178,6 +178,7 @@ export async function GET(req: NextRequest) {
           capacity: Math.max(0, hb.maxConcurrentWorkers - hb.activeWorkerCount),
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
+          environment: hb.environment || null,
           lastUpdated: hb.lastHeartbeatAt,
         };
       })

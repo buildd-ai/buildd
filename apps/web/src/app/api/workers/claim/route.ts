@@ -17,10 +17,20 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  const { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
+  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
 
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
+  }
+
+  // Auto-derive capabilities from environment when none are explicitly provided
+  if (capabilities.length === 0 && body.environment) {
+    const env = body.environment;
+    capabilities = [
+      ...env.tools.map(t => t.name),
+      ...env.envKeys,
+      ...env.mcp.map(m => `mcp:${m}`),
+    ];
   }
 
   // Auto-expire stale workers (no update in 15+ minutes)
