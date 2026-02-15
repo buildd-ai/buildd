@@ -11,6 +11,7 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
 let mockMessages: any[] = [];
+let mockBlockForever = false;
 let queryCallCount = 0;
 let mockStreamInputFn = mock(() => {});
 
@@ -18,6 +19,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     queryCallCount++;
     const msgs = [...mockMessages];
+    const blockForever = mockBlockForever;
     let idx = 0;
     return {
       streamInput: mockStreamInputFn,
@@ -26,6 +28,10 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
           async next() {
             if (idx < msgs.length) {
               return { value: msgs[idx++], done: false };
+            }
+            if (blockForever) {
+              // Block forever — simulates an active session until aborted
+              return new Promise(() => {});
             }
             return { value: undefined, done: true };
           },
@@ -145,6 +151,7 @@ async function createWorkerSession(manager: InstanceType<typeof WorkerManager>, 
   return manager.getWorker(workerId);
 }
 
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('WorkerManager — lifecycle', () => {
@@ -157,6 +164,7 @@ describe('WorkerManager — lifecycle', () => {
   beforeEach(() => {
     queryCallCount = 0;
     mockMessages = [];
+    mockBlockForever = false;
     mockUpdateWorker.mockClear();
     mockClaimTask.mockClear();
     mockStreamInputFn.mockClear();
@@ -168,6 +176,7 @@ describe('WorkerManager — lifecycle', () => {
       const events: any[] = [];
       manager.onEvent((e: any) => events.push(e));
 
+      mockBlockForever = true;
       await createWorkerSession(manager);
 
       await manager.abort('w-lc-1');
@@ -186,6 +195,7 @@ describe('WorkerManager — lifecycle', () => {
 
     test('uses provided reason for error message', async () => {
       manager = new WorkerManager(makeConfig());
+      mockBlockForever = true;
       await createWorkerSession(manager);
 
       await manager.abort('w-lc-1', 'User requested cancellation');
@@ -196,6 +206,7 @@ describe('WorkerManager — lifecycle', () => {
 
     test('preserves existing error message (e.g., from loop detection)', async () => {
       manager = new WorkerManager(makeConfig());
+      mockBlockForever = true;
       await createWorkerSession(manager);
 
       // Set an error before aborting (simulates loop detection)
@@ -211,6 +222,7 @@ describe('WorkerManager — lifecycle', () => {
       manager = new WorkerManager(makeConfig());
       mockUpdateWorker.mockClear();
 
+      mockBlockForever = true;
       await createWorkerSession(manager);
       await manager.abort('w-lc-1');
 
