@@ -79,6 +79,7 @@ export interface LocalWorker {
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
   teamState?: TeamState;  // Set when agent spawns a team
+  worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;

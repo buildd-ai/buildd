@@ -95,6 +95,7 @@ interface WorkerSession {
   inputStream: MessageStream;
   abortController: AbortController;
   cwd: string;
+  repoPath: string;  // Original repo path (different from cwd when using worktrees)
 }
 
 // Constants for repetition detection
@@ -589,8 +590,36 @@ export class WorkerManager {
       }).catch(err => console.error('Failed to register localUiUrl:', err));
     }
 
+    // Set up git worktree for isolation (if branching strategy is not 'none')
+    const gitConfig = fullTask.workspace?.gitConfig;
+    const branchingStrategy = gitConfig?.branchingStrategy || 'feature';
+    const defaultBranch = gitConfig?.defaultBranch || 'main';
+
+    let sessionCwd = workspacePath;
+    if (branchingStrategy !== 'none' && claimedWorker.branch) {
+      worker.currentAction = 'Setting up worktree...';
+      this.emit({ type: 'worker_update', worker });
+
+      const worktreePath = await this.setupWorktree(
+        workspacePath,
+        claimedWorker.branch,
+        defaultBranch,
+        worker.id,
+      );
+
+      if (worktreePath) {
+        worker.worktreePath = worktreePath;
+        sessionCwd = worktreePath;
+        this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
+      } else {
+        // Worktree setup failed — fall back to main repo (legacy behavior)
+        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to main repo`);
+        this.addMilestone(worker, { type: 'status', label: 'Worktree failed, using repo', ts: Date.now() });
+      }
+    }
+
     // Start SDK session (async, runs in background)
-    this.startSession(worker, workspacePath, fullTask).catch(err => {
+    this.startSession(worker, sessionCwd, fullTask).catch(err => {
       console.error(`[Worker ${worker.id}] Session failed to start:`, err);
 
       // Critical: notify server that session failed to start
@@ -609,6 +638,11 @@ export class WorkerManager {
       });
 
       this.emit({ type: 'worker_update', worker });
+
+      // Clean up worktree on session start failure
+      if (worker.worktreePath) {
+        this.cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+      }
     });
 
     return worker;
@@ -760,8 +794,14 @@ export class WorkerManager {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
+    // Resolve the original repo path (for worktree cleanup).
+    // When using worktrees, cwd is inside <repoPath>/.buildd-worktrees/<branch>/
+    const worktreeMarker = `${join('.buildd-worktrees', '')}`;
+    const worktreeIdx = cwd.indexOf(worktreeMarker);
+    const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
+
     // Store session state for sendMessage and abort
-    this.sessions.set(worker.id, { inputStream, abortController, cwd });
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath });
 
     try {
       // Fetch workspace git config from server
@@ -840,6 +880,12 @@ export class WorkerManager {
           gitContext.push(`- Branch naming: ${gitConfig.branchPrefix}<task-name>`);
         } else if (gitConfig.useBuildBranch) {
           gitContext.push(`- Branch naming: buildd/<task-id>-<task-name>`);
+        }
+
+        // Tell the worker their branch is already set up (worktree mode)
+        if (worker.worktreePath) {
+          gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${gitConfig.defaultBranch}\``);
+          gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
         }
 
         if (gitConfig.requiresPR) {
@@ -1177,6 +1223,14 @@ export class WorkerManager {
       const session = this.sessions.get(worker.id);
       if (session) {
         session.inputStream.end();
+
+        // Clean up worktree if used (after session is fully done)
+        if (worker.worktreePath) {
+          await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
+            console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
+          });
+        }
+
         this.sessions.delete(worker.id);
       }
     }
@@ -1960,6 +2014,107 @@ export class WorkerManager {
     return Array.from(files).slice(0, 20);
   }
 
+  /**
+   * Set up an isolated git worktree for a worker.
+   * Fetches latest from remote, creates a worktree branched from the default branch.
+   * Returns the worktree path, or null if worktree setup fails (falls back to main repo).
+   */
+  private async setupWorktree(
+    repoPath: string,
+    branch: string,
+    defaultBranch: string,
+    workerId: string,
+  ): Promise<string | null> {
+    const { execSync } = await import('child_process');
+    const fs = await import('fs');
+    const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
+
+    // Worktrees live in .buildd-worktrees/ inside the repo
+    const worktreeBase = join(repoPath, '.buildd-worktrees');
+    const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const worktreePath = join(worktreeBase, safeBranch);
+
+    try {
+      // Ensure worktree base directory exists
+      fs.mkdirSync(worktreeBase, { recursive: true });
+
+      // Add .buildd-worktrees to .git/info/exclude if not already there
+      const excludePath = join(repoPath, '.git', 'info', 'exclude');
+      if (existsSync(excludePath)) {
+        const excludeContent = readFileSync(excludePath, 'utf-8');
+        if (!excludeContent.includes('.buildd-worktrees')) {
+          fs.appendFileSync(excludePath, '\n.buildd-worktrees\n');
+        }
+      }
+
+      // Fetch latest from remote
+      console.log(`[Worker ${workerId}] Fetching latest from remote...`);
+      try {
+        execSync('git fetch origin', execOpts);
+      } catch (err) {
+        console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
+      }
+
+      // Clean up stale worktree at this path if it exists
+      if (existsSync(worktreePath)) {
+        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+        } catch {
+          // Force-remove the directory if git worktree remove fails
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+          try { execSync('git worktree prune', execOpts); } catch {}
+        }
+      }
+
+      // Delete the branch if it already exists locally (stale from previous run)
+      try {
+        execSync(`git branch -D "${branch}"`, execOpts);
+      } catch {
+        // Branch doesn't exist locally, that's fine
+      }
+
+      // Create worktree with new branch from latest remote default branch
+      const base = `origin/${defaultBranch}`;
+      console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
+      execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+      console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
+      return worktreePath;
+    } catch (err) {
+      console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
+      // Clean up partial worktree
+      try {
+        if (existsSync(worktreePath)) {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        }
+        execSync('git worktree prune', { ...execOpts, timeout: 5000 });
+      } catch {}
+      return null;
+    }
+  }
+
+  /**
+   * Clean up a git worktree after worker completes.
+   * Removes the worktree directory and prunes git worktree metadata.
+   */
+  private async cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+    const { execSync } = await import('child_process');
+    const fs = await import('fs');
+    const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
+
+    try {
+      console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
+      execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] git worktree remove failed, cleaning up manually:`, err instanceof Error ? err.message : err);
+      try {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+        execSync('git worktree prune', execOpts);
+      } catch {}
+    }
+  }
+
   /** Collect git stats by running git commands in the worker's cwd */
   private async collectGitStats(workerId: string, branch: string): Promise<{
     commitCount?: number;
@@ -2028,10 +2183,27 @@ export class WorkerManager {
     if (this.pusher) {
       this.pusher.disconnect();
     }
-    // Abort all active sessions
-    for (const session of this.sessions.values()) {
+    // Abort all active sessions and clean up worktrees
+    for (const [workerId, session] of this.sessions.entries()) {
       session.abortController.abort();
       session.inputStream.end();
+
+      // Synchronously clean up worktrees on destroy
+      const worker = this.workers.get(workerId);
+      if (worker?.worktreePath) {
+        try {
+          const cp = require('child_process');
+          cp.execSync(`git worktree remove --force "${worker.worktreePath}"`, {
+            cwd: session.repoPath,
+            timeout: 5000,
+          });
+        } catch {
+          try {
+            const fs = require('fs');
+            fs.rmSync(worker.worktreePath, { recursive: true, force: true });
+          } catch {}
+        }
+      }
     }
     this.sessions.clear();
   }

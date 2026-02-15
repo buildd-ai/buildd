@@ -15,4 +15,5 @@ coverage/
 .mcp.json
 .env*.local
 .plan
+.buildd-worktrees/
 scripts/seed/.last-seed.json
