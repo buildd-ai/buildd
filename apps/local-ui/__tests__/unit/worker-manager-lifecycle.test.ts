@@ -88,6 +88,12 @@ mock.module('fs', () => ({
   mkdirSync: () => {},
 }));
 
+mock.module('../../src/worker-store', () => ({
+  saveWorker: () => {},
+  loadAllWorkers: () => [],
+  deleteWorker: () => {},
+}));
+
 mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: async () => {},
 }));

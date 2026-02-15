@@ -8,6 +8,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
+import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -156,8 +157,10 @@ export class WorkerManager {
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
+  private diskPersistInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
+  private dirtyForDisk = new Set<string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -176,6 +179,12 @@ export class WorkerManager {
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
+
+    // Persist dirty worker state to disk every 5s
+    this.diskPersistInterval = setInterval(() => this.persistDirtyWorkers(), 5_000);
+
+    // Restore workers from disk on startup
+    this.restoreWorkersFromDisk();
 
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
@@ -218,6 +227,45 @@ export class WorkerManager {
       this.unsubscribeFromWorkspaceChannels();
     }
     console.log(`Accept remote tasks: ${enabled}`);
+  }
+
+  // Restore workers from disk on startup
+  private restoreWorkersFromDisk() {
+    try {
+      const restored = loadAllWorkers();
+      for (const worker of restored) {
+        // Workers with active status can't be resumed (no SDK session/inputStream)
+        if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+          worker.status = 'error';
+          worker.error = 'Process restarted';
+          worker.completedAt = worker.completedAt || Date.now();
+          worker.currentAction = 'Process restarted';
+        }
+        this.workers.set(worker.id, worker);
+      }
+      if (restored.length > 0) {
+        console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
+      }
+    } catch (err) {
+      console.error('[WorkerStore] Failed to restore workers from disk:', err);
+    }
+  }
+
+  // Persist workers that have been marked dirty since last interval
+  private persistDirtyWorkers() {
+    if (this.dirtyForDisk.size === 0) return;
+    const toSave = new Set(this.dirtyForDisk);
+    this.dirtyForDisk.clear();
+    for (const workerId of toSave) {
+      const worker = this.workers.get(workerId);
+      if (worker) {
+        try {
+          storeSaveWorker(worker);
+        } catch (err) {
+          console.error(`[WorkerStore] Failed to persist worker ${workerId}:`, err);
+        }
+      }
+    }
   }
 
   // Subscribe to workspace channels for task assignments
@@ -446,9 +494,10 @@ export class WorkerManager {
   }
 
   private emit(event: any) {
-    // Auto-mark workers dirty for server sync when their state changes
+    // Auto-mark workers dirty for server sync and disk persistence when their state changes
     if (event.type === 'worker_update' && event.worker?.id) {
       this.dirtyWorkers.add(event.worker.id);
+      this.dirtyForDisk.add(event.worker.id);
     }
     for (const handler of this.eventHandlers) {
       handler(event);
@@ -492,6 +541,7 @@ export class WorkerManager {
       ) {
         this.workers.delete(id);
         this.sessions.delete(id);
+        storeDeleteWorker(id);
       }
     }
   }
@@ -578,6 +628,9 @@ export class WorkerManager {
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
+
+    // Immediately persist new worker to disk
+    storeSaveWorker(worker);
 
     // Subscribe to Pusher for commands
     this.subscribeToWorker(worker.id);
@@ -1143,6 +1196,7 @@ export class WorkerManager {
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
       } else {
         // Actually completed - collect git stats before reporting
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
@@ -1157,6 +1211,7 @@ export class WorkerManager {
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
 
         // Capture summary observation (non-fatal)
         try {
@@ -1218,6 +1273,7 @@ export class WorkerManager {
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
+      storeSaveWorker(worker);
     } finally {
       // Clean up session
       const session = this.sessions.get(worker.id);
@@ -1247,6 +1303,8 @@ export class WorkerManager {
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
+      // Immediately persist sessionId (critical for resume)
+      storeSaveWorker(worker);
     }
 
     if (msg.type === 'assistant') {
@@ -1369,7 +1427,7 @@ export class WorkerManager {
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
-            // Immediately sync waiting state to server
+            // Immediately sync waiting state to server and disk
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
@@ -1379,6 +1437,7 @@ export class WorkerManager {
                 options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
               },
             }).catch(() => {});
+            storeSaveWorker(worker);
           } else if (toolName === 'EnterPlanMode') {
             // Auto-approve entering plan mode — respond immediately so the SDK doesn't stall
             const enterPlanToolUseId = block.id as string | undefined;
@@ -1423,6 +1482,7 @@ export class WorkerManager {
                 options: ['Approve & implement', 'Request changes'],
               },
             }).catch(() => {});
+            storeSaveWorker(worker);
           }
         }
       }
@@ -1594,6 +1654,7 @@ export class WorkerManager {
     worker.completedAt = undefined;
     this.addMilestone(worker, { type: 'status', label: 'Retry requested', ts: Date.now() });
     this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
 
     await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
 
@@ -1688,6 +1749,7 @@ export class WorkerManager {
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
+      storeSaveWorker(worker);
 
       // Update server
       await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Processing follow-up...' });
@@ -2161,6 +2223,15 @@ export class WorkerManager {
   }
 
   destroy() {
+    // Persist all current workers before shutdown (graceful save)
+    for (const worker of this.workers.values()) {
+      try {
+        storeSaveWorker(worker);
+      } catch (err) {
+        console.error(`[WorkerStore] Failed to save worker ${worker.id} on destroy:`, err);
+      }
+    }
+
     if (this.staleCheckInterval) {
       clearInterval(this.staleCheckInterval);
     }
@@ -2175,6 +2246,9 @@ export class WorkerManager {
     }
     if (this.evictionInterval) {
       clearInterval(this.evictionInterval);
+    }
+    if (this.diskPersistInterval) {
+      clearInterval(this.diskPersistInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {
