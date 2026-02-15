@@ -20,6 +20,7 @@
  *   - Waiting input (question/answer cycle with live worker)
  *
  * Prerequisites:
+ *   - BUILDD_TEST_SERVER set (preview or local URL)
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
  *   - local-ui running (claims tasks and runs Claude)
  *
@@ -28,8 +29,7 @@
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
 
 // --- Config ---
 
@@ -37,78 +37,9 @@ const LOCAL_UI = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TIMEOUT = Number(process.env.DOGFOOD_TIMEOUT) || 300_000;
 const POLL_INTERVAL = 3_000;
 
-function getFileConfig(): { apiKey?: string; builddServer?: string } {
-  try {
-    const configPath = join(process.env.HOME || '~', '.buildd', 'config.json');
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-const fileConfig = getFileConfig();
-const API_KEY = process.env.BUILDD_API_KEY || fileConfig.apiKey;
-let SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://buildd.dev';
-
-// --- Tracking for cleanup ---
-
-const cleanupWorkerIds: string[] = [];
-const cleanupTaskIds: string[] = [];
-
-// --- API helpers ---
-
-async function api(endpoint: string, options: RequestInit & { retries?: number } = {}) {
-  const maxRetries = options.retries ?? 2;
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await fetch(`${SERVER}${endpoint}`, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${API_KEY}`,
-          ...options.headers,
-        },
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        if (res.status >= 500 && attempt < maxRetries) {
-          lastError = new Error(`API ${options.method || 'GET'} ${endpoint} -> ${res.status}: ${JSON.stringify(body)}`);
-          await sleep(1_000 * (attempt + 1));
-          continue;
-        }
-        throw new Error(`API ${options.method || 'GET'} ${endpoint} -> ${res.status}: ${JSON.stringify(body)}`);
-      }
-      return body;
-    } catch (err: any) {
-      if (attempt < maxRetries && (err instanceof TypeError || err.message?.includes('fetch failed'))) {
-        lastError = err;
-        await sleep(1_000 * (attempt + 1));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError || new Error(`API ${endpoint} failed after ${maxRetries} retries`);
-}
-
-/** api() variant that returns { status, body } instead of throwing on non-2xx */
-async function apiRaw(endpoint: string, options: RequestInit = {}): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${SERVER}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_KEY}`,
-      ...options.headers,
-    },
-  });
-  return { status: res.status, body: await res.json() };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
+const { server: SERVER, apiKey: API_KEY } = requireTestEnv();
+const { api, apiRaw } = createTestApi(SERVER, API_KEY);
+const cleanup = createCleanup(api);
 
 // --- Helpers ---
 
@@ -126,7 +57,7 @@ async function createTask(workspaceId: string, title: string, description: strin
     method: 'POST',
     body: JSON.stringify({ workspaceId, title, description }),
   });
-  cleanupTaskIds.push(task.id);
+  cleanup.trackTask(task.id);
   return task;
 }
 
@@ -154,7 +85,7 @@ async function triggerClaim(taskId: string): Promise<string> {
       throw new Error('Local-ui claim returned no worker ID');
     }
     console.log(`  Claimed -> worker ${workerId}`);
-    cleanupWorkerIds.push(workerId);
+    cleanup.trackWorker(workerId);
     return workerId;
   }
   throw new Error('triggerClaim: unreachable');
@@ -181,7 +112,7 @@ async function serverClaim(workspaceId: string, taskId: string): Promise<string>
     }
     const worker = body.workers?.[0];
     if (!worker) throw new Error(`Server claim returned no worker for task ${taskId}`);
-    cleanupWorkerIds.push(worker.id);
+    cleanup.trackWorker(worker.id);
     return worker.id;
   }
   throw new Error('serverClaim: unreachable');
@@ -281,10 +212,6 @@ describe('dogfood', () => {
   let hasPusher = false;
 
   beforeAll(async () => {
-    if (!API_KEY) {
-      throw new Error('No API key found (set BUILDD_API_KEY or ~/.buildd/config.json)');
-    }
-
     // Verify local-ui is running and configured
     let localUiConfig: any;
     try {
@@ -299,18 +226,10 @@ describe('dogfood', () => {
       throw new Error('local-ui is running but not configured (no API key)');
     }
 
-    // Use local-ui's server URL if we didn't get one from env
-    if (!process.env.BUILDD_SERVER && localUiConfig.builddServer) {
-      SERVER = localUiConfig.builddServer;
-    }
-
     // Check if Pusher is configured (needed for dashboard dispatch test)
-    // Local-ui needs pusherKey to receive task assignment events
-    const localConfig = getFileConfig() as any;
     hasPusher = !!(
       process.env.PUSHER_KEY ||
-      process.env.NEXT_PUBLIC_PUSHER_KEY ||
-      localConfig.pusherKey
+      process.env.NEXT_PUBLIC_PUSHER_KEY
     );
 
     console.log(`Local-ui: ${LOCAL_UI} | Server: ${SERVER} | Pusher: ${hasPusher ? 'yes' : 'no'}`);
@@ -320,20 +239,8 @@ describe('dogfood', () => {
   }, TIMEOUT);
 
   afterAll(async () => {
-    console.log('Cleanup...');
-    for (const wid of cleanupWorkerIds) {
-      try {
-        await api(`/api/workers/${wid}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup' }),
-        });
-      } catch {}
-    }
-    for (const tid of cleanupTaskIds) {
-      try {
-        await api(`/api/tasks/${tid}`, { method: 'DELETE' });
-      } catch {}
-    }
+    await cleanup.runCleanup();
+    cleanup.dispose();
   });
 
   // ---------------------------------------------------------------
@@ -425,7 +332,7 @@ describe('dogfood', () => {
       await sleep(1_000);
     }
     expect(workerId).toBeTruthy();
-    cleanupWorkerIds.push(workerId!);
+    cleanup.trackWorker(workerId!);
 
     const result = await waitForTaskTerminal(task.id);
     expect(result.status).toBe('completed');

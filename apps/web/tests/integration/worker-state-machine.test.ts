@@ -4,67 +4,27 @@
  * Tests that workers can report waiting_input status with waitingFor data,
  * and that it auto-clears when the worker resumes.
  *
- * Usage:
- *   BUILDD_API_KEY=bld_xxx bun run apps/web/tests/integration/worker-waiting.test.ts
- *   # or reads from .env automatically
+ * Prerequisites:
+ *   - BUILDD_TEST_SERVER set (preview or local URL)
+ *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
  *
- * Env vars:
- *   BUILDD_API_KEY  - required
- *   BUILDD_SERVER   - defaults to https://buildd.dev
- *   BUILDD_WORKSPACE_ID - optional, auto-picks first workspace
+ * Usage:
+ *   bun test apps/web/tests/integration/worker-state-machine.test.ts
  */
 
-const SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
-const API_KEY = process.env.BUILDD_API_KEY;
+import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
 
-if (!API_KEY) {
-  console.log('⏭️  Skipping integration test: BUILDD_API_KEY not set (this is expected in CI)');
-  process.exit(0);
-}
-
-// Track resources for cleanup
-let createdTaskId: string | null = null;
-let createdWorkerId: string | null = null;
-
-async function api(endpoint: string, options: RequestInit = {}) {
-  const res = await fetch(`${SERVER}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_KEY}`,
-      ...options.headers,
-    },
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: ${JSON.stringify(body)}`);
-  }
-  return body;
-}
+const { server, apiKey } = requireTestEnv();
+const { api } = createTestApi(server, apiKey);
+const cleanup = createCleanup(api);
 
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(`ASSERTION FAILED: ${msg}`);
   console.log(`  ✓ ${msg}`);
 }
 
-async function cleanup() {
-  if (createdWorkerId) {
-    try {
-      await api(`/api/workers/${createdWorkerId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'failed', error: 'Integration test cleanup' }),
-      });
-    } catch {}
-  }
-  if (createdTaskId) {
-    try {
-      await api(`/api/tasks/${createdTaskId}`, { method: 'DELETE' });
-    } catch {}
-  }
-}
-
 async function run() {
-  console.log(`\nTesting against: ${SERVER}\n`);
+  console.log(`\nTesting against: ${server}\n`);
 
   // Step 1: Find a workspace
   let workspaceId = process.env.BUILDD_WORKSPACE_ID;
@@ -86,7 +46,7 @@ async function run() {
       description: 'Auto-created by integration test. Safe to delete.',
     }),
   });
-  createdTaskId = task.id;
+  cleanup.trackTask(task.id);
   assert(!!task.id, `Task created: ${task.id}`);
   assert(task.status === 'pending', `Task status is pending`);
 
@@ -99,7 +59,7 @@ async function run() {
   assert(workers.length > 0, 'Claimed a worker');
   // The claim might pick a different task if others are pending - find ours or use whatever was claimed
   const worker = workers[0];
-  createdWorkerId = worker.id;
+  cleanup.trackWorker(worker.id);
   console.log(`  Worker: ${worker.id}, Task: ${worker.task.title}\n`);
 
   // Step 4: Set worker to running
@@ -166,12 +126,15 @@ async function run() {
   });
   assert(explicitClear.waitingFor === null, 'Explicit waitingFor: null clears it');
 
-  console.log('\n✅ All tests passed!\n');
+  console.log('\n All tests passed!\n');
 }
 
 run()
   .catch((err) => {
-    console.error(`\n❌ Test failed: ${err.message}\n`);
+    console.error(`\nTest failed: ${err.message}\n`);
     process.exit(1);
   })
-  .finally(cleanup);
+  .finally(async () => {
+    await cleanup.runCleanup();
+    cleanup.dispose();
+  });

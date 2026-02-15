@@ -14,6 +14,16 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TEST_TIMEOUT = 60_000;
 
+// Require BUILDD_TEST_SERVER to be set — prevents accidental production hits
+if (!process.env.BUILDD_TEST_SERVER) {
+  console.log(
+    '⏭️  Skipping: BUILDD_TEST_SERVER not set.\n' +
+    '   Set it to a preview/local URL to run integration tests.\n' +
+    '   Example: BUILDD_TEST_SERVER=http://localhost:3000 bun test:integration',
+  );
+  process.exit(0);
+}
+
 // Track resources for cleanup
 const createdTaskIds: string[] = [];
 const createdWorkerIds: string[] = [];

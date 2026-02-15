@@ -5,16 +5,16 @@
  *   Server reachable → Create task → Local worker picks it up → Completion confirmed
  *
  * Environment variables:
- *   BUILDD_SERVER       Remote server URL  (default: https://buildd.dev)
- *   BUILDD_API_KEY      API key            (fallback: ~/.buildd/config.json)
- *   LOCAL_UI_URL        Local-UI address   (default: http://localhost:8766)
- *   SKIP_LOCAL_UI_START Set to "1" if local-ui is already running
- *   E2E_MODEL           Model to use       (default: claude-haiku-4-5-20251001)
+ *   BUILDD_TEST_SERVER   Remote server URL  (required — no fallback to production)
+ *   BUILDD_API_KEY       API key            (fallback: ~/.buildd/config.json)
+ *   LOCAL_UI_URL         Local-UI address   (default: http://localhost:8766)
+ *   SKIP_LOCAL_UI_START  Set to "1" if local-ui is already running
+ *   E2E_MODEL            Model to use       (default: claude-haiku-4-5-20251001)
  *
  * Usage:
  *   bun run test:e2e                                     # full lifecycle
  *   SKIP_LOCAL_UI_START=1 bun run test:e2e               # local-ui already running
- *   BUILDD_SERVER=https://your-app.vercel.app bun run test:e2e  # alternate server
+ *   BUILDD_TEST_SERVER=https://your-preview.vercel.app bun run test:e2e
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
@@ -31,7 +31,16 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const BUILDD_SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
+const BUILDD_SERVER = process.env.BUILDD_TEST_SERVER;
+if (!BUILDD_SERVER) {
+  console.log(
+    '⏭️  Skipping: BUILDD_TEST_SERVER not set.\n' +
+    '   Set it to a preview/local URL to run E2E tests.\n' +
+    '   Example: BUILDD_TEST_SERVER=http://localhost:3000 bun run test:e2e',
+  );
+  process.exit(0);
+}
+
 const LOCAL_UI_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TEST_TIMEOUT = 120_000; // 2 min — Claude execution can be slow
 const TEST_MODEL = process.env.E2E_MODEL || 'claude-haiku-4-5-20251001';
@@ -124,10 +133,10 @@ afterAll(async () => {
     } catch { /* already done */ }
   }
 
-  // Delete test tasks from server
+  // Delete test tasks from server (use force=true for completed tasks)
   for (const tid of createdTaskIds) {
     try {
-      await server.deleteTask(tid);
+      await server.fetch(`/api/tasks/${tid}?force=true`, { method: 'DELETE' });
       console.log(`  Deleted task ${tid}`);
     } catch { /* may already be gone */ }
   }
