@@ -33,6 +33,7 @@ export default function NewTaskPage() {
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const [requirePlan, setRequirePlan] = useState(false);
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string }[]>([]);
@@ -200,6 +201,7 @@ export default function NewTaskPage() {
             title,
             description,
             priority,
+            ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
             ...(selectedSkillSlugs.length > 0 && {
               context: {
@@ -454,6 +456,24 @@ export default function NewTaskPage() {
                 className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
             </div>
+
+            {/* Plan mode toggle (one-time tasks only) */}
+            {!recurring && (
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={requirePlan}
+                  onChange={(e) => setRequirePlan(e.target.checked)}
+                  className="w-[18px] h-[18px] accent-primary cursor-pointer"
+                />
+                <div>
+                  <span className="text-sm font-medium">Require plan first</span>
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    Agent will create an implementation plan for your approval before writing code
+                  </p>
+                </div>
+              </label>
+            )}
 
             {/* Cron fields (recurring only) */}
             {recurring && (

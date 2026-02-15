@@ -1325,6 +1325,20 @@ export class WorkerManager {
                 options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
               },
             }).catch(() => {});
+          } else if (toolName === 'EnterPlanMode') {
+            // Auto-approve entering plan mode — respond immediately so the SDK doesn't stall
+            const enterPlanToolUseId = block.id as string | undefined;
+            console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
+            worker.currentAction = 'Planning...';
+            this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
+            // Enqueue approval response so the SDK can proceed
+            const session = this.sessions.get(worker.id);
+            if (session && enterPlanToolUseId) {
+              session.inputStream.enqueue(buildUserMessage('Approved — enter plan mode.', {
+                parentToolUseId: enterPlanToolUseId,
+                sessionId: worker.sessionId,
+              }));
+            }
           } else if (toolName === 'ExitPlanMode') {
             // Extract plan content from the last text message(s) before ExitPlanMode
             const textMessages = worker.messages.filter(m => m.type === 'text');
