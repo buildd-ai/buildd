@@ -459,23 +459,47 @@ export default function QuickCreateModal({
 
               {/* Worker assignment */}
               {activeLocalUis.length > 0 && (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <label className="text-xs text-text-secondary">
                     Assign to worker (optional)
                   </label>
-                  <select
-                    value={selectedLocalUi}
-                    onChange={(e) => setSelectedLocalUi(e.target.value)}
-                    className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
-                    disabled={loading}
-                  >
-                    <option value="">Queue for any worker</option>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedLocalUi('')}
+                      disabled={loading}
+                      className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
+                        selectedLocalUi === ''
+                          ? 'border-primary bg-primary-subtle'
+                          : 'border-border-default hover:border-text-muted'
+                      }`}
+                    >
+                      <span className="font-medium">Queue for any worker</span>
+                    </button>
                     {activeLocalUis.map((ui) => (
-                      <option key={ui.localUiUrl} value={ui.localUiUrl}>
-                        {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''}{ui.live ? ' — live' : ''})
-                      </option>
+                      <button
+                        key={ui.localUiUrl}
+                        type="button"
+                        onClick={() => setSelectedLocalUi(ui.localUiUrl)}
+                        disabled={loading}
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
+                          selectedLocalUi === ui.localUiUrl
+                            ? 'border-primary bg-primary-subtle'
+                            : 'border-border-default hover:border-text-muted'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{ui.accountName}</span>
+                          <span className="flex items-center gap-1.5 text-xs text-text-muted">
+                            {ui.live && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
+                            )}
+                            {ui.capacity} slot{ui.capacity !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      </button>
                     ))}
-                  </select>
+                  </div>
                   {selectedLocalUi && (
                     <p className="text-xs text-status-success">
                       Task will be sent directly (auto-reassigns after {ASSIGNMENT_TIMEOUT_MS / 1000}s if not accepted)

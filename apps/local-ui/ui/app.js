@@ -804,15 +804,21 @@ function renderWorkerDetail(worker) {
   // Question/plan prompt for waiting workers
   if (worker.status === 'waiting' && worker.waitingFor) {
     if (worker.waitingFor.type === 'plan_approval') {
-      // Dedicated plan review UI with cyan accent
+      // Dedicated plan review UI with cyan accent — include plan content inline
+      const planContent = worker.planContent || '';
+      const planHtml = planContent ? marked.parse(planContent) : '';
       timelineEl.innerHTML += `
         <div class="bg-status-info/[0.08] border border-status-info/30 rounded-xl p-4 my-4">
           <div class="text-xs text-status-info font-mono font-medium uppercase tracking-wide mb-3">
             Plan ready for review
           </div>
-          <div class="text-sm text-text-secondary mb-4">
-            Review the plan above, then approve to execute with a fresh context window or request changes.
-          </div>
+          ${planHtml ? `
+            <div class="markdown-content text-sm leading-relaxed mb-4 max-h-[300px] overflow-y-auto border-b border-status-info/30 pb-4">${planHtml}</div>
+          ` : `
+            <div class="text-sm text-text-secondary mb-4">
+              Review the plan above, then approve to execute with a fresh context window or request changes.
+            </div>
+          `}
           <div class="flex flex-wrap gap-2">
             <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
               onclick="sendQuestionAnswer('Approve & implement')">
@@ -2153,6 +2159,7 @@ async function createTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
+  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2167,6 +2174,7 @@ async function createTask() {
     workspaceId,
     title,
     description,
+    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
@@ -2218,6 +2226,7 @@ async function createAndStartTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
+  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2232,6 +2241,7 @@ async function createAndStartTask() {
     workspaceId,
     title,
     description,
+    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
@@ -2358,6 +2368,7 @@ function clearTaskForm() {
   document.getElementById('taskTitle').value = '';
   document.getElementById('taskDescription').value = '';
   document.getElementById('taskWorkspace').value = '';
+  document.getElementById('taskRequirePlan').checked = false;
   selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();

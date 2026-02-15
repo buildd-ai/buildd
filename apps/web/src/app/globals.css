@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Z-Index Scale ──
+ * z-10: Fixed mobile header bar (MobileTasksLayout)
+ * z-20: Fixed bottom nav (BottomNav)
+ * z-30: Mobile sidebar overlay backdrop
+ * z-40: Mobile sidebar panel
+ * z-50: Modals, dialogs, dropdowns (highest layer)
+ */
+
 /* ── Buildd Design Tokens ── */
 
 :root {

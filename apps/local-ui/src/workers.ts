@@ -2,12 +2,15 @@ import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
+import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
+import { scanEnvironment } from './env-scan';
+import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -95,6 +98,7 @@ interface WorkerSession {
   inputStream: MessageStream;
   abortController: AbortController;
   cwd: string;
+  repoPath: string;  // Original repo path (different from cwd when using worktrees)
 }
 
 // Constants for repetition detection
@@ -152,11 +156,16 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
+  private workspaceAllowlistCache = new Map<string, string[] | undefined>();
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
+  private diskPersistInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
+  private dirtyForDisk = new Set<string>();
+  private environment?: WorkerEnvironment;
+  private envScanInterval?: Timer;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -175,6 +184,26 @@ export class WorkerManager {
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
+
+    // Persist dirty worker state to disk every 5s
+    this.diskPersistInterval = setInterval(() => this.persistDirtyWorkers(), 5_000);
+
+    // Restore workers from disk on startup
+    this.restoreWorkersFromDisk();
+
+    // Scan environment on startup (sync — runs once, fast enough for init)
+    try {
+      this.environment = scanEnvironment();
+      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${this.environment.mcp.length} MCP servers`);
+    } catch (err) {
+      console.warn('Environment scan failed:', err);
+    }
+    // Re-scan every 30 minutes
+    this.envScanInterval = setInterval(() => {
+      try {
+        this.environment = scanEnvironment();
+      } catch { /* non-fatal */ }
+    }, 30 * 60_000);
 
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
@@ -219,6 +248,45 @@ export class WorkerManager {
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
+  // Restore workers from disk on startup
+  private restoreWorkersFromDisk() {
+    try {
+      const restored = loadAllWorkers();
+      for (const worker of restored) {
+        // Workers with active status can't be resumed (no SDK session/inputStream)
+        if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+          worker.status = 'error';
+          worker.error = 'Process restarted';
+          worker.completedAt = worker.completedAt || Date.now();
+          worker.currentAction = 'Process restarted';
+        }
+        this.workers.set(worker.id, worker);
+      }
+      if (restored.length > 0) {
+        console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
+      }
+    } catch (err) {
+      console.error('[WorkerStore] Failed to restore workers from disk:', err);
+    }
+  }
+
+  // Persist workers that have been marked dirty since last interval
+  private persistDirtyWorkers() {
+    if (this.dirtyForDisk.size === 0) return;
+    const toSave = new Set(this.dirtyForDisk);
+    this.dirtyForDisk.clear();
+    for (const workerId of toSave) {
+      const worker = this.workers.get(workerId);
+      if (worker) {
+        try {
+          storeSaveWorker(worker);
+        } catch (err) {
+          console.error(`[WorkerStore] Failed to persist worker ${workerId}:`, err);
+        }
+      }
+    }
+  }
+
   // Subscribe to workspace channels for task assignments
   private async subscribeToWorkspaceChannels() {
     if (!this.pusher) return;
@@ -239,7 +307,20 @@ export class WorkerManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('skill:install', (data: SkillInstallPayload) => {
+            if (data.targetLocalUiUrl && this.config.localUiUrl && data.targetLocalUiUrl !== this.config.localUiUrl) {
+              return; // Not for us
+            }
+            this.handleSkillInstall(data, ws.id);
+          });
           this.workspaceChannels.set(channelName, channel);
+          // Cache workspace allowlist
+          try {
+            const wsConfig = await this.buildd.getWorkspaceConfig(ws.id);
+            this.workspaceAllowlistCache.set(ws.id, (wsConfig.gitConfig as any)?.skillInstallerAllowlist);
+          } catch {
+            // Non-fatal — will use default allowlist
+          }
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
@@ -252,9 +333,11 @@ export class WorkerManager {
     // Unsubscribe from workspace channels
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
+      channel.unbind('skill:install');
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
+    this.workspaceAllowlistCache.clear();
   }
 
   // Handle incoming task assignment
@@ -294,6 +377,79 @@ export class WorkerManager {
       }
     } catch (err) {
       console.error(`Failed to start assigned task ${task.id}:`, err);
+    }
+  }
+
+  // Handle remote skill installation
+  private async handleSkillInstall(payload: SkillInstallPayload, workspaceId: string) {
+    const { requestId, skillSlug } = payload;
+    console.log(`[SkillInstall] Received install request: ${skillSlug} (${requestId})`);
+
+    // Content push path
+    if (payload.bundle) {
+      try {
+        await syncSkillToLocal(payload.bundle);
+        console.log(`[SkillInstall] Content push succeeded: ${skillSlug}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, true, 'content_push');
+      } catch (err) {
+        console.error(`[SkillInstall] Content push failed: ${skillSlug}`, err);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'content_push', undefined, String(err));
+      }
+      return;
+    }
+
+    // Command execution path
+    if (payload.installerCommand) {
+      const validation = validateInstallerCommand(payload.installerCommand, {
+        workspaceAllowlist: this.workspaceAllowlistCache.get(workspaceId),
+        localAllowlist: this.config.skillInstallerAllowlist,
+        rejectAll: this.config.rejectRemoteInstallers,
+      });
+      if (!validation.allowed) {
+        console.log(`[SkillInstall] Command rejected: ${validation.reason}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'installer_command', undefined, validation.reason);
+        return;
+      }
+
+      const { execSync } = await import('child_process');
+      try {
+        const output = execSync(payload.installerCommand, {
+          cwd: homedir(),
+          timeout: 120_000,
+          encoding: 'utf-8',
+        });
+        console.log(`[SkillInstall] Command succeeded: ${skillSlug}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, true, 'installer_command', output?.slice(0, 2000));
+      } catch (err: any) {
+        console.error(`[SkillInstall] Command failed: ${skillSlug}`, err.message);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'installer_command', err.stdout?.slice(0, 1000), err.message?.slice(0, 1000));
+      }
+    }
+  }
+
+  private async reportInstallResult(
+    workspaceId: string,
+    requestId: string,
+    skillSlug: string,
+    success: boolean,
+    method: 'content_push' | 'installer_command',
+    output?: string,
+    error?: string,
+  ) {
+    const result: SkillInstallResult = {
+      requestId,
+      skillSlug,
+      localUiUrl: this.config.localUiUrl,
+      success,
+      method,
+      output,
+      error,
+      timestamp: Date.now(),
+    };
+    try {
+      await this.buildd.reportSkillInstallResult(workspaceId, result);
+    } catch (err) {
+      console.error(`[SkillInstall] Failed to report result:`, err);
     }
   }
 
@@ -445,9 +601,10 @@ export class WorkerManager {
   }
 
   private emit(event: any) {
-    // Auto-mark workers dirty for server sync when their state changes
+    // Auto-mark workers dirty for server sync and disk persistence when their state changes
     if (event.type === 'worker_update' && event.worker?.id) {
       this.dirtyWorkers.add(event.worker.id);
+      this.dirtyForDisk.add(event.worker.id);
     }
     for (const handler of this.eventHandlers) {
       handler(event);
@@ -461,7 +618,7 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount);
+      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -491,6 +648,7 @@ export class WorkerManager {
       ) {
         this.workers.delete(id);
         this.sessions.delete(id);
+        storeDeleteWorker(id);
       }
     }
   }
@@ -578,6 +736,9 @@ export class WorkerManager {
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
 
+    // Immediately persist new worker to disk
+    storeSaveWorker(worker);
+
     // Subscribe to Pusher for commands
     this.subscribeToWorker(worker.id);
 
@@ -589,8 +750,36 @@ export class WorkerManager {
       }).catch(err => console.error('Failed to register localUiUrl:', err));
     }
 
+    // Set up git worktree for isolation (if branching strategy is not 'none')
+    const gitConfig = fullTask.workspace?.gitConfig;
+    const branchingStrategy = gitConfig?.branchingStrategy || 'feature';
+    const defaultBranch = gitConfig?.defaultBranch || 'main';
+
+    let sessionCwd = workspacePath;
+    if (branchingStrategy !== 'none' && claimedWorker.branch) {
+      worker.currentAction = 'Setting up worktree...';
+      this.emit({ type: 'worker_update', worker });
+
+      const worktreePath = await this.setupWorktree(
+        workspacePath,
+        claimedWorker.branch,
+        defaultBranch,
+        worker.id,
+      );
+
+      if (worktreePath) {
+        worker.worktreePath = worktreePath;
+        sessionCwd = worktreePath;
+        this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
+      } else {
+        // Worktree setup failed — fall back to main repo (legacy behavior)
+        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to main repo`);
+        this.addMilestone(worker, { type: 'status', label: 'Worktree failed, using repo', ts: Date.now() });
+      }
+    }
+
     // Start SDK session (async, runs in background)
-    this.startSession(worker, workspacePath, fullTask).catch(err => {
+    this.startSession(worker, sessionCwd, fullTask).catch(err => {
       console.error(`[Worker ${worker.id}] Session failed to start:`, err);
 
       // Critical: notify server that session failed to start
@@ -609,6 +798,11 @@ export class WorkerManager {
       });
 
       this.emit({ type: 'worker_update', worker });
+
+      // Clean up worktree on session start failure
+      if (worker.worktreePath) {
+        this.cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+      }
     });
 
     return worker;
@@ -760,8 +954,14 @@ export class WorkerManager {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
+    // Resolve the original repo path (for worktree cleanup).
+    // When using worktrees, cwd is inside <repoPath>/.buildd-worktrees/<branch>/
+    const worktreeMarker = `${join('.buildd-worktrees', '')}`;
+    const worktreeIdx = cwd.indexOf(worktreeMarker);
+    const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
+
     // Store session state for sendMessage and abort
-    this.sessions.set(worker.id, { inputStream, abortController, cwd });
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath });
 
     try {
       // Fetch workspace git config from server
@@ -840,6 +1040,12 @@ export class WorkerManager {
           gitContext.push(`- Branch naming: ${gitConfig.branchPrefix}<task-name>`);
         } else if (gitConfig.useBuildBranch) {
           gitContext.push(`- Branch naming: buildd/<task-id>-<task-name>`);
+        }
+
+        // Tell the worker their branch is already set up (worktree mode)
+        if (worker.worktreePath) {
+          gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${gitConfig.defaultBranch}\``);
+          gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
         }
 
         if (gitConfig.requiresPR) {
@@ -1097,6 +1303,7 @@ export class WorkerManager {
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
       } else {
         // Actually completed - collect git stats before reporting
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
@@ -1111,6 +1318,7 @@ export class WorkerManager {
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
 
         // Capture summary observation (non-fatal)
         try {
@@ -1172,11 +1380,20 @@ export class WorkerManager {
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
+      storeSaveWorker(worker);
     } finally {
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {
         session.inputStream.end();
+
+        // Clean up worktree if used (after session is fully done)
+        if (worker.worktreePath) {
+          await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
+            console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
+          });
+        }
+
         this.sessions.delete(worker.id);
       }
     }
@@ -1193,6 +1410,8 @@ export class WorkerManager {
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
+      // Immediately persist sessionId (critical for resume)
+      storeSaveWorker(worker);
     }
 
     if (msg.type === 'assistant') {
@@ -1315,7 +1534,7 @@ export class WorkerManager {
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
-            // Immediately sync waiting state to server
+            // Immediately sync waiting state to server and disk
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
@@ -1325,6 +1544,21 @@ export class WorkerManager {
                 options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
               },
             }).catch(() => {});
+            storeSaveWorker(worker);
+          } else if (toolName === 'EnterPlanMode') {
+            // Auto-approve entering plan mode — respond immediately so the SDK doesn't stall
+            const enterPlanToolUseId = block.id as string | undefined;
+            console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
+            worker.currentAction = 'Planning...';
+            this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
+            // Enqueue approval response so the SDK can proceed
+            const session = this.sessions.get(worker.id);
+            if (session && enterPlanToolUseId) {
+              session.inputStream.enqueue(buildUserMessage('Approved — enter plan mode.', {
+                parentToolUseId: enterPlanToolUseId,
+                sessionId: worker.sessionId,
+              }));
+            }
           } else if (toolName === 'ExitPlanMode') {
             // Extract plan content from the last text message(s) before ExitPlanMode
             const textMessages = worker.messages.filter(m => m.type === 'text');
@@ -1355,6 +1589,7 @@ export class WorkerManager {
                 options: ['Approve & implement', 'Request changes'],
               },
             }).catch(() => {});
+            storeSaveWorker(worker);
           }
         }
       }
@@ -1526,6 +1761,7 @@ export class WorkerManager {
     worker.completedAt = undefined;
     this.addMilestone(worker, { type: 'status', label: 'Retry requested', ts: Date.now() });
     this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
 
     await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
 
@@ -1620,6 +1856,7 @@ export class WorkerManager {
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
       this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
+      storeSaveWorker(worker);
 
       // Update server
       await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Processing follow-up...' });
@@ -1946,6 +2183,107 @@ export class WorkerManager {
     return Array.from(files).slice(0, 20);
   }
 
+  /**
+   * Set up an isolated git worktree for a worker.
+   * Fetches latest from remote, creates a worktree branched from the default branch.
+   * Returns the worktree path, or null if worktree setup fails (falls back to main repo).
+   */
+  private async setupWorktree(
+    repoPath: string,
+    branch: string,
+    defaultBranch: string,
+    workerId: string,
+  ): Promise<string | null> {
+    const { execSync } = await import('child_process');
+    const fs = await import('fs');
+    const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
+
+    // Worktrees live in .buildd-worktrees/ inside the repo
+    const worktreeBase = join(repoPath, '.buildd-worktrees');
+    const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const worktreePath = join(worktreeBase, safeBranch);
+
+    try {
+      // Ensure worktree base directory exists
+      fs.mkdirSync(worktreeBase, { recursive: true });
+
+      // Add .buildd-worktrees to .git/info/exclude if not already there
+      const excludePath = join(repoPath, '.git', 'info', 'exclude');
+      if (existsSync(excludePath)) {
+        const excludeContent = readFileSync(excludePath, 'utf-8');
+        if (!excludeContent.includes('.buildd-worktrees')) {
+          fs.appendFileSync(excludePath, '\n.buildd-worktrees\n');
+        }
+      }
+
+      // Fetch latest from remote
+      console.log(`[Worker ${workerId}] Fetching latest from remote...`);
+      try {
+        execSync('git fetch origin', execOpts);
+      } catch (err) {
+        console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
+      }
+
+      // Clean up stale worktree at this path if it exists
+      if (existsSync(worktreePath)) {
+        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+        } catch {
+          // Force-remove the directory if git worktree remove fails
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+          try { execSync('git worktree prune', execOpts); } catch {}
+        }
+      }
+
+      // Delete the branch if it already exists locally (stale from previous run)
+      try {
+        execSync(`git branch -D "${branch}"`, execOpts);
+      } catch {
+        // Branch doesn't exist locally, that's fine
+      }
+
+      // Create worktree with new branch from latest remote default branch
+      const base = `origin/${defaultBranch}`;
+      console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
+      execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+      console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
+      return worktreePath;
+    } catch (err) {
+      console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
+      // Clean up partial worktree
+      try {
+        if (existsSync(worktreePath)) {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        }
+        execSync('git worktree prune', { ...execOpts, timeout: 5000 });
+      } catch {}
+      return null;
+    }
+  }
+
+  /**
+   * Clean up a git worktree after worker completes.
+   * Removes the worktree directory and prunes git worktree metadata.
+   */
+  private async cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+    const { execSync } = await import('child_process');
+    const fs = await import('fs');
+    const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
+
+    try {
+      console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
+      execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] git worktree remove failed, cleaning up manually:`, err instanceof Error ? err.message : err);
+      try {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+        execSync('git worktree prune', execOpts);
+      } catch {}
+    }
+  }
+
   /** Collect git stats by running git commands in the worker's cwd */
   private async collectGitStats(workerId: string, branch: string): Promise<{
     commitCount?: number;
@@ -1992,6 +2330,15 @@ export class WorkerManager {
   }
 
   destroy() {
+    // Persist all current workers before shutdown (graceful save)
+    for (const worker of this.workers.values()) {
+      try {
+        storeSaveWorker(worker);
+      } catch (err) {
+        console.error(`[WorkerStore] Failed to save worker ${worker.id} on destroy:`, err);
+      }
+    }
+
     if (this.staleCheckInterval) {
       clearInterval(this.staleCheckInterval);
     }
@@ -2007,6 +2354,12 @@ export class WorkerManager {
     if (this.evictionInterval) {
       clearInterval(this.evictionInterval);
     }
+    if (this.diskPersistInterval) {
+      clearInterval(this.diskPersistInterval);
+    }
+    if (this.envScanInterval) {
+      clearInterval(this.envScanInterval);
+    }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {
       this.unsubscribeFromWorker(workerId);
@@ -2014,10 +2367,27 @@ export class WorkerManager {
     if (this.pusher) {
       this.pusher.disconnect();
     }
-    // Abort all active sessions
-    for (const session of this.sessions.values()) {
+    // Abort all active sessions and clean up worktrees
+    for (const [workerId, session] of this.sessions.entries()) {
       session.abortController.abort();
       session.inputStream.end();
+
+      // Synchronously clean up worktrees on destroy
+      const worker = this.workers.get(workerId);
+      if (worker?.worktreePath) {
+        try {
+          const cp = require('child_process');
+          cp.execSync(`git worktree remove --force "${worker.worktreePath}"`, {
+            cwd: session.repoPath,
+            timeout: 5000,
+          });
+        } catch {
+          try {
+            const fs = require('fs');
+            fs.rmSync(worker.worktreePath, { recursive: true, force: true });
+          } catch {}
+        }
+      }
     }
     this.sessions.clear();
   }

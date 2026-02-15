@@ -67,4 +67,7 @@ export const events = {
   WORKER_COMMAND: 'worker:command',
   // Schedule events
   SCHEDULE_TRIGGERED: 'schedule:triggered',
+  // Remote skill installation
+  SKILL_INSTALL: 'skill:install',
+  SKILL_INSTALL_RESULT: 'skill:install_result',
 } as const;

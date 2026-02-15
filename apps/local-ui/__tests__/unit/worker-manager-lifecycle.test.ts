@@ -88,8 +88,18 @@ mock.module('fs', () => ({
   mkdirSync: () => {},
 }));
 
+mock.module('../../src/worker-store', () => ({
+  saveWorker: () => {},
+  loadAllWorkers: () => [],
+  deleteWorker: () => {},
+}));
+
 mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: async () => {},
+}));
+
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');
@@ -139,6 +149,7 @@ async function createWorkerSession(manager: InstanceType<typeof WorkerManager>, 
   return manager.getWorker(workerId);
 }
 
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('WorkerManager — lifecycle', () => {
@@ -157,12 +168,33 @@ describe('WorkerManager — lifecycle', () => {
   });
 
   describe('abort()', () => {
+    // Helper: register a worker directly (no session) to test abort() in isolation
+    function addWorker(mgr: InstanceType<typeof WorkerManager>, id = 'w-lc-1', status = 'working') {
+      const workers = (mgr as any).workers as Map<string, any>;
+      const worker = {
+        id,
+        status,
+        error: undefined as string | undefined,
+        currentAction: 'Working...',
+        task: makeTask(),
+        branch: `buildd/${id}`,
+        output: [],
+        toolCalls: [],
+        milestones: [],
+        commits: [],
+        hasNewActivity: false,
+        startedAt: Date.now(),
+      };
+      workers.set(id, worker);
+      return worker;
+    }
+
     test('sets error status and emits update', async () => {
       manager = new WorkerManager(makeConfig());
       const events: any[] = [];
       manager.onEvent((e: any) => events.push(e));
 
-      await createWorkerSession(manager);
+      addWorker(manager);
 
       await manager.abort('w-lc-1');
 
@@ -180,7 +212,7 @@ describe('WorkerManager — lifecycle', () => {
 
     test('uses provided reason for error message', async () => {
       manager = new WorkerManager(makeConfig());
-      await createWorkerSession(manager);
+      addWorker(manager);
 
       await manager.abort('w-lc-1', 'User requested cancellation');
 
@@ -190,11 +222,8 @@ describe('WorkerManager — lifecycle', () => {
 
     test('preserves existing error message (e.g., from loop detection)', async () => {
       manager = new WorkerManager(makeConfig());
-      await createWorkerSession(manager);
-
-      // Set an error before aborting (simulates loop detection)
-      const worker = manager.getWorker('w-lc-1');
-      worker!.error = 'Agent stuck: made 5 identical Read calls';
+      const worker = addWorker(manager);
+      worker.error = 'Agent stuck: made 5 identical Read calls';
 
       await manager.abort('w-lc-1');
 
@@ -205,7 +234,7 @@ describe('WorkerManager — lifecycle', () => {
       manager = new WorkerManager(makeConfig());
       mockUpdateWorker.mockClear();
 
-      await createWorkerSession(manager);
+      addWorker(manager);
       await manager.abort('w-lc-1');
 
       const failedCalls = mockUpdateWorker.mock.calls.filter(

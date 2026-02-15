@@ -79,6 +79,7 @@ export interface LocalWorker {
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
   teamState?: TeamState;  // Set when agent spawns a team
+  worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -175,9 +176,15 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message';
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'skill_install';
   text?: string;
   timestamp: number;
+  // skill_install fields
+  bundle?: { slug: string; name: string; content: string; contentHash?: string; files?: any[] };
+  installerCommand?: string;
+  requestId?: string;
+  skillSlug?: string;
+  targetLocalUiUrl?: string | null;
 }
 
 // Provider configuration for LLM routing
@@ -213,4 +220,7 @@ export interface LocalUIConfig {
   acceptRemoteTasks?: boolean;
   // Bypass permission prompts for bash commands (dangerous commands still blocked)
   bypassPermissions?: boolean;
+  // Remote skill installation
+  skillInstallerAllowlist?: string[];
+  rejectRemoteInstallers?: boolean;
 }

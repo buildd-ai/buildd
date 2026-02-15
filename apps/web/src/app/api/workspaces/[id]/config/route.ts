@@ -89,6 +89,11 @@ export async function POST(
 
             // Permission mode
             bypassPermissions: body.bypassPermissions ?? false,
+
+            // Remote skill installation allowlist
+            ...(Array.isArray(body.skillInstallerAllowlist)
+                ? { skillInstallerAllowlist: body.skillInstallerAllowlist.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
+                : {}),
         };
 
         await db

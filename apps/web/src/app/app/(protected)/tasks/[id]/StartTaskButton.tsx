@@ -293,19 +293,86 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     <label className="block text-sm text-text-secondary mb-2">
                       Select a worker
                     </label>
-                    <select
-                      value={selectedLocalUi}
-                      onChange={(e) => setSelectedLocalUi(e.target.value)}
-                      className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-                      disabled={loading}
-                    >
-                      <option value="">Any available worker</option>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedLocalUi('')}
+                        disabled={loading}
+                        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+                          selectedLocalUi === ''
+                            ? 'border-primary bg-primary-subtle'
+                            : 'border-border-default hover:border-text-muted'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">Any available worker</span>
+                          {selectedLocalUi === '' && (
+                            <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                        <p className="text-xs text-text-muted mt-0.5">Queued for the next available worker</p>
+                      </button>
+
                       {activeLocalUis.map((ui) => (
-                        <option key={ui.localUiUrl} value={ui.localUiUrl}>
-                          {ui.accountName} ({ui.capacity} slot{ui.capacity !== 1 ? 's' : ''}{ui.live ? ' — live' : ''})
-                        </option>
+                        <button
+                          key={ui.localUiUrl}
+                          type="button"
+                          onClick={() => setSelectedLocalUi(ui.localUiUrl)}
+                          disabled={loading}
+                          className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+                            selectedLocalUi === ui.localUiUrl
+                              ? 'border-primary bg-primary-subtle'
+                              : 'border-border-default hover:border-text-muted'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium">{ui.accountName}</span>
+                            <div className="flex items-center gap-2">
+                              {ui.live && (
+                                <span className="flex items-center gap-1 text-xs text-status-success">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
+                                  Live
+                                </span>
+                              )}
+                              {selectedLocalUi === ui.localUiUrl && (
+                                <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                              )}
+                            </div>
+                          </div>
+                          <p className="text-xs text-text-muted mt-0.5">
+                            {ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available
+                          </p>
+                          {ui.environment && (
+                            <div className="mt-1.5 space-y-0.5">
+                              {ui.environment.tools.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">Tools:</span>{' '}
+                                  {ui.environment.tools.map(t => t.version ? `${t.name} ${t.version}` : t.name).join(', ')}
+                                </p>
+                              )}
+                              {ui.environment.envKeys.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">Env:</span>{' '}
+                                  {ui.environment.envKeys.length <= 3
+                                    ? ui.environment.envKeys.join(', ')
+                                    : `${ui.environment.envKeys.slice(0, 3).join(', ')} +${ui.environment.envKeys.length - 3} more`}
+                                </p>
+                              )}
+                              {ui.environment.mcp.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">MCP:</span>{' '}
+                                  {ui.environment.mcp.join(', ')}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </button>
                       ))}
-                    </select>
+                    </div>
                     {activeLocalUis.length === 0 && (
                       <p className="mt-2 text-xs text-status-warning">
                         No workers with capacity detected. The task will be queued for the next available worker.

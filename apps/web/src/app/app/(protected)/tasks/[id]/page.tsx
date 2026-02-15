@@ -74,9 +74,11 @@ export default async function TaskDetailPage({
   );
 
   // Override task status for UI if worker is waiting or awaiting plan
-  const displayStatus = activeWorker?.status === 'waiting_input'
+  // Don't override if task is already in a terminal state (completed/failed)
+  const isTerminal = task.status === 'completed' || task.status === 'failed';
+  const displayStatus = !isTerminal && activeWorker?.status === 'waiting_input'
     ? 'waiting_input'
-    : activeWorker?.status === 'awaiting_plan_approval'
+    : !isTerminal && activeWorker?.status === 'awaiting_plan_approval'
       ? 'awaiting_plan_approval'
       : task.status;
 

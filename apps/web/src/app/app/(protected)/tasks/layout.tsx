@@ -72,12 +72,14 @@ export default async function TasksLayout({
         type TaskSummary = { id: string; title: string; status: string; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
+          // Only override status with waiting_input if the task isn't already completed/failed
+          const isTerminal = task.status === 'completed' || task.status === 'failed';
           acc[task.workspaceId].push({
             id: task.id,
             title: task.title,
-            status: waitingForByTaskId.has(task.id) ? 'waiting_input' : task.status,
+            status: !isTerminal && waitingForByTaskId.has(task.id) ? 'waiting_input' : task.status,
             updatedAt: task.updatedAt,
-            waitingFor: waitingForByTaskId.get(task.id) || null,
+            waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
           });
           return acc;
         }, {} as Record<string, TaskSummary[]>);

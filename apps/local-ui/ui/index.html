@@ -57,7 +57,7 @@
       <div id="manualKeyForm" class="hidden mt-6 text-left">
         <div class="mb-4">
           <label class="block text-sm mb-2 text-text-secondary">API Key</label>
-          <input type="password" id="apiKeyInput" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="bld_xxxxxx...">
+          <input type="password" id="apiKeyInput" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="bld_xxxxxx...">
         </div>
         <div class="flex gap-3">
           <button class="btn bg-surface-hover text-text-primary py-3 px-6 rounded-md font-medium cursor-pointer transition-all duration-200 flex-1" id="cancelKeyBtn">Cancel</button>
@@ -212,7 +212,7 @@
           <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
         </div>
         <div class="flex gap-2 py-3 px-4 border-t border-border-default bg-surface">
-          <input type="text" id="messageInput" class="input flex-1 w-full bg-surface border border-border-default rounded-md py-2.5 px-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Send a message to the agent...">
+          <input type="text" id="messageInput" class="input flex-1 w-full bg-surface border border-border-default rounded-md py-2.5 px-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Send a message to the agent...">
           <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-2.5 px-4 rounded-md font-medium cursor-pointer transition-all duration-200 shrink-0 hover:bg-brand-hover" id="sendMessageBtn">Send</button>
         </div>
         <footer class="flex gap-3 p-4 border-t border-border-default" id="modalFooter">
@@ -266,11 +266,20 @@
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Title</label>
-            <input type="text" id="taskTitle" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Fix the bug...">
+            <input type="text" id="taskTitle" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Fix the bug...">
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Description</label>
-            <textarea id="taskDescription" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
+            <textarea id="taskDescription" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
+          </div>
+          <div class="mb-4">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="taskRequirePlan" class="w-[18px] h-[18px] accent-brand cursor-pointer">
+              <div>
+                <span class="text-[13px] font-medium text-text-primary">Require plan first</span>
+                <p class="text-[11px] text-text-secondary mt-0.5">Agent will create an implementation plan for your approval before writing code</p>
+              </div>
+            </label>
           </div>
           <div class="mb-4" id="taskSkillsSection">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Skills</label>
@@ -314,19 +323,19 @@
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">Projects Root</label>
-            <input type="text" id="settingsRoot" class="input w-full bg-inset border border-border-default rounded-md p-3 text-[15px] text-text-secondary outline-none cursor-default" readonly>
+            <input type="text" id="settingsRoot" class="input w-full bg-inset border border-border-default rounded-md p-3 text-base text-text-secondary outline-none cursor-default" readonly>
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">buildd Server</label>
             <div class="flex gap-2 items-center">
-              <input type="text" id="settingsServer" class="input flex-1 w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev">
+              <input type="text" id="settingsServer" class="input flex-1 w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="https://buildd.dev">
               <button id="settingsServerSave" class="hidden btn bg-brand text-white py-1.5 px-3 text-[13px] rounded-md font-medium cursor-pointer transition-all duration-200" onclick="handleServerUrlChange()">Save</button>
             </div>
             <p class="text-xs text-text-secondary mt-1.5" id="settingsServerHint">Reinitializes connection when changed</p>
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">Model</label>
-            <select id="settingsModel" class="input w-full bg-surface border border-border-default rounded-md p-3 text-[15px] text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring">
+            <select id="settingsModel" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring">
               <option value="">Default (recommended)</option>
               <option value="claude-opus-4-6">Claude Opus 4.6</option>
               <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>

@@ -1,6 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
-import type { WorkspaceSkill, SyncWorkspaceSkillsInput } from '@buildd/shared';
+import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult, WorkerEnvironment } from '@buildd/shared';
 
 export class BuilddClient {
   private config: LocalUIConfig;
@@ -101,6 +101,7 @@ export class BuilddClient {
     workspaceId: string;
     title: string;
     description: string;
+    mode?: 'execution' | 'planning';
     attachments?: Array<{ data: string; mimeType: string; filename: string }>;
   }) {
     return this.fetch('/api/tasks', {
@@ -272,10 +273,10 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number): Promise<{ viewerToken?: string }> {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string }> {
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ localUiUrl, activeWorkerCount }),
+      body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
     });
     return { viewerToken: data.viewerToken };
   }
@@ -343,6 +344,13 @@ export class BuilddClient {
   async deleteWorkspaceSkill(workspaceId: string, skillId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/skills/${skillId}`, {
       method: 'DELETE',
+    });
+  }
+
+  async reportSkillInstallResult(workspaceId: string, result: SkillInstallResult) {
+    return this.fetch(`/api/workspaces/${workspaceId}/skills/install/result`, {
+      method: 'POST',
+      body: JSON.stringify(result),
     });
   }
 }
