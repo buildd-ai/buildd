@@ -15,6 +15,7 @@
  *   - Concurrent worker limits (429 when at capacity)
  *
  * Prerequisites:
+ *   - BUILDD_TEST_SERVER set (preview or local URL)
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
  *   - local-ui running with Pusher configured (claims tasks)
  *
@@ -22,16 +23,15 @@
  *   bun run test:integration task-lifecycle
  *
  * Env vars:
- *   BUILDD_API_KEY      - required (or config.json)
- *   BUILDD_SERVER       - defaults to local-ui's configured server
- *   LOCAL_UI_URL        - defaults to http://localhost:8766
- *   BUILDD_WORKSPACE_ID - optional, auto-picks first workspace
- *   INTEGRATION_TEST_TIMEOUT     - per-test timeout in ms (default: 300000 = 5 min)
+ *   BUILDD_TEST_SERVER   - required (preview or local URL)
+ *   BUILDD_API_KEY       - required (or config.json)
+ *   LOCAL_UI_URL         - defaults to http://localhost:8766
+ *   BUILDD_WORKSPACE_ID  - optional, auto-picks first workspace
+ *   INTEGRATION_TEST_TIMEOUT - per-test timeout in ms (default: 300000 = 5 min)
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
 
 // --- Config ---
 
@@ -39,78 +39,9 @@ const LOCAL_UI = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TIMEOUT = Number(process.env.INTEGRATION_TEST_TIMEOUT) || 300_000; // 5 min per test
 const POLL_INTERVAL = 3_000;
 
-function getFileConfig(): { apiKey?: string; builddServer?: string } {
-  try {
-    const configPath = join(process.env.HOME || '~', '.buildd', 'config.json');
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-const fileConfig = getFileConfig();
-const API_KEY = process.env.BUILDD_API_KEY || fileConfig.apiKey;
-let SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://buildd.dev';
-
-// --- Tracking for cleanup ---
-
-const cleanupWorkerIds: string[] = [];
-const cleanupTaskIds: string[] = [];
-
-// --- API helpers ---
-
-async function api(endpoint: string, options: RequestInit & { retries?: number } = {}) {
-  const maxRetries = options.retries ?? 2;
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await fetch(`${SERVER}${endpoint}`, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${API_KEY}`,
-          ...options.headers,
-        },
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        if (res.status >= 500 && attempt < maxRetries) {
-          lastError = new Error(`API ${options.method || 'GET'} ${endpoint} -> ${res.status}: ${JSON.stringify(body)}`);
-          await sleep(1_000 * (attempt + 1));
-          continue;
-        }
-        throw new Error(`API ${options.method || 'GET'} ${endpoint} -> ${res.status}: ${JSON.stringify(body)}`);
-      }
-      return body;
-    } catch (err: any) {
-      if (attempt < maxRetries && (err instanceof TypeError || err.message?.includes('fetch failed'))) {
-        lastError = err;
-        await sleep(1_000 * (attempt + 1));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError || new Error(`API ${endpoint} failed after ${maxRetries} retries`);
-}
-
-/** api() variant that returns { status, body } instead of throwing on non-2xx */
-async function apiRaw(endpoint: string, options: RequestInit = {}): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${SERVER}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_KEY}`,
-      ...options.headers,
-    },
-  });
-  return { status: res.status, body: await res.json() };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
+const { server: SERVER, apiKey: API_KEY } = requireTestEnv();
+const { api, apiRaw } = createTestApi(SERVER, API_KEY);
+const cleanup = createCleanup(api);
 
 // --- Helpers ---
 
@@ -128,7 +59,7 @@ async function createTask(workspaceId: string, title: string, description: strin
     method: 'POST',
     body: JSON.stringify({ workspaceId, title, description }),
   });
-  cleanupTaskIds.push(task.id);
+  cleanup.trackTask(task.id);
   return task;
 }
 
@@ -156,7 +87,7 @@ async function triggerClaim(taskId: string): Promise<string> {
       throw new Error('Local-ui claim returned no worker ID');
     }
     console.log(`  Claimed -> worker ${workerId}`);
-    cleanupWorkerIds.push(workerId);
+    cleanup.trackWorker(workerId);
     return workerId;
   }
   throw new Error('triggerClaim: unreachable');
@@ -253,12 +184,9 @@ async function cleanupStaleWorkers() {
 
 describe('Task Lifecycle', () => {
   let workspaceId: string;
+  let originalLocalUiServer: string | null = null;
 
   beforeAll(async () => {
-    if (!API_KEY) {
-      throw new Error('No API key found (set BUILDD_API_KEY or ~/.buildd/config.json)');
-    }
-
     // Verify local-ui is running and configured
     let localUiConfig: any;
     try {
@@ -273,9 +201,15 @@ describe('Task Lifecycle', () => {
       throw new Error('local-ui is running but not configured (no API key)');
     }
 
-    // Use local-ui's server URL if we didn't get one from env
-    if (!process.env.BUILDD_SERVER && localUiConfig.builddServer) {
-      SERVER = localUiConfig.builddServer;
+    // Repoint local-ui to the test server if needed
+    originalLocalUiServer = localUiConfig.builddServer || null;
+    if (localUiConfig.builddServer !== SERVER) {
+      console.log(`Repointing local-ui: ${localUiConfig.builddServer} → ${SERVER}`);
+      await fetch(`${LOCAL_UI}/api/config/server`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server: SERVER }),
+      });
     }
 
     console.log(`Local-ui: ${LOCAL_UI} | Server: ${SERVER}`);
@@ -285,19 +219,19 @@ describe('Task Lifecycle', () => {
   }, TIMEOUT);
 
   afterAll(async () => {
-    console.log('Cleanup...');
-    for (const wid of cleanupWorkerIds) {
+    await cleanup.runCleanup();
+    cleanup.dispose();
+
+    // Restore original server URL
+    if (originalLocalUiServer && originalLocalUiServer !== SERVER) {
       try {
-        await api(`/api/workers/${wid}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'failed', error: 'Integration test cleanup' }),
+        await fetch(`${LOCAL_UI}/api/config/server`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ server: originalLocalUiServer }),
         });
-      } catch {}
-    }
-    for (const tid of cleanupTaskIds) {
-      try {
-        await api(`/api/tasks/${tid}`, { method: 'DELETE' });
-      } catch {}
+        console.log(`Restored local-ui server → ${originalLocalUiServer}`);
+      } catch { /* best effort */ }
     }
   });
 
@@ -383,7 +317,7 @@ describe('Task Lifecycle', () => {
       await sleep(1_000);
     }
     expect(workerId).toBeTruthy();
-    cleanupWorkerIds.push(workerId!);
+    cleanup.trackWorker(workerId!);
 
     // Wait for completion
     const result = await waitForTaskTerminal(task.id);

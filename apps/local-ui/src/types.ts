@@ -30,6 +30,31 @@ export type ChatMessage =
   | { type: 'tool_use'; name: string; input?: any; timestamp: number }
   | { type: 'user'; content: string; timestamp: number };
 
+// Agent team member
+export interface TeamMember {
+  name: string;
+  role?: string;
+  status: 'active' | 'idle' | 'done';
+  spawnedAt: number;
+}
+
+// Inter-agent message
+export interface TeamMessage {
+  from: string;
+  to: string | 'broadcast';
+  content: string;
+  summary?: string;
+  timestamp: number;
+}
+
+// Team state for a worker
+export interface TeamState {
+  teamName: string;
+  members: TeamMember[];
+  messages: TeamMessage[];
+  createdAt: number;
+}
+
 // Local worker state
 export interface LocalWorker {
   id: string;
@@ -53,6 +78,7 @@ export interface LocalWorker {
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
+  teamState?: TeamState;  // Set when agent spawns a team
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;

@@ -436,10 +436,26 @@ const server = Bun.serve({
     }
 
     // viewerToken auth for remote access to worker data endpoints
-    // Localhost requests bypass auth; remote requests need ?token= or Authorization header
-    const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+    // Localhost and private IP requests bypass auth; remote requests need ?token= or Authorization header
+    const isPrivateOrLocalhost = (hostname: string): boolean => {
+      // localhost variants
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+
+      // Private IPv4 ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 100.64-127.x.x (CGNAT/Tailscale)
+      const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+      if (ipv4Match) {
+        const [, a, b] = ipv4Match.map(Number);
+        return a === 10 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31 || a === 100 && b >= 64 && b <= 127;
+      }
+
+      // Private IPv6 (fc00::/7, fe80::/10)
+      if (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80:')) return true;
+
+      return false;
+    };
+
     const viewerProtectedPaths = ['/api/workers', '/api/events', '/health'];
-    const needsViewerAuth = !isLocalhost && viewerProtectedPaths.some(p => path === p || path.startsWith(p + '/'));
+    const needsViewerAuth = !isPrivateOrLocalhost(url.hostname) && viewerProtectedPaths.some(p => path === p || path.startsWith(p + '/'));
     if (needsViewerAuth) {
       const expectedToken = workerManager?.getViewerToken();
       const providedToken = url.searchParams.get('token') || req.headers.get('authorization')?.replace('Bearer ', '');
@@ -480,6 +496,7 @@ const server = Bun.serve({
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
         accountId: currentAccountId,
+        viewerToken: workerManager?.getViewerToken() || null,
         outboxCount: outbox.count(),
         // LLM provider info
         llmProvider: config.llmProvider?.provider || 'anthropic',
@@ -1000,6 +1017,32 @@ const server = Bun.serve({
         return Response.json({ error: 'Worker not found or not running' }, { status: 404, headers: corsHeaders });
       }
       return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    // Team state endpoint (P2P — dashboard fetches directly from local-ui)
+    if (path.startsWith('/api/workers/') && path.endsWith('/team') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ team: worker.teamState || null }, { headers: corsHeaders });
+    }
+
+    // Trace endpoint — returns tool calls and messages for a worker
+    if (path.startsWith('/api/workers/') && path.endsWith('/trace') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ toolCalls: worker.toolCalls, messages: worker.messages }, { headers: corsHeaders });
     }
 
     // Command endpoint for direct access (when server relays or user accesses directly)

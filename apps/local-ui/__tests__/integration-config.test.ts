@@ -15,10 +15,17 @@ const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 
 // --- Helpers ---
 
+let viewerToken: string | null = null;
+
 async function api(path: string, method = 'GET', body?: any): Promise<Response> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  // Pass viewer token for protected endpoints when available
+  if (viewerToken) {
+    headers['Authorization'] = `Bearer ${viewerToken}`;
+  }
   return fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 }
@@ -35,9 +42,11 @@ let originalServer: string;
 beforeAll(async () => {
   // Verify server is running
   try {
-    const config = await apiJson<{ builddServer: string }>('/api/config');
+    const config = await apiJson<{ builddServer: string; viewerToken?: string }>('/api/config');
     originalServer = config.builddServer;
+    viewerToken = config.viewerToken || null;
     console.log(`Original server URL: ${originalServer}`);
+    if (viewerToken) console.log(`Viewer token acquired`);
   } catch (err: any) {
     if (err.message?.includes('fetch failed')) {
       throw new Error(`Local-UI not running at ${BASE_URL}. Start with: bun run dev`);

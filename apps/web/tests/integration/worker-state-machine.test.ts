@@ -4,174 +4,121 @@
  * Tests that workers can report waiting_input status with waitingFor data,
  * and that it auto-clears when the worker resumes.
  *
- * Usage:
- *   BUILDD_API_KEY=bld_xxx bun run apps/web/tests/integration/worker-waiting.test.ts
- *   # or reads from .env automatically
+ * Prerequisites:
+ *   - BUILDD_TEST_SERVER set (preview or local URL)
+ *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
  *
- * Env vars:
- *   BUILDD_API_KEY  - required
- *   BUILDD_SERVER   - defaults to https://buildd.dev
- *   BUILDD_WORKSPACE_ID - optional, auto-picks first workspace
+ * Usage:
+ *   bun test apps/web/tests/integration/worker-state-machine.test.ts
  */
 
-const SERVER = process.env.BUILDD_SERVER || 'https://buildd.dev';
-const API_KEY = process.env.BUILDD_API_KEY;
+import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
 
-if (!API_KEY) {
-  console.log('⏭️  Skipping integration test: BUILDD_API_KEY not set (this is expected in CI)');
-  process.exit(0);
-}
+const TIMEOUT = 30_000;
 
-// Track resources for cleanup
-let createdTaskId: string | null = null;
-let createdWorkerId: string | null = null;
+const { server, apiKey } = requireTestEnv();
+const { api, apiRaw } = createTestApi(server, apiKey);
+const cleanup = createCleanup(api);
 
-async function api(endpoint: string, options: RequestInit = {}) {
-  const res = await fetch(`${SERVER}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_KEY}`,
-      ...options.headers,
-    },
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: ${JSON.stringify(body)}`);
-  }
-  return body;
-}
+describe('Worker State Machine', () => {
+  let workspaceId: string;
+  let workerId: string;
 
-function assert(condition: boolean, msg: string) {
-  if (!condition) throw new Error(`ASSERTION FAILED: ${msg}`);
-  console.log(`  ✓ ${msg}`);
-}
-
-async function cleanup() {
-  if (createdWorkerId) {
-    try {
-      await api(`/api/workers/${createdWorkerId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'failed', error: 'Integration test cleanup' }),
-      });
-    } catch {}
-  }
-  if (createdTaskId) {
-    try {
-      await api(`/api/tasks/${createdTaskId}`, { method: 'DELETE' });
-    } catch {}
-  }
-}
-
-async function run() {
-  console.log(`\nTesting against: ${SERVER}\n`);
-
-  // Step 1: Find a workspace
-  let workspaceId = process.env.BUILDD_WORKSPACE_ID;
-  if (!workspaceId) {
-    console.log('Step 1: Finding workspace...');
+  beforeAll(async () => {
     const { workspaces } = await api('/api/workspaces');
-    assert(workspaces.length > 0, 'Account has at least one workspace');
+    if (!workspaces.length) throw new Error('No workspaces available for testing');
     workspaceId = workspaces[0].id;
-    console.log(`  Using workspace: ${workspaces[0].name} (${workspaceId})\n`);
-  }
+    console.log(`  Using workspace: ${workspaces[0].name} (${workspaceId})`);
 
-  // Step 2: Create a test task
-  console.log('Step 2: Create test task...');
-  const task = await api('/api/tasks', {
-    method: 'POST',
-    body: JSON.stringify({
-      workspaceId,
-      title: '[INTEG-TEST] Worker waitingFor flow',
-      description: 'Auto-created by integration test. Safe to delete.',
-    }),
+    // Create a test task and claim it
+    const task = await api('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        workspaceId,
+        title: '[INTEG-TEST] Worker waitingFor flow',
+        description: 'Auto-created by integration test. Safe to delete.',
+      }),
+    });
+    cleanup.trackTask(task.id);
+
+    const { workers } = await api('/api/workers/claim', {
+      method: 'POST',
+      body: JSON.stringify({ maxTasks: 1, workspaceId, runner: 'test' }),
+    });
+    if (!workers.length) throw new Error('Failed to claim a worker');
+    workerId = workers[0].id;
+    cleanup.trackWorker(workerId);
+    console.log(`  Worker: ${workerId}`);
   });
-  createdTaskId = task.id;
-  assert(!!task.id, `Task created: ${task.id}`);
-  assert(task.status === 'pending', `Task status is pending`);
 
-  // Step 3: Claim the task
-  console.log('\nStep 3: Claim task...');
-  const { workers } = await api('/api/workers/claim', {
-    method: 'POST',
-    body: JSON.stringify({ maxTasks: 1, workspaceId, runner: 'test' }),
+  afterAll(async () => {
+    await cleanup.runCleanup();
+    cleanup.dispose();
   });
-  assert(workers.length > 0, 'Claimed a worker');
-  // The claim might pick a different task if others are pending - find ours or use whatever was claimed
-  const worker = workers[0];
-  createdWorkerId = worker.id;
-  console.log(`  Worker: ${worker.id}, Task: ${worker.task.title}\n`);
 
-  // Step 4: Set worker to running
-  console.log('Step 4: Set worker to running...');
-  const running = await api(`/api/workers/${worker.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'running', currentAction: 'Integration test running', progress: 10 }),
-  });
-  assert(running.status === 'running', 'Worker status is running');
-  assert(running.waitingFor === null, 'waitingFor is null when running');
+  test('should set worker to running', async () => {
+    const running = await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'running', currentAction: 'Integration test running', progress: 10 }),
+    });
+    expect(running.status).toBe('running');
+    expect(running.waitingFor).toBeNull();
+  }, TIMEOUT);
 
-  // Step 5: Set worker to waiting_input with waitingFor data
-  console.log('\nStep 5: Set worker to waiting_input with waitingFor...');
-  const waiting = await api(`/api/workers/${worker.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      status: 'waiting_input',
-      currentAction: 'Auth method',
-      waitingFor: {
-        type: 'question',
-        prompt: 'Which authentication method should we use?',
-        options: ['JWT tokens', 'Session cookies', 'OAuth2'],
-      },
-    }),
-  });
-  assert(waiting.status === 'waiting_input', 'Worker status is waiting_input');
-  assert(waiting.waitingFor !== null, 'waitingFor is not null');
-  assert(waiting.waitingFor.type === 'question', 'waitingFor.type is question');
-  assert(waiting.waitingFor.prompt === 'Which authentication method should we use?', 'waitingFor.prompt matches');
-  assert(Array.isArray(waiting.waitingFor.options) && waiting.waitingFor.options.length === 3, 'waitingFor.options has 3 items');
+  test('should set waiting_input with waitingFor data', async () => {
+    const waiting = await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: 'waiting_input',
+        currentAction: 'Auth method',
+        waitingFor: {
+          type: 'question',
+          prompt: 'Which authentication method should we use?',
+          options: ['JWT tokens', 'Session cookies', 'OAuth2'],
+        },
+      }),
+    });
+    expect(waiting.status).toBe('waiting_input');
+    expect(waiting.waitingFor).not.toBeNull();
+    expect(waiting.waitingFor.type).toBe('question');
+    expect(waiting.waitingFor.prompt).toBe('Which authentication method should we use?');
+    expect(waiting.waitingFor.options).toHaveLength(3);
+  }, TIMEOUT);
 
-  // Step 6: Verify via GET
-  console.log('\nStep 6: Verify via GET...');
-  const fetched = await api(`/api/workers/${worker.id}`);
-  assert(fetched.status === 'waiting_input', 'GET returns waiting_input status');
-  assert(fetched.waitingFor?.prompt === 'Which authentication method should we use?', 'GET returns waitingFor data');
+  test('should return waitingFor via GET', async () => {
+    const fetched = await api(`/api/workers/${workerId}`);
+    expect(fetched.status).toBe('waiting_input');
+    expect(fetched.waitingFor?.prompt).toBe('Which authentication method should we use?');
+  }, TIMEOUT);
 
-  // Step 7: Resume worker - waitingFor should auto-clear
-  console.log('\nStep 7: Resume worker (auto-clear waitingFor)...');
-  const resumed = await api(`/api/workers/${worker.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'running', currentAction: 'User chose JWT' }),
-  });
-  assert(resumed.status === 'running', 'Worker status back to running');
-  assert(resumed.waitingFor === null, 'waitingFor auto-cleared on resume');
+  test('should auto-clear waitingFor on resume', async () => {
+    const resumed = await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'running', currentAction: 'User chose JWT' }),
+    });
+    expect(resumed.status).toBe('running');
+    expect(resumed.waitingFor).toBeNull();
 
-  // Step 8: Verify cleared via GET
-  console.log('\nStep 8: Verify cleared via GET...');
-  const cleared = await api(`/api/workers/${worker.id}`);
-  assert(cleared.waitingFor === null, 'GET confirms waitingFor cleared');
+    // Verify via GET
+    const cleared = await api(`/api/workers/${workerId}`);
+    expect(cleared.waitingFor).toBeNull();
+  }, TIMEOUT);
 
-  // Step 9: Test explicit waitingFor: null
-  console.log('\nStep 9: Set waiting again, then explicitly clear...');
-  await api(`/api/workers/${worker.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      status: 'waiting_input',
-      waitingFor: { type: 'confirmation', prompt: 'Ready to deploy?' },
-    }),
-  });
-  const explicitClear = await api(`/api/workers/${worker.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'running', waitingFor: null }),
-  });
-  assert(explicitClear.waitingFor === null, 'Explicit waitingFor: null clears it');
+  test('should clear waitingFor with explicit null', async () => {
+    // Set waiting again
+    await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: 'waiting_input',
+        waitingFor: { type: 'confirmation', prompt: 'Ready to deploy?' },
+      }),
+    });
 
-  console.log('\n✅ All tests passed!\n');
-}
-
-run()
-  .catch((err) => {
-    console.error(`\n❌ Test failed: ${err.message}\n`);
-    process.exit(1);
-  })
-  .finally(cleanup);
+    // Explicitly clear
+    const explicitClear = await api(`/api/workers/${workerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'running', waitingFor: null }),
+    });
+    expect(explicitClear.waitingFor).toBeNull();
+  }, TIMEOUT);
+});

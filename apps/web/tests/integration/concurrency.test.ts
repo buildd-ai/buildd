@@ -6,65 +6,21 @@
  * and prevents multiple workers from claiming the same task.
  *
  * Prerequisites:
+ *   - BUILDD_TEST_SERVER set (preview or local URL)
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
- *   - Test server running (defaults to https://buildd.dev)
  *
  * Usage:
  *   bun test apps/web/tests/integration/concurrency.test.ts
  */
 
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
 
 // --- Config ---
 
 const TIMEOUT = 30_000; // 30 seconds per test
 
-// Resolve API key + server from env var > config.json
-function getFileConfig(): { apiKey?: string; builddServer?: string } {
-  try {
-    const configPath = join(process.env.HOME || '~', '.buildd', 'config.json');
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-const fileConfig = getFileConfig();
-const API_KEY = process.env.BUILDD_API_KEY || fileConfig.apiKey;
-const SERVER = process.env.BUILDD_SERVER || fileConfig.builddServer || 'https://buildd.dev';
-
-if (!API_KEY) {
-  console.log('⏭️  Skipping concurrency tests: no API key found');
-  process.exit(0);
-}
-
-// --- Helpers ---
-
-async function api(endpoint: string, options: RequestInit = {}) {
-  const res = await fetch(`${SERVER}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_KEY}`,
-      ...options.headers,
-    },
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    throw new Error(`API ${options.method || 'GET'} ${endpoint} → ${res.status}: ${JSON.stringify(body)}`);
-  }
-  return body;
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-function assert(condition: boolean, msg: string) {
-  if (!condition) throw new Error(`ASSERTION FAILED: ${msg}`);
-  console.log(`  ✓ ${msg}`);
-}
+const { server, apiKey } = requireTestEnv();
+const { api, apiRaw } = createTestApi(server, apiKey);
 
 /** Claim a task via the server API, returns the first worker from the response */
 async function serverClaim(taskId: string): Promise<any> {
@@ -77,12 +33,20 @@ async function serverClaim(taskId: string): Promise<any> {
   return worker;
 }
 
-/** Clean up a worker by marking it as failed (no DELETE endpoint exists) */
+/** Clean up a worker by marking it as failed. Tolerates 409 (already terminated). */
 async function failWorker(workerId: string) {
-  await api(`/api/workers/${workerId}`, {
+  const { status } = await apiRaw(`/api/workers/${workerId}`, {
     method: 'PATCH',
     body: JSON.stringify({ status: 'failed', error: 'Concurrency test cleanup' }),
   });
+  if (status !== 200 && status !== 409) {
+    console.warn(`  Cleanup worker ${workerId}: unexpected status ${status}`);
+  }
+}
+
+function assert(condition: boolean, msg: string) {
+  if (!condition) throw new Error(`ASSERTION FAILED: ${msg}`);
+  console.log(`  ✓ ${msg}`);
 }
 
 // --- Tests ---
@@ -90,7 +54,7 @@ async function failWorker(workerId: string) {
 describe('Concurrency Control', () => {
   let workspaceId: string;
   const cleanupWorkerIds: string[] = [];
-  const cleanupTaskIds: string[] = [];
+  const cleanup = createCleanup(api);
 
   // Setup: Get/create workspace
   beforeAll(async () => {
@@ -111,16 +75,11 @@ describe('Concurrency Control', () => {
       }
     }
     cleanupWorkerIds.length = 0;
+  });
 
-    // Clean up tasks
-    for (const taskId of cleanupTaskIds) {
-      try {
-        await api(`/api/tasks/${taskId}`, { method: 'DELETE' });
-      } catch (err) {
-        console.warn(`Failed to cleanup task ${taskId}:`, err);
-      }
-    }
-    cleanupTaskIds.length = 0;
+  afterAll(async () => {
+    await cleanup.runCleanup();
+    cleanup.dispose();
   });
 
   test('should enforce maxConcurrentWorkers limit', async () => {
@@ -145,7 +104,7 @@ describe('Concurrency Control', () => {
         }),
       });
       taskIds.push(task.id);
-      cleanupTaskIds.push(task.id);
+      cleanup.trackTask(task.id);
     }
 
     assert(taskIds.length === taskCount, `Created ${taskCount} tasks`);
@@ -158,6 +117,7 @@ describe('Concurrency Control', () => {
         const worker = await serverClaim(taskId);
         claimedWorkerIds.push(worker.id);
         cleanupWorkerIds.push(worker.id);
+        cleanup.trackWorker(worker.id);
       } catch (err: any) {
         // Expected to fail after maxConcurrent claims
         if (claimedWorkerIds.length >= maxConcurrent) {
@@ -186,7 +146,7 @@ describe('Concurrency Control', () => {
         description: 'Only one worker should claim this',
       }),
     });
-    cleanupTaskIds.push(task.id);
+    cleanup.trackTask(task.id);
 
     // Try to claim the same task concurrently (simulate race)
     const claimPromises = Array.from({ length: 3 }, () =>
@@ -208,7 +168,10 @@ describe('Concurrency Control', () => {
     // Track successful worker for cleanup
     if (successfulClaims.length > 0) {
       const worker = (successfulClaims[0] as any).workers?.[0];
-      if (worker) cleanupWorkerIds.push(worker.id);
+      if (worker) {
+        cleanupWorkerIds.push(worker.id);
+        cleanup.trackWorker(worker.id);
+      }
     }
   }, TIMEOUT);
 
@@ -232,11 +195,13 @@ describe('Concurrency Control', () => {
         description: 'Second task',
       }),
     });
-    cleanupTaskIds.push(task1.id, task2.id);
+    cleanup.trackTask(task1.id);
+    cleanup.trackTask(task2.id);
 
     // Claim first task
     const worker1 = await serverClaim(task1.id);
     cleanupWorkerIds.push(worker1.id);
+    cleanup.trackWorker(worker1.id);
     assert(!!worker1.id, 'Worker 1 claimed task 1');
 
     // Mark worker 1 as done
@@ -251,6 +216,7 @@ describe('Concurrency Control', () => {
     // Should now be able to claim second task (capacity released)
     const worker2 = await serverClaim(task2.id);
     cleanupWorkerIds.push(worker2.id);
+    cleanup.trackWorker(worker2.id);
     assert(!!worker2.id, 'Worker 2 claimed task 2 (capacity released)');
   }, TIMEOUT);
 
@@ -266,11 +232,12 @@ describe('Concurrency Control', () => {
         description: 'Task that will error',
       }),
     });
-    cleanupTaskIds.push(task.id);
+    cleanup.trackTask(task.id);
 
     // Claim task
     const worker = await serverClaim(task.id);
     cleanupWorkerIds.push(worker.id);
+    cleanup.trackWorker(worker.id);
 
     // Mark worker as failed
     await api(`/api/workers/${worker.id}`, {
@@ -299,7 +266,7 @@ describe('Concurrency Control', () => {
     const { activeLocalUis } = await api('/api/workers/active');
 
     if (activeLocalUis.length === 0) {
-      console.log('  ⏭️  Skipping (no active local-ui instances)');
+      console.log('  Skipping (no active local-ui instances)');
       return;
     }
 
