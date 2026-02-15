@@ -22,7 +22,7 @@ export default async function DashboardPage() {
   let activeWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect })[] = [];
   let githubOrgs: { accountLogin: string; repoCount: number }[] = [];
   let githubConfigured = false;
-  let totalTaskCount = 0;
+  let completedRecentCount = 0;
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
 
   if (!isDev) {
@@ -49,9 +49,16 @@ export default async function DashboardPage() {
       const workspaceIds = userWorkspaces.map(w => w.id);
 
       if (workspaceIds.length > 0) {
-        // Get total task count for stat card
-        const countResult = await db.select({ count: sql<number>`count(*)::int` }).from(tasks).where(inArray(tasks.workspaceId, workspaceIds));
-        totalTaskCount = countResult[0]?.count || 0;
+        // Get count of tasks completed in the last 7 days
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const countResult = await db.select({ count: sql<number>`count(*)::int` }).from(tasks).where(
+          and(
+            inArray(tasks.workspaceId, workspaceIds),
+            eq(tasks.status, 'completed'),
+            gt(tasks.updatedAt, sevenDaysAgo),
+          )
+        );
+        completedRecentCount = countResult[0]?.count || 0;
 
         // Get active tasks first (running, assigned, pending, failed) - sorted by status priority
         const activeTasks = await db.query.tasks.findMany({
@@ -275,8 +282,8 @@ export default async function DashboardPage() {
             href="/app/tasks"
             className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Tasks</div>
-            <div className="text-2xl font-semibold">{totalTaskCount}</div>
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Completed (7d)</div>
+            <div className={`text-2xl font-semibold ${completedRecentCount > 0 ? 'text-status-success' : ''}`}>{completedRecentCount}</div>
           </Link>
           <Link
             href="/app/workers"

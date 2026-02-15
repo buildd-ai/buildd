@@ -40,8 +40,26 @@ export default function SkillsSection({ skills, workspaces }: { skills: Skill[];
         <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
           <p className="text-text-secondary text-sm">No team-level skills registered</p>
           <p className="text-xs text-text-muted mt-1">
-            Skills are reusable agent instructions. Promote workspace skills or register via API.
+            Skills are reusable agent instructions (SKILL.md files) that give workers domain-specific expertise.
           </p>
+          <div className="flex items-center justify-center gap-3 mt-3">
+            {defaultWorkspace && (
+              <Link
+                href={`/app/workspaces/${defaultWorkspace.id}/skills`}
+                className="px-3 py-1.5 text-sm bg-accent-primary text-white rounded-md hover:bg-accent-primary/90"
+              >
+                Create a Skill
+              </Link>
+            )}
+            <a
+              href="https://docs.buildd.dev/docs/features/skills"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 text-text-secondary"
+            >
+              Read the docs
+            </a>
+          </div>
         </div>
       ) : (
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
