@@ -228,7 +228,7 @@ export default function NewTaskPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 overflow-auto h-full">
+    <div className="p-4 pb-32 md:p-8 md:pb-8 overflow-auto h-full">
       <div className="max-w-xl mx-auto md:mx-0">
         <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
           <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
@@ -519,7 +519,7 @@ export default function NewTaskPage() {
               </div>
             )}
 
-            <div className="flex gap-4">
+            <div className="fixed bottom-16 left-0 right-0 p-4 bg-surface-1 border-t border-border-default md:relative md:bottom-auto md:left-auto md:right-auto md:p-0 md:bg-transparent md:border-t-0 flex gap-4 z-10 md:z-auto">
               <button
                 type="submit"
                 disabled={loading || loadingWorkspaces || (recurring && cronPreview !== null && !cronPreview.valid)}
