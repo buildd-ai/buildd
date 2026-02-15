@@ -126,6 +126,8 @@ export async function GET(req: NextRequest) {
     const successUrl = new URL(callback);
     successUrl.searchParams.set('token', plaintextKey);
     successUrl.searchParams.set('email', session.user.email || '');
+    if (process.env.NEXT_PUBLIC_PUSHER_KEY) successUrl.searchParams.set('pusherKey', process.env.NEXT_PUBLIC_PUSHER_KEY);
+    if (process.env.NEXT_PUBLIC_PUSHER_CLUSTER) successUrl.searchParams.set('pusherCluster', process.env.NEXT_PUBLIC_PUSHER_CLUSTER);
     return NextResponse.redirect(successUrl.toString());
 
   } catch (error) {

@@ -1521,16 +1521,22 @@ function markBrowserOpened() {
 (async () => {
   // Check if this is first run (openBrowser preference not set)
   if (savedConfig.openBrowser === undefined) {
-    console.log('');
-    const shouldOpen = await promptYesNo('Auto-open browser on startup?');
-    saveConfig({ openBrowser: shouldOpen });
+    // Skip interactive prompt when running without a TTY (e.g. in screen, CI)
+    const isTTY = process.stdin.isTTY ?? false;
+    if (!isTTY) {
+      saveConfig({ openBrowser: false });
+    } else {
+      console.log('');
+      const shouldOpen = await promptYesNo('Auto-open browser on startup?');
+      saveConfig({ openBrowser: shouldOpen });
 
-    if (shouldOpen && shouldOpenBrowser()) {
-      console.log('Opening browser...');
-      Bun.spawn(['open', localUrl]);
-      markBrowserOpened();
+      if (shouldOpen && shouldOpenBrowser()) {
+        console.log('Opening browser...');
+        Bun.spawn(['open', localUrl]);
+        markBrowserOpened();
+      }
+      console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
     }
-    console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
   } else if (savedConfig.openBrowser && shouldOpenBrowser()) {
     Bun.spawn(['open', localUrl]);
     markBrowserOpened();

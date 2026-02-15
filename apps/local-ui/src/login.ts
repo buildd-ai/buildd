@@ -150,8 +150,11 @@ if (values.device) {
       });
 
       if (pollRes.status === 200) {
-        const tokenData = await pollRes.json() as { api_key: string; email?: string };
-        saveConfig({ apiKey: tokenData.api_key, builddServer: serverUrl });
+        const tokenData = await pollRes.json() as { api_key: string; email?: string; pusherKey?: string; pusherCluster?: string };
+        const configData: Record<string, unknown> = { apiKey: tokenData.api_key, builddServer: serverUrl };
+        if (tokenData.pusherKey) configData.pusherKey = tokenData.pusherKey;
+        if (tokenData.pusherCluster) configData.pusherCluster = tokenData.pusherCluster;
+        saveConfig(configData);
         configureMcp();
 
         console.log('');
@@ -216,6 +219,9 @@ const tempServer = Bun.serve({
       }
 
       if (token && token.startsWith('bld_')) {
+        const pusherKey = url.searchParams.get('pusherKey') || '';
+        const pusherCluster = url.searchParams.get('pusherCluster') || '';
+        if (pusherKey) saveConfig({ pusherKey, pusherCluster });
         resolveCallback!(token, email);
         return new Response(`
           <!DOCTYPE html>

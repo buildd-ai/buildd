@@ -1,10 +1,10 @@
 import { db } from '@buildd/core/db';
-import { accounts, skills, teams, teamMembers, workspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray, sql, and } from 'drizzle-orm';
+import { accounts, skills, workspaces } from '@buildd/core/db/schema';
+import { desc, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
 import SkillsSection from './SkillsSection';
@@ -19,14 +19,23 @@ export default async function SettingsPage() {
   }
 
   let allAccounts: any[] = [];
-  let userTeams: { id: string; name: string; slug: string; role: string; memberCount: number }[] = [];
+  let userTeams: UserTeam[] = [];
+  let teamsError = false;
   let teamSkills: any[] = [];
   let userWorkspaces: { id: string; name: string }[] = [];
 
+  // Fetch teams - uses React cache() so shared with layout
   try {
-    const teamIds = await getUserTeamIds(user.id);
+    userTeams = await getUserTeamsWithDetails(user.id);
+  } catch (error) {
+    console.error('Settings: teams query error:', error);
+    teamsError = true;
+  }
 
-    // Fetch accounts
+  const teamIds = userTeams.map(t => t.id);
+
+  // Fetch accounts
+  try {
     if (teamIds.length > 0) {
       allAccounts = await db.query.accounts.findMany({
         where: inArray(accounts.teamId, teamIds),
@@ -36,37 +45,12 @@ export default async function SettingsPage() {
         },
       });
     }
+  } catch (error) {
+    console.error('Settings: accounts query error:', error);
+  }
 
-    // Fetch teams with member counts
-    const memberships = await db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, user.id),
-      with: { team: true },
-    });
-
-    const validMemberships = memberships.filter(m => m.team != null);
-    const memberTeamIds = validMemberships.map(m => m.teamId);
-    const memberCounts = memberTeamIds.length > 0
-      ? await db
-          .select({
-            teamId: teamMembers.teamId,
-            count: sql<number>`count(*)::int`,
-          })
-          .from(teamMembers)
-          .where(sql`${teamMembers.teamId} = ANY(${memberTeamIds})`)
-          .groupBy(teamMembers.teamId)
-      : [];
-
-    const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
-
-    userTeams = validMemberships.map(m => ({
-      id: m.team.id,
-      name: m.team.name,
-      slug: m.team.slug,
-      role: m.role,
-      memberCount: countMap.get(m.teamId) || 1,
-    }));
-
-    // Fetch team-level skills
+  // Fetch team-level skills
+  try {
     if (teamIds.length > 0) {
       teamSkills = await db.query.skills.findMany({
         where: inArray(skills.teamId, teamIds),
@@ -84,7 +68,7 @@ export default async function SettingsPage() {
       });
     }
   } catch (error) {
-    console.error('Settings query error:', error);
+    console.error('Settings: skills query error:', error);
   }
 
   const roleColors: Record<string, string> = {
@@ -124,7 +108,17 @@ export default async function SettingsPage() {
               </Link>
             </div>
 
-            {userTeams.length === 0 ? (
+            {teamsError ? (
+              <div className="border border-dashed border-status-error/30 rounded-lg p-6 text-center">
+                <p className="text-text-secondary mb-3 text-sm">Failed to load teams</p>
+                <Link
+                  href="/app/settings"
+                  className="text-sm text-primary hover:underline"
+                >
+                  Retry
+                </Link>
+              </div>
+            ) : userTeams.length === 0 ? (
               <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
                 <p className="text-text-secondary mb-3 text-sm">No teams yet</p>
                 <Link

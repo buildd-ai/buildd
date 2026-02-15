@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 
 export async function GET() {
@@ -28,7 +28,7 @@ export async function GET() {
             count: sql<number>`count(*)::int`,
           })
           .from(teamMembers)
-          .where(sql`${teamMembers.teamId} = ANY(${teamIds})`)
+          .where(inArray(teamMembers.teamId, teamIds))
           .groupBy(teamMembers.teamId)
       : [];
 

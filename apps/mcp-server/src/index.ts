@@ -173,10 +173,24 @@ const server = new Server(
     capabilities: {
       tools: {},
     },
-    instructions: `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
+    instructions: WORKER_ID
+      ? `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
+
+**Your task is already assigned.** Your worker ID is \`${WORKER_ID}\`. Do NOT call list_tasks or claim_task — your task was auto-claimed for you.
 
 **Worker workflow:**
-1. \`buildd\` action=list_tasks → action=claim_task → checkout the returned branch → do the work
+1. Do the work on the current branch.
+2. Report progress at milestones (25%, 50%, 75%) via action=update_progress with workerId="${WORKER_ID}". Include plan param to submit a plan for review.
+3. When done: push commits → action=create_pr → action=complete_task (with summary). If blocked, use action=complete_task with error param instead.
+
+**Memory (REQUIRED):**
+- BEFORE touching unfamiliar files, use \`buildd_memory\` action=search with keywords
+- AFTER encountering a gotcha, pattern, or decision, use \`buildd_memory\` action=save IMMEDIATELY
+- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)`
+      : `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
+
+**Worker workflow:**
+1. \`buildd\` action=claim_task → checkout the returned branch → do the work. claim_task auto-assigns the highest-priority pending task — you do NOT pick a task by ID. Use list_tasks only to preview what's available.
 2. Report progress at milestones (25%, 50%, 75%) via action=update_progress. Include plan param to submit a plan for review.
 3. When done: push commits → action=create_pr → action=complete_task (with summary). If blocked, use action=complete_task with error param instead.
 
@@ -221,7 +235,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: "object",
             description: `Action-specific parameters. By action:
 - list_tasks: { offset? }
-- claim_task: { maxTasks?, workspaceId? }
+- claim_task: { maxTasks?, workspaceId? } — auto-assigns highest-priority pending task, no task ID needed
 - update_progress: { workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }
 - complete_task: { workerId (required), summary?, error? } — if error present, marks task as failed
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
@@ -303,9 +317,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           const header = `${pending.length} pending task${pending.length === 1 ? '' : 's'}:`;
           const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : "";
+          const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority task — you don't pick by ID).`;
 
           return {
-            content: [{ type: "text", text: `${header}\n\n${summary}${moreHint}` }],
+            content: [{ type: "text", text: `${header}\n\n${summary}${moreHint}${claimHint}` }],
           };
         }
 

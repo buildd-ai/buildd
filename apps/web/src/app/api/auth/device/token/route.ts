@@ -62,7 +62,12 @@ export async function POST(req: NextRequest) {
         email = user?.email;
       }
 
-      return NextResponse.json({ api_key: apiKey, email });
+      return NextResponse.json({
+        api_key: apiKey,
+        email,
+        pusherKey: process.env.NEXT_PUBLIC_PUSHER_KEY,
+        pusherCluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
+      });
     }
 
     return NextResponse.json({ error: 'Unexpected state' }, { status: 400 });
