@@ -20,7 +20,7 @@ import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../..
 const TIMEOUT = 30_000; // 30 seconds per test
 
 const { server, apiKey } = requireTestEnv();
-const { api } = createTestApi(server, apiKey);
+const { api, apiRaw } = createTestApi(server, apiKey);
 
 /** Claim a task via the server API, returns the first worker from the response */
 async function serverClaim(taskId: string): Promise<any> {
@@ -33,12 +33,15 @@ async function serverClaim(taskId: string): Promise<any> {
   return worker;
 }
 
-/** Clean up a worker by marking it as failed (no DELETE endpoint exists) */
+/** Clean up a worker by marking it as failed. Tolerates 409 (already terminated). */
 async function failWorker(workerId: string) {
-  await api(`/api/workers/${workerId}`, {
+  const { status } = await apiRaw(`/api/workers/${workerId}`, {
     method: 'PATCH',
     body: JSON.stringify({ status: 'failed', error: 'Concurrency test cleanup' }),
   });
+  if (status !== 200 && status !== 409) {
+    console.warn(`  Cleanup worker ${workerId}: unexpected status ${status}`);
+  }
 }
 
 function assert(condition: boolean, msg: string) {
