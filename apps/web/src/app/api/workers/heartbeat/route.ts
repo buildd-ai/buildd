@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
         set: {
           maxConcurrentWorkers: account.maxConcurrentWorkers,
           activeWorkerCount,
-          ...(environment ? { environment } : {}),
+          environment: environment || null,
           lastHeartbeatAt: now,
           updatedAt: now,
         },

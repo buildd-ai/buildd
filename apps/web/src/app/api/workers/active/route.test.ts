@@ -182,6 +182,83 @@ describe('GET /api/workers/active', () => {
     expect(data.activeLocalUis).toHaveLength(0);
   });
 
+  it('includes environment in response when present', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { workspaceId: 'ws-1' },
+    ]);
+
+    const environment = {
+      tools: [{ name: 'node', version: '22.1.0' }, { name: 'docker' }],
+      envKeys: ['DATABASE_URL', 'VERCEL_TOKEN'],
+      mcp: ['slack'],
+      labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test-mac' },
+      scannedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 1,
+        workspaceIds: ['ws-1'],
+        environment,
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeLocalUis).toHaveLength(1);
+    expect(data.activeLocalUis[0].environment).toEqual(environment);
+  });
+
+  it('returns null environment when not set on heartbeat', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { workspaceId: 'ws-1' },
+    ]);
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 0,
+        workspaceIds: ['ws-1'],
+        environment: null,
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeLocalUis[0].environment).toBeNull();
+  });
+
   it('supports API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-1' });

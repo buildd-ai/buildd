@@ -194,6 +194,78 @@ describe('POST /api/workers/heartbeat', () => {
     expect(data.ok).toBe(true);
   });
 
+  it('persists environment in heartbeat upsert', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const environment = {
+      tools: [{ name: 'node', version: '22.1.0' }],
+      envKeys: ['DATABASE_URL'],
+      mcp: ['slack'],
+      labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+      scannedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1, environment },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.environment).toEqual(environment);
+    expect(capturedConflictSet.environment).toEqual(environment);
+  });
+
+  it('sets environment to null when not provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 0 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.environment).toBeNull();
+    expect(capturedConflictSet.environment).toBeNull();
+  });
+
   it('defaults activeWorkerCount to 0', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
