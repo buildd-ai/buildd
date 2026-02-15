@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-log() { echo "::notice::$*"; }
+log() { echo "::notice::$*" >&2; }
 
 # Determine changed files
 if [ -n "${GITHUB_BASE_REF:-}" ]; then
