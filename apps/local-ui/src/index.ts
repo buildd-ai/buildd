@@ -45,6 +45,9 @@ interface SavedConfig {
   llmProvider?: LLMProvider; // 'anthropic' or 'openrouter'
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
+  // Remote skill installation
+  skillInstallerAllowlist?: string[]; // Override workspace allowlist locally
+  rejectRemoteInstallers?: boolean; // Block all remote installer commands
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -66,6 +69,8 @@ function loadSavedConfig(): SavedConfig {
         llmProvider: data.llmProvider,
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
+        skillInstallerAllowlist: data.skillInstallerAllowlist,
+        rejectRemoteInstallers: data.rejectRemoteInstallers,
       };
     }
   } catch (err) {
@@ -288,6 +293,9 @@ const config: LocalUIConfig = {
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
   // Bypass permission prompts (default: false)
   bypassPermissions: savedConfig.bypassPermissions || false,
+  // Remote skill installation
+  skillInstallerAllowlist: savedConfig.skillInstallerAllowlist,
+  rejectRemoteInstallers: savedConfig.rejectRemoteInstallers,
 };
 
 const resolver = createWorkspaceResolver(projectRoots);
@@ -385,7 +393,7 @@ if (buildd) {
 }
 
 // Serve static files
-function serveStatic(path: string): Response {
+function serveStatic(path: string, req?: Request): Response {
   const uiDir = join(import.meta.dir, '..', 'ui');
   try {
     const content = readFileSync(join(uiDir, path));
@@ -398,8 +406,22 @@ function serveStatic(path: string): Response {
       jpg: 'image/jpeg',
       svg: 'image/svg+xml',
     };
+
+    // ETag from file size (cheap, stable between reads)
+    const etag = `"${content.length.toString(16)}"`;
+
+    // 304 Not Modified if ETag matches
+    if (req?.headers.get('if-none-match') === etag) {
+      return new Response(null, { status: 304 });
+    }
+
     return new Response(content, {
-      headers: { 'Content-Type': types[ext || 'html'] || 'text/plain' },
+      headers: {
+        'Content-Type': types[ext || 'html'] || 'text/plain',
+        'Content-Length': content.length.toString(),
+        'Cache-Control': ext === 'html' ? 'no-cache' : 'public, max-age=300',
+        'ETag': etag,
+      },
     });
   } catch {
     return new Response('Not found', { status: 404 });
@@ -1447,22 +1469,22 @@ const server = Bun.serve({
 
     // Static files
     if (path === '/' || path === '/index.html') {
-      return serveStatic('index.html');
+      return serveStatic('index.html', req);
     }
     if (path === '/styles.css') {
-      return serveStatic('styles.css');
+      return serveStatic('styles.css', req);
     }
     if (path === '/app.js') {
-      return serveStatic('app.js');
+      return serveStatic('app.js', req);
     }
     if (path === '/icon.png') {
-      return serveStatic('icon.png');
+      return serveStatic('icon.png', req);
     }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)
     // Exclude /worker/api/ to avoid silently serving HTML for misrouted API calls
     if (path.startsWith('/worker/') && !path.includes('/api/')) {
-      return serveStatic('index.html');
+      return serveStatic('index.html', req);
     }
 
     return new Response('Not found', { status: 404 });
