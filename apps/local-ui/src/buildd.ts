@@ -60,10 +60,10 @@ export class BuilddClient {
     return data.tasks || [];
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string) {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, environment?: WorkerEnvironment) {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',
-      body: JSON.stringify({ maxTasks, workspaceId, taskId, runner: runner || 'local-ui' }),
+      body: JSON.stringify({ maxTasks, workspaceId, taskId, runner: runner || 'local-ui', environment }),
     });
     return data.workers || [];
   }

@@ -86,6 +86,33 @@ function scanMcpServers(): string[] {
   return [...new Set(servers)];
 }
 
+/**
+ * Parse .env and .env.local in a directory for key names.
+ * Returns key names only, never values.
+ */
+export function scanDotEnvKeys(dir: string): string[] {
+  const keys: string[] = [];
+  const files = ['.env', '.env.local'];
+
+  for (const file of files) {
+    try {
+      const content = readFileSync(join(dir, file), 'utf-8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          keys.push(trimmed.slice(0, eqIdx).trim());
+        }
+      }
+    } catch {
+      // File doesn't exist
+    }
+  }
+
+  return [...new Set(keys)];
+}
+
 export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
   const tools: WorkerTool[] = [];
 
