@@ -496,6 +496,7 @@ const server = Bun.serve({
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
         accountId: currentAccountId,
+        viewerToken: workerManager?.getViewerToken() || null,
         outboxCount: outbox.count(),
         // LLM provider info
         llmProvider: config.llmProvider?.provider || 'anthropic',
