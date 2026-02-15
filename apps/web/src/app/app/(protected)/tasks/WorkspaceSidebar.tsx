@@ -130,11 +130,13 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
     setWorkspaces(prev => prev.map(ws => ({
       ...ws,
-      tasks: ws.tasks.map(task =>
-        task.id === worker.taskId
-          ? { ...task, status: taskStatus, updatedAt: new Date(), waitingFor }
-          : task
-      )
+      tasks: ws.tasks.map(task => {
+        if (task.id !== worker.taskId) return task;
+        // Don't override terminal task states with active worker states
+        const isTerminal = task.status === 'completed' || task.status === 'failed';
+        if (isTerminal && taskStatus !== 'completed' && taskStatus !== 'failed') return task;
+        return { ...task, status: taskStatus, updatedAt: new Date(), waitingFor };
+      })
     })));
   }, []);
 
