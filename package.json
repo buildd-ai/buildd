@@ -16,6 +16,7 @@
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build",
     "release": "gh pr create --base main --head dev --title \"Release $(date +%Y-%m-%d)\" --body 'Automated release from dev' 2>/dev/null || echo 'PR already exists'",
+    "sync-dev": "bash scripts/sync-dev.sh",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
     "seed:reset": "bun run scripts/seed/reset.ts"
   },
