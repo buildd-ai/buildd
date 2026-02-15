@@ -5,6 +5,36 @@
 
 set -euo pipefail
 
+# Post-release cleanup: delete branches already in main
+if [ "${1:-}" = "--cleanup" ]; then
+  echo "🧹 Cleaning up stale branches..."
+  git fetch origin --prune
+
+  DELETED=0
+  for branch in $(git branch -r --no-merged origin/main | grep 'origin/' | grep -v 'origin/main$' | grep -v 'origin/dev$' | grep -v 'origin/HEAD' | sed 's|origin/||'); do
+    # Check if all commits in this branch are already in main (squash-merged)
+    NEW_COMMITS=0
+    for commit in $(git log origin/main..origin/$branch --format=%H --no-merges 2>/dev/null); do
+      msg=$(git log -1 --format=%s "$commit" | cut -c1-40)
+      if ! git log origin/main --oneline --grep="$msg" --fixed-strings 2>/dev/null | grep -q .; then
+        NEW_COMMITS=$((NEW_COMMITS + 1))
+      fi
+    done
+
+    if [ "$NEW_COMMITS" -eq 0 ]; then
+      echo "  ✅ Deleting $branch (all changes in main)"
+      git push origin --delete "$branch" 2>/dev/null || true
+      DELETED=$((DELETED + 1))
+    else
+      echo "  ⏭️  Keeping $branch ($NEW_COMMITS unmerged commits)"
+    fi
+  done
+
+  echo ""
+  echo "🧹 Deleted $DELETED stale branches"
+  exit 0
+fi
+
 # Get the latest version tag, default to v0.0.0
 LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
 if [ -z "$LATEST_TAG" ]; then
