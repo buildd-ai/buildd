@@ -2,7 +2,7 @@ import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -154,6 +154,7 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
+  private workspaceAllowlistCache = new Map<string, string[] | undefined>();
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
@@ -288,7 +289,20 @@ export class WorkerManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('skill:install', (data: SkillInstallPayload) => {
+            if (data.targetLocalUiUrl && this.config.localUiUrl && data.targetLocalUiUrl !== this.config.localUiUrl) {
+              return; // Not for us
+            }
+            this.handleSkillInstall(data, ws.id);
+          });
           this.workspaceChannels.set(channelName, channel);
+          // Cache workspace allowlist
+          try {
+            const wsConfig = await this.buildd.getWorkspaceConfig(ws.id);
+            this.workspaceAllowlistCache.set(ws.id, (wsConfig.gitConfig as any)?.skillInstallerAllowlist);
+          } catch {
+            // Non-fatal — will use default allowlist
+          }
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
@@ -301,9 +315,11 @@ export class WorkerManager {
     // Unsubscribe from workspace channels
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
+      channel.unbind('skill:install');
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
+    this.workspaceAllowlistCache.clear();
   }
 
   // Handle incoming task assignment
@@ -343,6 +359,79 @@ export class WorkerManager {
       }
     } catch (err) {
       console.error(`Failed to start assigned task ${task.id}:`, err);
+    }
+  }
+
+  // Handle remote skill installation
+  private async handleSkillInstall(payload: SkillInstallPayload, workspaceId: string) {
+    const { requestId, skillSlug } = payload;
+    console.log(`[SkillInstall] Received install request: ${skillSlug} (${requestId})`);
+
+    // Content push path
+    if (payload.bundle) {
+      try {
+        await syncSkillToLocal(payload.bundle);
+        console.log(`[SkillInstall] Content push succeeded: ${skillSlug}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, true, 'content_push');
+      } catch (err) {
+        console.error(`[SkillInstall] Content push failed: ${skillSlug}`, err);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'content_push', undefined, String(err));
+      }
+      return;
+    }
+
+    // Command execution path
+    if (payload.installerCommand) {
+      const validation = validateInstallerCommand(payload.installerCommand, {
+        workspaceAllowlist: this.workspaceAllowlistCache.get(workspaceId),
+        localAllowlist: this.config.skillInstallerAllowlist,
+        rejectAll: this.config.rejectRemoteInstallers,
+      });
+      if (!validation.allowed) {
+        console.log(`[SkillInstall] Command rejected: ${validation.reason}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'installer_command', undefined, validation.reason);
+        return;
+      }
+
+      const { execSync } = await import('child_process');
+      try {
+        const output = execSync(payload.installerCommand, {
+          cwd: homedir(),
+          timeout: 120_000,
+          encoding: 'utf-8',
+        });
+        console.log(`[SkillInstall] Command succeeded: ${skillSlug}`);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, true, 'installer_command', output?.slice(0, 2000));
+      } catch (err: any) {
+        console.error(`[SkillInstall] Command failed: ${skillSlug}`, err.message);
+        await this.reportInstallResult(workspaceId, requestId, skillSlug, false, 'installer_command', err.stdout?.slice(0, 1000), err.message?.slice(0, 1000));
+      }
+    }
+  }
+
+  private async reportInstallResult(
+    workspaceId: string,
+    requestId: string,
+    skillSlug: string,
+    success: boolean,
+    method: 'content_push' | 'installer_command',
+    output?: string,
+    error?: string,
+  ) {
+    const result: SkillInstallResult = {
+      requestId,
+      skillSlug,
+      localUiUrl: this.config.localUiUrl,
+      success,
+      method,
+      output,
+      error,
+      timestamp: Date.now(),
+    };
+    try {
+      await this.buildd.reportSkillInstallResult(workspaceId, result);
+    } catch (err) {
+      console.error(`[SkillInstall] Failed to report result:`, err);
     }
   }
 

@@ -113,6 +113,9 @@ export interface WorkspaceGitConfig {
 
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
+
+  // Remote skill installation — allowlist of command prefixes workers can execute
+  skillInstallerAllowlist?: string[];
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
