@@ -363,11 +363,6 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             <div className="space-y-1">
               {sortedWorkspaces.map((ws) => {
                 const isCollapsed = collapsed[ws.id];
-                const isShowingAll = showAll[ws.id];
-                const visibleTasks = isShowingAll
-                  ? ws.tasks
-                  : ws.tasks.slice(0, TASKS_PER_WORKSPACE);
-                const hasMore = ws.tasks.length > TASKS_PER_WORKSPACE;
                 const activeCount = ws.tasks.filter(
                   t => ['running', 'assigned', 'waiting_input'].includes(t.status)
                 ).length;
@@ -414,29 +409,31 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
                     {/* Tasks */}
                     {!isCollapsed && (() => {
-                      // Split tasks into active/pending vs completed/failed
-                      const activeTasks = visibleTasks.filter(t =>
+                      // Split ALL tasks into active vs completed BEFORE slicing
+                      const allActiveTasks = ws.tasks.filter(t =>
                         ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
                       );
-                      const completedTasks = visibleTasks.filter(t =>
+                      const allCompletedTasks = ws.tasks.filter(t =>
                         ['completed', 'failed'].includes(t.status)
                       );
-                      // Total completed count from ALL tasks (not just visible)
-                      const totalCompletedCount = ws.tasks.filter(t =>
-                        ['completed', 'failed'].includes(t.status)
-                      ).length;
+                      // Always show ALL active tasks, limit completed
+                      const isShowingAllCompleted = showAll[ws.id];
+                      const visibleCompletedTasks = isShowingAllCompleted
+                        ? allCompletedTasks
+                        : allCompletedTasks.slice(0, TASKS_PER_WORKSPACE);
+                      const hiddenCompletedCount = allCompletedTasks.length - visibleCompletedTasks.length;
                       const isCompletedHidden = completedCollapsed[ws.id] ?? true; // Default collapsed
 
                       return (
                         <div className="ml-4 mt-0.5 space-y-0.5">
-                          {activeTasks.length === 0 && completedTasks.length === 0 ? (
+                          {allActiveTasks.length === 0 && allCompletedTasks.length === 0 ? (
                             <div className="px-2 py-1 text-xs text-text-muted">
                               No tasks
                             </div>
                           ) : (
                             <>
-                              {/* Active/Pending tasks */}
-                              {activeTasks.map((task) => (
+                              {/* Active/Pending tasks - always show all */}
+                              {allActiveTasks.map((task) => (
                                 <Link
                                   key={task.id}
                                   href={`/app/tasks/${task.id}`}
@@ -463,7 +460,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                               ))}
 
                               {/* Completed section - collapsible */}
-                              {completedTasks.length > 0 && (
+                              {allCompletedTasks.length > 0 && (
                                 <>
                                   <button
                                     onClick={() => toggleCompletedCollapsed(ws.id)}
@@ -471,52 +468,43 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                     className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text-secondary w-full"
                                   >
                                     <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
-                                    <span>Completed ({totalCompletedCount})</span>
+                                    <span>Completed ({allCompletedTasks.length})</span>
                                   </button>
-                                  {!isCompletedHidden && completedTasks.map((task) => (
-                                    <Link
-                                      key={task.id}
-                                      href={`/app/tasks/${task.id}`}
-                                      className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
-                                          ? 'bg-primary-subtle text-text-primary'
-                                          : 'text-text-secondary hover:bg-surface-3'
-                                        }`}
-                                    >
-                                      {getStatusIndicator(task.status)}
-                                      <span className="truncate flex-1">{task.title}</span>
-                                    </Link>
-                                  ))}
+                                  {!isCompletedHidden && (
+                                    <>
+                                      {visibleCompletedTasks.map((task) => (
+                                        <Link
+                                          key={task.id}
+                                          href={`/app/tasks/${task.id}`}
+                                          className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
+                                              ? 'bg-primary-subtle text-text-primary'
+                                              : 'text-text-secondary hover:bg-surface-3'
+                                            }`}
+                                        >
+                                          {getStatusIndicator(task.status)}
+                                          <span className="truncate flex-1">{task.title}</span>
+                                        </Link>
+                                      ))}
+                                      {hiddenCompletedCount > 0 && (
+                                        <button
+                                          onClick={() => toggleShowAll(ws.id)}
+                                          className="px-2 py-1 text-xs text-text-muted hover:text-text-secondary"
+                                        >
+                                          Show {hiddenCompletedCount} more completed
+                                        </button>
+                                      )}
+                                      {isShowingAllCompleted && allCompletedTasks.length > TASKS_PER_WORKSPACE && (
+                                        <button
+                                          onClick={() => toggleShowAll(ws.id)}
+                                          className="px-2 py-1 text-xs text-text-muted hover:text-text-secondary"
+                                        >
+                                          Show less
+                                        </button>
+                                      )}
+                                    </>
+                                  )}
                                 </>
                               )}
-
-                              {/* Show toggle only when it would change visible content */}
-                              {hasMore && (() => {
-                                // Count active tasks in ALL tasks (not just visible)
-                                const totalActiveTasks = ws.tasks.filter(t =>
-                                  ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
-                                ).length;
-                                // Show "See all" if not showing all and there's more content
-                                // Show "Show less" only if:
-                                // - there are more than 5 active tasks, OR
-                                // - completed section is expanded
-                                const shouldShowLess = isShowingAll && (
-                                  totalActiveTasks > TASKS_PER_WORKSPACE || !isCompletedHidden
-                                );
-                                const shouldShowMore = !isShowingAll;
-
-                                if (!shouldShowLess && !shouldShowMore) return null;
-
-                                return (
-                                  <button
-                                    onClick={() => toggleShowAll(ws.id)}
-                                    className="px-2 py-1 text-xs text-text-muted hover:text-text-secondary"
-                                  >
-                                    {shouldShowLess
-                                      ? 'Show less'
-                                      : `See all (${ws.tasks.length})`}
-                                  </button>
-                                );
-                              })()}
                             </>
                           )}
                         </div>
