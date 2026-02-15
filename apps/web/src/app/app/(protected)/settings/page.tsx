@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { accounts, skills, teams, teamMembers, workspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray, sql, and } from 'drizzle-orm';
+import { accounts, skills, teamMembers, workspaces } from '@buildd/core/db/schema';
+import { desc, eq, inArray, sql } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -23,10 +23,49 @@ export default async function SettingsPage() {
   let teamSkills: any[] = [];
   let userWorkspaces: { id: string; name: string }[] = [];
 
-  try {
-    const teamIds = await getUserTeamIds(user.id);
+  const teamIds = await getUserTeamIds(user.id);
 
-    // Fetch accounts
+  // Fetch teams with member counts
+  try {
+    const memberships = await db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, user.id),
+      with: { team: true },
+    });
+
+    const validMemberships = memberships.filter(m => m.team != null);
+    const memberTeamIds = validMemberships.map(m => m.teamId);
+    let countMap = new Map<string, number>();
+
+    if (memberTeamIds.length > 0) {
+      try {
+        const memberCounts = await db
+          .select({
+            teamId: teamMembers.teamId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(teamMembers)
+          .where(inArray(teamMembers.teamId, memberTeamIds))
+          .groupBy(teamMembers.teamId);
+
+        countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+      } catch (error) {
+        console.error('Settings: member counts query error:', error);
+      }
+    }
+
+    userTeams = validMemberships.map(m => ({
+      id: m.team.id,
+      name: m.team.name,
+      slug: m.team.slug,
+      role: m.role,
+      memberCount: countMap.get(m.teamId) || 1,
+    }));
+  } catch (error) {
+    console.error('Settings: teams query error:', error);
+  }
+
+  // Fetch accounts
+  try {
     if (teamIds.length > 0) {
       allAccounts = await db.query.accounts.findMany({
         where: inArray(accounts.teamId, teamIds),
@@ -36,37 +75,12 @@ export default async function SettingsPage() {
         },
       });
     }
+  } catch (error) {
+    console.error('Settings: accounts query error:', error);
+  }
 
-    // Fetch teams with member counts
-    const memberships = await db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, user.id),
-      with: { team: true },
-    });
-
-    const validMemberships = memberships.filter(m => m.team != null);
-    const memberTeamIds = validMemberships.map(m => m.teamId);
-    const memberCounts = memberTeamIds.length > 0
-      ? await db
-          .select({
-            teamId: teamMembers.teamId,
-            count: sql<number>`count(*)::int`,
-          })
-          .from(teamMembers)
-          .where(sql`${teamMembers.teamId} = ANY(${memberTeamIds})`)
-          .groupBy(teamMembers.teamId)
-      : [];
-
-    const countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
-
-    userTeams = validMemberships.map(m => ({
-      id: m.team.id,
-      name: m.team.name,
-      slug: m.team.slug,
-      role: m.role,
-      memberCount: countMap.get(m.teamId) || 1,
-    }));
-
-    // Fetch team-level skills
+  // Fetch team-level skills
+  try {
     if (teamIds.length > 0) {
       teamSkills = await db.query.skills.findMany({
         where: inArray(skills.teamId, teamIds),
@@ -84,7 +98,7 @@ export default async function SettingsPage() {
       });
     }
   } catch (error) {
-    console.error('Settings query error:', error);
+    console.error('Settings: skills query error:', error);
   }
 
   const roleColors: Record<string, string> = {
