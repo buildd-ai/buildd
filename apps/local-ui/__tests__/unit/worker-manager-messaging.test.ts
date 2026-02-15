@@ -92,6 +92,9 @@ mock.module('fs', () => ({
   readFileSync: () => '{}',
   writeFileSync: () => {},
   mkdirSync: () => {},
+  renameSync: () => {},
+  readdirSync: () => [],
+  unlinkSync: () => {},
 }));
 
 mock.module('../../src/skills.js', () => ({

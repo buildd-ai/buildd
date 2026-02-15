@@ -93,6 +93,9 @@ mock.module('fs', () => ({
   readFileSync: () => '{}',
   writeFileSync: () => {},
   mkdirSync: () => {},
+  renameSync: () => {},
+  readdirSync: () => [],
+  unlinkSync: () => {},
 }));
 
 const mockSyncSkillToLocal = mock(async () => {});
