@@ -1,6 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
-import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult } from '@buildd/shared';
+import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult, WorkerEnvironment } from '@buildd/shared';
 
 export class BuilddClient {
   private config: LocalUIConfig;
@@ -273,10 +273,10 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number): Promise<{ viewerToken?: string }> {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string }> {
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ localUiUrl, activeWorkerCount }),
+      body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
     });
     return { viewerToken: data.viewerToken };
   }

@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
     const {
       localUiUrl,
       activeWorkerCount = 0,
+      environment,
     } = body;
 
     if (!localUiUrl) {
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
         workspaceIds: [], // Deprecated - computed on-demand in /api/workers/active
         maxConcurrentWorkers: account.maxConcurrentWorkers,
         activeWorkerCount,
+        environment: environment || null,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -70,6 +72,7 @@ export async function POST(req: NextRequest) {
         set: {
           maxConcurrentWorkers: account.maxConcurrentWorkers,
           activeWorkerCount,
+          ...(environment ? { environment } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },

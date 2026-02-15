@@ -9,6 +9,8 @@ import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
+import { scanEnvironment } from './env-scan';
+import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -162,6 +164,8 @@ export class WorkerManager {
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
+  private environment?: WorkerEnvironment;
+  private envScanInterval?: Timer;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -186,6 +190,20 @@ export class WorkerManager {
 
     // Restore workers from disk on startup
     this.restoreWorkersFromDisk();
+
+    // Scan environment on startup (sync — runs once, fast enough for init)
+    try {
+      this.environment = scanEnvironment();
+      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${this.environment.mcp.length} MCP servers`);
+    } catch (err) {
+      console.warn('Environment scan failed:', err);
+    }
+    // Re-scan every 30 minutes
+    this.envScanInterval = setInterval(() => {
+      try {
+        this.environment = scanEnvironment();
+      } catch { /* non-fatal */ }
+    }, 30 * 60_000);
 
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
@@ -600,7 +618,7 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount);
+      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -2338,6 +2356,9 @@ export class WorkerManager {
     }
     if (this.diskPersistInterval) {
       clearInterval(this.diskPersistInterval);
+    }
+    if (this.envScanInterval) {
+      clearInterval(this.envScanInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {

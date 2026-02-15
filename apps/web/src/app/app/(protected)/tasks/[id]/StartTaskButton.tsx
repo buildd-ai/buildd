@@ -346,6 +346,30 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                           <p className="text-xs text-text-muted mt-0.5">
                             {ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available
                           </p>
+                          {ui.environment && (
+                            <div className="mt-1.5 space-y-0.5">
+                              {ui.environment.tools.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">Tools:</span>{' '}
+                                  {ui.environment.tools.map(t => t.version ? `${t.name} ${t.version}` : t.name).join(', ')}
+                                </p>
+                              )}
+                              {ui.environment.envKeys.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">Env:</span>{' '}
+                                  {ui.environment.envKeys.length <= 3
+                                    ? ui.environment.envKeys.join(', ')
+                                    : `${ui.environment.envKeys.slice(0, 3).join(', ')} +${ui.environment.envKeys.length - 3} more`}
+                                </p>
+                              )}
+                              {ui.environment.mcp.length > 0 && (
+                                <p className="text-[11px] text-text-muted truncate">
+                                  <span className="text-text-secondary">MCP:</span>{' '}
+                                  {ui.environment.mcp.join(', ')}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </button>
                       ))}
                     </div>

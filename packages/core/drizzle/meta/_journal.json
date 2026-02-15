@@ -197,6 +197,13 @@
       "when": 1770800000000,
       "tag": "0027_workspace_skills",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1770900000000,
+      "tag": "0028_worker_environment",
+      "breakpoints": true
     }
   ]
 }

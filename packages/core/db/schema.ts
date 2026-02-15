@@ -2,6 +2,7 @@ import {
   pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+import type { WorkerEnvironment } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -325,6 +326,7 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
+  environment: jsonb('environment').$type<WorkerEnvironment>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
