@@ -51,7 +51,7 @@ export default async function ProtectedLayout({
         Alpha &mdash; All features free for all users
       </div>
       {userTeams.length > 0 && (
-        <div className="border-b border-border-default bg-surface-2 px-4 md:px-8 py-2 flex items-center gap-2">
+        <div className="relative z-50 border-b border-border-default bg-surface-2 px-4 md:px-8 py-2 flex items-center gap-2">
           <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
           <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
         </div>
