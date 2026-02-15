@@ -8,20 +8,23 @@ import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 /**
- * Authenticate via session or API key. Returns { userId?, accountId? } or null.
+ * Authenticate via session or API key.
+ * For API keys, requires admin-level account (schedules are admin-only).
+ * Returns { userId?, accountId? } or null.
  */
 async function resolveAuth(req: NextRequest, workspaceId: string) {
-  // Try session auth first
+  // Try session auth first (session users have full access)
   const user = await getCurrentUser();
   if (user) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (access) return { userId: user.id };
   }
 
-  // Try API key auth
+  // Try API key auth — require admin level for schedule management
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
   if (account) {
+    if (account.level !== 'admin') return null; // Workers cannot manage schedules
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { accountId: account.id };
   }
