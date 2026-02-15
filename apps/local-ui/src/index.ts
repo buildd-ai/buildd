@@ -1002,6 +1002,32 @@ const server = Bun.serve({
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    // Team state endpoint (P2P — dashboard fetches directly from local-ui)
+    if (path.startsWith('/api/workers/') && path.endsWith('/team') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ team: worker.teamState || null }, { headers: corsHeaders });
+    }
+
+    // Trace endpoint — returns tool calls and messages for a worker
+    if (path.startsWith('/api/workers/') && path.endsWith('/trace') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ toolCalls: worker.toolCalls, messages: worker.messages }, { headers: corsHeaders });
+    }
+
     // Command endpoint for direct access (when server relays or user accesses directly)
     if (path === '/cmd' && req.method === 'POST') {
       if (!workerManager) {

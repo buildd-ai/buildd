@@ -1,5 +1,5 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle } from '@buildd/shared';
@@ -197,11 +197,14 @@ export class WorkerManager {
     }
 
     // Check if credentials exist (don't validate, SDK handles auth)
+    // Skip in serverless mode — SDK handles its own auth, no server to report to
     this.hasCredentials = hasClaudeCredentials();
-    if (this.hasCredentials) {
-      console.log('Claude Code: credentials found');
-    } else {
-      console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
+    if (!config.serverless) {
+      if (this.hasCredentials) {
+        console.log('Claude Code: credentials found');
+      } else {
+        console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
+      }
     }
   }
 
@@ -520,7 +523,7 @@ export class WorkerManager {
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
     // Warn if no credentials found (but let SDK handle actual auth)
-    if (!this.hasCredentials) {
+    if (!this.hasCredentials && !this.config.serverless) {
       console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
     }
 
@@ -673,6 +676,63 @@ export class WorkerManager {
           permissionDecisionReason: 'Allowed by buildd permission hook',
         },
       };
+    };
+  }
+
+  // Create a PostToolUse hook that captures team events (TeamCreate, SendMessage, Task).
+  // Purely observational — returns {} and never blocks or modifies tool execution.
+  private createTeamTrackingHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PostToolUse') return {};
+
+      const toolName = (input as any).tool_name;
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      if (toolName === 'TeamCreate') {
+        const teamName = (toolInput.team_name as string) || 'unnamed';
+        worker.teamState = {
+          teamName,
+          members: [],
+          messages: [],
+          createdAt: Date.now(),
+        };
+        this.addMilestone(worker, { type: 'status', label: `Team created: ${teamName}`, ts: Date.now() });
+        console.log(`[Worker ${worker.id}] Team created: ${teamName}`);
+      }
+
+      if (toolName === 'SendMessage' && worker.teamState) {
+        const msg = {
+          from: (toolInput.sender as string) || 'leader',
+          to: (toolInput.recipient as string) || (toolInput.type === 'broadcast' ? 'broadcast' : 'unknown'),
+          content: (toolInput.content as string) || '',
+          summary: (toolInput.summary as string) || undefined,
+          timestamp: Date.now(),
+        };
+        worker.teamState.messages.push(msg);
+        // Cap at 200 messages
+        if (worker.teamState.messages.length > 200) {
+          worker.teamState.messages.shift();
+        }
+        // Only emit milestone for broadcasts (avoid noise from DMs)
+        if (toolInput.type === 'broadcast') {
+          this.addMilestone(worker, { type: 'status', label: `Broadcast: ${msg.summary || msg.content.slice(0, 40)}`, ts: Date.now() });
+        }
+      }
+
+      if (toolName === 'Task' && worker.teamState) {
+        const agentName = (toolInput.name as string) || (toolInput.description as string) || 'subagent';
+        const agentType = (toolInput.subagent_type as string) || undefined;
+        worker.teamState.members.push({
+          name: agentName,
+          role: agentType,
+          status: 'active',
+          spawnedAt: Date.now(),
+        });
+        this.addMilestone(worker, { type: 'status', label: `Subagent: ${agentName}`, ts: Date.now() });
+        console.log(`[Worker ${worker.id}] Subagent spawned: ${agentName}`);
+      }
+
+      return {};
     };
   }
 
@@ -980,8 +1040,10 @@ export class WorkerManager {
       };
 
       // Attach permission hook (blocks dangerous commands, allows safe bash)
+      // and team tracking hook (captures TeamCreate, SendMessage, Task events)
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
+        PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
       };
 
       // Start query with full options

@@ -6,6 +6,7 @@ import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
+import TeamPanel from './TeamPanel';
 
 
 type Milestone =
@@ -122,7 +123,7 @@ function useDirectConnect(localUiUrl: string | null) {
     }
   }, [status, localUiUrl]);
 
-  return { status, sendDirect };
+  return { status, sendDirect, viewerToken: viewerTokenRef.current, localUiUrl };
 }
 
 function RequestPlanButton({ workerId }: { workerId: string }) {
@@ -206,7 +207,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
-  const { status: directStatus, sendDirect } = useDirectConnect(worker.localUiUrl);
+  const { status: directStatus, sendDirect, viewerToken, localUiUrl: resolvedLocalUiUrl } = useDirectConnect(worker.localUiUrl);
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -358,6 +359,15 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         milestones={worker.milestones || []}
         currentAction={isActive ? worker.currentAction : undefined}
       />
+
+      {/* Team Panel (P2P — fetches directly from local-ui) */}
+      {directStatus === 'connected' && resolvedLocalUiUrl && (
+        <TeamPanel
+          localUiUrl={resolvedLocalUiUrl}
+          viewerToken={viewerToken}
+          workerId={worker.id}
+        />
+      )}
 
       {/* Stats row */}
       <div className="flex items-center gap-4 mt-3 font-mono text-xs text-text-muted">

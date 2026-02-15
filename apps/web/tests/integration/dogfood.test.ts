@@ -210,6 +210,7 @@ async function cleanupStaleWorkers() {
 describe('dogfood', () => {
   let workspaceId: string;
   let hasPusher = false;
+  let originalLocalUiServer: string | null = null;
 
   beforeAll(async () => {
     // Verify local-ui is running and configured
@@ -224,6 +225,17 @@ describe('dogfood', () => {
 
     if (!localUiConfig.configured) {
       throw new Error('local-ui is running but not configured (no API key)');
+    }
+
+    // Repoint local-ui to the test server if needed
+    originalLocalUiServer = localUiConfig.builddServer || null;
+    if (localUiConfig.builddServer !== SERVER) {
+      console.log(`Repointing local-ui: ${localUiConfig.builddServer} → ${SERVER}`);
+      await fetch(`${LOCAL_UI}/api/config/server`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server: SERVER }),
+      });
     }
 
     // Check if Pusher is configured (needed for dashboard dispatch test)
@@ -241,6 +253,18 @@ describe('dogfood', () => {
   afterAll(async () => {
     await cleanup.runCleanup();
     cleanup.dispose();
+
+    // Restore original server URL
+    if (originalLocalUiServer && originalLocalUiServer !== SERVER) {
+      try {
+        await fetch(`${LOCAL_UI}/api/config/server`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ server: originalLocalUiServer }),
+        });
+        console.log(`Restored local-ui server → ${originalLocalUiServer}`);
+      } catch { /* best effort */ }
+    }
   });
 
   // ---------------------------------------------------------------

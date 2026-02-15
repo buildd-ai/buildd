@@ -184,6 +184,7 @@ async function cleanupStaleWorkers() {
 
 describe('Task Lifecycle', () => {
   let workspaceId: string;
+  let originalLocalUiServer: string | null = null;
 
   beforeAll(async () => {
     // Verify local-ui is running and configured
@@ -200,6 +201,17 @@ describe('Task Lifecycle', () => {
       throw new Error('local-ui is running but not configured (no API key)');
     }
 
+    // Repoint local-ui to the test server if needed
+    originalLocalUiServer = localUiConfig.builddServer || null;
+    if (localUiConfig.builddServer !== SERVER) {
+      console.log(`Repointing local-ui: ${localUiConfig.builddServer} → ${SERVER}`);
+      await fetch(`${LOCAL_UI}/api/config/server`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server: SERVER }),
+      });
+    }
+
     console.log(`Local-ui: ${LOCAL_UI} | Server: ${SERVER}`);
 
     workspaceId = await findWorkspace();
@@ -209,6 +221,18 @@ describe('Task Lifecycle', () => {
   afterAll(async () => {
     await cleanup.runCleanup();
     cleanup.dispose();
+
+    // Restore original server URL
+    if (originalLocalUiServer && originalLocalUiServer !== SERVER) {
+      try {
+        await fetch(`${LOCAL_UI}/api/config/server`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ server: originalLocalUiServer }),
+        });
+        console.log(`Restored local-ui server → ${originalLocalUiServer}`);
+      } catch { /* best effort */ }
+    }
   });
 
   // ---------------------------------------------------------------
