@@ -24,7 +24,8 @@ jobs:
       - name: Run preview integration tests
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
-               apps/web/tests/integration/worker-state-machine.test.ts
+               apps/web/tests/integration/worker-state-machine.test.ts \
+               apps/web/tests/integration/schedule-triggers.test.ts
         env:
           BUILDD_TEST_SERVER: ${{ github.event.deployment_status.target_url }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
