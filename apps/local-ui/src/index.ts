@@ -825,19 +825,13 @@ const server = Bun.serve({
         },
       };
       const initMessage = `data: ${JSON.stringify(init)}\n\n`;
-      let initSent = false;
 
       const stream = new ReadableStream({
         start(controller) {
           sseController = controller;
           sseClients.add(controller);
-        },
-        pull(controller) {
-          // Send init message on first pull to ensure it's ready when read() is called
-          if (!initSent) {
-            controller.enqueue(new TextEncoder().encode(initMessage));
-            initSent = true;
-          }
+          // Send init message immediately in start() to ensure it's available on first read()
+          controller.enqueue(new TextEncoder().encode(initMessage));
         },
         cancel() {
           if (sseController) sseClients.delete(sseController);
