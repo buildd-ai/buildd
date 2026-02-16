@@ -808,27 +808,36 @@ const server = Bun.serve({
     // SSE endpoint
     if (path === '/api/events') {
       let sseController: ReadableStreamDefaultController | null = null;
+
+      // Prepare initial state outside the stream to ensure it's ready
+      const init = {
+        type: 'init',
+        configured: !!config.apiKey,
+        workers: workerManager?.getWorkers() || [],
+        config: {
+          projectsRoot: config.projectsRoot,
+          builddServer: config.builddServer,
+          maxConcurrent: config.maxConcurrent,
+          model: config.model,
+          bypassPermissions: config.bypassPermissions || false,
+          acceptRemoteTasks: config.acceptRemoteTasks !== false,
+          openBrowser: savedConfig.openBrowser !== false,
+        },
+      };
+      const initMessage = `data: ${JSON.stringify(init)}\n\n`;
+      let initSent = false;
+
       const stream = new ReadableStream({
         start(controller) {
           sseController = controller;
           sseClients.add(controller);
-
-          // Send initial state (must include all config fields that the frontend uses)
-          const init = {
-            type: 'init',
-            configured: !!config.apiKey,
-            workers: workerManager?.getWorkers() || [],
-            config: {
-              projectsRoot: config.projectsRoot,
-              builddServer: config.builddServer,
-              maxConcurrent: config.maxConcurrent,
-              model: config.model,
-              bypassPermissions: config.bypassPermissions || false,
-              acceptRemoteTasks: config.acceptRemoteTasks !== false,
-              openBrowser: savedConfig.openBrowser !== false,
-            },
-          };
-          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(init)}\n\n`));
+        },
+        pull(controller) {
+          // Send init message on first pull to ensure it's ready when read() is called
+          if (!initSent) {
+            controller.enqueue(new TextEncoder().encode(initMessage));
+            initSent = true;
+          }
         },
         cancel() {
           if (sseController) sseClients.delete(sseController);

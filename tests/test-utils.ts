@@ -138,8 +138,12 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
         api(`/api/workers/${wid}`, {
           method: 'PATCH',
           body: JSON.stringify({ status: 'failed', error: 'Test cleanup' }),
+          retries: 0,
         }).catch(err => {
-          console.log(`  Warning: failed to clean worker ${wid}: ${err.message}`);
+          // 409 = already terminated, expected during concurrency test cleanup
+          if (!err.message?.includes('409')) {
+            console.log(`  Warning: failed to clean worker ${wid}: ${err.message}`);
+          }
         })
       ),
       ...taskIds.map(tid =>
