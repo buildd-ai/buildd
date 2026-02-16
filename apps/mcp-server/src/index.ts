@@ -31,7 +31,7 @@ const WORKER_ID = process.env.BUILDD_WORKER_ID || "";
 
 // Cache for workspace lookup and account info
 let cachedWorkspaceId: string | null = null;
-let cachedAccountLevel: 'worker' | 'admin' | null = null;
+// No caching — checked fresh each time an admin action is attempted
 
 /**
  * Extract repo full name (owner/repo) from git remote URL
@@ -103,29 +103,21 @@ async function getWorkspaceId(): Promise<string | null> {
 }
 
 /**
- * Get the account level from API
+ * Get the account level from API (no cache — avoids stale key issues on reconnect)
  */
 async function getAccountLevel(): Promise<'worker' | 'admin'> {
-  if (cachedAccountLevel !== null) return cachedAccountLevel;
-
   try {
     const response = await fetch(`${SERVER_URL}/api/accounts/me`, {
-      headers: {
-        Authorization: `Bearer ${API_KEY}`,
-      },
+      headers: { Authorization: `Bearer ${API_KEY}` },
     });
-
     if (response.ok) {
       const data = await response.json();
-      cachedAccountLevel = data.level || 'worker';
-      return cachedAccountLevel;
+      return data.level || 'worker';
     }
   } catch {
     // Default to worker level if fetch fails
   }
-
-  cachedAccountLevel = 'worker';
-  return cachedAccountLevel;
+  return 'worker';
 }
 
 interface Task {
@@ -194,7 +186,7 @@ const server = new Server(
 2. Report progress at milestones (25%, 50%, 75%) via action=update_progress. Include plan param to submit a plan for review.
 3. When done: push commits → action=create_pr → action=complete_task (with summary). If blocked, use action=complete_task with error param instead.
 
-**Admin actions** (hidden from workers): create_task, update_task, create_schedule, list_schedules, register_skill
+**Admin actions** (require admin-level API key): create_schedule, update_schedule, list_schedules, register_skill
 
 **Memory (REQUIRED):**
 - When you claim a task, relevant memory is included automatically. READ IT before starting.
@@ -204,21 +196,17 @@ const server = new Server(
   }
 );
 
-// Worker actions available to all
-const workerActions = [
+const allActions = [
   "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task", "create_task",
-];
-
-// Admin-only actions
-const adminActions = [
   "create_schedule", "update_schedule", "list_schedules", "register_skill",
 ];
 
-// List available tools (dynamically based on account level)
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const level = await getAccountLevel();
-  const allActions = level === 'admin' ? [...workerActions, ...adminActions] : workerActions;
+// Admin-only actions — checked at execution time, not at listing time
+const adminActions = new Set([
+  "create_schedule", "update_schedule", "list_schedules", "register_skill",
+]);
 
+server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
     {
       name: "buildd",
@@ -240,11 +228,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - complete_task: { workerId (required), summary?, error? } — if error present, marks task as failed
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
 - update_task: { taskId (required), title?, description?, priority? }
-- create_task: { title (required), description (required), workspaceId?, priority? }${level === 'admin' ? `
-- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), workspaceId? }
-- update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? }
-- list_schedules: { workspaceId? }
-- register_skill: { name (required), content (required), description?, source?, workspaceId? }` : ''}`,
+- create_task: { title (required), description (required), workspaceId?, priority? }
+- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
+- update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? } [admin]
+- list_schedules: { workspaceId? } [admin]
+- register_skill: { name (required), content (required), description?, source?, workspaceId? } [admin]`,
           },
         },
         required: ["action"],
@@ -669,6 +657,23 @@ export BUILDD_SERVER=${SERVER_URL}`;
             taskTemplate.context = { skillSlugs: params.skillSlugs };
           }
 
+          // Attach trigger config for conditional schedules
+          if (params.trigger && typeof params.trigger === 'object') {
+            const trigger = params.trigger as Record<string, unknown>;
+            if (!trigger.type || !trigger.url) {
+              throw new Error("trigger requires type ('rss' | 'http-json') and url");
+            }
+            if (trigger.type !== 'rss' && trigger.type !== 'http-json') {
+              throw new Error("trigger.type must be 'rss' or 'http-json'");
+            }
+            taskTemplate.trigger = {
+              type: trigger.type,
+              url: trigger.url,
+              ...(trigger.path ? { path: trigger.path } : {}),
+              ...(trigger.headers ? { headers: trigger.headers } : {}),
+            };
+          }
+
           const schedule = await apiCall(`/api/workspaces/${workspaceId}/schedules`, {
             method: "POST",
             body: JSON.stringify({
@@ -680,11 +685,14 @@ export BUILDD_SERVER=${SERVER_URL}`;
           });
 
           const sched = schedule.schedule;
+          const triggerInfo = sched.taskTemplate?.trigger
+            ? `\nTrigger: ${sched.taskTemplate.trigger.type} → ${sched.taskTemplate.trigger.url}`
+            : '';
           return {
             content: [
               {
                 type: "text",
-                text: `Schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nCreates task: "${sched.taskTemplate.title}"`,
+                text: `Schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nCreates task: "${sched.taskTemplate.title}"${triggerInfo}`,
               },
             ],
           };

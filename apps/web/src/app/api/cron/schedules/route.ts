@@ -1,12 +1,100 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces } from '@buildd/core/db/schema';
+import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 const MAX_SCHEDULES_PER_RUN = 50;
+const TRIGGER_FETCH_TIMEOUT = 10_000;
+
+/**
+ * Extract a value from a JSON object using simple dot-notation path.
+ * Supports: ".tag_name", ".items[0].title", ".feed.entry[0].id"
+ */
+function extractByPath(obj: unknown, path?: string): string | null {
+  if (!path) return typeof obj === 'string' ? obj : JSON.stringify(obj);
+  const parts = path.replace(/^\./, '').split(/\.|\[(\d+)\]/).filter(Boolean);
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current == null) return null;
+    if (typeof current === 'object') {
+      current = (current as Record<string, unknown>)[part];
+    } else {
+      return null;
+    }
+  }
+  return current != null ? String(current) : null;
+}
+
+/**
+ * Parse Atom/RSS XML — extract first entry's id, title, and link.
+ */
+function parseAtomFeed(xml: string): { latestId: string | null; latestTitle: string | null; latestLink: string | null } {
+  const entryMatch = xml.match(/<entry[^>]*>([\s\S]*?)<\/entry>/);
+  if (!entryMatch) return { latestId: null, latestTitle: null, latestLink: null };
+  const entry = entryMatch[1];
+
+  const idMatch = entry.match(/<id[^>]*>([\s\S]*?)<\/id>/);
+  const titleMatch = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/);
+  const linkMatch = entry.match(/<link[^>]*href="([^"]*)"/) || entry.match(/<link[^>]*>([\s\S]*?)<\/link>/);
+
+  return {
+    latestId: idMatch?.[1]?.trim() || null,
+    latestTitle: titleMatch?.[1]?.trim() || null,
+    latestLink: linkMatch?.[1]?.trim() || null,
+  };
+}
+
+/**
+ * Evaluate a schedule trigger. Returns result or null on fetch error.
+ */
+async function evaluateTrigger(
+  trigger: ScheduleTrigger,
+  lastValue: string | null
+): Promise<{ changed: boolean; currentValue: string; metadata?: Record<string, string> } | null> {
+  try {
+    const headers: Record<string, string> = {
+      'User-Agent': 'buildd-scheduler/1.0',
+      ...(trigger.headers || {}),
+    };
+
+    const res = await fetch(trigger.url, {
+      headers,
+      signal: AbortSignal.timeout(TRIGGER_FETCH_TIMEOUT),
+    });
+
+    if (!res.ok) return null;
+
+    if (trigger.type === 'rss') {
+      const xml = await res.text();
+      const feed = parseAtomFeed(xml);
+      const currentValue = feed.latestId || feed.latestTitle || '';
+      if (!currentValue) return null;
+      return {
+        changed: currentValue !== lastValue,
+        currentValue,
+        metadata: {
+          ...(feed.latestTitle ? { title: feed.latestTitle } : {}),
+          ...(feed.latestLink ? { link: feed.latestLink } : {}),
+        },
+      };
+    }
+
+    // http-json
+    const json = await res.json();
+    const currentValue = extractByPath(json, trigger.path);
+    if (currentValue == null) return null;
+    return {
+      changed: currentValue !== lastValue,
+      currentValue,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(req: NextRequest) {
   // Verify CRON_SECRET
@@ -27,6 +115,7 @@ export async function GET(req: NextRequest) {
   let created = 0;
   let skipped = 0;
   let errors = 0;
+  let triggerChecks = 0;
 
   try {
     // Find due schedules: enabled=true AND nextRunAt <= now
@@ -42,6 +131,37 @@ export async function GET(req: NextRequest) {
       processed++;
 
       try {
+        // Check trigger condition before anything else
+        const trigger = schedule.taskTemplate?.trigger;
+        let triggerResult: { currentValue: string; metadata?: Record<string, string> } | null = null;
+        if (trigger) {
+          triggerChecks++;
+          const result = await evaluateTrigger(trigger, schedule.lastTriggerValue);
+
+          // Always update lastCheckedAt and totalChecks
+          const triggerUpdate: Record<string, unknown> = {
+            lastCheckedAt: now,
+            totalChecks: sql`${taskSchedules.totalChecks} + 1`,
+            updatedAt: now,
+          };
+
+          if (result) {
+            triggerUpdate.lastTriggerValue = result.currentValue;
+          }
+
+          if (!result || !result.changed) {
+            // No change or fetch failed — advance nextRunAt but don't create task
+            triggerUpdate.nextRunAt = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+            await db.update(taskSchedules).set(triggerUpdate).where(eq(taskSchedules.id, schedule.id));
+            skipped++;
+            continue;
+          }
+
+          // Trigger fired — save result for task context, update DB
+          triggerResult = result;
+          await db.update(taskSchedules).set(triggerUpdate).where(eq(taskSchedules.id, schedule.id));
+        }
+
         // Check maxConcurrentFromSchedule - count active tasks from this schedule
         if (schedule.maxConcurrentFromSchedule > 0) {
           const activeStatuses = ['pending', 'assigned', 'in_progress'];
@@ -94,24 +214,42 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        // Create task from template
+        // Build task context — include trigger metadata if present
         const template = schedule.taskTemplate;
+        const taskContext: Record<string, unknown> = {
+          ...(template.context || {}),
+          scheduleId: schedule.id,
+          scheduleName: schedule.name,
+        };
+
+        // Inject trigger info into task context so the agent knows what changed
+        if (trigger && triggerResult) {
+          taskContext.triggerValue = triggerResult.currentValue;
+          taskContext.previousTriggerValue = schedule.lastTriggerValue; // value before this run
+          if (triggerResult.metadata) {
+            taskContext.triggerMetadata = triggerResult.metadata;
+          }
+        }
+
+        // Interpolate trigger value into title if {{triggerValue}} placeholder present
+        let taskTitle = template.title;
+        if (triggerResult) {
+          taskTitle = taskTitle.replace(/\{\{triggerValue\}\}/g, triggerResult.currentValue);
+        }
+
+        // Create task from template
         const [task] = await db
           .insert(tasks)
           .values({
             workspaceId: schedule.workspaceId,
-            title: template.title,
+            title: taskTitle,
             description: template.description || null,
             priority: template.priority || 0,
             status: 'pending',
             mode: template.mode || 'execution',
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
-            context: {
-              ...(template.context || {}),
-              scheduleId: schedule.id,
-              scheduleName: schedule.name,
-            },
+            context: taskContext,
             creationSource: 'schedule',
           })
           .returning();
@@ -166,6 +304,7 @@ export async function GET(req: NextRequest) {
       created,
       skipped,
       errors,
+      triggerChecks,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

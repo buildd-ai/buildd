@@ -131,6 +131,16 @@ export interface WorkspaceWebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+// Schedule trigger - conditional check before creating a task
+export interface ScheduleTrigger {
+  type: 'rss' | 'http-json';
+  url: string;
+  // Dot-notation path to extract a value (e.g., ".tag_name", ".feed.entry[0].title")
+  path?: string;
+  // Optional HTTP headers (e.g., for GitHub API auth)
+  headers?: Record<string, string>;
+}
+
 // Task schedule template - defines what task to create on each run
 export interface TaskScheduleTemplate {
   title: string;
@@ -140,6 +150,7 @@ export interface TaskScheduleTemplate {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
   requiredCapabilities?: string[];
   context?: Record<string, unknown>;
+  trigger?: ScheduleTrigger;
 }
 
 // Task result/deliverable snapshot - populated when worker completes
@@ -353,6 +364,9 @@ export const taskSchedules = pgTable('task_schedules', {
   lastError: text('last_error'),
   maxConcurrentFromSchedule: integer('max_concurrent_from_schedule').default(1).notNull(),
   pauseAfterFailures: integer('pause_after_failures').default(5).notNull(),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  lastTriggerValue: text('last_trigger_value'),
+  totalChecks: integer('total_checks').default(0).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
