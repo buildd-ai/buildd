@@ -3,8 +3,34 @@ import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+
+/**
+ * Authenticate via session or API key.
+ * For API keys, requires admin-level account (schedules are admin-only).
+ * Returns { userId?, accountId? } or null.
+ */
+async function resolveAuth(req: NextRequest, workspaceId: string) {
+  // Try session auth first (session users have full access)
+  const user = await getCurrentUser();
+  if (user) {
+    const access = await verifyWorkspaceAccess(user.id, workspaceId);
+    if (access) return { userId: user.id };
+  }
+
+  // Try API key auth — require admin level for schedule management
+  const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
+  const account = await authenticateApiKey(apiKey);
+  if (account) {
+    if (account.level !== 'admin') return null; // Workers cannot manage schedules
+    const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
+    if (hasAccess) return { accountId: account.id };
+  }
+
+  return null;
+}
 
 // GET /api/workspaces/[id]/schedules - List schedules for a workspace
 export async function GET(
@@ -12,15 +38,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const user = await getCurrentUser();
-  if (!user) {
+  const authResult = await resolveAuth(req, id);
+  if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // Verify workspace access
-  const access = await verifyWorkspaceAccess(user.id, id);
-  if (!access) {
-    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   const schedules = await db.query.taskSchedules.findMany({
@@ -37,15 +57,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const user = await getCurrentUser();
-  if (!user) {
+  const authResult = await resolveAuth(req, id);
+  if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // Verify workspace access
-  const postAccess = await verifyWorkspaceAccess(user.id, id);
-  if (!postAccess) {
-    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   try {
@@ -88,7 +102,7 @@ export async function POST(
         nextRunAt,
         maxConcurrentFromSchedule,
         pauseAfterFailures,
-        createdByUserId: user.id,
+        createdByUserId: authResult.userId || null,
       })
       .returning();
 

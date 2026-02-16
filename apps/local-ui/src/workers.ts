@@ -2295,22 +2295,6 @@ export class WorkerManager {
       } catch {}
     }
 
-    // Sync local tracking branches with remote to prevent divergence
-    try {
-      execSync('git fetch origin', { ...execOpts, timeout: 15000 });
-      const defaultBranch = execSync('git symbolic-ref refs/remotes/origin/HEAD', execOpts).trim().replace('refs/remotes/origin/', '') || 'main';
-      // Reset local default branch to match remote (only if not checked out)
-      try {
-        execSync(`git branch -f ${defaultBranch} origin/${defaultBranch}`, execOpts);
-      } catch {}
-      // Also sync dev if it exists
-      try {
-        execSync('git rev-parse --verify origin/dev', { ...execOpts, stdio: 'pipe' });
-        execSync('git branch -f dev origin/dev', execOpts);
-      } catch {}
-    } catch (err) {
-      console.warn(`[Worker ${workerId}] Post-cleanup branch sync failed (non-fatal):`, err instanceof Error ? err.message : err);
-    }
   }
 
   /** Collect git stats by running git commands in the worker's cwd */

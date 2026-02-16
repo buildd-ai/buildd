@@ -48,11 +48,11 @@ git reset --hard origin/main
 echo "🍒 Cherry-picking commits..."
 for commit in $COMMITS; do
     echo "  Applying $(git log -1 --oneline $commit)"
-    if ! git cherry-pick $commit 2>&1; then
+    if ! GIT_EDITOR=true git cherry-pick --no-edit $commit 2>&1; then
         # Check if it's an empty commit (already applied in squash merge)
         if git status | grep -q "nothing to commit"; then
             echo "    ⏭️  Skipping (already in main)"
-            git cherry-pick --skip
+            GIT_EDITOR=true git cherry-pick --skip
             continue
         fi
         echo ""

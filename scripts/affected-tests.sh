@@ -55,6 +55,10 @@ while IFS= read -r file; do
 
   # Skip test files themselves (they'll be included if they changed)
   if [[ "$file" == *.test.ts || "$file" == *.test.tsx ]]; then
+    # Skip integration tests (they run in separate CI job with server setup)
+    if [[ "$file" == *integration*.test.ts ]]; then
+      continue
+    fi
     if [ -f "$file" ]; then
       TESTS="$TESTS $file"
     fi

@@ -206,12 +206,12 @@ const server = new Server(
 
 // Worker actions available to all
 const workerActions = [
-  "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task",
+  "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task", "create_task",
 ];
 
 // Admin-only actions
 const adminActions = [
-  "create_task", "create_schedule", "list_schedules", "register_skill",
+  "create_schedule", "update_schedule", "list_schedules", "register_skill",
 ];
 
 // List available tools (dynamically based on account level)
@@ -239,9 +239,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - update_progress: { workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }
 - complete_task: { workerId (required), summary?, error? } — if error present, marks task as failed
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
-- update_task: { taskId (required), title?, description?, priority? }${level === 'admin' ? `
-- create_task: { title (required), description (required), workspaceId?, priority? }
-- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, workspaceId? }
+- update_task: { taskId (required), title?, description?, priority? }
+- create_task: { title (required), description (required), workspaceId?, priority? }${level === 'admin' ? `
+- create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), workspaceId? }
+- update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? }
 - list_schedules: { workspaceId? }
 - register_skill: { name (required), content (required), description?, source?, workspaceId? }` : ''}`,
           },
@@ -605,11 +606,6 @@ export BUILDD_SERVER=${SERVER_URL}`;
         }
 
         case "create_task": {
-          const level = await getAccountLevel();
-          if (level !== 'admin') {
-            throw new Error("This operation requires an admin-level token");
-          }
-
           if (!params.title || !params.description) {
             throw new Error("title and description are required");
           }
@@ -661,18 +657,25 @@ export BUILDD_SERVER=${SERVER_URL}`;
             throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
           }
 
+          const taskTemplate: Record<string, unknown> = {
+            title: params.title,
+            description: params.description,
+            priority: params.priority || 5,
+            mode: params.mode || 'execution',
+          };
+
+          // Attach skills via context if provided
+          if (params.skillSlugs && Array.isArray(params.skillSlugs) && params.skillSlugs.length > 0) {
+            taskTemplate.context = { skillSlugs: params.skillSlugs };
+          }
+
           const schedule = await apiCall(`/api/workspaces/${workspaceId}/schedules`, {
             method: "POST",
             body: JSON.stringify({
               name: params.name,
               cronExpression: params.cronExpression,
               timezone: params.timezone || 'UTC',
-              taskTemplate: {
-                title: params.title,
-                description: params.description,
-                priority: params.priority || 5,
-                mode: params.mode || 'execution',
-              },
+              taskTemplate,
             }),
           });
 
@@ -682,6 +685,47 @@ export BUILDD_SERVER=${SERVER_URL}`;
               {
                 type: "text",
                 text: `Schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nCreates task: "${sched.taskTemplate.title}"`,
+              },
+            ],
+          };
+        }
+
+        case "update_schedule": {
+          const level2 = await getAccountLevel();
+          if (level2 !== 'admin') {
+            throw new Error("This operation requires an admin-level token");
+          }
+
+          if (!params.scheduleId) {
+            throw new Error("scheduleId is required");
+          }
+
+          const workspaceId2 = (params.workspaceId as string) || await getWorkspaceId();
+          if (!workspaceId2) {
+            throw new Error("Could not determine workspace.");
+          }
+
+          const updateBody: Record<string, unknown> = {};
+          if (params.cronExpression !== undefined) updateBody.cronExpression = params.cronExpression;
+          if (params.timezone !== undefined) updateBody.timezone = params.timezone;
+          if (params.enabled !== undefined) updateBody.enabled = params.enabled;
+          if (params.name !== undefined) updateBody.name = params.name;
+
+          if (Object.keys(updateBody).length === 0) {
+            throw new Error("At least one field (cronExpression, timezone, enabled, name) must be provided");
+          }
+
+          const updated = await apiCall(`/api/workspaces/${workspaceId2}/schedules/${params.scheduleId}`, {
+            method: "PATCH",
+            body: JSON.stringify(updateBody),
+          });
+
+          const updSched = updated.schedule;
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}`,
               },
             ],
           };
