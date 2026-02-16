@@ -62,7 +62,7 @@ let hasClaudeCredentials = false;
 // Check configuration on startup
 async function checkConfig() {
   try {
-    const res = await fetch('/api/config');
+    const res = await fetch('./api/config');
     if (!res.ok) {
       console.error('Config fetch failed:', res.status);
       showSetup();
@@ -149,7 +149,7 @@ if (serverlessBtn) {
     serverlessBtn.textContent = 'Setting up...';
 
     try {
-      const res = await fetch('/api/config/serverless', { method: 'POST' });
+      const res = await fetch('./api/config/serverless', { method: 'POST' });
       if (res.ok) {
         window.location.reload();
       } else {
@@ -185,7 +185,7 @@ if (saveKeyBtn) {
     saveKeyBtn.textContent = 'Verifying...';
 
     try {
-      const res = await fetch('/api/config', {
+      const res = await fetch('./api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey }),
@@ -245,7 +245,7 @@ function connectSSE() {
     eventSource.close();
   }
 
-  eventSource = new EventSource('/api/events');
+  eventSource = new EventSource('./api/events');
 
   eventSource.onopen = () => {
     sseRetryDelay = 1000; // Reset backoff on successful connect
@@ -1022,7 +1022,7 @@ function openWorkerModal(workerId) {
   if (!worker) return;
 
   // Mark as read
-  fetch('/api/read', {
+  fetch('./api/read', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workerId })
@@ -1118,7 +1118,7 @@ async function handleServerUrlChange() {
   serverSaveBtn.textContent = 'Saving...';
 
   try {
-    const res = await fetch('/api/config/server', {
+    const res = await fetch('./api/config/server', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
@@ -1169,7 +1169,7 @@ async function handleOutboxFlush() {
   btn.style.opacity = '0.5';
   btn.style.pointerEvents = 'none';
   try {
-    const res = await fetch('/api/outbox/flush', { method: 'POST' });
+    const res = await fetch('./api/outbox/flush', { method: 'POST' });
     const data = await res.json();
     updateOutboxBadge(data.remaining || 0);
     if (data.flushed > 0) {
@@ -1186,7 +1186,7 @@ async function handleOutboxFlush() {
 // Poll outbox status periodically (picks up changes from background flushes)
 setInterval(async () => {
   try {
-    const res = await fetch('/api/outbox');
+    const res = await fetch('./api/outbox');
     const data = await res.json();
     updateOutboxBadge(data.count || 0);
   } catch { /* ignore */ }
@@ -1198,7 +1198,7 @@ async function handleModelChange() {
   const model = modelSelect.value; // Empty string = SDK default
 
   try {
-    const res = await fetch('/api/config/model', {
+    const res = await fetch('./api/config/model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
@@ -1222,7 +1222,7 @@ async function handleBypassChange() {
   const enabled = bypassCheckbox.checked;
 
   try {
-    const res = await fetch('/api/config/bypass-permissions', {
+    const res = await fetch('./api/config/bypass-permissions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -1249,7 +1249,7 @@ async function handleAcceptRemoteChange() {
   const enabled = acceptRemoteCheckbox.checked;
 
   try {
-    const res = await fetch('/api/config/accept-remote-tasks', {
+    const res = await fetch('./api/config/accept-remote-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -1276,7 +1276,7 @@ async function handleOpenBrowserChange() {
   const enabled = openBrowserCheckbox.checked;
 
   try {
-    const res = await fetch('/api/config/open-browser', {
+    const res = await fetch('./api/config/open-browser', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -1300,7 +1300,7 @@ async function handleOpenBrowserChange() {
 
 async function handleMaxConcurrentChange(value) {
   try {
-    const res = await fetch('/api/config/max-concurrent', {
+    const res = await fetch('./api/config/max-concurrent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ maxConcurrent: value }),
@@ -1341,7 +1341,7 @@ function getModelDisplayName(model) {
 // Fetch available models from SDK (cached on server after first worker starts)
 async function loadAvailableModels() {
   try {
-    const res = await fetch('/api/config/models');
+    const res = await fetch('./api/config/models');
     if (!res.ok) return;
     const data = await res.json();
     const models = data.models || [];
@@ -1425,7 +1425,7 @@ function showToast(message, type = 'info') {
 // API calls
 async function loadTasks() {
   try {
-    const res = await fetch('/api/tasks');
+    const res = await fetch('./api/tasks');
     const data = await res.json();
 
     // Handle auth errors - show setup screen
@@ -1621,7 +1621,7 @@ function getLastWorkspace() {
 
 async function loadWorkspaces() {
   try {
-    const res = await fetch('/api/combined-workspaces');
+    const res = await fetch('./api/combined-workspaces');
     const data = await res.json();
     combinedWorkspaces = data.workspaces || [];
     const serverError = data.serverError || null;
@@ -1729,7 +1729,7 @@ if (rescanBtn) {
     `;
 
     try {
-      const res = await fetch('/api/rescan', { method: 'POST' });
+      const res = await fetch('./api/rescan', { method: 'POST' });
       const data = await res.json();
       if (data.ok) {
         // Refresh workspace modal data
@@ -1756,7 +1756,7 @@ function closeWorkspaceModal() {
 
 async function renderWorkspaceModal() {
   // Refresh data
-  const res = await fetch('/api/combined-workspaces');
+  const res = await fetch('./api/combined-workspaces');
   const data = await res.json();
   combinedWorkspaces = data.workspaces || [];
 
@@ -1805,7 +1805,7 @@ async function cloneWorkspace(workspaceId, repoUrl) {
   btn.textContent = 'Cloning...';
 
   try {
-    const res = await fetch('/api/workspaces/clone', {
+    const res = await fetch('./api/workspaces/clone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, repoUrl }),
@@ -1835,7 +1835,7 @@ async function syncWorkspace(localPath, name) {
   btn.textContent = 'Syncing...';
 
   try {
-    const res = await fetch('/api/local-repos/sync', {
+    const res = await fetch('./api/local-repos/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: localPath, name }),
@@ -1887,7 +1887,7 @@ async function claimTask(taskId) {
   tasksEl.querySelectorAll('.task-card-start').forEach(btn => { btn.disabled = true; });
 
   try {
-    const res = await fetch('/api/claim', {
+    const res = await fetch('./api/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskId })
@@ -1931,7 +1931,7 @@ async function takeoverTask(taskId, btn) {
   }
 
   try {
-    const res = await fetch('/api/takeover', {
+    const res = await fetch('./api/takeover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskId })
@@ -2017,7 +2017,7 @@ async function abortWorker() {
     abortBtn.textContent = 'Stopping...';
   }
   try {
-    const res = await fetch('/api/abort', {
+    const res = await fetch('./api/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
@@ -2072,7 +2072,7 @@ function confirmAbort() {
 async function retryWorker() {
   if (!currentWorkerId) return;
   try {
-    const res = await fetch('/api/retry', {
+    const res = await fetch('./api/retry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
@@ -2092,7 +2092,7 @@ async function retryWorker() {
 async function markDone() {
   if (!currentWorkerId) return;
   try {
-    const res = await fetch('/api/done', {
+    const res = await fetch('./api/done', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: currentWorkerId })
@@ -2201,7 +2201,7 @@ async function createTask() {
 
   // Background POST
   try {
-    const res = await fetch('/api/tasks', {
+    const res = await fetch('./api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -2271,7 +2271,7 @@ async function createAndStartTask() {
 
   // Background: create task then claim it
   try {
-    const res = await fetch('/api/tasks', {
+    const res = await fetch('./api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -2280,7 +2280,7 @@ async function createAndStartTask() {
 
     if (data.task?.id) {
       // Claim the task - SSE worker_update will replace optimistic worker
-      const claimRes = await fetch('/api/claim', {
+      const claimRes = await fetch('./api/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskId: data.task.id })
@@ -2646,7 +2646,7 @@ async function loadSkills() {
     return;
   }
   try {
-    const res = await fetch('/api/skills/list', {
+    const res = await fetch('./api/skills/list', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId })
@@ -2703,7 +2703,7 @@ function filterSkills() {
 async function toggleSkill(skillId, enabled) {
   const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
   try {
-    await fetch('/api/skills/toggle', {
+    await fetch('./api/skills/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, skillId, enabled })
@@ -2721,7 +2721,7 @@ async function deleteSkill(skillId) {
   const skill = workspaceSkills.find(s => s.id === skillId);
   if (!confirm(`Delete skill "${skill?.name || skillId}"?`)) return;
   try {
-    await fetch('/api/skills/delete', {
+    await fetch('./api/skills/delete', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, skillId })
@@ -2736,7 +2736,7 @@ async function deleteSkill(skillId) {
 
 async function scanLocalSkills() {
   try {
-    const res = await fetch('/api/skills/scan', {
+    const res = await fetch('./api/skills/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -2778,7 +2778,7 @@ async function registerSkill(skill) {
     return;
   }
   try {
-    await fetch('/api/skills/register', {
+    await fetch('./api/skills/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, skill })
@@ -2797,7 +2797,7 @@ async function loadTaskSkills(workspaceId) {
     return;
   }
   try {
-    const res = await fetch('/api/skills/list', {
+    const res = await fetch('./api/skills/list', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, enabled: true })
