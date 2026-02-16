@@ -29,4 +29,4 @@ jobs:
         env:
           BUILDD_TEST_SERVER: ${{ github.event.deployment_status.target_url }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
-          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
