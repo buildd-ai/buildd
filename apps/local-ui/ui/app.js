@@ -2561,8 +2561,8 @@ document.getElementById('messageInput').onkeydown = (e) => {
 function handleRoute() {
   const path = window.location.pathname;
 
-  // /worker/:id - open worker modal directly
-  const workerMatch = path.match(/^\/worker\/([^/]+)$/);
+  // /worker/:id - open worker modal directly (supports base path prefix)
+  const workerMatch = path.match(/\/worker\/([^/]+)$/);
   if (workerMatch) {
     const workerId = workerMatch[1];
     // Wait for workers to load, then open modal (max 10 retries = 5s)
@@ -2579,31 +2579,35 @@ function handleRoute() {
   }
 }
 
+// Base path for URL updates (matches <base href> logic)
+const basePath = location.pathname.replace(/\/worker\/.*$/, '/').replace(/\/?$/, '/');
+
 // Update URL when opening/closing worker modal
 function updateUrl(path) {
-  if (window.location.pathname !== path) {
-    history.pushState({}, '', path);
+  const full = basePath + path.replace(/^\//, '');
+  if (window.location.pathname !== full) {
+    history.pushState({}, '', full);
   }
 }
 
 // Override openWorkerModal to update URL
 const originalOpenWorkerModal = openWorkerModal;
 openWorkerModal = function(workerId) {
-  updateUrl(`/worker/${workerId}`);
+  updateUrl(`worker/${workerId}`);
   return originalOpenWorkerModal(workerId);
 };
 
 // Override closeWorkerModal to update URL
 const originalCloseWorkerModal = closeWorkerModal;
 closeWorkerModal = function() {
-  updateUrl('/');
+  updateUrl('');
   return originalCloseWorkerModal();
 };
 
 // Handle browser back/forward
 window.onpopstate = () => {
   const path = window.location.pathname;
-  if (path === '/' || path === '/index.html') {
+  if (!path.includes('/worker/')) {
     if (currentWorkerId) {
       originalCloseWorkerModal();
     }
