@@ -8,7 +8,11 @@ interface Schedule {
   name: string;
   cronExpression: string;
   timezone: string;
-  taskTemplate: { title: string; description?: string };
+  taskTemplate: {
+    title: string;
+    description?: string;
+    trigger?: { type: string; url: string; path?: string };
+  };
   enabled: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
@@ -16,6 +20,9 @@ interface Schedule {
   totalRuns: number;
   consecutiveFailures: number;
   lastError: string | null;
+  lastCheckedAt: string | null;
+  lastTriggerValue: string | null;
+  totalChecks: number;
 }
 
 interface Props {
@@ -124,10 +131,28 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               <p className="text-sm text-text-muted mt-0.5">
                 Creates: {schedule.taskTemplate.title}
               </p>
+              {schedule.taskTemplate.trigger && (
+                <p className="text-sm text-text-muted mt-0.5 flex items-center gap-1.5">
+                  <span className="px-1.5 py-0.5 text-xs rounded bg-primary/10 text-primary font-mono">
+                    {schedule.taskTemplate.trigger.type}
+                  </span>
+                  <span className="truncate text-xs font-mono opacity-70" title={schedule.taskTemplate.trigger.url}>
+                    {schedule.taskTemplate.trigger.url.replace(/^https?:\/\//, '').slice(0, 60)}
+                  </span>
+                  {schedule.lastTriggerValue && (
+                    <span className="text-xs text-text-secondary" title={`Current value: ${schedule.lastTriggerValue}`}>
+                      = {schedule.lastTriggerValue.length > 30 ? schedule.lastTriggerValue.slice(0, 30) + '...' : schedule.lastTriggerValue}
+                    </span>
+                  )}
+                </p>
+              )}
               <div className="flex items-center gap-4 mt-1 text-xs text-text-muted">
                 <span>Next: {formatRelative(schedule.nextRunAt)}</span>
                 <span>Last: {formatRelative(schedule.lastRunAt)}</span>
                 <span>{schedule.totalRuns} total runs</span>
+                {schedule.taskTemplate.trigger && schedule.totalChecks > 0 && (
+                  <span>{schedule.totalChecks} checks</span>
+                )}
                 {schedule.lastTaskId && (
                   <a
                     href={`/app/tasks/${schedule.lastTaskId}`}
