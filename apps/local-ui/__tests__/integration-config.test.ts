@@ -41,16 +41,26 @@ async function restoreServer(url: string) {
 
 // --- Setup & Teardown ---
 
+// Use BUILDD_TEST_SERVER as the known-good server, not whatever config currently has
+// (a previous crashed run may have left it pointing at localhost:1)
+const KNOWN_GOOD_SERVER = process.env.BUILDD_TEST_SERVER || 'https://buildd.dev';
 let originalServer: string;
 
 beforeAll(async () => {
-  // Verify server is running
+  // Verify local-ui is running
   try {
     const config = await apiJson<{ builddServer: string; viewerToken?: string }>('/api/config');
     originalServer = config.builddServer;
     viewerToken = config.viewerToken || null;
     console.log(`Original server URL: ${originalServer}`);
     if (viewerToken) console.log(`Viewer token acquired`);
+
+    // Ensure we start with a valid server URL (previous run may have left bogus URL)
+    if (originalServer !== KNOWN_GOOD_SERVER) {
+      console.log(`Restoring to known-good server: ${KNOWN_GOOD_SERVER}`);
+      await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
+      originalServer = KNOWN_GOOD_SERVER;
+    }
   } catch (err: any) {
     if (err.message?.includes('fetch failed')) {
       throw new Error(`Local-UI not running at ${BASE_URL}. Start with: bun run dev`);
@@ -60,15 +70,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Restore original server URL
-  if (originalServer) {
-    try {
-      const res = await api('/api/config/server', 'POST', { server: originalServer });
-      const data = await res.json();
-      console.log(`Restored server URL to: ${data.builddServer}`);
-    } catch {
-      console.log(`Warning: could not restore server URL`);
-    }
+  // Always restore to the known-good server
+  try {
+    const res = await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
+    const data = await res.json();
+    console.log(`Restored server URL to: ${data.builddServer}`);
+  } catch {
+    console.log(`Warning: could not restore server URL`);
   }
 });
 
