@@ -116,6 +116,15 @@ jobs:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
 
+      - name: E2E dogfood tests
+        run: bun test tests/e2e/server-worker-flow.test.ts
+        timeout-minutes: 10
+        env:
+          BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
+          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          LOCAL_UI_URL: http://100.82.109.19:8767
+          SKIP_LOCAL_UI_START: "1"
+
       - name: Cleanup preview local-ui
         if: always()
         run: tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace screen -X -S buildd-test quit' || true
