@@ -17,6 +17,7 @@
     "agent": "bun run --filter @buildd/agent start",
     "agent:build": "bun run --filter @buildd/agent build",
     "release": "bash scripts/release.sh",
+    "release:hotfix": "bash scripts/release.sh --hotfix",
     "cleanup-branches": "bash scripts/release.sh --cleanup",
     "sync-dev": "bash scripts/sync-dev.sh",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",

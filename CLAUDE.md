@@ -60,11 +60,17 @@ CI will **fail** if you change schema.ts without generating/committing migration
 - **Default branch**: `dev`
 - **Production branch**: `main`
 - **Flow**: Push to `dev` → CI runs → auto-merges to `main` → Vercel deploys
-- **PRs**: Target `dev` for features, `main` for hotfixes only
-- **CI**: `.github/workflows/build.yml` runs type check + build
+- **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
+- **Release**: `bun run release` (dev→main), `bun run release:hotfix` (branch→main, patch bump)
+- **CI**: `.github/workflows/build.yml` runs type check + build; `.github/workflows/preview-tests.yml` runs API integration tests against Vercel preview deploys
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
+
+### Hotfix vs Normal Release
+
+- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then release PR merges dev→main. Use this when there's no urgency.
+- **Hotfix** (`bun run release:hotfix`): Run from a feature branch. Creates PR directly to `main` with a patch bump. Use only for urgent production fixes that can't wait for the normal dev→main cycle. After merging, backport to dev: `git checkout dev && git merge origin/main && git push origin dev`.
 
 ## When Modifying
 
