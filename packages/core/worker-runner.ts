@@ -13,6 +13,7 @@ export class WorkerRunner extends EventEmitter {
   private costUsd = 0;
   private turns = 0;
   private startTime: Date | null = null;
+  private toolFailures: Record<string, { count: number; errors: string[]; interrupts: number }> = {};
 
   constructor(workerId: string) {
     super();
@@ -88,9 +89,10 @@ export class WorkerRunner extends EventEmitter {
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
-            // TeammateIdle/TaskCompleted: agent team lifecycle hooks (SDK v0.2.33+)
+            // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
+            ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
           },
@@ -225,11 +227,13 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
+      const totalToolFailures = Object.values(this.toolFailures).reduce((sum, s) => sum + s.count, 0);
       this.emitEvent('worker:completed', {
         result: resultMsg.result,
         costUsd: this.costUsd,
         turns: this.turns,
         durationMs: Date.now() - (this.startTime?.getTime() || 0),
+        ...(totalToolFailures > 0 ? { toolFailures: this.toolFailures } : {}),
       });
     }
   }
@@ -276,6 +280,34 @@ export class WorkerRunner extends EventEmitter {
 
   private postToolUseHook: HookCallback = async () => {
     this.emitEvent('worker:cost', { costUsd: this.costUsd });
+    return {};
+  };
+
+  private postToolUseFailureHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
+
+    const toolName = (input as any).tool_name as string;
+    const error = (input as any).error as string;
+    const isInterrupt = (input as any).is_interrupt as boolean | undefined;
+
+    // Aggregate failure stats per tool
+    if (!this.toolFailures[toolName]) {
+      this.toolFailures[toolName] = { count: 0, errors: [], interrupts: 0 };
+    }
+    const stats = this.toolFailures[toolName];
+    stats.count++;
+    if (isInterrupt) stats.interrupts++;
+    // Keep last 5 unique errors per tool to avoid unbounded growth
+    if (!stats.errors.includes(error)) {
+      if (stats.errors.length >= 5) stats.errors.shift();
+      stats.errors.push(error);
+    }
+
+    this.emitEvent('worker:tool_failure', {
+      toolName,
+      error,
+      isInterrupt: isInterrupt ?? false,
+    });
     return {};
   };
 
