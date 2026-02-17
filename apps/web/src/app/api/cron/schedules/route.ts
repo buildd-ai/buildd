@@ -231,10 +231,14 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Interpolate trigger value into title if {{triggerValue}} placeholder present
+        // Interpolate trigger value into title and description if {{triggerValue}} placeholder present
         let taskTitle = template.title;
+        let taskDescription = template.description || null;
         if (triggerResult) {
           taskTitle = taskTitle.replace(/\{\{triggerValue\}\}/g, triggerResult.currentValue);
+          if (taskDescription) {
+            taskDescription = taskDescription.replace(/\{\{triggerValue\}\}/g, triggerResult.currentValue);
+          }
         }
 
         // Create task from template
@@ -243,7 +247,7 @@ export async function GET(req: NextRequest) {
           .values({
             workspaceId: schedule.workspaceId,
             title: taskTitle,
-            description: template.description || null,
+            description: taskDescription,
             priority: template.priority || 0,
             status: 'pending',
             mode: template.mode || 'execution',
