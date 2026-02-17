@@ -1350,6 +1350,7 @@ export class WorkerManager {
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
+        sessionId: worker.id,
         cwd,
         model: this.config.model,
         abortController,

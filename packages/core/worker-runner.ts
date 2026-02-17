@@ -74,6 +74,7 @@ export class WorkerRunner extends EventEmitter {
       for await (const message of query({
         prompt: fullPrompt,
         options: {
+          sessionId: this.workerId,
           cwd: worker.workspace?.localPath || process.cwd(),
           model: config.anthropicModel,
           abortController: this.abortController,
