@@ -117,6 +117,10 @@ export interface WorkspaceGitConfig {
 
   // Remote skill installation — allowlist of command prefixes workers can execute
   skillInstallerAllowlist?: string[];
+
+  // Plugin directories to load when workers start tasks
+  // Each path should point to a directory containing .claude-plugin/plugin.json
+  pluginPaths?: string[];
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

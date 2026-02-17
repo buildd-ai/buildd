@@ -66,6 +66,11 @@ export class WorkerRunner extends EventEmitter {
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
       }
 
+      // Build plugins from workspace config
+      const gitConfig = (worker.workspace as any)?.gitConfig;
+      const pluginPaths: string[] = gitConfig?.pluginPaths || [];
+      const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+
       for await (const message of query({
         prompt: fullPrompt,
         options: {
@@ -79,6 +84,7 @@ export class WorkerRunner extends EventEmitter {
           settingSources: ['user', 'project'],
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
+          ...(plugins.length > 0 ? { plugins } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
