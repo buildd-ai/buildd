@@ -4,6 +4,7 @@ import { db } from '../db/client';
 import { workers, tasks } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { config } from '../config';
+import { createBuilddMcpServer } from './buildd-mcp-server';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
 
 export class WorkerRunner extends EventEmitter {
@@ -71,6 +72,20 @@ export class WorkerRunner extends EventEmitter {
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
 
+      // Create in-process MCP server for Buildd coordination tools
+      const builddMcpServer = config.builddApiKey
+        ? createBuilddMcpServer({
+            serverUrl: config.builddServerUrl,
+            apiKey: config.builddApiKey,
+            workerId: this.workerId,
+            workspaceId: worker.workspace?.id,
+          })
+        : null;
+
+      if (builddMcpServer) {
+        allowedTools.push('mcp__buildd__buildd', 'mcp__buildd__buildd_memory');
+      }
+
       for await (const message of query({
         prompt: fullPrompt,
         options: {
@@ -85,6 +100,7 @@ export class WorkerRunner extends EventEmitter {
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
+          ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],

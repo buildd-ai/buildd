@@ -40,4 +40,8 @@ export const config = {
 
   maxTurns: parseInt(optional('MAX_TURNS', '100')),
   maxCostPerWorker: parseFloat(optional('MAX_COST_PER_WORKER', '10.0')),
+
+  // Buildd API (for in-process MCP server in worker-runner)
+  builddServerUrl: optional('BUILDD_SERVER', 'https://buildd.dev'),
+  builddApiKey: optional('BUILDD_API_KEY', ''),
 } as const;
