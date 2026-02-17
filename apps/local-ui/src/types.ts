@@ -24,6 +24,13 @@ export interface ToolCall {
   input?: any;
 }
 
+// File checkpoint (from SDK files_persisted events)
+export interface Checkpoint {
+  uuid: string;  // The message UUID — used for rewindFiles()
+  timestamp: number;
+  files: Array<{ filename: string; file_id: string }>;
+}
+
 // Chat message for unified timeline
 export type ChatMessage =
   | { type: 'text'; content: string; timestamp: number }
@@ -80,6 +87,7 @@ export interface LocalWorker {
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
   teamState?: TeamState;  // Set when agent spawns a team
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
+  checkpoints: Checkpoint[];  // File checkpoints for rollback support
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -176,7 +184,7 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'skill_install';
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'skill_install' | 'rollback';
   text?: string;
   timestamp: number;
   // skill_install fields
@@ -185,6 +193,8 @@ export interface WorkerCommand {
   requestId?: string;
   skillSlug?: string;
   targetLocalUiUrl?: string | null;
+  // rollback fields
+  checkpointUuid?: string;
 }
 
 // Provider configuration for LLM routing

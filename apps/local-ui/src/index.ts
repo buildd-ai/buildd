@@ -1044,6 +1044,39 @@ const server = Bun.serve({
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    // Checkpoints endpoint — returns file checkpoints for rollback
+    if (path.startsWith('/api/workers/') && path.endsWith('/checkpoints') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ checkpoints: worker.checkpoints || [] }, { headers: corsHeaders });
+    }
+
+    // Rollback endpoint — rewind files to a checkpoint
+    if (path.startsWith('/api/workers/') && path.endsWith('/rollback') && req.method === 'POST') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const body = await parseBody(req);
+      const { checkpointUuid, dryRun } = body;
+
+      if (!checkpointUuid) {
+        return Response.json({ error: 'checkpointUuid required' }, { status: 400, headers: corsHeaders });
+      }
+
+      const result = await workerManager.rollback(workerId, checkpointUuid, dryRun === true);
+      if (!result.success) {
+        return Response.json({ error: result.error }, { status: 400, headers: corsHeaders });
+      }
+      return Response.json(result, { headers: corsHeaders });
+    }
+
     // Team state endpoint (P2P — dashboard fetches directly from local-ui)
     if (path.startsWith('/api/workers/') && path.endsWith('/team') && req.method === 'GET') {
       if (!workerManager) {

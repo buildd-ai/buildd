@@ -1,5 +1,5 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
@@ -99,6 +99,7 @@ interface WorkerSession {
   abortController: AbortController;
   cwd: string;
   repoPath: string;  // Original repo path (different from cwd when using worktrees)
+  queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
 }
 
 // Constants for repetition detection
@@ -268,6 +269,8 @@ export class WorkerManager {
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
         }
+        // Ensure checkpoints array exists (workers saved before this feature)
+        if (!worker.checkpoints) worker.checkpoints = [];
         this.workers.set(worker.id, worker);
       }
       if (restored.length > 0) {
@@ -521,6 +524,11 @@ export class WorkerManager {
       case 'message':
         if (command.text) {
           await this.sendMessage(workerId, command.text);
+        }
+        break;
+      case 'rollback':
+        if (command.checkpointUuid) {
+          await this.rollback(workerId, command.checkpointUuid);
         }
         break;
     }
@@ -797,6 +805,7 @@ export class WorkerManager {
       output: [],
       toolCalls: [],
       messages: [],
+      checkpoints: [],
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -1344,6 +1353,7 @@ export class WorkerManager {
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
         permissionMode,
         systemPrompt,
+        enableFileCheckpointing: true,
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         stderr: (data: string) => {
@@ -1383,6 +1393,12 @@ export class WorkerManager {
         prompt: promptText,
         options: queryOptions,
       });
+
+      // Store queryInstance in session for rewindFiles() access
+      const session = this.sessions.get(worker.id);
+      if (session) {
+        session.queryInstance = queryInstance;
+      }
 
       // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
       queryInstance.streamInput(inputStream);
@@ -1538,6 +1554,23 @@ export class WorkerManager {
       worker.sessionId = msg.session_id;
       // Immediately persist sessionId (critical for resume)
       storeSaveWorker(worker);
+    }
+
+    // Track file checkpoints from SDK files_persisted events
+    if (msg.type === 'system' && (msg as any).subtype === 'files_persisted') {
+      const event = msg as any;
+      const checkpoint: Checkpoint = {
+        uuid: event.uuid,
+        timestamp: Date.now(),
+        files: (event.files || []).map((f: any) => ({ filename: f.filename, file_id: f.file_id })),
+      };
+      worker.checkpoints.push(checkpoint);
+      // Keep last 50 checkpoints
+      if (worker.checkpoints.length > 50) {
+        worker.checkpoints.shift();
+      }
+      console.log(`[Worker ${worker.id}] File checkpoint: ${checkpoint.files.length} file(s), uuid=${checkpoint.uuid.slice(0, 12)}`);
+      this.emit({ type: 'worker_update', worker });
     }
 
     if (msg.type === 'assistant') {
@@ -1870,6 +1903,60 @@ export class WorkerManager {
     }
   }
 
+  async rollback(workerId: string, checkpointUuid: string, dryRun = false): Promise<{ success: boolean; error?: string; filesChanged?: number; insertions?: number; deletions?: number }> {
+    const worker = this.workers.get(workerId);
+    if (!worker) {
+      return { success: false, error: 'Worker not found' };
+    }
+
+    const session = this.sessions.get(workerId);
+    if (!session?.queryInstance) {
+      return { success: false, error: 'No active session — rollback requires a running or recently completed query' };
+    }
+
+    // Verify checkpoint exists
+    const checkpoint = worker.checkpoints.find(cp => cp.uuid === checkpointUuid);
+    if (!checkpoint) {
+      return { success: false, error: 'Checkpoint not found' };
+    }
+
+    try {
+      console.log(`[Worker ${workerId}] ${dryRun ? 'Dry-run' : 'Rolling back'} to checkpoint ${checkpointUuid.slice(0, 12)} (${checkpoint.files.length} files)`);
+      const result = await session.queryInstance.rewindFiles(checkpointUuid, { dryRun });
+
+      if (!result.canRewind) {
+        return { success: false, error: result.error || 'Cannot rewind to this checkpoint' };
+      }
+
+      if (!dryRun) {
+        this.addMilestone(worker, {
+          type: 'status',
+          label: `Rollback: ${result.filesChanged || 0} files reverted`,
+          ts: Date.now(),
+        });
+        // Remove checkpoints after the rolled-back one (they're now invalid)
+        const cpIndex = worker.checkpoints.findIndex(cp => cp.uuid === checkpointUuid);
+        if (cpIndex >= 0) {
+          worker.checkpoints = worker.checkpoints.slice(0, cpIndex + 1);
+        }
+        worker.hasNewActivity = true;
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+      }
+
+      return {
+        success: true,
+        filesChanged: result.filesChanged,
+        insertions: result.insertions,
+        deletions: result.deletions,
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Worker ${workerId}] Rollback failed:`, errMsg);
+      return { success: false, error: errMsg };
+    }
+  }
+
   async retry(workerId: string) {
     const worker = this.workers.get(workerId);
     if (!worker) return;
@@ -1889,6 +1976,7 @@ export class WorkerManager {
     worker.hasNewActivity = true;
     worker.lastActivity = Date.now();
     worker.completedAt = undefined;
+    worker.checkpoints = [];  // Clear checkpoints — new session generates fresh ones
     this.addMilestone(worker, { type: 'status', label: 'Retry requested', ts: Date.now() });
     this.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
