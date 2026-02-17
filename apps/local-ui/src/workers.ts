@@ -786,7 +786,7 @@ export class WorkerManager {
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
       workspaceId: fullTask.workspaceId,
-      workspaceName: fullTask.workspace?.name || task.workspace?.name || 'unknown',
+      workspaceName: fullTask.workspace?.name || 'unknown',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
