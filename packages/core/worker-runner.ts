@@ -1,7 +1,7 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import { db } from '../db/client';
-import { workers, tasks } from '../db/schema';
+import { workers, tasks, type ResultMeta } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { config } from '../config';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
@@ -165,12 +165,41 @@ export class WorkerRunner extends EventEmitter {
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
 
+      // Extract SDK result metadata
+      const resultMeta: ResultMeta = {
+        stopReason: resultMsg.stop_reason ?? null,
+        durationMs: resultMsg.duration_ms ?? 0,
+        durationApiMs: resultMsg.duration_api_ms ?? 0,
+        numTurns: resultMsg.num_turns ?? this.turns,
+        modelUsage: resultMsg.usage?.byModel ?? {},
+        ...(resultMsg.permission_denials?.length > 0 && {
+          permissionDenials: resultMsg.permission_denials.map((d: any) => ({
+            tool: d.tool_name || d.tool || 'unknown',
+            reason: d.reason || d.message || '',
+          })),
+        }),
+      };
+
+      // Use SDK's turn count if available (more accurate than manual counter)
+      const turns = resultMeta.numTurns || this.turns;
+
+      // Populate inputTokens/outputTokens from modelUsage aggregate
+      let totalInput = 0;
+      let totalOutput = 0;
+      for (const usage of Object.values(resultMeta.modelUsage)) {
+        totalInput += usage.inputTokens + usage.cacheReadInputTokens;
+        totalOutput += usage.outputTokens;
+      }
+
       await db.update(workers).set({
         status: resultMsg.is_error ? 'error' : 'completed',
         costUsd: this.costUsd.toString(),
-        turns: this.turns,
+        turns,
         completedAt: new Date(),
         error: resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+        resultMeta,
+        ...(totalInput > 0 && { inputTokens: totalInput }),
+        ...(totalOutput > 0 && { outputTokens: totalOutput }),
       }).where(eq(workers.id, this.workerId));
 
       const worker = await db.query.workers.findFirst({
@@ -228,8 +257,9 @@ export class WorkerRunner extends EventEmitter {
       this.emitEvent('worker:completed', {
         result: resultMsg.result,
         costUsd: this.costUsd,
-        turns: this.turns,
-        durationMs: Date.now() - (this.startTime?.getTime() || 0),
+        turns,
+        durationMs: resultMeta.durationMs || (Date.now() - (this.startTime?.getTime() || 0)),
+        resultMeta,
       });
     }
   }

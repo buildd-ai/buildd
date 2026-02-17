@@ -170,6 +170,25 @@ export interface TaskResult {
   prNumber?: number;
 }
 
+// Per-model token usage from SDK result
+export interface ModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUSD: number;
+}
+
+// SDK result metadata - captured from SDKResultSuccess/SDKResultError
+export interface ResultMeta {
+  stopReason: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  modelUsage: Record<string, ModelUsage>;
+  permissionDenials?: Array<{ tool: string; reason: string }>;
+}
+
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
@@ -290,6 +309,8 @@ export const workers = pgTable('workers', {
     message: string;
     timestamp: number;
   }>>(),
+  // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
+  resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

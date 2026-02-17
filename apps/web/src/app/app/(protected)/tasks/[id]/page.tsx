@@ -322,6 +322,7 @@ export default async function TaskDetailPage({
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
+                resultMeta: activeWorker.resultMeta as any,
               }}
             />
           </div>
@@ -407,7 +408,29 @@ export default async function TaskDetailPage({
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
                         <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                        {(worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
+                          <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
+                        )}
                       </div>
+                      {/* Per-model usage breakdown */}
+                      {(worker.resultMeta as any)?.modelUsage && Object.keys((worker.resultMeta as any).modelUsage).length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-text-muted">
+                          {Object.entries((worker.resultMeta as any).modelUsage as Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; costUSD: number }>).map(([model, usage]) => (
+                            <span key={model} className="inline-flex items-center gap-1">
+                              <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                              <span>{((usage.inputTokens + usage.cacheReadInputTokens) / 1000).toFixed(0)}k in</span>
+                              <span>{(usage.outputTokens / 1000).toFixed(0)}k out</span>
+                              {usage.costUSD > 0 && <span className="text-text-secondary">${usage.costUSD.toFixed(4)}</span>}
+                            </span>
+                          ))}
+                          {(worker.resultMeta as any).durationMs > 0 && (
+                            <span>{((worker.resultMeta as any).durationMs / 1000).toFixed(0)}s total</span>
+                          )}
+                          {(worker.resultMeta as any).durationApiMs > 0 && (
+                            <span>{((worker.resultMeta as any).durationApiMs / 1000).toFixed(0)}s API</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <StatusBadge status={worker.status} />
                     <div className="flex items-center gap-2">

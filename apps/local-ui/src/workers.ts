@@ -1459,10 +1459,27 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Compute aggregate token counts from SDK result metadata
+        const resultMeta = worker.resultMeta || undefined;
+        let inputTokens: number | undefined;
+        let outputTokens: number | undefined;
+        if (resultMeta?.modelUsage) {
+          let totalIn = 0, totalOut = 0;
+          for (const usage of Object.values(resultMeta.modelUsage)) {
+            totalIn += usage.inputTokens + usage.cacheReadInputTokens;
+            totalOut += usage.outputTokens;
+          }
+          if (totalIn > 0) inputTokens = totalIn;
+          if (totalOut > 0) outputTokens = totalOut;
+        }
+
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
+          ...(resultMeta && { resultMeta }),
+          ...(inputTokens && { inputTokens }),
+          ...(outputTokens && { outputTokens }),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -1772,6 +1789,21 @@ export class WorkerManager {
       if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
       }
+
+      // Capture SDK result metadata for server sync
+      worker.resultMeta = {
+        stopReason: result.stop_reason ?? null,
+        durationMs: result.duration_ms ?? 0,
+        durationApiMs: result.duration_api_ms ?? 0,
+        numTurns: result.num_turns ?? 0,
+        modelUsage: result.usage?.byModel ?? {},
+        ...(result.permission_denials?.length > 0 && {
+          permissionDenials: result.permission_denials.map((d: any) => ({
+            tool: d.tool_name || d.tool || 'unknown',
+            reason: d.reason || d.message || '',
+          })),
+        }),
+      };
     }
 
     this.emit({ type: 'worker_update', worker });

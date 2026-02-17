@@ -83,6 +83,8 @@ export async function PATCH(
     inputTokens, outputTokens,
     // Git stats
     lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
+    // SDK result metadata
+    resultMeta,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -114,6 +116,8 @@ export async function PATCH(
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
+  // SDK result metadata
+  if (resultMeta !== undefined) updates.resultMeta = resultMeta;
 
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {

@@ -93,6 +93,27 @@ export interface LocalWorker {
   phaseStart: number | null;
   phaseToolCount: number;
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
+  // SDK result metadata (populated on completion)
+  resultMeta?: ResultMeta | null;
+}
+
+// Per-model token usage from SDK result
+export interface ModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUSD: number;
+}
+
+// SDK result metadata - captured from SDKResultSuccess/SDKResultError
+export interface ResultMeta {
+  stopReason: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  modelUsage: Record<string, ModelUsage>;
+  permissionDenials?: Array<{ tool: string; reason: string }>;
 }
 
 // Task mode
