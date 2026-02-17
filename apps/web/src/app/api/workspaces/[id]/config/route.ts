@@ -99,6 +99,11 @@ export async function POST(
             ...(Array.isArray(body.pluginPaths)
                 ? { pluginPaths: body.pluginPaths.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
                 : {}),
+
+            // Max budget per worker session (SDK-enforced)
+            ...(typeof body.maxBudgetUsd === 'number' && body.maxBudgetUsd > 0
+                ? { maxBudgetUsd: body.maxBudgetUsd }
+                : {}),
         };
 
         await db

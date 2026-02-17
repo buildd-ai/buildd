@@ -157,6 +157,9 @@ export interface WorkspaceGitConfig {
 
   // Permission mode
   bypassPermissions?: boolean;
+
+  // Maximum budget in USD per worker session
+  maxBudgetUsd?: number;
 }
 
 // SSE event types
@@ -233,4 +236,6 @@ export interface LocalUIConfig {
   // Remote skill installation
   skillInstallerAllowlist?: string[];
   rejectRemoteInstallers?: boolean;
+  // Maximum budget in USD per worker session (local fallback; workspace gitConfig.maxBudgetUsd takes priority)
+  maxBudgetUsd?: number;
 }

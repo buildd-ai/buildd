@@ -80,6 +80,7 @@ export class WorkerRunner extends EventEmitter {
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
           enableFileCheckpointing: true,
+          maxBudgetUsd: config.maxCostPerWorker || undefined,
           env,
           settingSources: ['user', 'project'],
           systemPrompt,
@@ -164,13 +165,16 @@ export class WorkerRunner extends EventEmitter {
     if (msg.type === 'result') {
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
+      const isBudgetExceeded = resultMsg.subtype === 'error_max_budget_usd';
 
       await db.update(workers).set({
         status: resultMsg.is_error ? 'error' : 'completed',
         costUsd: this.costUsd.toString(),
         turns: this.turns,
         completedAt: new Date(),
-        error: resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+        error: isBudgetExceeded
+          ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
+          : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
       }).where(eq(workers.id, this.workerId));
 
       const worker = await db.query.workers.findFirst({

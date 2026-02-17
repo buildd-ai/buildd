@@ -121,6 +121,10 @@ export interface WorkspaceGitConfig {
   // Plugin directories to load when workers start tasks
   // Each path should point to a directory containing .claude-plugin/plugin.json
   pluginPaths?: string[];
+
+  // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
+  // The SDK will stop the agent when this limit is reached
+  maxBudgetUsd?: number;
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

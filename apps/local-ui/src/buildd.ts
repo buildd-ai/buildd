@@ -129,6 +129,7 @@ export class BuilddClient {
       agentInstructions?: string;
       useClaudeMd: boolean;
       pluginPaths?: string[];
+      maxBudgetUsd?: number;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {
