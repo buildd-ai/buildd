@@ -80,6 +80,11 @@ export class WorkerRunner extends EventEmitter {
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
+            // TeammateIdle/TaskCompleted: agent team lifecycle hooks (SDK v0.2.33+)
+            // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
+            // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
+            ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
+            ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
           },
         },
         signal: this.abortController.signal,
@@ -253,6 +258,30 @@ export class WorkerRunner extends EventEmitter {
 
   private postToolUseHook: HookCallback = async () => {
     this.emitEvent('worker:cost', { costUsd: this.costUsd });
+    return {};
+  };
+
+  // TeammateIdle hook — fires when a teammate in an agent team goes idle.
+  // Purely observational: emits an event for Pusher/dashboard visibility.
+  private teammateIdleHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'TeammateIdle') return {};
+
+    const teammateName = (input as any).teammate_name as string;
+    const teamName = (input as any).team_name as string;
+    this.emitEvent('worker:teammate_idle', { teammateName, teamName });
+    return {};
+  };
+
+  // TaskCompleted hook — fires when a task within an agent team completes.
+  // Emits event for dashboard and logs the completion.
+  private taskCompletedHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'TaskCompleted') return {};
+
+    const taskId = (input as any).task_id as string;
+    const taskSubject = (input as any).task_subject as string;
+    const teammateName = (input as any).teammate_name as string | undefined;
+    const teamName = (input as any).team_name as string | undefined;
+    this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
     return {};
   };
 
