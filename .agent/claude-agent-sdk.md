@@ -1,13 +1,29 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-> **Version investigated**: 0.1.77 / 0.2.37
+> **Version documented**: 0.2.44 (Claude Code 2.1.44)
+> **Package rename**: `@anthropic-ai/claude-code-sdk` → `@anthropic-ai/claude-agent-sdk` (v0.2.x)
+> **Peer dependency**: `zod ^4.0.0`
 
-### Recent Updates (2025-02)
+### Monorepo SDK Versions
 
-- ✅ **Agent Teams**: Enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var
-- ✅ **Skills-as-Subagents**: Convert skill bundles to agent definitions for Task delegation (see `apps/local-ui/src/workers.ts:936`)
-- ✅ **Stale Timeout**: Increased to 300s (from 120s) to accommodate agent coordination overhead
-- ✅ **Tests**: Comprehensive tests in `apps/local-ui/__tests__/unit/agent-teams*.test.ts`
+| Package | Version | Notes |
+|---------|---------|-------|
+| `apps/local-ui` | `>=0.2.37` | Full v0.2.x features |
+| `packages/core` | `^0.1.19` | Legacy, needs upgrade for v0.2.x features |
+| `apps/agent` | `^0.1.19` | Legacy, needs upgrade for v0.2.x features |
+
+---
+
+## API Overview
+
+The SDK exposes two main APIs:
+
+| API | Use Case | Options Support |
+|-----|----------|-----------------|
+| `query()` (V1) | Task orchestration, workers, full-featured | **All options** — cwd, settingSources, systemPrompt, mcpServers, sandbox, plugins, betas, agents, hooks, etc. |
+| V2 Session API | Interactive sessions, multi-turn chat | **Limited** — model, env, allowedTools, disallowedTools, permissionMode, hooks, canUseTool (no cwd, settingSources, systemPrompt, mcpServers, sandbox, plugins, etc.) |
+
+**Recommendation**: Use `query()` for Buildd workers. Use V2 only for simple interactive sessions.
 
 ---
 
@@ -15,19 +31,14 @@
 
 **Location**: `apps/local-ui/src/workers.ts`
 
-Uses `query()` API for task execution with agent teams support:
-
 ```typescript
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-// Filter out problematic env vars (expired OAuth tokens)
 const cleanEnv = Object.fromEntries(
   Object.entries(process.env).filter(([k]) =>
     !k.includes('CLAUDE_CODE_OAUTH_TOKEN')
   )
 );
-
-// Enable Agent Teams feature
 cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
 const queryInstance = query({
@@ -37,10 +48,10 @@ const queryInstance = query({
     model: 'claude-sonnet-4-5-20250929',
     abortController,
     env: cleanEnv,
-    settingSources: ['project'],  // Loads CLAUDE.md
+    settingSources: ['project'],
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     permissionMode: 'acceptEdits',
-    agents: {                       // Skills converted to agents (if useSkillAgents)
+    agents: {
       'deploy': {
         description: 'Handles deployment workflows',
         prompt: '<skill content>',
@@ -51,7 +62,6 @@ const queryInstance = query({
   },
 });
 
-// Stream responses, break on result
 for await (const msg of queryInstance) {
   handleMessage(msg);
   if (msg.type === 'result') break;
@@ -59,66 +69,19 @@ for await (const msg of queryInstance) {
 ```
 
 Key features used:
-- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` - Enables agent teams & Task delegation
-- `settingSources: ['project']` - Auto-loads workspace CLAUDE.md
-- `cwd` - Sets working directory for file operations
-- `env` - Filtered env to avoid expired OAuth tokens
-- `abortController` - Enables task cancellation
-- `permissionMode: 'acceptEdits'` - Autonomous execution without prompts
-- `agents` - Skills-as-subagents for Task tool delegation
+- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` — Enables agent teams & Task delegation
+- `settingSources: ['project']` — Auto-loads workspace CLAUDE.md
+- `cwd` — Sets working directory for file operations
+- `env` — Filtered env to avoid expired OAuth tokens
+- `abortController` — Enables task cancellation
+- `permissionMode: 'acceptEdits'` — Autonomous execution without prompts
+- `agents` — Skills-as-subagents for Task tool delegation
 - Break on `result` message to avoid process exit errors
 
 ---
 
-## ⚠️ CRITICAL: V2 Session API Limitations
+## Core Integration Pattern
 
-**The `unstable_v2_createSession` API does NOT support most orchestration options.**
-
-Investigation of `sdk.mjs` (2025-02) revealed that `SessionImpl` hardcodes defaults and ignores user-provided options:
-
-```javascript
-// From sdk.mjs - SessionImpl constructor
-const transport = new ProcessTransport({
-  settingSources: [],           // HARDCODED - user option IGNORED
-  mcpServers: {},               // HARDCODED - user option IGNORED
-  permissionMode: "default",    // HARDCODED - user option IGNORED
-  // cwd, systemPrompt, hooks, etc. are NOT passed through
-});
-```
-
-### API Comparison
-
-| Option | `query()` | `unstable_v2_createSession()` |
-|--------|-----------|------------------------------|
-| `cwd` | ✅ Passed to CLI | ❌ Ignored |
-| `settingSources` | ✅ `--setting-sources` flag | ❌ Hardcoded `[]` |
-| `systemPrompt` | ✅ Handled (string or preset) | ❌ Ignored |
-| `mcpServers` | ✅ `--mcp-config` flag | ❌ Hardcoded `{}` |
-| `permissionMode` | ✅ Passed | ❌ Hardcoded `"default"` |
-| `hooks` | ✅ Supported | ❌ Hardcoded `false` |
-| `allowedTools` | ✅ Passed | ❌ Hardcoded `[]` |
-
-### When to Use Each API
-
-| Use Case | Recommended API |
-|----------|-----------------|
-| Simple interactive chat | `unstable_v2_createSession` |
-| Task orchestration with project context | `query()` |
-| Multi-workspace worker execution | `query()` |
-| Sessions needing CLAUDE.md | `query()` with `settingSources: ['project']` |
-
-### Key Insight: CLAUDE.md Loading
-
-To auto-load a project's CLAUDE.md, you **must** use `query()` with:
-```typescript
-settingSources: ['project']  // Loads .claude/settings.json AND CLAUDE.md
-```
-
-The V2 session API cannot load CLAUDE.md because `settingSources` is hardcoded to `[]`.
-
----
-
-### Core Integration Pattern
 Standard setup for spawning workers that respect project context.
 
 ```typescript
@@ -128,280 +91,620 @@ const result = query({
   prompt: taskDescription,
   options: {
     cwd: workspacePath,
-    settingSources: ['project'], // CRITICAL: Loads target repo's CLAUDE.md & settings
+    settingSources: ['project'],
     systemPrompt: { type: 'preset', preset: 'claude_code' },
-    permissionMode: 'acceptEdits', // Use 'bypassPermissions' for CI/Autonomous runs
+    permissionMode: 'acceptEdits',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Task']
   }
 });
-
 ```
 
-### 1. Session Management (V2)
+---
 
-> ⚠️ **Limited options support** - See "V2 Session API Limitations" above.
-> Only use for simple interactive sessions. For orchestration, use `query()`.
+## 1. V2 Session API (send/receive/done pattern)
 
-The V2 API only supports these options (as of 0.1.77):
-- `model` - Model to use
-- `pathToClaudeCodeExecutable` - Custom CLI path
-- `executable` - `'node'` or `'bun'`
-- `executableArgs` - Args for runtime
-- `env` - Environment variables
-- `resume` - Session ID to resume
+> Status: `@alpha`, marked `UNSTABLE`. Significantly improved since v0.1.77.
+
+### `SDKSession` interface
 
 ```typescript
-import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
+interface SDKSession {
+  readonly sessionId: string;  // Available after first message (or immediately for resumed)
+  send(message: string | SDKUserMessage): Promise<void>;
+  stream(): AsyncGenerator<SDKMessage, void>;
+  close(): void;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+```
 
-// Create new session (simple interactive use only)
+### V2 Functions
+
+```typescript
+// Create a new persistent session
+function unstable_v2_createSession(options: SDKSessionOptions): SDKSession;
+
+// One-shot convenience (returns the final result)
+function unstable_v2_prompt(message: string, options: SDKSessionOptions): Promise<SDKResultMessage>;
+
+// Resume an existing session by ID
+function unstable_v2_resumeSession(sessionId: string, options: SDKSessionOptions): SDKSession;
+```
+
+### Usage pattern
+
+```typescript
 await using session = unstable_v2_createSession({
-  model: 'claude-sonnet-4-5-20250929'
+  model: 'claude-sonnet-4-5-20250929',
+  permissionMode: 'acceptEdits',
+  allowedTools: ['Read', 'Write', 'Bash'],
 });
 
-// Resume existing session
-await using resumedSession = unstable_v2_resumeSession(sessionId, {
-  model: 'claude-sonnet-4-5-20250929'
-});
-
-// For orchestration with full options, use query() instead:
-// query({ prompt, options: { cwd, settingSources, systemPrompt, ... } })
-
+await session.send("What files are here?");
+for await (const msg of session.stream()) {
+  if (msg.type === 'result') break;
+}
+// session.close() called automatically via Symbol.asyncDispose
 ```
 
-### 2. MCP Server Integration
+### SDKSessionOptions (v0.2.44)
 
-Use `createSdkMcpServer` to expose internal `buildd` state or tools to agents.
+The V2 session now supports more options than v0.1.77:
 
 ```typescript
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
-
-const builddServer = createSdkMcpServer({
-  name: "buildd-core",
-  version: "1.0.0",
-  tools: [
-    tool("report_progress", "Report task status", { status: z.string() }, async (args) => { /*...*/ })
-  ]
-});
-
-// Usage in query options
-options: {
-  mcpServers: { "buildd": builddServer },
-  allowedTools: ["mcp__buildd__report_progress"] // Namespace: mcp__{server}__{tool}
-}
-
+type SDKSessionOptions = {
+  model: string;
+  pathToClaudeCodeExecutable?: string;
+  executable?: 'node' | 'bun';
+  executableArgs?: string[];
+  env?: { [envVar: string]: string | undefined };
+  // NEW in v0.2.x:
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  canUseTool?: CanUseTool;
+  hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
+  permissionMode?: PermissionMode;  // 'default' | 'acceptEdits' | 'plan' | 'dontAsk'
+};
 ```
 
-### 3. Agent Teams & Subagents
+### V2 Still Does NOT Support
 
-> **Status**: Agent teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var (as of SDK v0.2.37)
+These `Options` (V1) fields remain unavailable in V2: `cwd`, `settingSources`, `systemPrompt`, `mcpServers`, `sandbox`, `plugins`, `betas`, `maxBudgetUsd`, `maxTurns`, `outputFormat`, `agents`, `enableFileCheckpointing`, `debug`, `debugFile`, `thinking`, `effort`, `additionalDirectories`, `fallbackModel`, `resume`, `continue`, `persistSession`.
 
-Use subagents for specialized tasks to keep context clean. The SDK supports two patterns:
+**For orchestration with project context, use `query()`.**
 
-#### A. Manual Agent Definitions
+---
 
-```typescript
-options: {
-  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
-  allowedTools: ['Task', 'Read', ...], // 'Task' tool is required for delegation
-  agents: {
-    'security-auditor': {
-      description: 'Audit code for vulnerabilities',
-      prompt: 'You are a security expert. Focus on auth patterns...',
-      tools: ['Read', 'Grep'], // Restricted toolset
-      model: 'claude-3-opus-20240229' // Model override for high-intelligence tasks
-    }
-  }
-}
-```
+## 2. Sandbox Configuration
 
-#### B. Skills as Subagents (Buildd Pattern)
-
-**Implementation**: `apps/local-ui/src/workers.ts:936-947`
-
-Convert skill bundles into agent definitions to enable direct Task delegation instead of Skill tool scoping:
+**Option**: `Options.sandbox`
 
 ```typescript
-// When useSkillAgents=true
-const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
-for (const bundle of skillBundles) {
-  agents[bundle.slug] = {
-    description: bundle.description || bundle.name,
-    prompt: bundle.content,           // Full skill instructions become agent prompt
-    tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
-    model: 'inherit',                 // Use parent's model
-  };
-}
-
-options: {
-  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
-  agents,                            // Skill bundles as agents
-  // Do NOT set allowedTools to Skill(slug) when using agents
-  // Do NOT append system prompt forcing Skill tool usage
-}
-```
-
-**Key Differences**:
-
-| Approach | Tool Delegation | System Prompt | When to Use |
-|----------|----------------|---------------|-------------|
-| **Skills as Agents** (`useSkillAgents: true`) | `Task` tool spawns named subagents | No forced skill usage | Agent can decide when to delegate |
-| **Skill Tool** (`useSkillAgents: false`) | `allowedTools: ['Skill(deploy)']` | Forces "MUST use X skill" | Task requires specific skill execution |
-
-**Tests**: See `apps/local-ui/__tests__/unit/agent-teams.test.ts` for full behavior verification.
-
-**Stale Timeout Note**: When using agent teams, increase stale worker timeout to 300s (from 120s) to account for subagent coordination overhead.
-
-### 4. Observability via Hooks
-
-Intercept actions for logging to `buildd` task logs or dashboards.
-
-```typescript
-const logHook = async (input, toolUseId) => {
-  // Input types: PreToolUseHookInput | PostToolUseHookInput
-  if (input.hook_event_name === 'PreToolUse') {
-    console.log(`[${toolUseId}] Agent executing: ${input.tool_name}`);
-  }
-  return {};
+type SandboxSettings = {
+  enabled?: boolean;
+  autoAllowBashIfSandboxed?: boolean;    // Skip Bash permission if sandboxed
+  allowUnsandboxedCommands?: boolean;
+  network?: SandboxNetworkConfig;
+  ignoreViolations?: Record<string, string[]>;  // tool name → violation strings to ignore
+  enableWeakerNestedSandbox?: boolean;
+  excludedCommands?: string[];
+  ripgrep?: { command: string; args?: string[] };  // Custom rg binary for sandbox
 };
 
-options: {
-  hooks: {
-    PreToolUse: [{ matcher: null, hooks: [logHook] }], // Match all tools
-    PostToolUse: [{ matcher: 'Bash', hooks: [logBashOutput] }] // Match specific tools
-  }
-}
-
+type SandboxNetworkConfig = {
+  allowedDomains?: string[];
+  allowManagedDomainsOnly?: boolean;
+  allowUnixSockets?: string[];      // e.g. ['/var/run/docker.sock']
+  allowAllUnixSockets?: boolean;
+  allowLocalBinding?: boolean;       // Allow binding to localhost
+  httpProxyPort?: number;
+  socksProxyPort?: number;
+};
 ```
 
-### 5. Sandbox Configuration
-
-Enforce security boundaries, especially for untrusted code execution.
+### Usage
 
 ```typescript
 options: {
   sandbox: {
     enabled: true,
-    autoAllowBashIfSandboxed: true, // Skip approval if sandbox is active
+    autoAllowBashIfSandboxed: true,
+    excludedCommands: ['docker'],
     network: {
-      allowLocalBinding: true, // Allow binding to localhost (e.g. dev servers)
-      // allowUnixSockets: ['/var/run/docker.sock'] // Careful with this
+      allowLocalBinding: true,
+      allowedDomains: ['api.example.com'],
+      httpProxyPort: 8080,
+    },
+    ignoreViolations: {
+      Bash: ['network_access_violation'],
+    },
+  }
+}
+```
+
+**Note**: Filesystem and network *restrictions* are configured via permission rules, not sandbox settings. Sandbox settings control sandbox *behavior*.
+
+---
+
+## 3. 1M Context Beta
+
+**Option**: `Options.betas`
+
+```typescript
+type SdkBeta = 'context-1m-2025-08-07';
+
+// Usage:
+options: {
+  model: 'claude-sonnet-4-5-20250929',  // Sonnet 4/4.5 only
+  betas: ['context-1m-2025-08-07'],
+}
+```
+
+Enables 1M token context window. The beta string is surfaced in `SDKSystemMessage.betas` on init.
+
+---
+
+## 4. Plugin Support
+
+**Option**: `Options.plugins`
+
+```typescript
+type SdkPluginConfig = {
+  type: 'local';           // Only 'local' supported currently
+  path: string;            // Absolute or relative path to plugin directory
+};
+
+// Usage:
+options: {
+  plugins: [
+    { type: 'local', path: './my-plugin' },
+    { type: 'local', path: '/absolute/path/to/plugin' },
+  ]
+}
+```
+
+Plugins provide custom commands, agents, skills, and hooks. Plugin info is surfaced in `SDKSystemMessage.plugins` on init:
+```typescript
+plugins: { name: string; path: string; }[];
+```
+
+---
+
+## 5. Structured Outputs
+
+**Option**: `Options.outputFormat`
+
+```typescript
+type OutputFormat = {
+  type: 'json_schema';
+  schema: Record<string, unknown>;  // JSON Schema object
+};
+
+// Usage:
+options: {
+  outputFormat: {
+    type: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        result: { type: 'string' },
+        confidence: { type: 'number' },
+      },
+      required: ['result', 'confidence'],
     }
   }
 }
-
 ```
 
-### 6. File Checkpointing (Rollback)
-
-Enable for risky operations. Requires env var `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1`.
+### Accessing structured output
 
 ```typescript
-// Enable in options
-options: {
-  enableFileCheckpointing: true,
-  extraArgs: { 'replay-user-messages': null } // Required to get checkpoint UUIDs
+if (msg.type === 'result' && msg.subtype === 'success') {
+  const data = msg.structured_output;  // Parsed JSON matching schema
 }
 
-// Rollback logic
-await query({
-  prompt: "",
-  options: { resume: sessionId }
-}).rewindFiles(checkpointUuid);
-
+// Schema validation failure:
+if (msg.type === 'result' && msg.subtype === 'error_max_structured_output_retries') {
+  // Agent couldn't produce valid output after retries
+}
 ```
+
+---
+
+## 6. Budget Limiting (`maxBudgetUsd`)
+
+**Option**: `Options.maxBudgetUsd`
+
+```typescript
+options: {
+  maxBudgetUsd: 5.00,  // Stop if cost exceeds $5
+}
+
+// Result:
+if (msg.type === 'result') {
+  console.log(`Total cost: $${msg.total_cost_usd}`);
+  if (msg.subtype === 'error_max_budget_usd') {
+    console.log('Budget exceeded');
+  }
+}
+```
+
+Both `SDKResultSuccess` and `SDKResultError` include `total_cost_usd: number`.
+
+---
+
+## 7. `stop_reason` in Results
+
+Both `SDKResultSuccess` and `SDKResultError` now include:
+
+```typescript
+stop_reason: string | null;  // e.g. "end_turn", "max_tokens", "stop_sequence", "tool_use"
+```
+
+---
+
+## 8. Per-Model Usage Breakdown (`modelUsage`)
+
+Both result types include a per-model breakdown:
+
+```typescript
+type ModelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  webSearchRequests: number;
+  costUSD: number;
+  contextWindow: number;
+  maxOutputTokens: number;
+};
+
+// In results:
+modelUsage: Record<string, ModelUsage>;  // Keyed by model identifier
+usage: NonNullableUsage;                 // Aggregate usage
+```
+
+When the session uses multiple models (e.g., main model + subagent models), each gets its own `modelUsage` entry.
+
+---
+
+## 9. Debug / Logging Options
+
+**Options**: `Options.debug`, `Options.debugFile`, `Options.stderr`
+
+```typescript
+options: {
+  debug: true,                            // Enable verbose logging (--debug flag)
+  debugFile: '/tmp/claude-debug.log',     // Write to file (implicitly enables debug)
+  stderr: (data) => console.error(data),  // Capture stderr output
+}
+```
+
+---
+
+## 10. File Checkpointing
+
+**Option**: `Options.enableFileCheckpointing`
+
+```typescript
+// Enable:
+options: {
+  enableFileCheckpointing: true,
+}
+
+// Rewind files to a specific user message:
+await queryInstance.rewindFiles(userMessageUuid, { dryRun: false });
+
+// Dry-run to preview:
+const preview = await queryInstance.rewindFiles(userMessageUuid, { dryRun: true });
+// RewindFilesResult: { canRewind, error?, filesChanged?, insertions?, deletions? }
+```
+
+### Files Persisted Event
+
+The SDK emits `SDKFilesPersistedEvent` during streaming:
+```typescript
+type SDKFilesPersistedEvent = {
+  type: 'system';
+  subtype: 'files_persisted';
+  files: { filename: string; file_id: string; }[];
+  failed: { filename: string; error: string; }[];
+  processed_at: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+---
+
+## 11. TeammateIdle / TaskCompleted Hooks
+
+Two new hook events for agent teams coordination:
+
+```typescript
+// All 15 hook events:
+const HOOK_EVENTS = [
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
+  'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop',
+  'SubagentStart', 'SubagentStop', 'PreCompact', 'PermissionRequest',
+  'Setup', 'TeammateIdle', 'TaskCompleted',  // <-- new
+] as const;
+
+type TeammateIdleHookInput = BaseHookInput & {
+  hook_event_name: 'TeammateIdle';
+  teammate_name: string;
+  team_name: string;
+};
+
+type TaskCompletedHookInput = BaseHookInput & {
+  hook_event_name: 'TaskCompleted';
+  task_id: string;
+  task_subject: string;
+  task_description?: string;
+  teammate_name?: string;
+  team_name?: string;
+};
+
+type BaseHookInput = {
+  session_id: string;
+  transcript_path: string;
+  cwd: string;
+  permission_mode?: string;
+};
+```
+
+### Usage
+
+```typescript
+options: {
+  hooks: {
+    TeammateIdle: [{
+      hooks: [async (input) => {
+        const { teammate_name, team_name } = input as TeammateIdleHookInput;
+        console.log(`${teammate_name} idle in ${team_name}`);
+        return {};
+      }]
+    }],
+    TaskCompleted: [{
+      hooks: [async (input) => {
+        const { task_id, task_subject } = input as TaskCompletedHookInput;
+        console.log(`Task ${task_id} "${task_subject}" done`);
+        return {};
+      }]
+    }],
+  }
+}
+```
+
+---
+
+## 12. MCP Tool Annotations
+
+Tools defined via `createSdkMcpServer` now support MCP tool annotations:
+
+```typescript
+import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod/v4';
+
+const readTool = tool(
+  'read_database',
+  'Read data from the database',
+  { query: z.string() },
+  async (args) => ({
+    content: [{ type: 'text', text: JSON.stringify(results) }]
+  }),
+  {
+    annotations: {
+      readOnly: true,       // Tool does not modify state
+      destructive: false,   // Tool is not destructive
+      openWorld: false,     // Tool does not access external resources
+    }
+  }
+);
+```
+
+Annotations are also visible in `McpServerStatus.tools[].annotations`.
+
+---
+
+## 13. `reconnectMcpServer()` / `toggleMcpServer()`
+
+Dynamic MCP server management on a running query:
+
+```typescript
+const q = query({ prompt: "...", options: { mcpServers: { ... } } });
+
+// Reconnect a failed server:
+await q.reconnectMcpServer('my-server');
+
+// Disable/enable a server:
+await q.toggleMcpServer('noisy-server', false);
+await q.toggleMcpServer('noisy-server', true);
+
+// Replace all dynamic servers:
+await q.setMcpServers({ 'new-server': serverConfig });
+
+// Check status:
+const statuses = await q.mcpServerStatus();
+// McpServerStatus[]: name, status ('connected'|'failed'|'needs-auth'|'pending'|'disabled'), tools[], error?
+```
+
+---
+
+## 14. Agent Teams & Subagents
+
+> Agent teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var (as of SDK v0.2.44)
+
+### Manual Agent Definitions
+
+```typescript
+options: {
+  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+  allowedTools: ['Task', 'Read', ...],
+  agents: {
+    'security-auditor': {
+      description: 'Audit code for vulnerabilities',
+      prompt: 'You are a security expert...',
+      tools: ['Read', 'Grep'],
+      model: 'claude-3-opus-20240229',
+    }
+  }
+}
+```
+
+### Skills as Subagents (Buildd Pattern)
+
+**Implementation**: `apps/local-ui/src/workers.ts:936-947`
+
+```typescript
+const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
+for (const bundle of skillBundles) {
+  agents[bundle.slug] = {
+    description: bundle.description || bundle.name,
+    prompt: bundle.content,
+    tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+    model: 'inherit',
+  };
+}
+
+options: {
+  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+  agents,
+}
+```
+
+| Approach | Tool Delegation | When to Use |
+|----------|----------------|-------------|
+| **Skills as Agents** (`useSkillAgents: true`) | `Task` tool spawns named subagents | Agent decides when to delegate |
+| **Skill Tool** (`useSkillAgents: false`) | `allowedTools: ['Skill(deploy)']` | Task requires specific skill execution |
+
+**Stale Timeout**: When using agent teams, increase stale worker timeout to 300s (from 120s) to account for subagent coordination overhead.
+
+---
+
+## Additional Options Reference
+
+### Thinking / Effort Controls
+
+```typescript
+options: {
+  thinking: { type: 'adaptive' }
+         | { type: 'enabled', budgetTokens: number }
+         | { type: 'disabled' },
+  effort: 'low' | 'medium' | 'high' | 'max',
+}
+```
+
+### All Query Control Methods
+
+| Method | Description |
+|--------|-------------|
+| `interrupt()` | Stop current execution |
+| `setPermissionMode(mode)` | Change permission mode mid-session |
+| `setModel(model?)` | Switch model mid-session |
+| `initializationResult()` | Get full init response |
+| `supportedCommands()` | List available skills |
+| `supportedModels()` | List available models |
+| `mcpServerStatus()` | Get MCP server statuses |
+| `accountInfo()` | Get account info |
+| `rewindFiles(messageId, opts?)` | Rewind file changes |
+| `reconnectMcpServer(name)` | Reconnect MCP server |
+| `toggleMcpServer(name, enabled)` | Enable/disable MCP server |
+| `setMcpServers(servers)` | Replace dynamic MCP servers |
+| `streamInput(stream)` | Stream user messages |
+| `stopTask(taskId)` | Stop a background task |
+| `close()` | Terminate the query |
+
+### SDKResultMessage
+
+```typescript
+type SDKResultSuccess = {
+  type: 'result';
+  subtype: 'success';
+  duration_ms: number;
+  duration_api_ms: number;
+  is_error: boolean;
+  num_turns: number;
+  result: string;
+  stop_reason: string | null;
+  total_cost_usd: number;
+  usage: NonNullableUsage;
+  modelUsage: Record<string, ModelUsage>;
+  permission_denials: SDKPermissionDenial[];
+  structured_output?: unknown;
+  uuid: UUID;
+  session_id: string;
+};
+
+type SDKResultError = {
+  type: 'result';
+  subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries';
+  // Same fields as success, plus:
+  errors: string[];
+};
+```
+
+### SDKMessage Union (16 types)
+
+`SDKAssistantMessage`, `SDKUserMessage`, `SDKUserMessageReplay`, `SDKResultMessage`, `SDKSystemMessage`, `SDKPartialAssistantMessage`, `SDKCompactBoundaryMessage`, `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
 
 ### Available Tools Reference
 
 * **File Ops**: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 * **Shell**: `Bash`, `BashOutput`, `KillBash`
-* **Interaction** (user-facing, `sD1` set): `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`
+* **Interaction** (user-facing, filtered from subagents): `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`
 * **Delegation**: `Task`
 * **Web**: `WebSearch`, `WebFetch`
 
-> **Note**: Interaction tools require special handling in SDK subprocess mode — see "Multi-Turn Conversations & User Input Tools" section.
-
 ---
 
-## Migration: V2 Session to query() for Orchestration
+## Observability via Hooks
 
-If you need project context (CLAUDE.md), hooks, MCP servers, or custom permissions, migrate from V2 to `query()`.
+Intercept actions for logging to Buildd task logs or dashboards.
 
-### Before (V2 - limited)
 ```typescript
-const session = unstable_v2_createSession({
-  model: 'claude-sonnet-4-5-20250929',
-});
-await session.send(taskDescription);
-for await (const msg of session.stream()) {
-  handleMessage(msg);
-}
-```
-
-### After (query - full options)
-```typescript
-const queryInstance = query({
-  prompt: taskDescription,
-  options: {
-    cwd: workspacePath,
-    model: 'claude-sonnet-4-5-20250929',
-    settingSources: ['project'],  // Loads CLAUDE.md automatically
-    systemPrompt: { type: 'preset', preset: 'claude_code' },
-    permissionMode: 'acceptEdits',
-    hooks: {
-      PostToolUse: [{ hooks: [logToolUsage] }]
-    }
+options: {
+  hooks: {
+    PreToolUse: [{ matcher: null, hooks: [logHook] }],     // Match all tools
+    PostToolUse: [{ matcher: 'Bash', hooks: [logBash] }],  // Match specific tool
   }
-});
-
-for await (const msg of queryInstance) {
-  handleMessage(msg);
 }
 ```
 
-### Key Differences
-
-| Aspect | V2 Session | query() |
-|--------|------------|---------|
-| Multi-turn | `session.send()` multiple times | Single prompt (use hooks for interaction) |
-| Streaming | `session.stream()` | Async iterator directly |
-| Cleanup | `session.close()` / `await using` | `abortController.abort()` |
-| Resume | `unstable_v2_resumeSession(id)` | `options.resume: id` |
-
 ---
 
-## Integration Test
+## MCP Server Integration
 
-**Location**: `apps/local-ui/src/test-query-integration.ts`
+```typescript
+import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod/v4";
 
-Run: `bun run test:integration` (from `apps/local-ui`)
+const builddServer = createSdkMcpServer({
+  name: "buildd-core",
+  version: "1.0.0",
+  tools: [
+    tool("report_progress", "Report task status", { status: z.string() },
+      async (args) => ({ content: [{ type: 'text', text: 'OK' }] }),
+      { annotations: { readOnly: false } }
+    )
+  ]
+});
 
-Tests:
-1. Creates temp workspace with unique marker in CLAUDE.md
-2. Runs `query()` with `settingSources: ['project']`
-3. Asks agent to report the marker from project instructions
-4. Verifies CLAUDE.md was loaded by checking response contains marker
-
-Expected output:
-```
-[PASS] Marker found in response - CLAUDE.md was loaded!
-SUCCESS: query() correctly loaded CLAUDE.md via settingSources
+options: {
+  mcpServers: { "buildd": builddServer },
+  allowedTools: ["mcp__buildd__report_progress"]  // Namespace: mcp__{server}__{tool}
+}
 ```
 
 ---
 
 ## Multi-Turn Conversations & User Input Tools
 
-> **Version investigated**: 0.2.37 (2025-02)
-
 ### How `streamInput` Works
 
-`query()` returns a `Query` object with a `streamInput(stream)` method. This connects an `AsyncIterable<SDKUserMessage>` to the CLI subprocess's stdin:
-
 ```typescript
-const inputStream = new MessageStream(); // custom async iterable
+const inputStream = new MessageStream();
 const queryInstance = query({ prompt, options });
-queryInstance.streamInput(inputStream);   // connects to subprocess stdin
+queryInstance.streamInput(inputStream);
 
 for await (const msg of queryInstance) {
   handleMessage(msg);
@@ -409,71 +712,37 @@ for await (const msg of queryInstance) {
 }
 ```
 
-When a message is enqueued on `inputStream`, `streamInput` serializes it as JSON and writes to the subprocess's stdin. The subprocess reads it and processes it as a user message in the conversation.
-
 ### SDKUserMessage Format
 
 ```typescript
 interface SDKUserMessage {
   type: 'user';
-  session_id: string;        // Must match the active session ID
+  session_id: string;
   message: { role: 'user'; content: ContentBlock[] };
   parent_tool_use_id: string | null;  // Links response to a pending tool call
 }
 ```
 
-### ⚠️ CRITICAL: AskUserQuestion in SDK Mode
+### AskUserQuestion in SDK Mode
 
-**Problem**: When the CLI subprocess encounters `AskUserQuestion` (or `ExitPlanMode`) tool calls, it handles them internally. In interactive CLI mode, a React/Ink component renders and blocks. In subprocess mode (no TTY), the CLI auto-resolves these tools — the session continues without waiting for user input.
+**Problem**: When the CLI subprocess encounters `AskUserQuestion`, in non-interactive (no TTY) mode it auto-resolves without waiting for user input.
 
-**Symptoms**: Agent calls `AskUserQuestion`, the question UI flashes for ~5 seconds in local-ui, then the task terminates. The `result` message arrives before the user can respond.
-
-**Root cause**: The CLI subprocess auto-resolves `AskUserQuestion` in non-interactive mode, sends a tool_result to Claude, Claude responds (often ending the conversation), and the `result` message is emitted — all within seconds.
-
-**Fix** (implemented in local-ui): Set `parent_tool_use_id` and `session_id` correctly when sending the user's response:
+**Fix** (implemented in local-ui): Set `parent_tool_use_id` and `session_id` correctly:
 
 ```typescript
-// In handleMessage — capture the tool_use block ID
+// Capture the tool_use block ID
 if (toolName === 'AskUserQuestion') {
-  const toolUseId = block.id; // from the assistant message content block
-  worker.waitingFor = { ..., toolUseId };
+  worker.waitingFor = { ..., toolUseId: block.id };
 }
 
-// In sendMessage — link response to the tool call
+// Link response to the tool call
 session.inputStream.enqueue(buildUserMessage(answer, {
   parentToolUseId: worker.waitingFor?.toolUseId,
-  sessionId: worker.sessionId,
+  sessionId: worker.sessionId,  // From SDK's system/init message
 }));
 ```
 
-**Key details**:
-- `block.id` on a `tool_use` content block is the tool_use_id (e.g., `toolu_abc123`)
-- `worker.sessionId` is captured from the SDK's `system/init` message: `msg.session_id`
-- Without correct `parent_tool_use_id`, the CLI treats the response as a new user message rather than a tool result
-- The same pattern applies to `ExitPlanMode` (plan approval flow)
-
-### Internal Tool Filtering (CLI internals)
-
-The CLI has a set called `sD1` containing "user-facing" tools: `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`, and others. These are:
-- **Available** in the main conversation (Claude can call them)
-- **Filtered out** from subagent contexts via `kjA()` function
-- **Not available** to `Task` subagents or hook agents
-
-The base tool list comes from `b0(permissionContext)` → `ss()` which returns ALL tools. `sD1` tools are only removed when building tool lists for subagents/hooks.
-
-### Debug Logging
-
-The local-ui includes debug logging for the AskUserQuestion flow:
-```
-[Worker abc] AskUserQuestion detected — toolUseId=toolu_xyz, question="What output format?"
-[Worker abc] Responding to tool_use toolu_xyz with sessionId=sess_12345
-[MessageStream] enqueue: parent_tool_use_id=toolu_xyz, session_id=sess_12345..., hasWaiter=true
-```
-
-Warning when the bug recurs (result arrives while still waiting):
-```
-[Worker abc] ⚠️ Result received while still waiting — toolUseId=toolu_xyz
-```
+Without correct `parent_tool_use_id`, the CLI treats the response as a new user message rather than a tool result. The same pattern applies to `ExitPlanMode`.
 
 ---
 
@@ -481,32 +750,17 @@ Warning when the bug recurs (result arrives while still waiting):
 
 ### CLAUDE_CODE_OAUTH_TOKEN env var
 
-If `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment with an expired/invalid token, it will override valid credentials and cause 401 auth errors.
+If `CLAUDE_CODE_OAUTH_TOKEN` is set with an expired/invalid token, it overrides valid credentials causing 401 errors. Local-UI filters this out automatically.
 
-**Symptoms**: Agent returns `API Error: 401 {"type":"error","error":{"type":"authentication_error"...` as its response text.
-
-**Fix**: Unset the env var or ensure it contains a valid token:
 ```bash
 unset CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-Local-UI filters out this env var automatically when spawning queries.
-
 ---
 
-## Investigation Notes (2025-02)
+## Integration Test
 
-**How we verified V2 limitations:**
+**Location**: `apps/local-ui/src/test-query-integration.ts`
+**Run**: `bun run test:integration` (from `apps/local-ui`)
 
-1. Searched `sdk.mjs` for option handling:
-   ```bash
-   rg -n "settingSources|cwd|systemPrompt|mcpServers" sdk.mjs
-   ```
-
-2. Found `SessionImpl` constructor hardcodes values:
-   - Line ~8613: `settingSources: []`
-   - Line ~8616: `mcpServers: {}`
-
-3. Compared with `query()` function which properly extracts and passes all options via `ProcessTransport`.
-
-4. Confirmed by TypeScript types: `SDKSessionOptions` only declares `model`, `env`, `executable`, `executableArgs`, `pathToClaudeCodeExecutable`, matching the runtime behavior.
+Tests that `query()` with `settingSources: ['project']` correctly loads CLAUDE.md by checking for a unique marker.
