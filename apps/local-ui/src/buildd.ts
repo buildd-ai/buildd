@@ -128,6 +128,7 @@ export class BuilddClient {
       autoCreatePR: boolean;
       agentInstructions?: string;
       useClaudeMd: boolean;
+      pluginPaths?: string[];
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {
