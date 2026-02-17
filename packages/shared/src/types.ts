@@ -591,6 +591,7 @@ export type SSEEventType =
   | 'worker:waiting'
   | 'worker:completed'
   | 'worker:tool_failure'
+  | 'worker:permission_request'
   | 'task:updated';
 
 export interface SSEEvent<T = unknown> {
