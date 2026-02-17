@@ -66,10 +66,11 @@ export class WorkerRunner extends EventEmitter {
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
       }
 
-      // Build plugins from workspace config
+      // Build plugins and sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+      const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       for await (const message of query({
         prompt: fullPrompt,
@@ -85,6 +86,7 @@ export class WorkerRunner extends EventEmitter {
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
+          ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],

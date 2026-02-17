@@ -17,6 +17,15 @@ interface GitConfig {
     useClaudeMd: boolean;
     bypassPermissions?: boolean;
     pluginPaths?: string[];
+    sandbox?: {
+        enabled?: boolean;
+        autoAllowBashIfSandboxed?: boolean;
+        network?: {
+            allowedDomains?: string[];
+            allowLocalBinding?: boolean;
+        };
+        excludedCommands?: string[];
+    };
 }
 
 interface Props {
@@ -48,6 +57,11 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
     const [pluginPaths, setPluginPaths] = useState((initialConfig?.pluginPaths || []).join('\n'));
+    const [sandboxEnabled, setSandboxEnabled] = useState(initialConfig?.sandbox?.enabled || false);
+    const [sandboxAutoAllowBash, setSandboxAutoAllowBash] = useState(initialConfig?.sandbox?.autoAllowBashIfSandboxed || false);
+    const [sandboxAllowedDomains, setSandboxAllowedDomains] = useState((initialConfig?.sandbox?.network?.allowedDomains || []).join('\n'));
+    const [sandboxAllowLocalBinding, setSandboxAllowLocalBinding] = useState(initialConfig?.sandbox?.network?.allowLocalBinding || false);
+    const [sandboxExcludedCommands, setSandboxExcludedCommands] = useState((initialConfig?.sandbox?.excludedCommands || []).join('\n'));
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -72,6 +86,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     useClaudeMd,
                     bypassPermissions,
                     pluginPaths: pluginPaths.split('\n').map(s => s.trim()).filter(Boolean),
+                    sandbox: sandboxEnabled ? {
+                        enabled: true,
+                        autoAllowBashIfSandboxed: sandboxAutoAllowBash,
+                        network: {
+                            allowedDomains: sandboxAllowedDomains.split('\n').map(s => s.trim()).filter(Boolean),
+                            allowLocalBinding: sandboxAllowLocalBinding,
+                        },
+                        excludedCommands: sandboxExcludedCommands.split('\n').map(s => s.trim()).filter(Boolean),
+                    } : undefined,
                 }),
             });
 
@@ -293,6 +316,97 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             Paths to plugin directories (containing <code>.claude-plugin/plugin.json</code>). Loaded when workers start tasks.
                         </p>
                     </div>
+                </div>
+            </div>
+
+            {/* Sandbox Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Sandbox</h3>
+
+                <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="sandboxEnabled"
+                            checked={sandboxEnabled}
+                            onChange={(e) => setSandboxEnabled(e.target.checked)}
+                            className="rounded"
+                        />
+                        <label htmlFor="sandboxEnabled" className="text-sm">
+                            Enable sandbox isolation
+                        </label>
+                    </div>
+                    <p className="text-xs text-text-muted -mt-2">
+                        Restrict worker file and network access using the SDK sandbox. Prevents workers from accessing unauthorized resources.
+                    </p>
+
+                    {sandboxEnabled && (
+                        <div className="space-y-4 pl-6 border-l-2 border-border-default">
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    id="sandboxAutoAllowBash"
+                                    checked={sandboxAutoAllowBash}
+                                    onChange={(e) => setSandboxAutoAllowBash(e.target.checked)}
+                                    className="rounded"
+                                />
+                                <label htmlFor="sandboxAutoAllowBash" className="text-sm">
+                                    Auto-allow bash commands when sandboxed
+                                </label>
+                            </div>
+                            <p className="text-xs text-text-muted -mt-2">
+                                Skip bash permission prompts since the sandbox restricts what commands can do.
+                            </p>
+
+                            <div>
+                                <label className="block text-sm font-medium mb-1">
+                                    Allowed Domains
+                                    <span className="text-text-muted font-normal ml-1">(one per line)</span>
+                                </label>
+                                <textarea
+                                    value={sandboxAllowedDomains}
+                                    onChange={(e) => setSandboxAllowedDomains(e.target.value)}
+                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
+                                    placeholder={"api.github.com\nnpm.pkg.github.com\nregistry.npmjs.org"}
+                                />
+                                <p className="text-xs text-text-muted mt-1">
+                                    Network domains workers are allowed to access. Leave empty to block all outbound network.
+                                </p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    id="sandboxAllowLocalBinding"
+                                    checked={sandboxAllowLocalBinding}
+                                    onChange={(e) => setSandboxAllowLocalBinding(e.target.checked)}
+                                    className="rounded"
+                                />
+                                <label htmlFor="sandboxAllowLocalBinding" className="text-sm">
+                                    Allow binding to localhost
+                                </label>
+                            </div>
+                            <p className="text-xs text-text-muted -mt-2">
+                                Allow workers to start local dev servers (e.g., for running tests that need a server).
+                            </p>
+
+                            <div>
+                                <label className="block text-sm font-medium mb-1">
+                                    Excluded Commands
+                                    <span className="text-text-muted font-normal ml-1">(one per line)</span>
+                                </label>
+                                <textarea
+                                    value={sandboxExcludedCommands}
+                                    onChange={(e) => setSandboxExcludedCommands(e.target.value)}
+                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
+                                    placeholder={"docker\nkubectl\nssh"}
+                                />
+                                <p className="text-xs text-text-muted mt-1">
+                                    Commands excluded from sandbox restrictions (run outside the sandbox).
+                                </p>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 

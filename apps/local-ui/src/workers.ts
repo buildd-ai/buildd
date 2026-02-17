@@ -1344,9 +1344,10 @@ export class WorkerManager {
         }
       }
 
-      // Build plugins from workspace config
+      // Build plugins and sandbox config from workspace config
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+      const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
@@ -1361,6 +1362,7 @@ export class WorkerManager {
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
+        ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },

@@ -99,6 +99,29 @@ export async function POST(
             ...(Array.isArray(body.pluginPaths)
                 ? { pluginPaths: body.pluginPaths.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
                 : {}),
+
+            // Sandbox configuration for worker isolation
+            ...(body.sandbox && typeof body.sandbox === 'object'
+                ? {
+                    sandbox: {
+                        enabled: Boolean(body.sandbox.enabled),
+                        autoAllowBashIfSandboxed: Boolean(body.sandbox.autoAllowBashIfSandboxed),
+                        ...(body.sandbox.network && typeof body.sandbox.network === 'object'
+                            ? {
+                                network: {
+                                    ...(Array.isArray(body.sandbox.network.allowedDomains)
+                                        ? { allowedDomains: body.sandbox.network.allowedDomains.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
+                                        : {}),
+                                    allowLocalBinding: Boolean(body.sandbox.network.allowLocalBinding),
+                                },
+                            }
+                            : {}),
+                        ...(Array.isArray(body.sandbox.excludedCommands)
+                            ? { excludedCommands: body.sandbox.excludedCommands.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
+                            : {}),
+                    },
+                }
+                : {}),
         };
 
         await db

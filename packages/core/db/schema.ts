@@ -121,6 +121,17 @@ export interface WorkspaceGitConfig {
   // Plugin directories to load when workers start tasks
   // Each path should point to a directory containing .claude-plugin/plugin.json
   pluginPaths?: string[];
+
+  // Sandbox configuration for worker isolation (SDK v0.2.44+)
+  sandbox?: {
+    enabled?: boolean;
+    autoAllowBashIfSandboxed?: boolean;
+    network?: {
+      allowedDomains?: string[];
+      allowLocalBinding?: boolean;
+    };
+    excludedCommands?: string[];
+  };
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
