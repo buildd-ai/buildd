@@ -74,6 +74,7 @@ export class WorkerRunner extends EventEmitter {
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
+          enableFileCheckpointing: true,
           env,
           settingSources: ['user', 'project'],
           systemPrompt,
@@ -116,6 +117,17 @@ export class WorkerRunner extends EventEmitter {
   private async handleMessage(msg: SDKMessage): Promise<void> {
     if (msg.type === 'system' && 'session_id' in msg) {
       // Session ID tracked in-memory only, no longer persisted to DB
+      return;
+    }
+
+    // Emit file checkpoint events from SDK
+    if (msg.type === 'system' && (msg as any).subtype === 'files_persisted') {
+      const event = msg as any;
+      this.emitEvent('worker:checkpoint', {
+        uuid: event.uuid,
+        files: event.files || [],
+        failed: event.failed || [],
+      });
       return;
     }
 
