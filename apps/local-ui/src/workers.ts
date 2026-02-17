@@ -1,5 +1,5 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
@@ -269,8 +269,9 @@ export class WorkerManager {
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
         }
-        // Ensure checkpoints array exists (workers saved before this feature)
+        // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
+        if (!worker.subagentTasks) worker.subagentTasks = [];
         this.workers.set(worker.id, worker);
       }
       if (restored.length > 0) {
@@ -806,6 +807,7 @@ export class WorkerManager {
       toolCalls: [],
       messages: [],
       checkpoints: [],
+      subagentTasks: [],
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -1645,6 +1647,50 @@ export class WorkerManager {
         worker.checkpoints.shift();
       }
       console.log(`[Worker ${worker.id}] File checkpoint: ${checkpoint.files.length} file(s), uuid=${checkpoint.uuid.slice(0, 12)}`);
+      this.emit({ type: 'worker_update', worker });
+    }
+
+    // SDK v0.2.45: Subagent task started — track lifecycle from start to completion
+    if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
+      const event = msg as any;
+      const subagentTask: SubagentTask = {
+        taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        description: event.description || '',
+        taskType: event.task_type || 'unknown',
+        startedAt: Date.now(),
+        status: 'running',
+      };
+      worker.subagentTasks.push(subagentTask);
+      // Keep last 100 subagent tasks
+      if (worker.subagentTasks.length > 100) {
+        worker.subagentTasks.shift();
+      }
+      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${subagentTask.description.slice(0, 50)}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent task started: ${subagentTask.taskId} (${subagentTask.taskType}) — ${subagentTask.description}`);
+      this.emit({ type: 'worker_update', worker });
+    }
+
+    // SDK v0.2.45: Subagent task notification — completion/status update for a tracked task
+    if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
+      const event = msg as any;
+      const taskId = event.task_id as string;
+      const status = event.status as string;
+      const message = event.message as string | undefined;
+
+      // Update tracked subagent task
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId);
+      if (tracked) {
+        tracked.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : tracked.status;
+        tracked.completedAt = Date.now();
+        if (message) tracked.message = message;
+      }
+
+      const label = tracked
+        ? `Subagent ${status}: ${tracked.description.slice(0, 50)}`
+        : `Subagent ${status}: ${taskId.slice(0, 12)}`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${message ? ` — ${message}` : ''}`);
       this.emit({ type: 'worker_update', worker });
     }
 
