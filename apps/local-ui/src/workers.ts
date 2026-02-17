@@ -930,6 +930,59 @@ export class WorkerManager {
     };
   }
 
+  // Create a TeammateIdle hook that updates team member status when a teammate goes idle.
+  // Purely observational — emits events for dashboard/Pusher visibility.
+  private createTeammateIdleHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'TeammateIdle') return {};
+
+      const teammateName = (input as any).teammate_name as string;
+      const teamName = (input as any).team_name as string;
+
+      // Update team member status if we're tracking team state
+      if (worker.teamState) {
+        const member = worker.teamState.members.find(m => m.name === teammateName);
+        if (member) {
+          member.status = 'idle';
+        }
+      }
+
+      this.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
+
+      return {};
+    };
+  }
+
+  // Create a TaskCompleted hook that logs task completions within agent teams.
+  // Emits milestones and updates team state for dashboard visibility.
+  private createTaskCompletedHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'TaskCompleted') return {};
+
+      const taskId = (input as any).task_id as string;
+      const taskSubject = (input as any).task_subject as string;
+      const teammateName = (input as any).teammate_name as string | undefined;
+      const teamName = (input as any).team_name as string | undefined;
+
+      // Update team member status if completed by a known teammate
+      if (worker.teamState && teammateName) {
+        const member = worker.teamState.members.find(m => m.name === teammateName);
+        if (member) {
+          member.status = 'done';
+        }
+      }
+
+      const label = teammateName
+        ? `Task done (${teammateName}): ${taskSubject.slice(0, 50)}`
+        : `Task done: ${taskSubject.slice(0, 50)}`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Task completed: ${taskSubject} (teammate: ${teammateName || 'leader'}, team: ${teamName || 'none'})`);
+
+      return {};
+    };
+  }
+
   // Resolve whether to use bypassPermissions mode.
   // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
   private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
@@ -1245,11 +1298,14 @@ export class WorkerManager {
         },
       };
 
-      // Attach permission hook (blocks dangerous commands, allows safe bash)
-      // and team tracking hook (captures TeamCreate, SendMessage, Task events)
+      // Attach permission hook (blocks dangerous commands, allows safe bash),
+      // team tracking hook (captures TeamCreate, SendMessage, Task events),
+      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted).
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
+        TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
+        TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
       };
 
       // Start query with full options
