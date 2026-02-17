@@ -1,5 +1,6 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
 import { db } from '../db/client';
 import { workers, tasks, type ResultMeta } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -114,6 +115,7 @@ export class WorkerRunner extends EventEmitter {
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
+            PreCompact: [{ hooks: [this.preCompactHook.bind(this)] }],
             // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
@@ -394,6 +396,30 @@ export class WorkerRunner extends EventEmitter {
     const teammateName = (input as any).teammate_name as string | undefined;
     const teamName = (input as any).team_name as string | undefined;
     this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
+    return {};
+  };
+
+  // PreCompact hook — fires before conversation compaction.
+  // Archives the full transcript so worker reasoning history is preserved.
+  private preCompactHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PreCompact') return {};
+
+    const transcriptPath = (input as any).transcript_path as string | undefined;
+    const trigger = (input as any).trigger as 'manual' | 'auto' | undefined;
+
+    if (!transcriptPath) return {};
+
+    try {
+      const transcript = readFileSync(transcriptPath, 'utf-8');
+      this.emitEvent('worker:transcript_archived', {
+        trigger: trigger || 'auto',
+        transcriptPath,
+        transcript,
+      });
+    } catch {
+      // Transcript file may not exist or be unreadable — non-fatal
+    }
+
     return {};
   };
 
