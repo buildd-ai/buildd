@@ -114,6 +114,7 @@ export class WorkerRunner extends EventEmitter {
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
+            Notification: [{ hooks: [this.notificationHook.bind(this)] }],
             // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
@@ -394,6 +395,17 @@ export class WorkerRunner extends EventEmitter {
     const teammateName = (input as any).teammate_name as string | undefined;
     const teamName = (input as any).team_name as string | undefined;
     this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
+    return {};
+  };
+
+  // Notification hook — fires when the agent emits status messages.
+  // Captures agent notifications and emits them for dashboard visibility.
+  private notificationHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Notification') return {};
+
+    const message = (input as any).message as string;
+    const title = (input as any).title as string | undefined;
+    this.emitEvent('worker:notification', { message, title });
     return {};
   };
 
