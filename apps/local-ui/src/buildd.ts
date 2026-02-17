@@ -81,6 +81,11 @@ export class BuilddClient {
     filesChanged?: number;
     linesAdded?: number;
     linesRemoved?: number;
+    // Token usage
+    inputTokens?: number;
+    outputTokens?: number;
+    // SDK result metadata
+    resultMeta?: Record<string, unknown>;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
@@ -129,6 +134,7 @@ export class BuilddClient {
       agentInstructions?: string;
       useClaudeMd: boolean;
       pluginPaths?: string[];
+      maxBudgetUsd?: number;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {

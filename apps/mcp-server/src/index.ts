@@ -225,10 +225,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - list_tasks: { offset? }
 - claim_task: { maxTasks?, workspaceId? } — auto-assigns highest-priority pending task, no task ID needed
 - update_progress: { workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }
-- complete_task: { workerId (required), summary?, error? } — if error present, marks task as failed
+- complete_task: { workerId (required), summary?, error?, structuredOutput? (JSON object — validated structured output from agent) } — if error present, marks task as failed
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
 - update_task: { taskId (required), title?, description?, priority? }
-- create_task: { title (required), description (required), workspaceId?, priority? }
+- create_task: { title (required), description (required), workspaceId?, priority?, outputSchema? (JSON Schema object — agent returns structured JSON matching this schema) }
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
 - update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
@@ -508,6 +508,7 @@ export BUILDD_SERVER=${SERVER_URL}`;
               body: JSON.stringify({
                 status: "completed",
                 ...(params.summary ? { summary: params.summary } : {}),
+                ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
               }),
             });
           } catch (err: unknown) {
@@ -610,6 +611,11 @@ export BUILDD_SERVER=${SERVER_URL}`;
             priority: params.priority || 5,
             creationSource: 'mcp',
           };
+
+          // Pass structured output schema if provided
+          if (params.outputSchema && typeof params.outputSchema === 'object') {
+            taskBody.outputSchema = params.outputSchema;
+          }
 
           if (WORKER_ID) {
             taskBody.createdByWorkerId = WORKER_ID;

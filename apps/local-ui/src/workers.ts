@@ -1082,6 +1082,25 @@ export class WorkerManager {
     return false;
   }
 
+  // Resolve maxBudgetUsd for SDK cost control.
+  // Priority: workspace gitConfig (if admin_confirmed) > local config > undefined (no limit)
+  private resolveMaxBudgetUsd(workspaceConfig: { gitConfig?: any; configStatus?: string }): number | undefined {
+    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
+    const wsBudget = workspaceConfig.gitConfig?.maxBudgetUsd;
+
+    // Workspace-level setting takes priority if admin confirmed
+    if (isAdminConfirmed && typeof wsBudget === 'number' && wsBudget > 0) {
+      return wsBudget;
+    }
+
+    // Fall back to local-ui config
+    if (typeof this.config.maxBudgetUsd === 'number' && this.config.maxBudgetUsd > 0) {
+      return this.config.maxBudgetUsd;
+    }
+
+    return undefined;
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -1344,12 +1363,17 @@ export class WorkerManager {
         }
       }
 
-      // Build plugins from workspace config
+      // Build plugins and sandbox config from workspace config
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+      const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
+
+      // Resolve max budget for SDK-level cost control
+      const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
+        sessionId: worker.id,
         cwd,
         model: this.config.model,
         abortController,
@@ -1358,9 +1382,13 @@ export class WorkerManager {
         permissionMode,
         systemPrompt,
         enableFileCheckpointing: true,
+        ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
+        ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+        // Structured output: pass outputFormat if task defines an outputSchema
+        ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
@@ -1409,13 +1437,20 @@ export class WorkerManager {
       queryInstance.streamInput(inputStream);
 
       // Stream responses
+      let resultSubtype: string | undefined;
+      let structuredOutput: Record<string, unknown> | undefined;
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
         if (msg.type === 'result') {
           const result = msg as any;
+          resultSubtype = result.subtype;
           console.log(`[Worker ${worker.id}] SDK result: subtype=${result.subtype}, worker.status=${worker.status}`);
           if (worker.status === 'waiting') {
             console.log(`[Worker ${worker.id}] ⚠️ Result received while still waiting — toolUseId=${worker.waitingFor?.toolUseId}`);
+          }
+          // Capture structured output from SDK result (when outputFormat was provided)
+          if (result.structured_output && typeof result.structured_output === 'object') {
+            structuredOutput = result.structured_output;
           }
         }
 
@@ -1451,6 +1486,22 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
+      } else if (resultSubtype === 'error_max_budget_usd') {
+        // Budget exceeded - report as error with specific message
+        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        worker.status = 'error';
+        worker.error = 'Budget limit exceeded';
+        worker.currentAction = 'Budget exceeded';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: 'Budget limit exceeded (maxBudgetUsd)',
+          milestones: worker.milestones,
+          ...gitStats,
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
       } else {
         // Actually completed - collect git stats before reporting
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
@@ -1459,10 +1510,29 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Compute aggregate token counts from SDK result metadata
+        const resultMeta = worker.resultMeta || undefined;
+        let inputTokens: number | undefined;
+        let outputTokens: number | undefined;
+        if (resultMeta?.modelUsage) {
+          let totalIn = 0, totalOut = 0;
+          for (const usage of Object.values(resultMeta.modelUsage)) {
+            totalIn += usage.inputTokens + usage.cacheReadInputTokens;
+            totalOut += usage.outputTokens;
+          }
+          if (totalIn > 0) inputTokens = totalIn;
+          if (totalOut > 0) outputTokens = totalOut;
+        }
+
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
+          ...(resultMeta && { resultMeta }),
+          ...(inputTokens && { inputTokens }),
+          ...(outputTokens && { outputTokens }),
+          // Include structured output if the SDK returned validated JSON
+          ...(structuredOutput ? { structuredOutput } : {}),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -1769,9 +1839,26 @@ export class WorkerManager {
         this.closePhase(worker);
       }
       const result = msg as any;
-      if (result.subtype !== 'success') {
+      if (result.subtype === 'error_max_budget_usd') {
+        this.addMilestone(worker, { type: 'status', label: `Budget limit exceeded ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
+      } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
       }
+
+      // Capture SDK result metadata for server sync
+      worker.resultMeta = {
+        stopReason: result.stop_reason ?? null,
+        durationMs: result.duration_ms ?? 0,
+        durationApiMs: result.duration_api_ms ?? 0,
+        numTurns: result.num_turns ?? 0,
+        modelUsage: result.usage?.byModel ?? {},
+        ...(result.permission_denials?.length > 0 && {
+          permissionDenials: result.permission_denials.map((d: any) => ({
+            tool: d.tool_name || d.tool || 'unknown',
+            reason: d.reason || d.message || '',
+          })),
+        }),
+      };
     }
 
     this.emit({ type: 'worker_update', worker });

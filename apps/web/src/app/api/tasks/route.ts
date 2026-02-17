@@ -107,6 +107,8 @@ export async function POST(req: NextRequest) {
       skillRef,
       // Skill slugs (new: array of skill slugs)
       skillSlugs: rawSkillSlugs,
+      // JSON Schema for structured output
+      outputSchema,
     } = body;
 
     if (!workspaceId || !title) {
@@ -225,6 +227,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Validate outputSchema is a valid JSON Schema object if provided
+    if (outputSchema && (typeof outputSchema !== 'object' || Array.isArray(outputSchema))) {
+      return NextResponse.json({ error: 'outputSchema must be a JSON Schema object' }, { status: 400 });
+    }
+
     const [task] = await db
       .insert(tasks)
       .values({
@@ -242,6 +249,7 @@ export async function POST(req: NextRequest) {
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },
+        ...(outputSchema ? { outputSchema } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })
