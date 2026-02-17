@@ -1,8 +1,7 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-> **Version documented**: 0.2.44 (Claude Code 2.1.44)
-> **Package rename**: `@anthropic-ai/claude-code-sdk` → `@anthropic-ai/claude-agent-sdk` (v0.2.x)
-> **Peer dependency**: `zod ^4.0.0`
+
+**Version documented**: 0.2.44 (all packages aligned)
 
 ### Monorepo SDK Versions
 
