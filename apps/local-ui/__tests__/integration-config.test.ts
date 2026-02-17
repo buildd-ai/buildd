@@ -121,24 +121,22 @@ describe('Config & Connectivity', () => {
       const res = await api('/api/events');
       const reader = res.body!.getReader();
 
-      // Accumulate chunks until we have a complete SSE event (ends with \n\n)
+      // Accumulate chunks until we have a complete SSE event (ends with \n\n).
+      // No chunk limit — the init payload can be large if many workers are running.
       let text = '';
-      for (let i = 0; i < 5; i++) {
+      while (!text.includes('\n\n')) {
         const { value, done } = await reader.read();
         if (done) break;
         text += new TextDecoder().decode(value);
-        if (text.includes('\n\n')) break;
       }
       reader.cancel();
 
-      // Parse the SSE data line - extract JSON payload after "data: "
-      console.log('SSE text length:', text.length, 'chars:', JSON.stringify(text.slice(0, 200)));
-      const dataLine = text.split('\n').find(line => line.startsWith('data: '));
-      if (!dataLine) {
-        console.log('Lines:', text.split('\n').map(l => l.slice(0, 50)));
-      }
-      expect(dataLine).toBeTruthy();
-      const initData = JSON.parse(dataLine!.slice(6));
+      // Extract the first complete SSE event: find "data: " then take everything up to "\n\n"
+      const dataStart = text.indexOf('data: ');
+      const eventEnd = text.indexOf('\n\n', dataStart);
+      expect(dataStart).toBeGreaterThanOrEqual(0);
+      const jsonStr = dataStart >= 0 ? text.slice(dataStart + 6, eventEnd >= 0 ? eventEnd : undefined) : '';
+      const initData = JSON.parse(jsonStr);
 
       // These fields must all be present so the frontend doesn't lose settings on SSE reconnect
       expect(initData.config).toBeDefined();
