@@ -136,6 +136,10 @@ export interface WorkspaceGitConfig {
     };
     excludedCommands?: string[];
   };
+
+  // SDK debug logging (SDK v0.2.44+)
+  debug?: boolean;               // Enable verbose SDK debug output to stderr
+  debugFile?: string;             // File path to write SDK debug logs to
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

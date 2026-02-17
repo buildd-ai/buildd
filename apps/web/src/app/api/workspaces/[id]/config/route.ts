@@ -105,6 +105,12 @@ export async function POST(
                 ? { maxBudgetUsd: body.maxBudgetUsd }
                 : {}),
 
+            // SDK debug logging
+            ...(body.debug === true ? { debug: true } : {}),
+            ...(typeof body.debugFile === 'string' && body.debugFile.trim()
+                ? { debugFile: body.debugFile.trim() }
+                : {}),
+
             // Sandbox configuration for worker isolation
             ...(body.sandbox && typeof body.sandbox === 'object'
                 ? {

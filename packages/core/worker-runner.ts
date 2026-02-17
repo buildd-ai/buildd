@@ -108,6 +108,9 @@ export class WorkerRunner extends EventEmitter {
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+          // SDK debug logging from workspace config
+          ...(gitConfig?.debug ? { debug: true } : {}),
+          ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
           // Structured output: pass outputFormat if task defines an outputSchema
           ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),

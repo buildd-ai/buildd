@@ -1387,6 +1387,9 @@ export class WorkerManager {
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
         ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+        // SDK debug logging from workspace config
+        ...(gitConfig?.debug ? { debug: true } : {}),
+        ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
         // Structured output: pass outputFormat if task defines an outputSchema
         ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
         stderr: (data: string) => {
