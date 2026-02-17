@@ -1,0 +1,127 @@
+name: Neon Branch for Schema Changes
+
+# Only creates isolated Neon branches for PRs that modify the DB schema.
+# All other preview deploys share the dev Neon branch (set in Vercel env).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'packages/core/drizzle/**'
+      - 'packages/core/db/schema.ts'
+
+jobs:
+  create-neon-branch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Neon branch for schema changes
+        id: neon
+        run: |
+          BRANCH_NAME="preview/pr-${{ github.event.pull_request.number }}"
+
+          # Check if branch already exists
+          EXISTING=$(curl -s \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches" \
+            | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Neon branch already exists: $EXISTING"
+            BRANCH_ID="$EXISTING"
+          else
+            echo "Creating Neon branch: $BRANCH_NAME"
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+
+            BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+            if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+              echo "::error::Failed to create Neon branch"
+              echo "$RESPONSE" | jq .
+              exit 1
+            fi
+            echo "Created Neon branch: $BRANCH_ID"
+          fi
+
+          # Get the connection URI for the branch
+          ENDPOINTS=$(curl -s \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+
+          HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+          DATABASE_URL="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
+
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
+          echo "database_url=$DATABASE_URL" >> "$GITHUB_OUTPUT"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
+          NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
+          NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run migrations on isolated branch
+        run: cd packages/core && bun db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
+      - name: Set branch-specific DATABASE_URL in Vercel
+        run: |
+          GIT_BRANCH="${{ github.head_ref }}"
+
+          # Remove existing override for this branch if any
+          EXISTING_ID=$(curl -s \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+            | jq -r --arg branch "$GIT_BRANCH" \
+              '.envs[] | select(.key == "DATABASE_URL" and .gitBranch == $branch) | .id')
+
+          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+            curl -s -X DELETE \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$EXISTING_ID"
+          fi
+
+          # Create branch-specific DATABASE_URL for preview
+          curl -s -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"key\": \"DATABASE_URL\",
+              \"value\": \"${{ steps.neon.outputs.database_url }}\",
+              \"type\": \"encrypted\",
+              \"target\": [\"preview\"],
+              \"gitBranch\": \"$GIT_BRANCH\"
+            }" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env"
+
+          echo "Set DATABASE_URL for branch $GIT_BRANCH preview deploys"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Trigger Vercel redeploy with new DATABASE_URL
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"$VERCEL_PROJECT_ID\", \"gitSource\": {\"type\": \"github\", \"ref\": \"${{ github.head_ref }}\", \"repoId\": \"${{ github.event.repository.id }}\"}}" \
+            "https://api.vercel.com/v13/deployments"
+          echo "Triggered redeploy for branch ${{ github.head_ref }}"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
