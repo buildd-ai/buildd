@@ -131,9 +131,10 @@ describe('Config & Connectivity', () => {
       }
       reader.cancel();
 
-      const match = text.match(/data: (.+)\n/);
-      expect(match).toBeTruthy();
-      const initData = JSON.parse(match![1]);
+      // Parse the SSE data line - extract JSON payload after "data: "
+      const dataLine = text.split('\n').find(line => line.startsWith('data: '));
+      expect(dataLine).toBeTruthy();
+      const initData = JSON.parse(dataLine!.slice(6));
 
       // These fields must all be present so the frontend doesn't lose settings on SSE reconnect
       expect(initData.config).toBeDefined();
