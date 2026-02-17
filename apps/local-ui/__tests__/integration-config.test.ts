@@ -120,8 +120,15 @@ describe('Config & Connectivity', () => {
     test('SSE init includes all config fields', async () => {
       const res = await api('/api/events');
       const reader = res.body!.getReader();
-      const { value } = await reader.read();
-      const text = new TextDecoder().decode(value);
+
+      // Accumulate chunks until we have a complete SSE event (ends with \n\n)
+      let text = '';
+      for (let i = 0; i < 5; i++) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += new TextDecoder().decode(value);
+        if (text.includes('\n\n')) break;
+      }
       reader.cancel();
 
       const match = text.match(/data: (.+)\n/);

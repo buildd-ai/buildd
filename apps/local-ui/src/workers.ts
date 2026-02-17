@@ -219,6 +219,14 @@ export class WorkerManager {
       });
       console.log('Pusher connected for command relay');
 
+      // On reconnect, send immediate heartbeat to catch any tasks missed during disconnect
+      this.pusher.connection.bind('state_change', (states: { previous: string; current: string }) => {
+        if (states.current === 'connected' && states.previous !== 'initialized') {
+          console.log(`Pusher reconnected (was ${states.previous}), sending immediate heartbeat`);
+          this.sendHeartbeat();
+        }
+      });
+
       // Subscribe to workspace channels for task assignments if enabled
       if (this.acceptRemoteTasks) {
         this.subscribeToWorkspaceChannels();
@@ -618,9 +626,21 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, pendingTaskCount } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
+      }
+      // If server reports pending tasks and we have capacity, try to claim them
+      if (pendingTaskCount && pendingTaskCount > 0 && this.acceptRemoteTasks) {
+        const activeWorkers = Array.from(this.workers.values()).filter(
+          w => w.status === 'working' || w.status === 'stale'
+        );
+        if (activeWorkers.length < this.config.maxConcurrent) {
+          console.log(`Heartbeat: ${pendingTaskCount} pending task(s) available, attempting claim...`);
+          this.claimPendingTasks().catch(err => {
+            console.error('Failed to claim tasks from heartbeat:', err);
+          });
+        }
       }
     } catch {
       // Non-fatal - heartbeat is best-effort
@@ -679,6 +699,47 @@ export class WorkerManager {
     }
   }
 
+  // Claim any pending tasks the server has available (no specific task ID)
+  async claimPendingTasks(): Promise<LocalWorker[]> {
+    if (!this.acceptRemoteTasks) return [];
+    if (!this.hasCredentials && !this.config.serverless) return [];
+
+    const activeWorkers = Array.from(this.workers.values()).filter(
+      w => w.status === 'working' || w.status === 'stale'
+    );
+    const slots = this.config.maxConcurrent - activeWorkers.length;
+    if (slots <= 0) return [];
+
+    try {
+      const claimed = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
+      if (claimed.length === 0) return [];
+
+      const started: LocalWorker[] = [];
+      for (const claimedWorker of claimed) {
+        const task = claimedWorker.task;
+        if (!task) continue;
+
+        const workspacePath = this.resolver.resolve({
+          id: task.workspaceId,
+          name: task.workspace?.name || 'unknown',
+          repo: task.workspace?.repo,
+        });
+
+        if (!workspacePath) {
+          console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+          continue;
+        }
+
+        const worker = await this.startFromClaim(claimedWorker, task, workspacePath);
+        if (worker) started.push(worker);
+      }
+      return started;
+    } catch (err) {
+      console.error('Failed to claim pending tasks:', err);
+      return [];
+    }
+  }
+
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
@@ -709,6 +770,15 @@ export class WorkerManager {
     // Prefer claim response task data (full) over Pusher event task data (minimal payload)
     const fullTask = claimedWorker.task || task;
 
+    return this.startFromClaim(claimedWorker, fullTask, workspacePath);
+  }
+
+  private async startFromClaim(
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask },
+    fullTask: BuilddTask,
+    workspacePath: string,
+  ): Promise<LocalWorker | null> {
+
     // Create local worker
     const worker: LocalWorker = {
       id: claimedWorker.id,
@@ -716,7 +786,7 @@ export class WorkerManager {
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
       workspaceId: fullTask.workspaceId,
-      workspaceName: fullTask.workspace?.name || task.workspace?.name || 'unknown',
+      workspaceName: fullTask.workspace?.name || 'unknown',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,

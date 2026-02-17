@@ -273,12 +273,12 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string }> {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number }> {
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
     });
-    return { viewerToken: data.viewerToken };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

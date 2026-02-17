@@ -16,12 +16,6 @@ echo "📝 Commits in dev that will be preserved:"
 git log origin/main..HEAD --oneline --no-merges
 
 echo ""
-read -p "Continue with sync? This will reset dev to main and cherry-pick the above commits. (y/N) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "❌ Aborted"
-    exit 1
-fi
 
 # Save current commits to temp branch
 TEMP_BRANCH="temp-dev-$(date +%s)"
