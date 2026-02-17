@@ -71,6 +71,7 @@ export class WorkerRunner extends EventEmitter {
         options: {
           cwd: worker.workspace?.localPath || process.cwd(),
           model: config.anthropicModel,
+          abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
           env,
@@ -82,7 +83,6 @@ export class WorkerRunner extends EventEmitter {
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
           },
         },
-        signal: this.abortController.signal,
       })) {
         await this.handleMessage(message);
         
