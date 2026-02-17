@@ -1062,6 +1062,45 @@ export class WorkerManager {
     };
   }
 
+  // Create a SubagentStart hook that tracks subagent spawning.
+  // Updates team state and emits milestones for dashboard visibility.
+  private createSubagentStartHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'SubagentStart') return {};
+
+      const agentId = (input as any).agent_id as string;
+      const agentType = (input as any).agent_type as string;
+
+      // Update team member status if we're tracking team state
+      if (worker.teamState) {
+        const member = worker.teamState.members.find(m => m.name === agentId);
+        if (member) {
+          member.status = 'active';
+        }
+      }
+
+      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
+
+      return {};
+    };
+  }
+
+  // Create a SubagentStop hook that tracks subagent completion.
+  // Updates team state and emits milestones for dashboard visibility.
+  private createSubagentStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'SubagentStop') return {};
+
+      const stopHookActive = (input as any).stop_hook_active as boolean;
+
+      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+
+      return {};
+    };
+  }
+
   // Resolve whether to use bypassPermissions mode.
   // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
   private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
@@ -1413,12 +1452,14 @@ export class WorkerManager {
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted).
+      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
+        SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
+        SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
       };
 
       // Start query with full options
