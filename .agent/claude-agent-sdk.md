@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.44 (all packages aligned)
+**Version documented**: 0.2.44 (CLI parity: v2.1.44, Feb 16 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
+| `packages/core` | `>=0.2.44` | Aligned to latest |
+| `apps/agent` | `>=0.2.44` | Aligned to latest |
 | `apps/local-ui` | `>=0.2.37` | Full v0.2.x features |
-| `packages/core` | `^0.1.19` | Legacy, needs upgrade for v0.2.x features |
-| `apps/agent` | `^0.1.19` | Legacy, needs upgrade for v0.2.x features |
 
 ---
 
@@ -544,7 +544,7 @@ options: {
       description: 'Audit code for vulnerabilities',
       prompt: 'You are a security expert...',
       tools: ['Read', 'Grep'],
-      model: 'claude-3-opus-20240229',
+      model: 'claude-opus-4-6',
     }
   }
 }
@@ -577,6 +577,103 @@ options: {
 | **Skill Tool** (`useSkillAgents: false`) | `allowedTools: ['Skill(deploy)']` | Task requires specific skill execution |
 
 **Stale Timeout**: When using agent teams, increase stale worker timeout to 300s (from 120s) to account for subagent coordination overhead.
+
+---
+
+## 15. Agent Memory (CLI v2.1.33+)
+
+Agents can have persistent memory via frontmatter `memory` field:
+
+```yaml
+---
+memory: project   # or 'user' or 'local'
+---
+```
+
+Scopes:
+- `user` — persists across all projects for the user
+- `project` — persists per-project (in `.claude/` directory)
+- `local` — persists per-machine
+
+The CLI auto-records and recalls memories during work (v2.1.32+). For SDK workers, memory is available when `settingSources` includes `'project'` or `'user'`.
+
+---
+
+## 16. Custom Session ID (SDK v0.2.33+)
+
+Specify a custom session ID instead of auto-generating one:
+
+```typescript
+options: {
+  sessionId: 'custom-uuid-here',  // Custom UUID for the conversation
+}
+```
+
+Useful for correlating SDK sessions with external task/worker IDs.
+
+---
+
+## 17. Task(agent_type) Restriction (CLI v2.1.33+)
+
+Agent frontmatter `tools` field supports restricting which sub-agent types can be spawned:
+
+```yaml
+---
+tools:
+  - Read
+  - Write
+  - Task(researcher)    # Only allow spawning 'researcher' sub-agents
+  - Task(test-runner)   # Also allow 'test-runner' sub-agents
+---
+```
+
+This prevents agents from spawning arbitrary sub-agent types.
+
+---
+
+## 18. PreToolUse Hook `updatedInput` (CLI v2.1.33+)
+
+PreToolUse hooks can now modify tool input while also requesting user consent:
+
+```typescript
+hooks: {
+  PreToolUse: [{
+    hooks: [async (input) => ({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput: { ...input.tool_input, modified: true },
+        // Can combine with permissionDecision if needed
+      }
+    })]
+  }]
+}
+```
+
+Enables middleware-style tool input transformation.
+
+---
+
+## CLI v2.1.32–2.1.44 Changelog (SDK-Relevant)
+
+| CLI Version | SDK Version | Key Changes |
+|-------------|-------------|-------------|
+| 2.1.44 | 0.2.44 | Auth refresh error fixes |
+| 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
+| 2.1.42 | 0.2.42 | Startup perf (deferred Zod); better prompt cache hit rates; image dimension limit errors suggest /compact |
+| 2.1.41 | 0.2.41 | Background task notifications delivered in streaming SDK mode; MCP image content crash fix; `claude auth login/status/logout` CLI commands; Windows ARM64 |
+| 2.1.39 | 0.2.39 | Terminal rendering perf; fatal error display fix; process hanging fix |
+| 2.1.38 | 0.2.38 | Heredoc delimiter security fix; `.claude/skills` writes blocked in sandbox |
+| 2.1.37 | 0.2.37 | /fast availability fix after /extra-usage |
+| 2.1.36 | 0.2.36 | Fast mode for Opus 4.6 |
+| 2.1.34 | 0.2.34 | Agent teams crash fix; sandbox `excludedCommands` bypass security fix |
+| 2.1.33 | 0.2.33 | Agent memory; Task(agent_type) restriction; TeammateIdle/TaskCompleted hooks; PreToolUse `updatedInput`; tmux agent teams fix |
+| 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
+
+### Key Fixes for Buildd Workers
+- **Background task notifications** now delivered in streaming SDK mode (v2.1.41) — previously silent
+- **Agent teams model identifiers** fixed for Bedrock/Vertex/Foundry (v2.1.41)
+- **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
+- **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
 ---
 
