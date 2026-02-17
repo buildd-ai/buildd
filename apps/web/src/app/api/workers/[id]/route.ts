@@ -162,6 +162,8 @@ export async function PATCH(
           prNumber: worker.prNumber ?? undefined,
           ...(phases.length > 0 && { phases }),
           ...(lastQuestion && { lastQuestion }),
+          // Structured output from SDK (validated JSON matching task.outputSchema)
+          ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
         };
       }
 

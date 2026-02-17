@@ -1361,6 +1361,8 @@ export class WorkerManager {
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
+        // Structured output: pass outputFormat if task defines an outputSchema
+        ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
@@ -1409,6 +1411,7 @@ export class WorkerManager {
       queryInstance.streamInput(inputStream);
 
       // Stream responses
+      let structuredOutput: Record<string, unknown> | undefined;
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
         if (msg.type === 'result') {
@@ -1416,6 +1419,10 @@ export class WorkerManager {
           console.log(`[Worker ${worker.id}] SDK result: subtype=${result.subtype}, worker.status=${worker.status}`);
           if (worker.status === 'waiting') {
             console.log(`[Worker ${worker.id}] ⚠️ Result received while still waiting — toolUseId=${worker.waitingFor?.toolUseId}`);
+          }
+          // Capture structured output from SDK result (when outputFormat was provided)
+          if (result.structured_output && typeof result.structured_output === 'object') {
+            structuredOutput = result.structured_output;
           }
         }
 
@@ -1463,6 +1470,8 @@ export class WorkerManager {
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
+          // Include structured output if the SDK returned validated JSON
+          ...(structuredOutput ? { structuredOutput } : {}),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);

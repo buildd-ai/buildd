@@ -71,6 +71,9 @@ export class WorkerRunner extends EventEmitter {
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
 
+      // Extract outputSchema from task for structured output support
+      const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
+
       for await (const message of query({
         prompt: fullPrompt,
         options: {
@@ -85,6 +88,8 @@ export class WorkerRunner extends EventEmitter {
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
+          // Structured output: pass outputFormat if task defines an outputSchema
+          ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
@@ -195,6 +200,10 @@ export class WorkerRunner extends EventEmitter {
             removed: worker.linesRemoved ?? 0,
             prUrl: worker.prUrl ?? undefined,
             prNumber: worker.prNumber ?? undefined,
+            // Include structured output from SDK if present
+            ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
+              ? { structuredOutput: resultMsg.structured_output }
+              : {}),
           };
         }
 

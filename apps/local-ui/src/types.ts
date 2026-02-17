@@ -116,6 +116,8 @@ export interface BuilddTask {
   mode?: TaskMode;  // 'planning' or 'execution' (default)
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // JSON Schema for structured output — passed to SDK outputFormat
+  outputSchema?: Record<string, unknown> | null;
   // Assignment tracking
   claimedBy?: string | null;
   claimedAt?: string | null;

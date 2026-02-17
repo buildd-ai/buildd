@@ -168,6 +168,7 @@ export interface TaskResult {
   removed?: number;
   prUrl?: string;
   prNumber?: number;
+  structuredOutput?: Record<string, unknown>;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -234,6 +235,8 @@ export const tasks = pgTable('tasks', {
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // JSON Schema for structured output — passed to SDK outputFormat
+  outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion
   result: jsonb('result').$type<TaskResult | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

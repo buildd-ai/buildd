@@ -199,6 +199,18 @@ export default async function TaskDetailPage({
           </div>
         )}
 
+        {/* Output Schema */}
+        {(task.outputSchema as any) && (
+          <div className="mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Output Schema
+            </div>
+            <pre className="p-4 bg-surface-2 rounded-[10px] overflow-x-auto text-sm font-mono text-text-primary">
+              {JSON.stringify(task.outputSchema, null, 2)}
+            </pre>
+          </div>
+        )}
+
         {/* Task Relationships */}
         {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
           <div className="mb-6">
@@ -330,7 +342,7 @@ export default async function TaskDetailPage({
         {/* Deliverables */}
         {(task.result as any) && (
           (() => {
-            const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number };
+            const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             return (
               <div className="mb-8">
                 <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
@@ -375,6 +387,17 @@ export default async function TaskDetailPage({
                     <p className="text-sm text-text-secondary mt-2">{result.summary}</p>
                   )}
                 </div>
+                {/* Structured Output */}
+                {result.structuredOutput && (
+                  <div className="mt-4">
+                    <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+                      Structured Output
+                    </div>
+                    <pre className="p-4 bg-surface-2 border border-border-default rounded-[10px] overflow-x-auto text-sm font-mono text-text-primary">
+                      {JSON.stringify(result.structuredOutput, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
             );
           })()
