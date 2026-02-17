@@ -677,6 +677,7 @@ Enables middleware-style tool input transformation.
 
 ---
 
+
 ## Additional Options Reference
 
 ### Thinking / Effort Controls

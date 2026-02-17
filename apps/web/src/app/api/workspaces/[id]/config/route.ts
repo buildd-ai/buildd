@@ -94,6 +94,11 @@ export async function POST(
             ...(Array.isArray(body.skillInstallerAllowlist)
                 ? { skillInstallerAllowlist: body.skillInstallerAllowlist.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
                 : {}),
+
+            // Plugin directories to load when workers start tasks
+            ...(Array.isArray(body.pluginPaths)
+                ? { pluginPaths: body.pluginPaths.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
+                : {}),
         };
 
         await db

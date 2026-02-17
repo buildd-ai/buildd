@@ -871,6 +871,41 @@ function renderWorkerDetail(worker) {
       </div>`;
   }
 
+  // File checkpoints rollback section
+  if (worker.checkpoints && worker.checkpoints.length > 0) {
+    const checkpoints = worker.checkpoints;
+    const isCollapsed = checkpoints.length > 3;
+    const visible = isCollapsed ? checkpoints.slice(-3) : checkpoints;
+    const hidden = isCollapsed ? checkpoints.slice(0, -3) : [];
+    const cpGroupId = 'cp-' + worker.id.slice(0, 8);
+    timelineEl.innerHTML += `
+      <div class="bg-surface border border-border-default rounded-xl p-3 my-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-1.5 text-xs text-text-secondary font-mono font-medium uppercase tracking-wide">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
+            </svg>
+            File Checkpoints (${checkpoints.length})
+          </div>
+        </div>
+        ${hidden.length > 0 ? `
+          <button class="flex items-center gap-1.5 py-1 px-2 mb-1.5 bg-surface-hover/50 rounded text-[11px] text-text-tertiary cursor-pointer transition-colors hover:text-text-secondary border-none" onclick="toggleToolGroup('${cpGroupId}', this)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 transition-transform duration-200">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+            <span>${hidden.length} older checkpoint${hidden.length > 1 ? 's' : ''}</span>
+          </button>
+          <div id="${cpGroupId}" class="hidden flex flex-col gap-1 mb-1">
+            ${hidden.map((cp, i) => renderCheckpointRow(cp, i)).join('')}
+          </div>
+        ` : ''}
+        <div class="flex flex-col gap-1">
+          ${visible.map((cp, i) => renderCheckpointRow(cp, hidden.length + i)).join('')}
+        </div>
+      </div>`;
+  }
+
   // Deliverables strip for completed workers
   if (worker.status === 'done' && worker.commits.length > 0) {
     const commitCount = worker.commits.length;
@@ -1001,6 +1036,68 @@ function shortPath(p) {
   if (!p) return '';
   const parts = p.split('/');
   return parts.length > 3 ? '.../' + parts.slice(-3).join('/') : p;
+}
+
+// Render a single checkpoint row with rollback button
+function renderCheckpointRow(cp, index) {
+  const time = new Date(cp.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const fileCount = cp.files?.length || 0;
+  const fileNames = (cp.files || []).map(f => shortPath(f.filename)).slice(0, 3).join(', ');
+  const moreFiles = fileCount > 3 ? ` +${fileCount - 3} more` : '';
+  return `
+    <div class="flex items-center justify-between py-1.5 px-2 rounded hover:bg-surface-hover/50 group transition-colors">
+      <div class="flex items-center gap-2 min-w-0 flex-1">
+        <div class="w-1.5 h-1.5 rounded-full bg-text-tertiary shrink-0"></div>
+        <span class="text-[11px] text-text-tertiary font-mono shrink-0">${time}</span>
+        <span class="text-[12px] text-text-secondary truncate">${fileNames}${moreFiles}</span>
+        <span class="text-[11px] text-text-tertiary">(${fileCount} file${fileCount !== 1 ? 's' : ''})</span>
+      </div>
+      <button class="opacity-0 group-hover:opacity-100 transition-opacity py-1 px-2 text-[11px] text-status-warning bg-status-warning/10 border border-status-warning/30 rounded cursor-pointer hover:bg-status-warning/20"
+        onclick="rollbackToCheckpoint('${cp.uuid}')">
+        Rollback
+      </button>
+    </div>`;
+}
+
+// Rollback files to a checkpoint
+async function rollbackToCheckpoint(checkpointUuid) {
+  if (!currentWorkerId) return;
+
+  // First do a dry-run to show what will change
+  try {
+    const rollbackUrl = '/api/workers/' + currentWorkerId + '/rollback';
+    const dryRunRes = await fetch(rollbackUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkpointUuid, dryRun: true }),
+    });
+    const dryRunData = await dryRunRes.json();
+
+    if (!dryRunRes.ok) {
+      showToast(dryRunData.error || 'Cannot rollback', 'error');
+      return;
+    }
+
+    const changes = dryRunData.filesChanged || 0;
+    const msg = 'Rollback will revert ' + changes + ' file(s). Proceed?';
+    if (!confirm(msg)) return;
+
+    // Execute the actual rollback
+    const res = await fetch(rollbackUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkpointUuid, dryRun: false }),
+    });
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      showToast('Rolled back ' + (data.filesChanged || 0) + ' file(s)', 'success');
+    } else {
+      showToast(data.error || 'Rollback failed', 'error');
+    }
+  } catch (err) {
+    showToast('Rollback request failed', 'error');
+  }
 }
 
 function appendOutput(line) {

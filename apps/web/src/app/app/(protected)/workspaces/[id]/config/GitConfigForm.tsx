@@ -16,6 +16,7 @@ interface GitConfig {
     agentInstructions?: string;
     useClaudeMd: boolean;
     bypassPermissions?: boolean;
+    pluginPaths?: string[];
 }
 
 interface Props {
@@ -46,6 +47,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
+    const [pluginPaths, setPluginPaths] = useState((initialConfig?.pluginPaths || []).join('\n'));
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -69,6 +71,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
+                    pluginPaths: pluginPaths.split('\n').map(s => s.trim()).filter(Boolean),
                 }),
             });
 
@@ -267,6 +270,29 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <p className="text-xs text-text-muted -mt-2">
                         Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
                     </p>
+                </div>
+            </div>
+
+            {/* Plugins Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Plugins</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">
+                            Plugin Directories
+                            <span className="text-text-muted font-normal ml-1">(one path per line)</span>
+                        </label>
+                        <textarea
+                            value={pluginPaths}
+                            onChange={(e) => setPluginPaths(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
+                            placeholder={"./plugins/linter\n/home/team/shared-plugins/deploy"}
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Paths to plugin directories (containing <code>.claude-plugin/plugin.json</code>). Loaded when workers start tasks.
+                        </p>
+                    </div>
                 </div>
             </div>
 
