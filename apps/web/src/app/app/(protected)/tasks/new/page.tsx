@@ -40,6 +40,11 @@ export default function NewTaskPage() {
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
 
+  // Structured output state
+  const [useOutputSchema, setUseOutputSchema] = useState(false);
+  const [outputSchemaText, setOutputSchemaText] = useState('{\n  "type": "object",\n  "properties": {\n    \n  },\n  "required": []\n}');
+  const [outputSchemaError, setOutputSchemaError] = useState('');
+
   // Recurring schedule state
   const [recurring, setRecurring] = useState(false);
   const [scheduleName, setScheduleName] = useState('');
@@ -198,6 +203,18 @@ export default function NewTaskPage() {
           }
         }
 
+        // Parse outputSchema if enabled
+        let parsedOutputSchema: Record<string, unknown> | undefined;
+        if (useOutputSchema && outputSchemaText.trim()) {
+          try {
+            parsedOutputSchema = JSON.parse(outputSchemaText);
+          } catch {
+            setError('Invalid JSON in output schema');
+            setLoading(false);
+            return;
+          }
+        }
+
         // Create one-time task
         const res = await fetch('/api/tasks', {
           method: 'POST',
@@ -209,6 +226,7 @@ export default function NewTaskPage() {
             priority,
             ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
+            ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
             ...(selectedSkillSlugs.length > 0 && {
               context: {
                 skillSlugs: selectedSkillSlugs,
@@ -479,6 +497,60 @@ export default function NewTaskPage() {
                   </p>
                 </div>
               </label>
+            )}
+
+            {/* Structured output schema (one-time tasks only) */}
+            {!recurring && (
+              <div>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useOutputSchema}
+                    onChange={(e) => setUseOutputSchema(e.target.checked)}
+                    className="w-[18px] h-[18px] accent-primary cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-sm font-medium">Require structured output</span>
+                    <p className="text-xs text-text-secondary mt-0.5">
+                      Agent will return validated JSON matching a schema you define
+                    </p>
+                  </div>
+                </label>
+                {useOutputSchema && (
+                  <div className="mt-3 border border-border-default rounded-lg p-4 bg-surface-2">
+                    <label htmlFor="outputSchema" className="block text-sm font-medium mb-2">
+                      JSON Schema
+                    </label>
+                    <textarea
+                      id="outputSchema"
+                      value={outputSchemaText}
+                      onChange={(e) => {
+                        setOutputSchemaText(e.target.value);
+                        setOutputSchemaError('');
+                        try {
+                          JSON.parse(e.target.value);
+                        } catch {
+                          setOutputSchemaError('Invalid JSON');
+                        }
+                      }}
+                      rows={8}
+                      spellCheck={false}
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
+                      placeholder='{"type": "object", "properties": {...}, "required": [...]}'
+                    />
+                    {outputSchemaError && (
+                      <p className="text-xs text-status-error mt-1">{outputSchemaError}</p>
+                    )}
+                    <p className="text-xs text-text-secondary mt-1">
+                      Define the shape of the data you want back. Uses{' '}
+                      <a href="https://json-schema.org/understanding-json-schema/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                        JSON Schema
+                      </a>{' '}
+                      syntax.
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Cron fields (recurring only) */}

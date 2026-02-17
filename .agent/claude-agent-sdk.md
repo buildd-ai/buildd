@@ -1,7 +1,7 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.44 (CLI parity: v2.1.44, Feb 16 2026)
+**Version documented**: 0.2.44 (CLI parity: v2.1.44, Feb 17 2026)
 
 ### Monorepo SDK Versions
 
@@ -102,7 +102,7 @@ const result = query({
 
 ## 1. V2 Session API (send/receive/done pattern)
 
-> Status: `@alpha`, marked `UNSTABLE`. Significantly improved since v0.1.77.
+> Status: `@alpha`, marked `UNSTABLE`. Officially described as "new V2 interface (preview)" in SDK docs.
 
 ### `SDKSession` interface
 
@@ -181,22 +181,24 @@ These `Options` (V1) fields remain unavailable in V2: `cwd`, `settingSources`, `
 type SandboxSettings = {
   enabled?: boolean;
   autoAllowBashIfSandboxed?: boolean;    // Skip Bash permission if sandboxed
-  allowUnsandboxedCommands?: boolean;
-  network?: SandboxNetworkConfig;
-  ignoreViolations?: Record<string, string[]>;  // tool name → violation strings to ignore
+  allowUnsandboxedCommands?: boolean;    // Let model request unsandboxed execution via dangerouslyDisableSandbox
+  network?: NetworkSandboxSettings;
+  ignoreViolations?: SandboxIgnoreViolations;
   enableWeakerNestedSandbox?: boolean;
-  excludedCommands?: string[];
-  ripgrep?: { command: string; args?: string[] };  // Custom rg binary for sandbox
+  excludedCommands?: string[];           // Commands that always bypass sandbox (e.g. ['docker'])
 };
 
-type SandboxNetworkConfig = {
-  allowedDomains?: string[];
-  allowManagedDomainsOnly?: boolean;
-  allowUnixSockets?: string[];      // e.g. ['/var/run/docker.sock']
-  allowAllUnixSockets?: boolean;
+type NetworkSandboxSettings = {
   allowLocalBinding?: boolean;       // Allow binding to localhost
+  allowUnixSockets?: string[];       // e.g. ['/var/run/docker.sock']
+  allowAllUnixSockets?: boolean;
   httpProxyPort?: number;
   socksProxyPort?: number;
+};
+
+type SandboxIgnoreViolations = {
+  file?: string[];     // File path patterns to ignore violations for
+  network?: string[];  // Network patterns to ignore violations for
 };
 ```
 
@@ -210,17 +212,16 @@ options: {
     excludedCommands: ['docker'],
     network: {
       allowLocalBinding: true,
-      allowedDomains: ['api.example.com'],
-      httpProxyPort: 8080,
     },
     ignoreViolations: {
-      Bash: ['network_access_violation'],
+      file: ['/tmp/*'],
+      network: ['localhost:*'],
     },
   }
 }
 ```
 
-**Note**: Filesystem and network *restrictions* are configured via permission rules, not sandbox settings. Sandbox settings control sandbox *behavior*.
+**Note**: Filesystem read/write and network *restrictions* are configured via permission rules (Read deny, Edit allow/deny, WebFetch allow/deny), not sandbox settings. Sandbox settings control command execution sandboxing only. When `allowUnsandboxedCommands: true`, the model can set `dangerouslyDisableSandbox` in Bash tool input, which falls back to the permissions system (`canUseTool` handler).
 
 ---
 
@@ -415,19 +416,31 @@ type SDKFilesPersistedEvent = {
 
 ---
 
-## 11. TeammateIdle / TaskCompleted Hooks
+## 11. Hook Events Reference
 
-Two new hook events for agent teams coordination:
+### Official HookEvent Type (12 events)
 
 ```typescript
-// All 15 hook events:
-const HOOK_EVENTS = [
-  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
-  'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop',
-  'SubagentStart', 'SubagentStop', 'PreCompact', 'PermissionRequest',
-  'Setup', 'TeammateIdle', 'TaskCompleted',  // <-- new
-] as const;
+type HookEvent =
+  | 'PreToolUse'          // Before tool execution (can block/modify)
+  | 'PostToolUse'         // After tool execution
+  | 'PostToolUseFailure'  // After tool execution failure
+  | 'Notification'        // Agent status messages
+  | 'UserPromptSubmit'    // User prompt submission
+  | 'SessionStart'        // Session initialization
+  | 'SessionEnd'          // Session termination
+  | 'Stop'                // Agent execution stop
+  | 'SubagentStart'       // Subagent initialization
+  | 'SubagentStop'        // Subagent completion
+  | 'PreCompact'          // Conversation compaction
+  | 'PermissionRequest';  // Permission dialog
+```
 
+### Agent Teams Hooks (experimental, not in HookEvent type)
+
+These require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and type casting (`as any`):
+
+```typescript
 type TeammateIdleHookInput = BaseHookInput & {
   hook_event_name: 'TeammateIdle';
   teammate_name: string;
@@ -442,12 +455,58 @@ type TaskCompletedHookInput = BaseHookInput & {
   teammate_name?: string;
   team_name?: string;
 };
+```
 
+### All Hook Input Types
+
+```typescript
 type BaseHookInput = {
   session_id: string;
   transcript_path: string;
   cwd: string;
   permission_mode?: string;
+};
+
+type PostToolUseFailureHookInput = BaseHookInput & {
+  hook_event_name: 'PostToolUseFailure';
+  tool_name: string;
+  tool_input: unknown;
+  error: string;
+  is_interrupt?: boolean;
+};
+
+type SubagentStartHookInput = BaseHookInput & {
+  hook_event_name: 'SubagentStart';
+  agent_id: string;
+  agent_type: string;
+};
+
+type SubagentStopHookInput = BaseHookInput & {
+  hook_event_name: 'SubagentStop';
+  stop_hook_active: boolean;
+};
+
+type PermissionRequestHookInput = BaseHookInput & {
+  hook_event_name: 'PermissionRequest';
+  tool_name: string;
+  tool_input: unknown;
+  permission_suggestions?: PermissionUpdate[];
+};
+
+type NotificationHookInput = BaseHookInput & {
+  hook_event_name: 'Notification';
+  message: string;
+  title?: string;
+};
+
+type SessionStartHookInput = BaseHookInput & {
+  hook_event_name: 'SessionStart';
+  source: 'startup' | 'resume' | 'clear' | 'compact';
+};
+
+type SessionEndHookInput = BaseHookInput & {
+  hook_event_name: 'SessionEnd';
+  reason: string;  // 'clear' | 'logout' | 'prompt_input_exit' | 'bypass_permissions_disabled' | 'other'
 };
 ```
 
@@ -473,6 +532,38 @@ options: {
   }
 }
 ```
+
+### Hook Callback Output
+
+```typescript
+type HookJSONOutput = {
+  continue?: boolean;           // Whether agent should continue (default: true)
+  stopReason?: string;          // Message when continue is false
+  suppressOutput?: boolean;     // Hide stdout from transcript
+  systemMessage?: string;       // Inject context into conversation for Claude
+  hookSpecificOutput?:
+    | {
+        hookEventName: 'PreToolUse';
+        permissionDecision?: 'allow' | 'deny' | 'ask';
+        permissionDecisionReason?: string;
+        updatedInput?: Record<string, unknown>;   // Modified tool input
+      }
+    | {
+        hookEventName: 'UserPromptSubmit';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'SessionStart';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'PostToolUse';
+        additionalContext?: string;
+      };
+};
+```
+
+**Priority**: Deny > Ask > Allow > Default (ask). Any hook returning `deny` blocks the operation even if others return `allow`.
 
 ---
 
@@ -653,6 +744,139 @@ Enables middleware-style tool input transformation.
 
 ---
 
+## 19. Custom Permission Function (`canUseTool`)
+
+**Option**: `Options.canUseTool`
+
+Programmatic permission control for tool usage, complementing `permissionMode`:
+
+```typescript
+type CanUseTool = (
+  toolName: string,
+  input: ToolInput,
+  options: {
+    signal: AbortSignal;
+    suggestions?: PermissionUpdate[];
+  }
+) => Promise<PermissionResult>;
+
+type PermissionResult =
+  | { behavior: 'allow'; updatedInput: ToolInput; updatedPermissions?: PermissionUpdate[]; }
+  | { behavior: 'deny'; message: string; interrupt?: boolean; };
+```
+
+### Usage
+
+```typescript
+options: {
+  canUseTool: async (tool, input, { signal }) => {
+    if (tool === 'Bash' && input.dangerouslyDisableSandbox) {
+      return { behavior: 'deny', message: 'Unsandboxed commands not allowed' };
+    }
+    return { behavior: 'allow', updatedInput: input };
+  },
+}
+```
+
+**Note**: `canUseTool` is used for sandbox fallback when `allowUnsandboxedCommands: true` and model sets `dangerouslyDisableSandbox` in Bash input.
+
+---
+
+## 20. Session Forking (`forkSession`)
+
+**Option**: `Options.forkSession`
+
+When resuming a session, fork to a new session ID instead of continuing the original:
+
+```typescript
+// Fork: creates new session ID, original preserved
+options: {
+  resume: existingSessionId,
+  forkSession: true,
+}
+
+// Continue (default): appends to original session
+options: {
+  resume: existingSessionId,
+  forkSession: false,  // default
+}
+```
+
+### `resumeSessionAt`
+
+Resume a session at a specific message UUID (not just the end):
+
+```typescript
+options: {
+  resume: existingSessionId,
+  resumeSessionAt: 'specific-message-uuid',
+}
+```
+
+---
+
+## 21. In-Process MCP Servers (`createSdkMcpServer`)
+
+Create MCP servers that run in the same process (no subprocess overhead):
+
+```typescript
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod/v4';
+
+const server = createSdkMcpServer({
+  name: 'my-server',
+  version: '1.0.0',
+  tools: [
+    tool('get_status', 'Get system status', { component: z.string() },
+      async (args) => ({ content: [{ type: 'text', text: `Status: OK for ${args.component}` }] }),
+      { annotations: { readOnly: true, destructive: false, openWorld: false } }
+    ),
+  ],
+});
+
+options: {
+  mcpServers: { 'my-server': server },
+  allowedTools: ['mcp__my-server__get_status'],
+}
+```
+
+**Key advantage**: No subprocess startup cost, shared memory with host process.
+
+---
+
+## 22. Compact Boundary Messages
+
+When conversation history is compacted (auto or manual), the SDK emits a boundary message:
+
+```typescript
+type SDKCompactBoundaryMessage = {
+  type: 'system';
+  subtype: 'compact_boundary';
+  uuid: UUID;
+  session_id: string;
+  compact_metadata: {
+    trigger: 'manual' | 'auto';
+    pre_tokens: number;
+  };
+};
+```
+
+The `PreCompact` hook fires before compaction, allowing transcript archival:
+
+```typescript
+hooks: {
+  PreCompact: [{
+    hooks: [async (input) => {
+      const { trigger, custom_instructions } = input as PreCompactHookInput;
+      // Archive full transcript before compaction
+      return {};
+    }]
+  }]
+}
+```
+
+---
+
 ## CLI v2.1.32–2.1.44 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
@@ -695,15 +919,15 @@ options: {
 
 | Method | Description |
 |--------|-------------|
-| `interrupt()` | Stop current execution |
+| `interrupt()` | Stop current execution (streaming input mode) |
 | `setPermissionMode(mode)` | Change permission mode mid-session |
 | `setModel(model?)` | Switch model mid-session |
-| `initializationResult()` | Get full init response |
-| `supportedCommands()` | List available skills |
-| `supportedModels()` | List available models |
+| `setMaxThinkingTokens(n)` | Change max thinking tokens mid-session |
+| `supportedCommands()` | List available slash commands |
+| `supportedModels()` | List available models with display info |
 | `mcpServerStatus()` | Get MCP server statuses |
 | `accountInfo()` | Get account info |
-| `rewindFiles(messageId, opts?)` | Rewind file changes |
+| `rewindFiles(messageId, opts?)` | Rewind file changes (requires `enableFileCheckpointing`) |
 | `reconnectMcpServer(name)` | Reconnect MCP server |
 | `toggleMcpServer(name, enabled)` | Enable/disable MCP server |
 | `setMcpServers(servers)` | Replace dynamic MCP servers |
@@ -740,17 +964,31 @@ type SDKResultError = {
 };
 ```
 
-### SDKMessage Union (16 types)
+### SDKMessage Union
 
-`SDKAssistantMessage`, `SDKUserMessage`, `SDKUserMessageReplay`, `SDKResultMessage`, `SDKSystemMessage`, `SDKPartialAssistantMessage`, `SDKCompactBoundaryMessage`, `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+Core types (always present):
+
+```typescript
+type SDKMessage =
+  | SDKAssistantMessage          // Assistant response with content blocks
+  | SDKUserMessage               // User input message
+  | SDKUserMessageReplay         // Replayed user message (with required UUID)
+  | SDKResultMessage             // Final result (success or error subtypes)
+  | SDKSystemMessage             // System init message (subtype: 'init')
+  | SDKPartialAssistantMessage   // Streaming partial (requires includePartialMessages)
+  | SDKCompactBoundaryMessage;   // Conversation compaction boundary
+```
+
+Additional types emitted during streaming: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
 
 ### Available Tools Reference
 
-* **File Ops**: `Read`, `Write`, `Edit`, `Glob`, `Grep`
+* **File Ops**: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit`
 * **Shell**: `Bash`, `BashOutput`, `KillBash`
-* **Interaction** (user-facing, filtered from subagents): `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TaskOutput`
-* **Delegation**: `Task`
+* **Interaction**: `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TodoWrite`
+* **Delegation**: `Task`, `TaskOutput`
 * **Web**: `WebSearch`, `WebFetch`
+* **MCP**: `ListMcpResources`, `ReadMcpResource`
 
 ---
 

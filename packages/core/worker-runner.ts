@@ -1,9 +1,10 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import { db } from '../db/client';
-import { workers, tasks } from '../db/schema';
+import { workers, tasks, type ResultMeta } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { config } from '../config';
+import { createBuilddMcpServer } from './buildd-mcp-server';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
 
 export class WorkerRunner extends EventEmitter {
@@ -13,6 +14,7 @@ export class WorkerRunner extends EventEmitter {
   private costUsd = 0;
   private turns = 0;
   private startTime: Date | null = null;
+  private toolFailures: Record<string, { count: number; errors: string[]; interrupts: number }> = {};
 
   constructor(workerId: string) {
     super();
@@ -66,31 +68,56 @@ export class WorkerRunner extends EventEmitter {
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
       }
 
-      // Build plugins from workspace config
+      // Build plugins and sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+      const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
+
+      // Extract outputSchema from task for structured output support
+      const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
+
+      // Create in-process MCP server for Buildd coordination tools
+      const builddMcpServer = config.builddApiKey
+        ? createBuilddMcpServer({
+            serverUrl: config.builddServerUrl,
+            apiKey: config.builddApiKey,
+            workerId: this.workerId,
+            workspaceId: worker.workspace?.id,
+          })
+        : null;
+
+      if (builddMcpServer) {
+        allowedTools.push('mcp__buildd__buildd', 'mcp__buildd__buildd_memory');
+      }
 
       for await (const message of query({
         prompt: fullPrompt,
         options: {
+          sessionId: this.workerId,
           cwd: worker.workspace?.localPath || process.cwd(),
           model: config.anthropicModel,
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
           enableFileCheckpointing: true,
+          maxBudgetUsd: config.maxCostPerWorker || undefined,
           env,
           settingSources: ['user', 'project'],
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
+          ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+          // Structured output: pass outputFormat if task defines an outputSchema
+          ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
+          ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
-            // TeammateIdle/TaskCompleted: agent team lifecycle hooks (SDK v0.2.33+)
+            // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
+            ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
           },
@@ -164,13 +191,45 @@ export class WorkerRunner extends EventEmitter {
     if (msg.type === 'result') {
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
+      const isBudgetExceeded = resultMsg.subtype === 'error_max_budget_usd';
+
+      // Extract SDK result metadata
+      const resultMeta: ResultMeta = {
+        stopReason: resultMsg.stop_reason ?? null,
+        durationMs: resultMsg.duration_ms ?? 0,
+        durationApiMs: resultMsg.duration_api_ms ?? 0,
+        numTurns: resultMsg.num_turns ?? this.turns,
+        modelUsage: resultMsg.usage?.byModel ?? {},
+        ...(resultMsg.permission_denials?.length > 0 && {
+          permissionDenials: resultMsg.permission_denials.map((d: any) => ({
+            tool: d.tool_name || d.tool || 'unknown',
+            reason: d.reason || d.message || '',
+          })),
+        }),
+      };
+
+      // Use SDK's turn count if available (more accurate than manual counter)
+      const turns = resultMeta.numTurns || this.turns;
+
+      // Populate inputTokens/outputTokens from modelUsage aggregate
+      let totalInput = 0;
+      let totalOutput = 0;
+      for (const usage of Object.values(resultMeta.modelUsage)) {
+        totalInput += usage.inputTokens + usage.cacheReadInputTokens;
+        totalOutput += usage.outputTokens;
+      }
 
       await db.update(workers).set({
         status: resultMsg.is_error ? 'error' : 'completed',
         costUsd: this.costUsd.toString(),
-        turns: this.turns,
+        turns,
         completedAt: new Date(),
-        error: resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+        error: isBudgetExceeded
+          ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
+          : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+        resultMeta,
+        ...(totalInput > 0 && { inputTokens: totalInput }),
+        ...(totalOutput > 0 && { outputTokens: totalOutput }),
       }).where(eq(workers.id, this.workerId));
 
       const worker = await db.query.workers.findFirst({
@@ -195,6 +254,10 @@ export class WorkerRunner extends EventEmitter {
             removed: worker.linesRemoved ?? 0,
             prUrl: worker.prUrl ?? undefined,
             prNumber: worker.prNumber ?? undefined,
+            // Include structured output from SDK if present
+            ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
+              ? { structuredOutput: resultMsg.structured_output }
+              : {}),
           };
         }
 
@@ -225,11 +288,14 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
+      const totalToolFailures = Object.values(this.toolFailures).reduce((sum, s) => sum + s.count, 0);
       this.emitEvent('worker:completed', {
         result: resultMsg.result,
         costUsd: this.costUsd,
-        turns: this.turns,
-        durationMs: Date.now() - (this.startTime?.getTime() || 0),
+        turns,
+        durationMs: resultMeta.durationMs || (Date.now() - (this.startTime?.getTime() || 0)),
+        resultMeta,
+        ...(totalToolFailures > 0 ? { toolFailures: this.toolFailures } : {}),
       });
     }
   }
@@ -276,6 +342,34 @@ export class WorkerRunner extends EventEmitter {
 
   private postToolUseHook: HookCallback = async () => {
     this.emitEvent('worker:cost', { costUsd: this.costUsd });
+    return {};
+  };
+
+  private postToolUseFailureHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
+
+    const toolName = (input as any).tool_name as string;
+    const error = (input as any).error as string;
+    const isInterrupt = (input as any).is_interrupt as boolean | undefined;
+
+    // Aggregate failure stats per tool
+    if (!this.toolFailures[toolName]) {
+      this.toolFailures[toolName] = { count: 0, errors: [], interrupts: 0 };
+    }
+    const stats = this.toolFailures[toolName];
+    stats.count++;
+    if (isInterrupt) stats.interrupts++;
+    // Keep last 5 unique errors per tool to avoid unbounded growth
+    if (!stats.errors.includes(error)) {
+      if (stats.errors.length >= 5) stats.errors.shift();
+      stats.errors.push(error);
+    }
+
+    this.emitEvent('worker:tool_failure', {
+      toolName,
+      error,
+      isInterrupt: isInterrupt ?? false,
+    });
     return {};
   };
 

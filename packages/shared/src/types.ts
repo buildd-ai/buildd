@@ -216,6 +216,7 @@ export interface TaskResult {
   removed?: number;
   prUrl?: string;
   prNumber?: number;
+  structuredOutput?: Record<string, unknown>;
 }
 
 export interface Task {
@@ -240,6 +241,7 @@ export interface Task {
   createdByWorkerId: string | null;
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
+  outputSchema?: Record<string, unknown> | null;
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
@@ -446,6 +448,8 @@ export interface CreateTaskInput {
   creationSource?: CreationSourceValue;
   // Skill reference — server resolves slug to contentHash
   skillRef?: { slug: string };
+  // JSON Schema for structured output — passed to SDK outputFormat
+  outputSchema?: Record<string, unknown>;
 }
 
 export interface CreateWorkerInput {
@@ -586,6 +590,7 @@ export type SSEEventType =
   | 'worker:error'
   | 'worker:waiting'
   | 'worker:completed'
+  | 'worker:tool_failure'
   | 'task:updated';
 
 export interface SSEEvent<T = unknown> {

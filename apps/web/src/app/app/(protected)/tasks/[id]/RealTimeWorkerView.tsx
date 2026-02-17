@@ -37,6 +37,14 @@ interface Worker {
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
   pendingInstructions: string | null;
   account?: { authType: string } | null;
+  resultMeta?: {
+    stopReason: string | null;
+    durationMs: number;
+    durationApiMs: number;
+    numTurns: number;
+    modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>;
+    permissionDenials?: Array<{ tool: string; reason: string }>;
+  } | null;
 }
 
 interface Props {
@@ -420,6 +428,37 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             <span className="text-text-muted">
               {worker.lastCommitSha.slice(0, 7)}
             </span>
+          )}
+        </div>
+      )}
+
+      {/* Per-model usage breakdown */}
+      {worker.resultMeta?.modelUsage && Object.keys(worker.resultMeta.modelUsage).length > 0 && (
+        <div className="mt-3 p-3 bg-surface-3 rounded-[8px] border border-border-default/50">
+          <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">Model Usage</div>
+          <div className="space-y-1.5">
+            {Object.entries(worker.resultMeta.modelUsage).map(([model, usage]) => (
+              <div key={model} className="flex items-center justify-between font-mono text-[11px]">
+                <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                <div className="flex items-center gap-3 text-text-muted">
+                  <span>{((usage.inputTokens + usage.cacheReadInputTokens) / 1000).toFixed(0)}k in</span>
+                  <span>{(usage.outputTokens / 1000).toFixed(0)}k out</span>
+                  {usage.cacheReadInputTokens > 0 && (
+                    <span className="text-status-success">{(usage.cacheReadInputTokens / 1000).toFixed(0)}k cached</span>
+                  )}
+                  {usage.costUSD > 0 && <span>${usage.costUSD.toFixed(4)}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {(worker.resultMeta.durationMs > 0 || worker.resultMeta.durationApiMs > 0) && (
+            <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[10px] text-text-muted">
+              {worker.resultMeta.durationMs > 0 && <span>Total: {(worker.resultMeta.durationMs / 1000).toFixed(0)}s</span>}
+              {worker.resultMeta.durationApiMs > 0 && <span>API: {(worker.resultMeta.durationApiMs / 1000).toFixed(0)}s</span>}
+              {worker.resultMeta.stopReason && worker.resultMeta.stopReason !== 'end_turn' && (
+                <span className="text-status-warning">Stop: {worker.resultMeta.stopReason}</span>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -121,6 +121,21 @@ export interface WorkspaceGitConfig {
   // Plugin directories to load when workers start tasks
   // Each path should point to a directory containing .claude-plugin/plugin.json
   pluginPaths?: string[];
+
+  // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
+  // The SDK will stop the agent when this limit is reached
+  maxBudgetUsd?: number;
+
+  // Sandbox configuration for worker isolation (SDK v0.2.44+)
+  sandbox?: {
+    enabled?: boolean;
+    autoAllowBashIfSandboxed?: boolean;
+    network?: {
+      allowedDomains?: string[];
+      allowLocalBinding?: boolean;
+    };
+    excludedCommands?: string[];
+  };
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
@@ -168,6 +183,26 @@ export interface TaskResult {
   removed?: number;
   prUrl?: string;
   prNumber?: number;
+  structuredOutput?: Record<string, unknown>;
+}
+
+// Per-model token usage from SDK result
+export interface ModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUSD: number;
+}
+
+// SDK result metadata - captured from SDKResultSuccess/SDKResultError
+export interface ResultMeta {
+  stopReason: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  modelUsage: Record<string, ModelUsage>;
+  permissionDenials?: Array<{ tool: string; reason: string }>;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -234,6 +269,8 @@ export const tasks = pgTable('tasks', {
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // JSON Schema for structured output — passed to SDK outputFormat
+  outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion
   result: jsonb('result').$type<TaskResult | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -290,6 +327,8 @@ export const workers = pgTable('workers', {
     message: string;
     timestamp: number;
   }>>(),
+  // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
+  resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
