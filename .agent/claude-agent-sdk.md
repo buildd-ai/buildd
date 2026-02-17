@@ -1,6 +1,6 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-> **Version investigated**: 0.1.77 / 0.2.37
+> **Version investigated**: 0.2.44 (all packages aligned)
 
 ### Recent Updates (2025-02)
 
