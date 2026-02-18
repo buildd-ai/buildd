@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",
-    "@anthropic-ai/claude-agent-sdk": ">=0.2.45",
+    "@anthropic-ai/claude-agent-sdk": ">=0.2.47",
     "zod": "^4.3.6",
     "@neondatabase/serverless": "^0.9.0",
     "drizzle-orm": "^0.30.0",
