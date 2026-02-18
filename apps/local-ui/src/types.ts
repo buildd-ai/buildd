@@ -304,4 +304,6 @@ export interface LocalUIConfig {
   rejectRemoteInstallers?: boolean;
   // Maximum budget in USD per worker session (local fallback; workspace gitConfig.maxBudgetUsd takes priority)
   maxBudgetUsd?: number;
+  // Maximum turns per worker session (default: no limit)
+  maxTurns?: number;
 }

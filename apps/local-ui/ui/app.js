@@ -80,6 +80,7 @@ async function checkConfig() {
     config.openBrowser = data.openBrowser !== false; // default true
     config.model = data.model || config.model;
     config.maxConcurrent = data.maxConcurrent || 3;
+    config.maxTurns = data.maxTurns || null;
     updateOutboxBadge(data.outboxCount || 0);
 
     if (isConfigured || isServerless) {
@@ -1249,6 +1250,31 @@ function updateSettings() {
     maxDebounce = setTimeout(() => handleMaxConcurrentChange(val), 300);
   };
 
+  const maxTurnsEl = document.getElementById('settingsMaxTurns');
+  if (maxTurnsEl) {
+    maxTurnsEl.innerHTML = `
+      <input type="number" min="1" max="10000" value="${config.maxTurns || ''}"
+        placeholder="No limit"
+        class="bg-surface border border-border-default rounded-lg py-2 px-3 text-sm text-text-primary w-28 focus:outline-none focus:border-focus-ring"
+        id="settingsMaxTurnsInput">
+    `;
+    const maxTurnsInput = document.getElementById('settingsMaxTurnsInput');
+    let maxTurnsDebounce = null;
+    maxTurnsInput.onchange = () => {
+      const raw = maxTurnsInput.value.trim();
+      if (!raw) {
+        // Empty = no limit
+        clearTimeout(maxTurnsDebounce);
+        maxTurnsDebounce = setTimeout(() => handleMaxTurnsChange(null), 300);
+        return;
+      }
+      const val = Math.max(1, Math.min(10000, parseInt(raw) || 1));
+      maxTurnsInput.value = val;
+      clearTimeout(maxTurnsDebounce);
+      maxTurnsDebounce = setTimeout(() => handleMaxTurnsChange(val), 300);
+    };
+  }
+
   const bypassCheckbox = document.getElementById('settingsBypass');
   if (bypassCheckbox) {
     bypassCheckbox.checked = config.bypassPermissions || false;
@@ -1476,6 +1502,26 @@ async function handleMaxConcurrentChange(value) {
   } catch (err) {
     console.error('Failed to update max concurrent:', err);
     showToast('Failed to update max concurrent setting', 'error');
+  }
+}
+
+async function handleMaxTurnsChange(value) {
+  try {
+    const res = await fetch('./api/config/max-turns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxTurns: value }),
+    });
+
+    if (res.ok) {
+      config.maxTurns = value;
+      showToast(value ? `Max turns set to ${value}` : 'Max turns limit removed', 'success');
+    } else {
+      showToast('Failed to update max turns setting', 'error');
+    }
+  } catch (err) {
+    console.error('Failed to update max turns:', err);
+    showToast('Failed to update max turns setting', 'error');
   }
 }
 

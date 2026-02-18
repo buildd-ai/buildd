@@ -1219,6 +1219,25 @@ export class WorkerManager {
     return undefined;
   }
 
+  // Resolve maxTurns for SDK-level turn limiting.
+  // Priority: workspace gitConfig (if admin_confirmed) > local config > undefined (no limit)
+  private resolveMaxTurns(workspaceConfig: { gitConfig?: any; configStatus?: string }): number | undefined {
+    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
+    const wsTurns = workspaceConfig.gitConfig?.maxTurns;
+
+    // Workspace-level setting takes priority if admin confirmed
+    if (isAdminConfirmed && typeof wsTurns === 'number' && wsTurns > 0) {
+      return wsTurns;
+    }
+
+    // Fall back to local-ui config
+    if (typeof this.config.maxTurns === 'number' && this.config.maxTurns > 0) {
+      return this.config.maxTurns;
+    }
+
+    return undefined;
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const inputStream = new MessageStream();
@@ -1502,6 +1521,9 @@ export class WorkerManager {
         ? ['context-1m-2025-08-07' as const]
         : undefined;
 
+      // Resolve max turns for SDK-level turn limiting
+      const maxTurns = this.resolveMaxTurns(workspaceConfig);
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
@@ -1514,6 +1536,7 @@ export class WorkerManager {
         systemPrompt,
         enableFileCheckpointing: true,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+        ...(maxTurns ? { maxTurns } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
