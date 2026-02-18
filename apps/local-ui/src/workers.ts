@@ -1120,46 +1120,49 @@ export class WorkerManager {
       const gitConfig = workspaceConfig.gitConfig;
       const isConfigured = workspaceConfig.configStatus === 'admin_confirmed';
 
-      // Build message content with text and images
-      const content: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
+      // Extract image attachments from task context (if any)
+      // Supported formats: image/jpeg, image/png, image/gif, image/webp (Anthropic API)
+      const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+      const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB per image
+      const imageBlocks: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
 
-      // Add text description
-      content.push({ type: 'text', text: task.description || task.title });
-
-      // Add image attachments if present (from task.context.attachments)
-      // Supports both presigned URL format (from R2) and inline base64 data URLs (legacy)
       const ctx = task.context as { attachments?: Array<{ filename: string; mimeType: string; data?: string; url?: string }> } | undefined;
       if (ctx?.attachments && Array.isArray(ctx.attachments)) {
         for (const att of ctx.attachments) {
-          if (att.url && att.mimeType) {
+          if (!SUPPORTED_IMAGE_TYPES.has(att.mimeType)) {
+            this.addMilestone(worker, { type: 'status', label: `Skipped unsupported: ${att.filename} (${att.mimeType})`, ts: Date.now() });
+            continue;
+          }
+
+          if (att.url) {
             // R2 presigned URL format — fetch and convert to base64
             try {
               const response = await fetch(att.url);
+              if (!response.ok) {
+                this.addMilestone(worker, { type: 'status', label: `Failed to fetch image: ${att.filename} (${response.status})`, ts: Date.now() });
+                continue;
+              }
               const arrayBuffer = await response.arrayBuffer();
+              if (arrayBuffer.byteLength > MAX_IMAGE_BYTES) {
+                this.addMilestone(worker, { type: 'status', label: `Skipped oversized: ${att.filename} (${Math.round(arrayBuffer.byteLength / 1024 / 1024)}MB)`, ts: Date.now() });
+                continue;
+              }
               const base64Data = Buffer.from(arrayBuffer).toString('base64');
-              content.push({
+              imageBlocks.push({
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: att.mimeType,
-                  data: base64Data,
-                },
+                source: { type: 'base64', media_type: att.mimeType, data: base64Data },
               });
               this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             } catch (err) {
               this.addMilestone(worker, { type: 'status', label: `Failed to fetch image: ${att.filename}`, ts: Date.now() });
             }
-          } else if (att.data && att.mimeType) {
+          } else if (att.data) {
             // Inline base64 data URL format (legacy)
             const base64Match = att.data.match(/^data:([^;]+);base64,(.+)$/);
             if (base64Match) {
-              content.push({
+              imageBlocks.push({
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: base64Match[1],
-                  data: base64Match[2],
-                },
+                source: { type: 'base64', media_type: base64Match[1], data: base64Match[2] },
               });
               this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             }
@@ -1421,9 +1424,20 @@ export class WorkerManager {
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
       };
 
+      // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
+      // so image content blocks are included in the initial message to the agent.
+      const prompt: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
+        ? (async function* () {
+            yield buildUserMessage([
+              { type: 'text', text: promptText },
+              ...imageBlocks,
+            ]);
+          })()
+        : promptText;
+
       // Start query with full options
       const queryInstance = query({
-        prompt: promptText,
+        prompt,
         options: queryOptions,
       });
 
@@ -1460,11 +1474,6 @@ export class WorkerManager {
         if (msg.type === 'result') {
           break;
         }
-      }
-
-      // Note: Image attachments temporarily disabled - need to handle via follow-up message
-      if (ctx?.attachments && ctx.attachments.length > 0) {
-        console.log(`[Worker ${worker.id}] Warning: ${ctx.attachments.length} image attachments not sent (TODO)`);
       }
 
       // Check if session actually did work or just errored
