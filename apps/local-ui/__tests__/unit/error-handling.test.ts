@@ -104,6 +104,11 @@ mock.module('fs', () => ({
   readFileSync: () => '{}',
   writeFileSync: () => {},
   mkdirSync: () => {},
+  unlinkSync: () => {},
+  renameSync: () => {},
+  readdirSync: () => [],
+  appendFileSync: () => {},
+  statSync: () => ({ size: 0, mtimeMs: 0 }),
 }));
 
 // Mock worker-store
