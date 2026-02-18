@@ -930,7 +930,11 @@ const server = Bun.serve({
 
     if (path === '/api/retry' && req.method === 'POST') {
       const body = await parseBody(req);
-      await workerManager!.retry(body.workerId);
+      if (body.withPlan) {
+        await workerManager!.retryWithPlan(body.workerId);
+      } else {
+        await workerManager!.retry(body.workerId);
+      }
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
@@ -1101,6 +1105,17 @@ const server = Bun.serve({
         return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
       }
       return Response.json({ toolCalls: worker.toolCalls, messages: worker.messages }, { headers: corsHeaders });
+    }
+
+    // Session logs endpoint — returns structured log entries from file
+    if (path.startsWith('/api/workers/') && path.endsWith('/logs') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const maxLines = parseInt(url.searchParams.get('limit') || '100', 10);
+      const logs = workerManager.getSessionLogs(workerId, maxLines);
+      return Response.json({ logs }, { headers: corsHeaders });
     }
 
     // Command endpoint for direct access (when server relays or user accesses directly)
