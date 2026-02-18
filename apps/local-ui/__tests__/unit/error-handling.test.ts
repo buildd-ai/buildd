@@ -679,8 +679,10 @@ describe('Error Handling', () => {
     });
 
     test('sync response with invalid JSON instructions is handled gracefully', async () => {
-      // updateWorker returns response with non-JSON instructions
-      mockUpdateWorker.mockImplementation(async () => ({
+      // updateWorker returns response with non-JSON instructions (only first call)
+      // Using mockImplementationOnce to avoid infinite loop: plain-text instructions
+      // trigger sendMessage which calls updateWorker again, creating a cycle.
+      mockUpdateWorker.mockImplementationOnce(async () => ({
         instructions: 'Plain text instruction: do this thing',
       }));
 
