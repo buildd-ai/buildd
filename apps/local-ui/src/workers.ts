@@ -10,6 +10,7 @@ import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
+import { sessionLog, cleanupOldLogs, readSessionLogs } from './session-logger';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
@@ -180,8 +181,8 @@ export class WorkerManager {
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
     this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
 
-    // Run cleanup every 30 minutes
-    this.cleanupInterval = setInterval(() => this.runCleanup(), 30 * 60 * 1000);
+    // Run cleanup every 30 minutes (includes session logs)
+    this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
@@ -1102,6 +1103,7 @@ export class WorkerManager {
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
+    sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -1478,6 +1480,7 @@ export class WorkerManager {
 
       if (isAuthError) {
         // Auth error - mark as failed, not completed
+        sessionLog(worker.id, 'error', 'auth_error', 'Agent authentication failed — check API key', worker.taskId);
         worker.status = 'error';
         worker.error = 'Agent authentication failed';
         worker.currentAction = 'Auth failed';
@@ -1488,6 +1491,7 @@ export class WorkerManager {
         storeSaveWorker(worker);
       } else if (resultSubtype === 'error_max_budget_usd') {
         // Budget exceeded - report as error with specific message
+        sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
@@ -1504,6 +1508,7 @@ export class WorkerManager {
         storeSaveWorker(worker);
       } else {
         // Actually completed - collect git stats before reporting
+        sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         worker.status = 'done';
@@ -1577,6 +1582,7 @@ export class WorkerManager {
       if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
+        sessionLog(worker.id, 'warn', 'session_abort', worker.error || 'Session aborted', worker.taskId);
         worker.status = 'error';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
@@ -1586,9 +1592,12 @@ export class WorkerManager {
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
         // Unexpected error
+        const errMsg = error instanceof Error ? error.message : 'Unknown error';
+        const errStack = error instanceof Error ? error.stack : undefined;
         console.error(`Worker ${worker.id} error:`, error);
+        sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
         worker.status = 'error';
-        worker.error = error instanceof Error ? error.message : 'Unknown error';
+        worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
@@ -1783,6 +1792,7 @@ export class WorkerManager {
             // Auto-approve entering plan mode — respond immediately so the SDK doesn't stall
             const enterPlanToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
+            sessionLog(worker.id, 'info', 'enter_plan_mode', `toolUseId=${enterPlanToolUseId}`, worker.taskId);
             worker.currentAction = 'Planning...';
             this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
             // Enqueue approval response so the SDK can proceed
@@ -1803,6 +1813,7 @@ export class WorkerManager {
             console.log(`[Worker ${worker.id}] ExitPlanMode — planContent length: ${worker.planContent.length} chars`);
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
+            sessionLog(worker.id, 'info', 'exit_plan_mode', `planLength=${worker.planContent.length} toolUseId=${planToolUseId}`, worker.taskId);
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'plan_approval',
@@ -1841,8 +1852,10 @@ export class WorkerManager {
       const result = msg as any;
       if (result.subtype === 'error_max_budget_usd') {
         this.addMilestone(worker, { type: 'status', label: `Budget limit exceeded ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
+        sessionLog(worker.id, 'error', 'result_budget_exceeded', `cost=$${result.total_cost_usd?.toFixed(2) || '?'}`, worker.taskId);
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
+        sessionLog(worker.id, 'error', 'result_error', `subtype=${result.subtype} stopReason=${result.stop_reason}`, worker.taskId);
       }
 
       // Capture SDK result metadata for server sync
@@ -1995,6 +2008,10 @@ export class WorkerManager {
     }
   }
 
+  getSessionLogs(workerId: string, maxLines = 100) {
+    return readSessionLogs(workerId, maxLines);
+  }
+
   async rollback(workerId: string, checkpointUuid: string, dryRun = false): Promise<{ success: boolean; error?: string; filesChanged?: number; insertions?: number; deletions?: number }> {
     const worker = this.workers.get(workerId);
     if (!worker) {
@@ -2134,6 +2151,76 @@ export class WorkerManager {
     });
   }
 
+  async retryWithPlan(workerId: string) {
+    const worker = this.workers.get(workerId);
+    if (!worker || !worker.planContent) return;
+
+    sessionLog(worker.id, 'info', 'retry_with_plan', `planLength=${worker.planContent.length}`, worker.taskId);
+
+    // Abort current session if any
+    const session = this.sessions.get(workerId);
+    if (session) {
+      session.abortController.abort();
+      session.inputStream.end();
+      this.sessions.delete(workerId);
+    }
+
+    // Reset worker state
+    worker.status = 'working';
+    worker.error = undefined;
+    worker.currentAction = 'Re-executing plan...';
+    worker.hasNewActivity = true;
+    worker.lastActivity = Date.now();
+    worker.completedAt = undefined;
+    this.addMilestone(worker, { type: 'status', label: 'Retrying with saved plan', ts: Date.now() });
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+
+    await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Re-executing plan...' });
+
+    const workspacePath = this.resolver.resolve({
+      id: worker.workspaceId,
+      name: worker.workspaceName,
+      repo: undefined,
+    });
+
+    if (!workspacePath) {
+      worker.status = 'error';
+      worker.error = 'Cannot resolve workspace path';
+      worker.currentAction = 'Workspace not found';
+      worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
+      this.emit({ type: 'worker_update', worker });
+      await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
+      return;
+    }
+
+    const task: BuilddTask = {
+      id: worker.taskId,
+      title: worker.taskTitle,
+      description: `Execute this plan:\n\n${worker.planContent}`,
+      workspaceId: worker.workspaceId,
+      workspace: { name: worker.workspaceName },
+      status: 'assigned',
+      priority: 1,
+      mode: 'execution',
+    };
+
+    this.startSession(worker, workspacePath, task).catch(err => {
+      const errMsg = err instanceof Error ? err.message : 'Plan retry failed';
+      console.error(`[Worker ${worker.id}] Plan retry failed:`, err);
+      sessionLog(worker.id, 'error', 'plan_retry_failed', errMsg, worker.taskId);
+      if (worker.status === 'working') {
+        worker.status = 'error';
+        worker.error = errMsg;
+        worker.currentAction = 'Plan retry failed';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        this.emit({ type: 'worker_update', worker });
+      }
+    });
+  }
+
   async markDone(workerId: string) {
     const worker = this.workers.get(workerId);
     if (worker) {
@@ -2256,6 +2343,7 @@ export class WorkerManager {
         const planText = worker.planContent || worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
         if (!planText) {
           console.error(`[Worker ${worker.id}] Plan approval but no plan content found — falling through to enqueue`);
+          sessionLog(worker.id, 'warn', 'plan_approval_empty', 'No plan content found, falling through to enqueue', worker.taskId);
           // Fall through to normal enqueue so the message at least reaches the agent
         } else {
           // Kill current session
@@ -2284,6 +2372,7 @@ export class WorkerManager {
           worker.hasNewActivity = true;
           worker.lastActivity = Date.now();
           this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length}`, worker.taskId);
           this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
           this.emit({ type: 'worker_update', worker });
 
@@ -2296,9 +2385,11 @@ export class WorkerManager {
           });
           if (workspacePath) {
             this.startSession(worker, workspacePath, task).catch(err => {
+              const errMsg = err instanceof Error ? err.message : 'Plan execution failed';
               console.error(`[Worker ${worker.id}] Fresh plan execution failed:`, err);
+              sessionLog(worker.id, 'error', 'plan_execution_failed', errMsg, worker.taskId);
               worker.status = 'error';
-              worker.error = err instanceof Error ? err.message : 'Plan execution failed';
+              worker.error = errMsg;
               worker.currentAction = 'Execution failed';
               worker.hasNewActivity = true;
               worker.completedAt = Date.now();
