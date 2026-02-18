@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 18 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.45` | Bump to >=0.2.47 recommended |
+| `apps/agent` | `>=0.2.45` | Bump to >=0.2.47 recommended |
+| `apps/local-ui` | `>=0.2.45` | Bump to >=0.2.47 recommended |
 
 ---
 
@@ -484,6 +484,7 @@ type SubagentStartHookInput = BaseHookInput & {
 type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: 'SubagentStop';
   stop_hook_active: boolean;
+  last_assistant_message?: string;  // v2.1.47: final response text from subagent
 };
 
 type PermissionRequestHookInput = BaseHookInput & {
@@ -507,6 +508,11 @@ type SessionStartHookInput = BaseHookInput & {
 type SessionEndHookInput = BaseHookInput & {
   hook_event_name: 'SessionEnd';
   reason: string;  // 'clear' | 'logout' | 'prompt_input_exit' | 'bypass_permissions_disabled' | 'other'
+};
+
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  last_assistant_message?: string;  // v2.1.47: final response text from agent
 };
 ```
 
@@ -967,10 +973,66 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## 27. `last_assistant_message` in Stop/SubagentStop Hooks (SDK v0.2.47)
+
+Stop and SubagentStop hook inputs now include the agent's final response text:
+
+```typescript
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  last_assistant_message?: string;  // Final response text from agent
+};
+
+type SubagentStopHookInput = BaseHookInput & {
+  hook_event_name: 'SubagentStop';
+  stop_hook_active: boolean;
+  last_assistant_message?: string;  // Final response text from subagent
+};
+```
+
+Useful for capturing the agent's summary/conclusion without parsing the full message stream. Can be surfaced in task completion events or dashboard.
+
+---
+
+## 28. Parallel File Edit Resilience (SDK v0.2.47)
+
+A single file write/edit error no longer aborts all other parallel file operations. Independent file mutations complete successfully even when a sibling fails. This improves reliability for agents making multiple concurrent file changes.
+
+---
+
+## 29. Memory & Performance Improvements (SDK v0.2.47)
+
+Multiple memory and startup improvements:
+- **API stream buffers released** after processing — prevents RSS growth in long sessions
+- **Agent context and skill state** released after task completion
+- **O(n^2) progress update accumulation** eliminated — messages no longer pile up quadratically
+- **SessionStart hook execution deferred** — reduces time-to-interactive by ~500ms
+- **Agent task message history trimmed** after tasks complete
+
+These benefit long-running Buildd workers that spawn multiple subagents.
+
+---
+
+## 30. Concurrent Agent Session Fix (SDK v0.2.47)
+
+Fixed API 400 errors ("thinking blocks cannot be modified") in sessions with concurrent agents, caused by interleaved streaming content blocks. This was a blocking issue for agent teams with multiple simultaneous teammates.
+
+---
+
+## 31. Git Worktree Fixes (SDK v0.2.47)
+
+- Background tasks no longer fail in git worktrees due to remote URL resolution
+- Custom agents and skills now properly discovered from worktree directories (fixed in v2.1.45, further improved in v2.1.47)
+
+These are particularly relevant for Buildd's worktree-based worker isolation pattern.
+
+---
+
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `last_assistant_message` on Stop/SubagentStop hooks; parallel file edit resilience; memory improvements (stream buffer + agent context release); startup perf (~500ms faster); concurrent agent API 400 fix; background agent results fix; git worktree task fix; custom agent `model` field fix; `tool_decision` OTel in SDK mode |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +1047,14 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **Concurrent agent API 400 errors** ("thinking blocks cannot be modified") fixed when interleaved streaming (v2.1.47) — critical for agent teams
+- **Background agent results** now return the agent's final answer instead of raw transcript data (v2.1.47)
+- **Background tasks in git worktrees** no longer fail due to remote URL resolution (v2.1.47) — affects worktree-based workers
+- **Custom agent `model` field** in `.claude/agents/*.md` now respected when spawning teammates (v2.1.47)
+- **Parallel file edits** — a single file write/edit error no longer aborts all other parallel operations (v2.1.47)
+- **Memory improvements** — API stream buffers, agent context, and skill state released after use; O(n^2) progress update accumulation eliminated (v2.1.47)
+- **Startup performance** — SessionStart hook deferred, ~500ms faster time-to-interactive (v2.1.47)
+- **`tool_decision` OTel telemetry** now emitted in headless/SDK mode (v2.1.47)
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,7 +1065,7 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1015,10 +1085,9 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority |
 |-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
+| Bump SDK pin to `>=0.2.47` | Concurrent agent fix, memory improvements, worktree fix | P2 |
+| Capture `last_assistant_message` in SubagentStop/Stop hooks | New v2.1.47 hook field — surface final agent response in dashboard | P3 |
 | Effort/thinking controls | `effort`, `thinking` options | P4 |
-| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
-| maxTurns in local-ui | `maxTurns` option | P4 |
 | Fallback model | `fallbackModel` option | P4 |
 
 ---
