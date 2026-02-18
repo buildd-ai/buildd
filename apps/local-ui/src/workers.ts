@@ -1512,6 +1512,10 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
 
+      // Resolve fallback model: task-level override > workspace-level setting
+      const taskFallbackModel = (task.context as any)?.fallbackModel as string | undefined;
+      const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
+
       // Resolve 1M context beta: task-level override > workspace-level setting
       const taskExtendedContext = (task.context as any)?.extendedContext;
       const extendedContext = taskExtendedContext !== undefined
@@ -1529,6 +1533,7 @@ export class WorkerManager {
         sessionId: worker.id,
         cwd,
         model: this.config.model,
+        ...(fallbackModel ? { fallbackModel } : {}),
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md

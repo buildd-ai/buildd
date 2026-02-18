@@ -78,6 +78,10 @@ export class WorkerRunner extends EventEmitter {
       // Extract outputSchema from task for structured output support
       const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
 
+      // Resolve fallback model: task-level override > workspace-level setting
+      const taskFallbackModel = (worker.task as any)?.context?.fallbackModel as string | undefined;
+      const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
+
       // Resolve 1M context beta: task-level override > workspace-level setting
       const taskExtendedContext = (worker.task as any)?.context?.extendedContext;
       const extendedContext = taskExtendedContext !== undefined
@@ -107,6 +111,7 @@ export class WorkerRunner extends EventEmitter {
           sessionId: this.workerId,
           cwd: worker.workspace?.localPath || process.cwd(),
           model: config.anthropicModel,
+          ...(fallbackModel ? { fallbackModel } : {}),
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,

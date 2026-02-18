@@ -141,6 +141,11 @@ export interface WorkspaceGitConfig {
   debug?: boolean;               // Enable verbose SDK debug output to stderr
   debugFile?: string;             // File path to write SDK debug logs to
 
+  // Fallback model (SDK v0.2.45+)
+  // Automatically switches to this model if the primary model fails (e.g., rate limited, unavailable).
+  // Can be overridden per-task via task.context.fallbackModel.
+  fallbackModel?: string;
+
   // 1M context window beta (SDK v0.2.45+)
   // Enables 'context-1m-2025-08-07' beta for Sonnet 4.x models only.
   // Reduces context compaction at higher cost — useful for large codebases.
