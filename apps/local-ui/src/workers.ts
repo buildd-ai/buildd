@@ -1104,6 +1104,25 @@ export class WorkerManager {
     };
   }
 
+  // Create a Notification hook that captures agent status messages.
+  // Emits milestones for dashboard visibility and logs the notification.
+  private createNotificationHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Notification') return {};
+
+      const message = (input as any).message as string;
+      const title = (input as any).title as string | undefined;
+
+      const label = title
+        ? `${title}: ${message.slice(0, 60)}`
+        : message.slice(0, 80);
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Notification: ${title ? `[${title}] ` : ''}${message}`);
+
+      return {};
+    };
+  }
+
   // Resolve whether to use bypassPermissions mode.
   // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
   private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
@@ -1463,6 +1482,7 @@ export class WorkerManager {
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
+        Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],

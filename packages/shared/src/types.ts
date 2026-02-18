@@ -593,6 +593,7 @@ export type SSEEventType =
   | 'worker:tool_failure'
   | 'worker:task_started'
   | 'worker:task_notification'
+  | 'worker:notification'
   | 'task:updated';
 
 export interface SSEEvent<T = unknown> {
