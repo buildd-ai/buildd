@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserFromRequest } from '@/lib/auth-helpers';
 
 // POST /api/invitations/[token]/accept — accept an invitation
 export async function POST(
@@ -11,7 +11,7 @@ export async function POST(
 ) {
   const { token } = await params;
 
-  const user = await getCurrentUser();
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

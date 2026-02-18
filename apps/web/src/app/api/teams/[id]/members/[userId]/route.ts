@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserFromRequest } from '@/lib/auth-helpers';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -18,7 +18,7 @@ export async function PATCH(
 ) {
   const { id: teamId, userId: targetUserId } = await params;
 
-  const user = await getCurrentUser();
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -93,7 +93,7 @@ export async function DELETE(
 ) {
   const { id: teamId, userId: targetUserId } = await params;
 
-  const user = await getCurrentUser();
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
