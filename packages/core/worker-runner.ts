@@ -166,6 +166,29 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
+    // SDK v0.2.45: Subagent task started — emitted when a subagent task is registered
+    if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
+      const event = msg as any;
+      this.emitEvent('worker:task_started', {
+        taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        description: event.description,
+        taskType: event.task_type,
+      });
+      return;
+    }
+
+    // SDK v0.2.45: Subagent task notification — emitted on task completion/status updates
+    if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
+      const event = msg as any;
+      this.emitEvent('worker:task_notification', {
+        taskId: event.task_id,
+        status: event.status,
+        message: event.message,
+      });
+      return;
+    }
+
     if (msg.type === 'assistant') {
       const assistantMsg = msg as any;
       if (assistantMsg.message?.content) {

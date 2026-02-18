@@ -54,6 +54,18 @@ export interface TeamMessage {
   timestamp: number;
 }
 
+// Subagent task lifecycle tracking (from SDK task_started / task_notification messages)
+export interface SubagentTask {
+  taskId: string;
+  toolUseId: string;
+  description: string;
+  taskType: string;
+  startedAt: number;
+  status: 'running' | 'completed' | 'failed';
+  completedAt?: number;
+  message?: string;
+}
+
 // Team state for a worker
 export interface TeamState {
   teamName: string;
@@ -86,6 +98,7 @@ export interface LocalWorker {
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
   teamState?: TeamState;  // Set when agent spawns a team
+  subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   // Phase tracking (reasoning text → tool call grouping)
