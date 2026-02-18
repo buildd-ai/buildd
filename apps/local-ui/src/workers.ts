@@ -1117,14 +1117,38 @@ export class WorkerManager {
 
   // Create a SubagentStop hook that tracks subagent completion.
   // Updates team state and emits milestones for dashboard visibility.
+  // SDK v0.2.47: captures last_assistant_message for subagent result summaries.
   private createSubagentStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
       const stopHookActive = (input as any).stop_hook_active as boolean;
+      const agentId = (input as any).agent_id as string;
+      const agentType = (input as any).agent_type as string;
+      const lastMessage = (input as any).last_assistant_message as string | undefined;
 
-      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+      const label = lastMessage
+        ? `Subagent stopped: ${lastMessage.slice(0, 80)}${lastMessage.length > 80 ? '…' : ''}`
+        : 'Subagent stopped';
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent ${agentType} (${agentId}) stopped (stop_hook_active: ${stopHookActive}, lastMessage: ${lastMessage ? 'yes' : 'no'})`);
+
+      return { async: true };
+    };
+  }
+
+  // Create a Stop hook that captures the main agent's final response.
+  // SDK v0.2.47: last_assistant_message provides the agent's final summary text.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastMessage = (input as any).last_assistant_message as string | undefined;
+
+      if (lastMessage) {
+        this.addMilestone(worker, { type: 'status', label: `Agent finished: ${lastMessage.slice(0, 80)}${lastMessage.length > 80 ? '…' : ''}`, ts: Date.now() });
+      }
+      console.log(`[Worker ${worker.id}] Agent stopped (lastMessage: ${lastMessage ? 'yes' : 'no'})`);
 
       return { async: true };
     };
@@ -1572,13 +1596,14 @@ export class WorkerManager {
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
+      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, Stop).
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],

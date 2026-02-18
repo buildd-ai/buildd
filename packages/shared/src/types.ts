@@ -598,6 +598,7 @@ export type SSEEventType =
   | 'worker:session_end'
   | 'worker:permission_request'
   | 'worker:rate_limit'
+  | 'worker:stop'
   | 'task:updated';
 
 export interface SSEEvent<T = unknown> {
