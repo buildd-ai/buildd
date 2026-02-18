@@ -401,6 +401,7 @@ function updateStats(activeCount, pendingCount, completedCount) {
 }
 
 function renderWorkerCard(w) {
+  const progress = renderMilestoneBoxes(w.milestones);
   return `
     <div class="worker-card bg-surface rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-surface-hover hover:bg-surface-hover" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-2">
@@ -409,9 +410,9 @@ function renderWorkerCard(w) {
         <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
       <div class="text-[13px] text-text-secondary mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
-      <div class="flex gap-1 mb-2">
-        ${renderMilestoneBoxes(w.milestones)}
-        <span class="text-xs text-text-secondary ml-2">${w.milestones.length}</span>
+      <div class="flex gap-1 mb-2 items-center">
+        ${progress.html}
+        <span class="text-xs text-text-secondary ml-2">${progress.completed}/${progress.total}</span>
       </div>
       <div class="text-[13px] text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.currentAction)}</div>
     </div>
@@ -478,6 +479,7 @@ function renderCompletedSection(completed) {
 
 function renderCompletedCard(w) {
   const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
+  const progress = renderMilestoneBoxes(w.milestones);
   return `
     <div class="worker-card bg-surface rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-1">
@@ -485,7 +487,7 @@ function renderCompletedCard(w) {
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
         <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
+      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${progress.completed}/${progress.total} checkpoints${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
     </div>
   `;
 }
@@ -529,14 +531,35 @@ function getStatusClass(worker) {
   return worker.status;
 }
 
+// Meaningful checkpoint events in expected order
+const CHECKPOINT_ORDER = [
+  'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed'
+];
+const CHECKPOINT_LABELS = {
+  session_started: 'Started',
+  first_read: 'Read',
+  first_edit: 'Edit',
+  first_commit: 'Commit',
+  task_completed: 'Done',
+};
+
 function renderMilestoneBoxes(milestones) {
-  const max = 10;
-  const completed = Math.min(milestones.length, max);
+  // Extract checkpoint events from milestones
+  const checkpoints = new Set(
+    milestones
+      .filter(m => m.type === 'checkpoint')
+      .map(m => m.event)
+  );
+  const total = CHECKPOINT_ORDER.length;
+  const completed = CHECKPOINT_ORDER.filter(e => checkpoints.has(e)).length;
+
   let html = '';
-  for (let i = 0; i < max; i++) {
-    html += `<div class="w-6 h-2 rounded-sm ${i < completed ? 'bg-brand' : 'bg-surface-hover'}"></div>`;
+  for (const event of CHECKPOINT_ORDER) {
+    const filled = checkpoints.has(event);
+    const label = CHECKPOINT_LABELS[event] || event;
+    html += `<div class="w-6 h-2 rounded-sm ${filled ? 'bg-brand' : 'bg-surface-hover'}" title="${label}"></div>`;
   }
-  return html;
+  return { html, completed, total };
 }
 
 function renderTasks() {

@@ -4,7 +4,20 @@ import { useState } from 'react';
 
 type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label: string; progress?: number; ts: number };
+  | { type: 'status'; label: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label: string; ts: number };
+
+const CHECKPOINT_ORDER = [
+  'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed',
+] as const;
+
+const CHECKPOINT_SHORT_LABELS: Record<string, string> = {
+  session_started: 'Started',
+  first_read: 'Read',
+  first_edit: 'Edit',
+  first_commit: 'Commit',
+  task_completed: 'Done',
+};
 
 interface WorkerActivityTimelineProps {
   milestones: Milestone[];
@@ -39,9 +52,33 @@ export default function WorkerActivityTimeline({
     return new Date(ts).toLocaleDateString();
   };
 
+  // Compute checkpoint progress from milestones
+  const checkpointEvents = new Set(
+    milestones
+      .filter((m): m is Extract<Milestone, { type: 'checkpoint' }> => m.type === 'checkpoint')
+      .map(m => m.event)
+  );
+  const checkpointCount = CHECKPOINT_ORDER.filter(e => checkpointEvents.has(e)).length;
+
   return (
     <div className="mt-4">
       <h4 className="text-sm font-medium text-text-secondary mb-2">Activity</h4>
+
+      {/* Checkpoint progress boxes */}
+      {checkpointCount > 0 && (
+        <div className="flex items-center gap-1 mb-3">
+          {CHECKPOINT_ORDER.map(event => (
+            <div
+              key={event}
+              className={`h-2 flex-1 rounded-sm ${checkpointEvents.has(event) ? 'bg-primary' : 'bg-surface-secondary'}`}
+              title={CHECKPOINT_SHORT_LABELS[event] || event}
+            />
+          ))}
+          <span className="text-xs text-text-muted ml-2 tabular-nums">
+            {checkpointCount}/{CHECKPOINT_ORDER.length}
+          </span>
+        </div>
+      )}
 
       {/* Milestones timeline */}
       {visibleMilestones.length > 0 && (
@@ -54,6 +91,8 @@ export default function WorkerActivityTimeline({
                   currentAction={i === 0 && milestone.pending ? currentAction : undefined}
                   formatTime={formatTime}
                 />
+              ) : milestone.type === 'checkpoint' ? (
+                <CheckpointRow milestone={milestone} formatTime={formatTime} />
               ) : (
                 <StatusRow milestone={milestone} formatTime={formatTime} />
               )}
@@ -158,6 +197,35 @@ function StatusRow({
         {typeof milestone.progress === 'number' && (
           <span className="ml-2 text-xs text-text-muted">{milestone.progress}%</span>
         )}
+      </span>
+      <span className="text-xs text-text-muted flex-shrink-0">
+        {formatTime(milestone.ts)}
+      </span>
+    </div>
+  );
+}
+
+function CheckpointRow({
+  milestone,
+  formatTime,
+}: {
+  milestone: { type: 'checkpoint'; event: string; label: string; ts: number };
+  formatTime: (ts: number) => string;
+}) {
+  const isError = milestone.event === 'task_error';
+  const isComplete = milestone.event === 'task_completed';
+
+  return (
+    <div className="flex items-start gap-2 py-1 text-sm">
+      <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
+        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-primary'
+      }`}>
+        {isError ? '!' : isComplete ? '+' : '#'}
+      </span>
+      <span className={`flex-1 truncate ${
+        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-primary'
+      }`}>
+        {milestone.label}
       </span>
       <span className="text-xs text-text-muted flex-shrink-0">
         {formatTime(milestone.ts)}

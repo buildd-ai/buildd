@@ -8,7 +8,7 @@ interface Props {
   status: string;
   taskTitle: string | null;
   workspaceName: string | null;
-  milestones: Array<{ label: string; timestamp: number }>;
+  milestones: Array<{ label: string; timestamp: number; type?: string; event?: string }>;
   turns: number;
   costUsd: string | null;
   startedAt: string | null;
@@ -43,7 +43,16 @@ export default function MobileWorkerCard({
   startedAt,
   taskId,
 }: Props) {
-  const progressWidth = Math.min(100, milestones.length * 10);
+  const CHECKPOINT_ORDER = ['session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed'];
+  const checkpointEvents = new Set(
+    milestones
+      .filter(m => m.type === 'checkpoint')
+      .map(m => m.event)
+  );
+  const checkpointCount = CHECKPOINT_ORDER.filter(e => checkpointEvents.has(e)).length;
+  const progressWidth = checkpointCount > 0
+    ? Math.round((checkpointCount / CHECKPOINT_ORDER.length) * 100)
+    : Math.min(100, milestones.length * 10); // Fallback for workers without checkpoints
   const isWaiting = status === 'waiting_input' || status === 'awaiting_plan_approval';
 
   return (
