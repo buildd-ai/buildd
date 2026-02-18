@@ -1764,6 +1764,23 @@ export class WorkerManager {
       storeSaveWorker(worker);
     }
 
+    // Surface rate limit events from SDK (v0.2.45+)
+    if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
+      const event = msg as any;
+      const retryMs = event.retry_after_ms;
+      const utilization = event.utilization;
+      const label = retryMs
+        ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
+        : utilization
+          ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
+          : 'Rate limited';
+      worker.currentAction = label;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
+      this.emit({ type: 'worker_update', worker });
+      return;
+    }
+
     // Track file checkpoints from SDK files_persisted events
     if (msg.type === 'system' && (msg as any).subtype === 'files_persisted') {
       const event = msg as any;
@@ -1826,6 +1843,12 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      // Surface rate_limit errors on assistant messages
+      if ((msg as any).error === 'rate_limit') {
+        worker.currentAction = 'Rate limited — retrying...';
+        console.log(`[Worker ${worker.id}] Assistant rate_limit error — SDK retrying automatically`);
+      }
+
       // Extract text from assistant message
       const content = (msg as any).message?.content || [];
       for (const block of content) {

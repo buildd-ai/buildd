@@ -164,6 +164,19 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
+    // Emit rate limit events from SDK (v0.2.45+)
+    if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
+      const event = msg as any;
+      this.emitEvent('worker:rate_limit', {
+        utilization: event.utilization ?? null,
+        retryAfterMs: event.retry_after_ms ?? null,
+        resetAt: event.reset_at ?? null,
+        overage: event.overage ?? false,
+        message: event.message ?? null,
+      });
+      return;
+    }
+
     // Emit file checkpoint events from SDK
     if (msg.type === 'system' && (msg as any).subtype === 'files_persisted') {
       const event = msg as any;
@@ -200,6 +213,18 @@ export class WorkerRunner extends EventEmitter {
 
     if (msg.type === 'assistant') {
       const assistantMsg = msg as any;
+
+      // Surface rate_limit errors on assistant messages
+      if (assistantMsg.error === 'rate_limit') {
+        this.emitEvent('worker:rate_limit', {
+          utilization: null,
+          retryAfterMs: null,
+          resetAt: null,
+          overage: false,
+          message: 'API rate limit reached — SDK is retrying automatically',
+        });
+      }
+
       if (assistantMsg.message?.content) {
         for (const block of assistantMsg.message.content) {
           if (block.type === 'text') {
