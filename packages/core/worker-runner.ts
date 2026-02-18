@@ -121,8 +121,8 @@ export class WorkerRunner extends EventEmitter {
             Notification: [{ hooks: [this.notificationHook.bind(this)] }],
             PreCompact: [{ hooks: [this.preCompactHook.bind(this)] }],
             // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
-            // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
-            // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
+            // Cast needed: these HookEvent keys are in the SDK type definitions but
+            // TeammateIdle/TaskCompleted are experimental (agent teams) and need `as any`.
             ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
             ...({ PermissionRequest: [{ hooks: [this.permissionRequestHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
