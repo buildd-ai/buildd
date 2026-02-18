@@ -1,7 +1,9 @@
+import { NextRequest } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
-import { users } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { teamMembers, users } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { authenticateApiKey } from '@/lib/api-auth';
 
 export type CurrentUser = {
   id: string;
@@ -60,6 +62,42 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     email: user.email,
     name: user.name,
     image: user.image,
+  };
+}
+
+/**
+ * Resolve the current user from a request, supporting both session and API key auth.
+ * For API key auth, resolves the user via account → team → owner member.
+ */
+export async function getUserFromRequest(req: NextRequest): Promise<CurrentUser | null> {
+  // Try session auth first
+  const sessionUser = await getCurrentUser();
+  if (sessionUser) return sessionUser;
+
+  // Try API key auth
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const account = await authenticateApiKey(apiKey);
+  if (!account) return null;
+
+  // Find the owner of the account's team
+  const ownerMembership = await db.query.teamMembers.findFirst({
+    where: and(
+      eq(teamMembers.teamId, account.teamId),
+      eq(teamMembers.role, 'owner')
+    ),
+    with: { user: true },
+  });
+
+  if (!ownerMembership?.user) return null;
+
+  const u = ownerMembership.user;
+  return {
+    id: u.id,
+    googleId: u.googleId,
+    email: u.email,
+    name: u.name,
+    image: u.image,
   };
 }
 

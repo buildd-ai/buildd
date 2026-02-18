@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserFromRequest } from '@/lib/auth-helpers';
 
 // DELETE /api/teams/[id]/invitations/[invitationId] — revoke invitation
 export async function DELETE(
@@ -11,7 +11,7 @@ export async function DELETE(
 ) {
   const { id: teamId, invitationId } = await params;
 
-  const user = await getCurrentUser();
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

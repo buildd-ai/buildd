@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserFromRequest } from '@/lib/auth-helpers';
 
-export async function GET() {
-  const user = await getCurrentUser();
+export async function GET(req: NextRequest) {
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -48,7 +48,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const user = await getUserFromRequest(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
