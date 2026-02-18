@@ -401,7 +401,7 @@ export class WorkerRunner extends EventEmitter {
 
   private postToolUseHook: HookCallback = async () => {
     this.emitEvent('worker:cost', { costUsd: this.costUsd });
-    return {};
+    return { async: true };
   };
 
   private postToolUseFailureHook: HookCallback = async (input) => {
@@ -429,10 +429,11 @@ export class WorkerRunner extends EventEmitter {
       error,
       isInterrupt: isInterrupt ?? false,
     });
-    return {};
+    return { async: true };
   };
 
   // PermissionRequest hook — fires when tool permission is requested (analytics only).
+  // Async: purely observational, no return value affects agent behavior.
   private permissionRequestHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'PermissionRequest') return {};
 
@@ -445,22 +446,22 @@ export class WorkerRunner extends EventEmitter {
       toolInput,
       permissionSuggestions: permissionSuggestions ?? [],
     });
-    return {};
+    return { async: true };
   };
 
   // TeammateIdle hook — fires when a teammate in an agent team goes idle.
-  // Purely observational: emits an event for Pusher/dashboard visibility.
+  // Async: purely observational, emits an event for Pusher/dashboard visibility.
   private teammateIdleHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'TeammateIdle') return {};
 
     const teammateName = (input as any).teammate_name as string;
     const teamName = (input as any).team_name as string;
     this.emitEvent('worker:teammate_idle', { teammateName, teamName });
-    return {};
+    return { async: true };
   };
 
   // TaskCompleted hook — fires when a task within an agent team completes.
-  // Emits event for dashboard and logs the completion.
+  // Async: purely observational, emits event for dashboard visibility.
   private taskCompletedHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'TaskCompleted') return {};
 
@@ -469,59 +470,59 @@ export class WorkerRunner extends EventEmitter {
     const teammateName = (input as any).teammate_name as string | undefined;
     const teamName = (input as any).team_name as string | undefined;
     this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
-    return {};
+    return { async: true };
   };
 
   // SubagentStart hook — fires when a subagent is spawned.
-  // Emits event for dashboard visibility.
+  // Async: purely observational, emits event for dashboard visibility.
   private subagentStartHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'SubagentStart') return {};
 
     const agentId = (input as any).agent_id as string;
     const agentType = (input as any).agent_type as string;
     this.emitEvent('worker:subagent_start', { agentId, agentType });
-    return {};
+    return { async: true };
   };
 
   // SubagentStop hook — fires when a subagent completes.
-  // Emits event for dashboard visibility.
+  // Async: purely observational, emits event for dashboard visibility.
   private subagentStopHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
     const stopHookActive = (input as any).stop_hook_active as boolean;
     this.emitEvent('worker:subagent_stop', { stopHookActive });
-    return {};
+    return { async: true };
   };
 
   // Notification hook — fires when the agent emits status messages.
-  // Captures agent notifications and emits them for dashboard visibility.
+  // Async: purely observational, emits notifications for dashboard visibility.
   private notificationHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'Notification') return {};
 
     const message = (input as any).message as string;
     const title = (input as any).title as string | undefined;
     this.emitEvent('worker:notification', { message, title });
-    return {};
+    return { async: true };
   };
 
   // SessionStart hook — fires on session initialization (startup, resume, clear, compact).
-  // Tracks session lifecycle for debugging worker session issues.
+  // Async: purely observational, tracks session lifecycle for debugging.
   private sessionStartHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'SessionStart') return {};
 
     const source = (input as any).source as 'startup' | 'resume' | 'clear' | 'compact';
     this.emitEvent('worker:session_start', { source });
-    return {};
+    return { async: true };
   };
 
   // SessionEnd hook — fires on session termination.
-  // Captures the reason for session end (clear, logout, prompt_input_exit, etc.).
+  // Async: purely observational, captures session end reason.
   private sessionEndHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'SessionEnd') return {};
 
     const reason = (input as any).reason as string;
     this.emitEvent('worker:session_end', { reason });
-    return {};
+    return { async: true };
   };
 
   // PreCompact hook — fires before conversation compaction.
