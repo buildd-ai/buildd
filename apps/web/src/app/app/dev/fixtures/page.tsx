@@ -27,6 +27,8 @@ const mockWorkers = {
         localUiUrl: null,
         currentAction: 'Auth method',
         milestones: [
+            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 3600000 },
+            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 3000000 },
             { label: 'Project setup', timestamp: Date.now() - 3000000 },
             { label: 'Database schema', timestamp: Date.now() - 2000000 },
         ],
@@ -61,6 +63,9 @@ const mockWorkers = {
         localUiUrl: 'http://localhost:8766',
         currentAction: 'Implementing API endpoints',
         milestones: [
+            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 7200000 },
+            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 6000000 },
+            { type: 'checkpoint', event: 'first_edit', label: 'First file edit', timestamp: Date.now() - 4000000 },
             { label: 'Project analysis', timestamp: Date.now() - 6000000 },
             { label: 'Schema design', timestamp: Date.now() - 4000000 },
             { label: 'API scaffolding', timestamp: Date.now() - 2000000 },
@@ -96,6 +101,11 @@ const mockWorkers = {
         localUiUrl: null,
         currentAction: null,
         milestones: [
+            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 14400000 },
+            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 13000000 },
+            { type: 'checkpoint', event: 'first_edit', label: 'First file edit', timestamp: Date.now() - 10000000 },
+            { type: 'checkpoint', event: 'first_commit', label: 'First commit', timestamp: Date.now() - 7000000 },
+            { type: 'checkpoint', event: 'task_completed', label: 'Task completed', timestamp: Date.now() - 3600000 },
             { label: 'Analysis complete', timestamp: Date.now() - 12000000 },
             { label: 'Implementation done', timestamp: Date.now() - 8000000 },
             { label: 'Tests passing', timestamp: Date.now() - 5000000 },

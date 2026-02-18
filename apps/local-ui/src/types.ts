@@ -12,10 +12,35 @@ export interface WaitingFor {
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
 }
 
+// Meaningful checkpoint events that map to actual worker activity
+export const CheckpointEvent = {
+  SESSION_STARTED: 'session_started',
+  FIRST_READ: 'first_read',
+  FIRST_EDIT: 'first_edit',
+  FIRST_COMMIT: 'first_commit',
+  PLAN_SUBMITTED: 'plan_submitted',
+  TASK_COMPLETED: 'task_completed',
+  TASK_ERROR: 'task_error',
+} as const;
+
+export type CheckpointEventType = typeof CheckpointEvent[keyof typeof CheckpointEvent];
+
+// Human-readable labels for checkpoint events
+export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
+  session_started: 'Session started',
+  first_read: 'First file read',
+  first_edit: 'First file edit',
+  first_commit: 'First commit',
+  plan_submitted: 'Plan submitted',
+  task_completed: 'Task completed',
+  task_error: 'Task failed',
+};
+
 // Milestone for progress tracking (typed union — no legacy format)
 export type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label: string; progress?: number; ts: number };
+  | { type: 'status'; label: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number };
 
 // Tool call tracking
 export interface ToolCall {
@@ -54,6 +79,18 @@ export interface TeamMessage {
   timestamp: number;
 }
 
+// Subagent task lifecycle tracking (from SDK task_started / task_notification messages)
+export interface SubagentTask {
+  taskId: string;
+  toolUseId: string;
+  description: string;
+  taskType: string;
+  startedAt: number;
+  status: 'running' | 'completed' | 'failed';
+  completedAt?: number;
+  message?: string;
+}
+
 // Team state for a worker
 export interface TeamState {
   teamName: string;
@@ -86,8 +123,10 @@ export interface LocalWorker {
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
   teamState?: TeamState;  // Set when agent spawns a team
+  subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
+  checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -183,6 +222,10 @@ export interface WorkspaceGitConfig {
 
   // Maximum budget in USD per worker session
   maxBudgetUsd?: number;
+
+  // SDK debug logging
+  debug?: boolean;
+  debugFile?: string;
 }
 
 // SSE event types

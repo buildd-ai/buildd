@@ -105,6 +105,12 @@ export async function POST(
                 ? { maxBudgetUsd: body.maxBudgetUsd }
                 : {}),
 
+            // SDK debug logging
+            ...(body.debug === true ? { debug: true } : {}),
+            ...(typeof body.debugFile === 'string' && body.debugFile.trim()
+                ? { debugFile: body.debugFile.trim() }
+                : {}),
+
             // Sandbox configuration for worker isolation
             ...(body.sandbox && typeof body.sandbox === 'object'
                 ? {
@@ -124,6 +130,21 @@ export async function POST(
                         ...(Array.isArray(body.sandbox.excludedCommands)
                             ? { excludedCommands: body.sandbox.excludedCommands.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
                             : {}),
+                    },
+                }
+                : {}),
+
+            // Organizer agent configuration
+            ...(body.organizer && typeof body.organizer === 'object'
+                ? {
+                    organizer: {
+                        enabled: Boolean(body.organizer.enabled),
+                        ...(typeof body.organizer.reviewWindowHours === 'number' && body.organizer.reviewWindowHours > 0
+                            ? { reviewWindowHours: Math.min(body.organizer.reviewWindowHours, 168) }
+                            : {}),
+                        requirePR: body.organizer.requirePR ?? true,
+                        requirePlanSummary: body.organizer.requirePlanSummary ?? true,
+                        autoCreateFollowUp: body.organizer.autoCreateFollowUp ?? false,
                     },
                 }
                 : {}),

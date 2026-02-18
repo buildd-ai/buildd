@@ -43,7 +43,7 @@ Both local-ui and the buildd server need to support image attachments on tasks.
 1. **File picker** - ✅ Done - multi-image selection
 2. **Preview thumbnails** - ✅ Done
 3. **Upload to server** - ✅ Done (sends base64 in task creation)
-4. **Pass to SDK** - TODO: Update workers.ts to include images in prompt
+4. **Pass to SDK** - ✅ Done (uses AsyncIterable prompt with image content blocks)
 
 ## Workspace Resolution
 

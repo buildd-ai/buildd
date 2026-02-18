@@ -1,0 +1,52 @@
+name: Cleanup Neon Schema Branches
+
+# Cleans up isolated Neon branches created for schema-change PRs.
+# No paths filter — closed PRs don't have diffs to match against.
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete Neon branch and Vercel env override
+        run: |
+          BRANCH_NAME="preview/pr-${{ github.event.pull_request.number }}"
+          GIT_BRANCH="${{ github.head_ref }}"
+
+          # Find and delete Neon branch (no-op if this PR didn't have one)
+          BRANCH_ID=$(curl -s \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches" \
+            | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
+
+          if [ -n "$BRANCH_ID" ] && [ "$BRANCH_ID" != "null" ]; then
+            curl -s -X DELETE \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID"
+            echo "Deleted Neon branch: $BRANCH_NAME ($BRANCH_ID)"
+          else
+            echo "No Neon branch for this PR (not a schema-change PR)"
+          fi
+
+          # Remove Vercel env override if one was set
+          EXISTING_ID=$(curl -s \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+            | jq -r --arg branch "$GIT_BRANCH" \
+              '.envs[] | select(.key == "DATABASE_URL" and .gitBranch == $branch) | .id')
+
+          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+            curl -s -X DELETE \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$EXISTING_ID"
+            echo "Removed Vercel DATABASE_URL override for branch $GIT_BRANCH"
+          fi
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

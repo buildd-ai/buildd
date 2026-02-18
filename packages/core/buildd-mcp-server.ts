@@ -62,12 +62,13 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
       // ── buildd tool ──────────────────────────────────────────────────
       tool(
         'buildd',
-        `Task coordination tool. Available actions: list_tasks, claim_task, update_progress, complete_task, create_pr, update_task, create_task, create_schedule, update_schedule, list_schedules, register_skill. Use action parameter to select operation, params for action-specific arguments.`,
+        `Task coordination tool. Available actions: list_tasks, claim_task, update_progress, complete_task, create_pr, update_task, create_task, create_schedule, update_schedule, list_schedules, register_skill, review_workspace. Use action parameter to select operation, params for action-specific arguments.`,
         {
           action: z.enum([
             'list_tasks', 'claim_task', 'update_progress', 'complete_task',
             'create_pr', 'update_task', 'create_task',
             'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
+            'review_workspace',
           ]),
           params: z.record(z.string(), z.unknown()).optional(),
         },
@@ -84,6 +85,13 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
               isError: true,
             };
           }
+        },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
+          },
         },
       ),
 
@@ -105,6 +113,13 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
               isError: true,
             };
           }
+        },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
+          },
         },
       ),
     ],
@@ -480,6 +495,93 @@ async function handleBuilddAction(
 
       const skill = data.skill;
       return text(`Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`);
+    }
+
+    case 'review_workspace': {
+      const wsId = (params.workspaceId as string) || ctx.workspaceId;
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      // Fetch recent tasks (completed + failed) with their workers
+      const hoursBack = Math.min(Math.max((params.hoursBack as number) || 24, 1), 168); // 1h–7d
+      const data = await api(`/api/workspaces/${wsId}/tasks/review?hoursBack=${hoursBack}`);
+
+      const tasksToReview = data.tasks || [];
+      if (tasksToReview.length === 0) {
+        return text(`No completed or failed tasks in the last ${hoursBack} hours. Nothing to review.`);
+      }
+
+      // Analyze each task for protocol issues
+      const findings: string[] = [];
+      const taskSummaries: string[] = [];
+
+      for (const task of tasksToReview) {
+        const issues: string[] = [];
+        const result = task.result || {};
+        const worker = task.worker;
+
+        // Check: task failed without a follow-up
+        if (task.status === 'failed') {
+          const hasSubTasks = (task.subTaskCount || 0) > 0;
+          if (!hasSubTasks) {
+            issues.push('FAILED without follow-up task created');
+          }
+        }
+
+        // Check: completed but no PR created (when workspace requires PRs)
+        if (task.status === 'completed' && task.mode === 'execution') {
+          if (!result.prUrl && !result.prNumber) {
+            if (result.commits && result.commits > 0) {
+              issues.push(`Has ${result.commits} commit(s) but NO PR created`);
+            } else if (!result.commits || result.commits === 0) {
+              issues.push('Completed with NO commits and NO PR — may not have pushed work');
+            }
+          }
+        }
+
+        // Check: planning mode completed but no structured output or summary
+        if (task.status === 'completed' && task.mode === 'planning') {
+          if (!result.summary && !result.structuredOutput) {
+            issues.push('Planning task completed without a plan summary or structured output');
+          }
+        }
+
+        // Check: worker had permission denials
+        if (worker?.resultMeta?.permissionDenials?.length > 0) {
+          issues.push(`Worker had ${worker.resultMeta.permissionDenials.length} permission denial(s)`);
+        }
+
+        const statusIcon = task.status === 'completed' ? 'OK' : 'FAIL';
+        const prInfo = result.prUrl ? ` | PR: ${result.prUrl}` : '';
+        const commitInfo = result.commits ? ` | ${result.commits} commits` : '';
+
+        let taskLine = `- [${statusIcon}] **${task.title}** (${task.id.slice(0, 8)})${commitInfo}${prInfo}`;
+        if (issues.length > 0) {
+          taskLine += `\n  ⚠ Issues: ${issues.join('; ')}`;
+        }
+        taskSummaries.push(taskLine);
+
+        if (issues.length > 0) {
+          findings.push(
+            `Task "${task.title}" (${task.id}):\n` +
+            issues.map(i => `  - ${i}`).join('\n')
+          );
+        }
+      }
+
+      const completed = tasksToReview.filter((t: any) => t.status === 'completed').length;
+      const failed = tasksToReview.filter((t: any) => t.status === 'failed').length;
+      const header = `## Workspace Review (last ${hoursBack}h)\n\n**${tasksToReview.length} tasks** reviewed: ${completed} completed, ${failed} failed\n`;
+
+      const tasksSection = `### Tasks\n${taskSummaries.join('\n')}\n`;
+
+      let findingsSection = '';
+      if (findings.length > 0) {
+        findingsSection = `\n### Findings (${findings.length} issue${findings.length === 1 ? '' : 's'})\n${findings.join('\n\n')}\n\n### Recommended Actions\nFor each finding above, consider creating a follow-up task using \`action=create_task\` to:\n- Create PRs for unpushed work\n- Retry or investigate failed tasks\n- Document plans that were completed without summaries`;
+      } else {
+        findingsSection = '\n### Findings\nAll tasks followed protocols correctly. No issues found.';
+      }
+
+      return text(`${header}\n${tasksSection}${findingsSection}`);
     }
 
     default:

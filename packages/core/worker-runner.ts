@@ -1,5 +1,6 @@
 import { query, type HookCallback, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
 import { db } from '../db/client';
 import { workers, tasks, type ResultMeta } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -108,18 +109,28 @@ export class WorkerRunner extends EventEmitter {
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+          // SDK debug logging from workspace config
+          ...(gitConfig?.debug ? { debug: true } : {}),
+          ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
           // Structured output: pass outputFormat if task defines an outputSchema
           ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
+            Notification: [{ hooks: [this.notificationHook.bind(this)] }],
+            PreCompact: [{ hooks: [this.preCompactHook.bind(this)] }],
             // PostToolUseFailure/TeammateIdle/TaskCompleted: SDK v0.2.33+ hooks
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
             ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
+            ...({ PermissionRequest: [{ hooks: [this.permissionRequestHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
+            ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
+            ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
+            ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
         },
       })) {
@@ -153,6 +164,19 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
+    // Emit rate limit events from SDK (v0.2.45+)
+    if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
+      const event = msg as any;
+      this.emitEvent('worker:rate_limit', {
+        utilization: event.utilization ?? null,
+        retryAfterMs: event.retry_after_ms ?? null,
+        resetAt: event.reset_at ?? null,
+        overage: event.overage ?? false,
+        message: event.message ?? null,
+      });
+      return;
+    }
+
     // Emit file checkpoint events from SDK
     if (msg.type === 'system' && (msg as any).subtype === 'files_persisted') {
       const event = msg as any;
@@ -164,8 +188,43 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
+    // SDK v0.2.45: Subagent task started — emitted when a subagent task is registered
+    if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
+      const event = msg as any;
+      this.emitEvent('worker:task_started', {
+        taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        description: event.description,
+        taskType: event.task_type,
+      });
+      return;
+    }
+
+    // SDK v0.2.45: Subagent task notification — emitted on task completion/status updates
+    if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
+      const event = msg as any;
+      this.emitEvent('worker:task_notification', {
+        taskId: event.task_id,
+        status: event.status,
+        message: event.message,
+      });
+      return;
+    }
+
     if (msg.type === 'assistant') {
       const assistantMsg = msg as any;
+
+      // Surface rate_limit errors on assistant messages
+      if (assistantMsg.error === 'rate_limit') {
+        this.emitEvent('worker:rate_limit', {
+          utilization: null,
+          retryAfterMs: null,
+          resetAt: null,
+          overage: false,
+          message: 'API rate limit reached — SDK is retrying automatically',
+        });
+      }
+
       if (assistantMsg.message?.content) {
         for (const block of assistantMsg.message.content) {
           if (block.type === 'text') {
@@ -373,6 +432,22 @@ export class WorkerRunner extends EventEmitter {
     return {};
   };
 
+  // PermissionRequest hook — fires when tool permission is requested (analytics only).
+  private permissionRequestHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PermissionRequest') return {};
+
+    const toolName = (input as any).tool_name as string;
+    const toolInput = (input as any).tool_input as Record<string, unknown>;
+    const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
+
+    this.emitEvent('worker:permission_request', {
+      toolName,
+      toolInput,
+      permissionSuggestions: permissionSuggestions ?? [],
+    });
+    return {};
+  };
+
   // TeammateIdle hook — fires when a teammate in an agent team goes idle.
   // Purely observational: emits an event for Pusher/dashboard visibility.
   private teammateIdleHook: HookCallback = async (input) => {
@@ -394,6 +469,81 @@ export class WorkerRunner extends EventEmitter {
     const teammateName = (input as any).teammate_name as string | undefined;
     const teamName = (input as any).team_name as string | undefined;
     this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
+    return {};
+  };
+
+  // SubagentStart hook — fires when a subagent is spawned.
+  // Emits event for dashboard visibility.
+  private subagentStartHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SubagentStart') return {};
+
+    const agentId = (input as any).agent_id as string;
+    const agentType = (input as any).agent_type as string;
+    this.emitEvent('worker:subagent_start', { agentId, agentType });
+    return {};
+  };
+
+  // SubagentStop hook — fires when a subagent completes.
+  // Emits event for dashboard visibility.
+  private subagentStopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SubagentStop') return {};
+
+    const stopHookActive = (input as any).stop_hook_active as boolean;
+    this.emitEvent('worker:subagent_stop', { stopHookActive });
+    return {};
+  };
+
+  // Notification hook — fires when the agent emits status messages.
+  // Captures agent notifications and emits them for dashboard visibility.
+  private notificationHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Notification') return {};
+
+    const message = (input as any).message as string;
+    const title = (input as any).title as string | undefined;
+    this.emitEvent('worker:notification', { message, title });
+    return {};
+  };
+
+  // SessionStart hook — fires on session initialization (startup, resume, clear, compact).
+  // Tracks session lifecycle for debugging worker session issues.
+  private sessionStartHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SessionStart') return {};
+
+    const source = (input as any).source as 'startup' | 'resume' | 'clear' | 'compact';
+    this.emitEvent('worker:session_start', { source });
+    return {};
+  };
+
+  // SessionEnd hook — fires on session termination.
+  // Captures the reason for session end (clear, logout, prompt_input_exit, etc.).
+  private sessionEndHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SessionEnd') return {};
+
+    const reason = (input as any).reason as string;
+    this.emitEvent('worker:session_end', { reason });
+    return {};
+  };
+
+  // PreCompact hook — fires before conversation compaction.
+  // Archives the full transcript so worker reasoning history is preserved.
+  private preCompactHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PreCompact') return {};
+
+    const transcriptPath = (input as any).transcript_path as string | undefined;
+    const trigger = (input as any).trigger as 'manual' | 'auto' | undefined;
+
+    if (!transcriptPath) return {};
+
+    try {
+      const transcript = readFileSync(transcriptPath, 'utf-8');
+      this.emitEvent('worker:transcript_archived', {
+        trigger: trigger || 'auto',
+        transcriptPath,
+        transcript,
+      });
+    } catch {
+      // Transcript file may not exist or be unreadable — non-fatal
+    }
     return {};
   };
 

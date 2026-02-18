@@ -401,6 +401,7 @@ function updateStats(activeCount, pendingCount, completedCount) {
 }
 
 function renderWorkerCard(w) {
+  const progress = renderMilestoneBoxes(w.milestones);
   return `
     <div class="worker-card bg-surface rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-surface-hover hover:bg-surface-hover" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-2">
@@ -409,9 +410,9 @@ function renderWorkerCard(w) {
         <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
       <div class="text-[13px] text-text-secondary mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
-      <div class="flex gap-1 mb-2">
-        ${renderMilestoneBoxes(w.milestones)}
-        <span class="text-xs text-text-secondary ml-2">${w.milestones.length}</span>
+      <div class="flex gap-1 mb-2 items-center">
+        ${progress.html}
+        <span class="text-xs text-text-secondary ml-2">${progress.completed}/${progress.total}</span>
       </div>
       <div class="text-[13px] text-text-secondary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(w.currentAction)}</div>
     </div>
@@ -478,6 +479,7 @@ function renderCompletedSection(completed) {
 
 function renderCompletedCard(w) {
   const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
+  const progress = renderMilestoneBoxes(w.milestones);
   return `
     <div class="worker-card bg-surface rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-1">
@@ -485,7 +487,7 @@ function renderCompletedCard(w) {
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
         <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
-      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${w.milestones.length} milestones${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
+      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${progress.completed}/${progress.total} checkpoints${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
     </div>
   `;
 }
@@ -529,14 +531,35 @@ function getStatusClass(worker) {
   return worker.status;
 }
 
+// Meaningful checkpoint events in expected order
+const CHECKPOINT_ORDER = [
+  'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed'
+];
+const CHECKPOINT_LABELS = {
+  session_started: 'Started',
+  first_read: 'Read',
+  first_edit: 'Edit',
+  first_commit: 'Commit',
+  task_completed: 'Done',
+};
+
 function renderMilestoneBoxes(milestones) {
-  const max = 10;
-  const completed = Math.min(milestones.length, max);
+  // Extract checkpoint events from milestones
+  const checkpoints = new Set(
+    milestones
+      .filter(m => m.type === 'checkpoint')
+      .map(m => m.event)
+  );
+  const total = CHECKPOINT_ORDER.length;
+  const completed = CHECKPOINT_ORDER.filter(e => checkpoints.has(e)).length;
+
   let html = '';
-  for (let i = 0; i < max; i++) {
-    html += `<div class="w-6 h-2 rounded-sm ${i < completed ? 'bg-brand' : 'bg-surface-hover'}"></div>`;
+  for (const event of CHECKPOINT_ORDER) {
+    const filled = checkpoints.has(event);
+    const label = CHECKPOINT_LABELS[event] || event;
+    html += `<div class="w-6 h-2 rounded-sm ${filled ? 'bg-brand' : 'bg-surface-hover'}" title="${label}"></div>`;
   }
-  return html;
+  return { html, completed, total };
 }
 
 function renderTasks() {
@@ -856,6 +879,37 @@ function renderWorkerDetail(worker) {
 
   // Error indicator for failed/aborted workers
   if (worker.status === 'error') {
+    // Show recent milestones for context on what happened before the error
+    const recentMilestones = (worker.milestones || []).slice(-5);
+    const milestonesHtml = recentMilestones.length > 0
+      ? `<div class="mt-2 mb-1">
+          <div class="text-[11px] text-text-tertiary font-mono uppercase tracking-wide mb-1">Last activity</div>
+          ${recentMilestones.map(m => `<div class="text-[12px] text-text-secondary py-0.5">${m.type === 'phase' ? '\u25B6' : '\u2022'} ${escapeHtml(m.label)}${m.type === 'phase' && m.toolCount ? ` (${m.toolCount} tools)` : ''}</div>`).join('')}
+        </div>`
+      : '';
+
+    // Show result metadata if available
+    const meta = worker.resultMeta;
+    const metaHtml = meta
+      ? `<div class="text-[11px] text-text-tertiary mt-1">
+          ${meta.stopReason ? `Stop: ${escapeHtml(meta.stopReason)}` : ''}
+          ${meta.numTurns ? ` \u2022 ${meta.numTurns} turns` : ''}
+          ${meta.durationMs ? ` \u2022 ${Math.round(meta.durationMs / 1000)}s` : ''}
+        </div>`
+      : '';
+
+    // Plan-specific context with retry button
+    const hasSavedPlan = !!worker.planContent;
+    const hadPlan = hasSavedPlan || recentMilestones.some(m => m.label.includes('Plan'));
+    const planHint = hadPlan
+      ? `<div class="flex items-center gap-2 mt-2">
+          <div class="text-xs text-status-info">This was a planning task.</div>
+          ${hasSavedPlan ? `<button class="text-[12px] font-medium text-brand bg-brand/10 border border-brand/30 rounded-md py-1 px-2.5 cursor-pointer transition-all hover:bg-brand/20" onclick="retryWithPlan()">Retry with plan</button>` : ''}
+        </div>`
+      : '';
+
+    const logsId = 'logs-' + worker.id.slice(0, 8);
+
     timelineEl.innerHTML += `
       <div class="bg-status-error/[0.08] border border-status-error/30 rounded-xl p-4 my-4">
         <div class="flex items-center gap-2 text-xs text-status-error font-mono font-medium uppercase tracking-wide mb-2">
@@ -866,8 +920,17 @@ function renderWorkerDetail(worker) {
           </svg>
           Task stopped
         </div>
-        <div class="text-sm text-text-primary leading-normal mb-2">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
-        <div class="text-xs text-text-secondary">Send a message below to restart with new instructions</div>
+        <div class="text-sm text-text-primary leading-normal mb-1">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
+        ${metaHtml}
+        ${milestonesHtml}
+        ${planHint}
+        <div class="flex items-center gap-2 mt-3">
+          <div class="text-xs text-text-secondary">Send a message below to restart with new instructions</div>
+          <button class="text-[11px] text-text-tertiary underline cursor-pointer bg-transparent border-none p-0 hover:text-text-secondary" onclick="toggleSessionLogs('${worker.id}', '${logsId}')">View logs</button>
+        </div>
+        <div id="${logsId}" class="hidden mt-2 bg-surface rounded-lg p-2 max-h-[200px] overflow-y-auto">
+          <div class="text-[11px] text-text-tertiary font-mono">Loading...</div>
+        </div>
       </div>`;
   }
 
@@ -2166,6 +2229,43 @@ function confirmAbort() {
   );
 }
 
+async function toggleSessionLogs(workerId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  // Toggle visibility
+  if (!container.classList.contains('hidden')) {
+    container.classList.add('hidden');
+    return;
+  }
+  container.classList.remove('hidden');
+
+  // Fetch logs if not already loaded
+  if (container.querySelector('.text-text-tertiary')?.textContent === 'Loading...') {
+    try {
+      const res = await fetch(`./api/workers/${workerId}/logs?limit=50`);
+      if (!res.ok) {
+        container.innerHTML = '<div class="text-[11px] text-status-error font-mono">Failed to load logs</div>';
+        return;
+      }
+      const data = await res.json();
+      const logs = data.logs || [];
+      if (logs.length === 0) {
+        container.innerHTML = '<div class="text-[11px] text-text-tertiary font-mono">No session logs found</div>';
+        return;
+      }
+      const levelColors = { error: 'text-status-error', warn: 'text-status-warning', info: 'text-text-secondary' };
+      container.innerHTML = logs.map(entry => {
+        const time = new Date(entry.ts).toLocaleTimeString();
+        const color = levelColors[entry.level] || 'text-text-secondary';
+        return `<div class="text-[11px] font-mono py-0.5 ${color}">${time} [${entry.level}] ${escapeHtml(entry.event)}${entry.detail ? ': ' + escapeHtml(entry.detail.slice(0, 200)) : ''}</div>`;
+      }).join('');
+    } catch {
+      container.innerHTML = '<div class="text-[11px] text-status-error font-mono">Failed to load logs</div>';
+    }
+  }
+}
+
 async function retryWorker() {
   if (!currentWorkerId) return;
   try {
@@ -2183,6 +2283,26 @@ async function retryWorker() {
   } catch (err) {
     console.error('Failed to retry:', err);
     showToast('Failed to retry task', 'error');
+  }
+}
+
+async function retryWithPlan() {
+  if (!currentWorkerId) return;
+  try {
+    const res = await fetch('./api/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: currentWorkerId, withPlan: true })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to retry with plan', 'error');
+      return;
+    }
+    showToast('Re-executing plan...', 'success');
+  } catch (err) {
+    console.error('Failed to retry with plan:', err);
+    showToast('Failed to retry with plan', 'error');
   }
 }
 

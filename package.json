@@ -21,6 +21,10 @@
     "cleanup-branches": "bash scripts/release.sh --cleanup",
     "sync-dev": "bash scripts/sync-dev.sh",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
+    "seed:error-worker": "bun run scripts/seed/error-worker.ts",
+    "seed:completed-tasks": "bun run scripts/seed/completed-tasks.ts",
+    "seed:multi-user": "bun run scripts/seed/multi-user.ts",
+    "seed:concurrent": "bun run scripts/seed/concurrent.ts",
     "seed:reset": "bun run scripts/seed/reset.ts"
   },
   "dependencies": {

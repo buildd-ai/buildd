@@ -63,18 +63,22 @@ export async function PATCH(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  // Check if worker was already terminated (reassigned/failed)
-  if (worker.status === 'failed' || worker.status === 'completed') {
-    return NextResponse.json({
-      error: worker.status === 'failed'
-        ? 'Worker was terminated - task may have been reassigned'
-        : 'Worker already completed',
-      abort: true,
-      reason: worker.error || worker.status,
-    }, { status: 409 });
-  }
-
   const body = await req.json();
+
+  // Check if worker was already terminated (reassigned/failed)
+  // Allow reactivation with 'running' status for follow-up messages from local-ui
+  if (worker.status === 'failed' || worker.status === 'completed') {
+    if (body.status !== 'running') {
+      return NextResponse.json({
+        error: worker.status === 'failed'
+          ? 'Worker was terminated - task may have been reassigned'
+          : 'Worker already completed',
+        abort: true,
+        reason: worker.error || worker.status,
+      }, { status: 409 });
+    }
+    // Reactivation: clear completion timestamp so worker can run again
+  }
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
@@ -122,6 +126,19 @@ export async function PATCH(
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {
     updates.startedAt = new Date();
+  }
+  // Reactivation: clear completion state when worker resumes from completed/failed
+  if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed')) {
+    updates.completedAt = null;
+    updates.error = null;
+
+    // Reactivate the associated task
+    if (worker.taskId) {
+      await db
+        .update(tasks)
+        .set({ status: 'assigned', updatedAt: new Date() })
+        .where(eq(tasks.id, worker.taskId));
+    }
   }
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();

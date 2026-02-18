@@ -1,5 +1,6 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
@@ -10,6 +11,7 @@ import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
+import { sessionLog, cleanupOldLogs, readSessionLogs } from './session-logger';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
@@ -180,8 +182,8 @@ export class WorkerManager {
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
     this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
 
-    // Run cleanup every 30 minutes
-    this.cleanupInterval = setInterval(() => this.runCleanup(), 30 * 60 * 1000);
+    // Run cleanup every 30 minutes (includes session logs)
+    this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
@@ -269,8 +271,17 @@ export class WorkerManager {
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
         }
-        // Ensure checkpoints array exists (workers saved before this feature)
+        // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
+        if (!worker.subagentTasks) worker.subagentTasks = [];
+        // Ensure checkpointEvents set exists (reconstructed from milestones by worker-store)
+        if (!worker.checkpointEvents || !(worker.checkpointEvents instanceof Set)) {
+          worker.checkpointEvents = new Set<CheckpointEventType>(
+            worker.milestones
+              .filter((m): m is Extract<typeof m, { type: 'checkpoint' }> => m.type === 'checkpoint')
+              .map(m => m.event)
+          );
+        }
         this.workers.set(worker.id, worker);
       }
       if (restored.length > 0) {
@@ -806,6 +817,8 @@ export class WorkerManager {
       toolCalls: [],
       messages: [],
       checkpoints: [],
+      subagentTasks: [],
+      checkpointEvents: new Set<CheckpointEventType>(),
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -1033,6 +1046,22 @@ export class WorkerManager {
     };
   }
 
+  // Create a PermissionRequest hook that captures permission dialog events for analytics.
+  // Purely observational — emits event with tool_name, tool_input, and permission_suggestions.
+  private createPermissionRequestHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PermissionRequest') return {};
+
+      const toolName = (input as any).tool_name as string;
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+      const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
+
+      console.log(`[Worker ${worker.id}] Permission requested: ${toolName}`);
+
+      return {};
+    };
+  }
+
   // Create a TaskCompleted hook that logs task completions within agent teams.
   // Emits milestones and updates team state for dashboard visibility.
   private createTaskCompletedHook(worker: LocalWorker): HookCallback {
@@ -1058,6 +1087,95 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Task completed: ${taskSubject} (teammate: ${teammateName || 'leader'}, team: ${teamName || 'none'})`);
 
+      return {};
+    };
+  }
+
+  // Create a SubagentStart hook that tracks subagent spawning.
+  // Updates team state and emits milestones for dashboard visibility.
+  private createSubagentStartHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'SubagentStart') return {};
+
+      const agentId = (input as any).agent_id as string;
+      const agentType = (input as any).agent_type as string;
+
+      // Update team member status if we're tracking team state
+      if (worker.teamState) {
+        const member = worker.teamState.members.find(m => m.name === agentId);
+        if (member) {
+          member.status = 'active';
+        }
+      }
+
+      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
+
+      return {};
+    };
+  }
+
+  // Create a SubagentStop hook that tracks subagent completion.
+  // Updates team state and emits milestones for dashboard visibility.
+  private createSubagentStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'SubagentStop') return {};
+
+      const stopHookActive = (input as any).stop_hook_active as boolean;
+
+      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+
+      return {};
+    };
+  }
+
+  // Create a Notification hook that captures agent status messages.
+  // Emits milestones for dashboard visibility and logs the notification.
+  private createNotificationHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Notification') return {};
+
+      const message = (input as any).message as string;
+      const title = (input as any).title as string | undefined;
+
+      const label = title
+        ? `${title}: ${message.slice(0, 60)}`
+        : message.slice(0, 80);
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Notification: ${title ? `[${title}] ` : ''}${message}`);
+
+      return {};
+    };
+  }
+
+  // Create a PreCompact hook that archives the full transcript before context compaction.
+  // This preserves worker reasoning history that would otherwise be lost during compaction.
+  private createPreCompactHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreCompact') return {};
+
+      const transcriptPath = (input as any).transcript_path as string | undefined;
+      const trigger = (input as any).trigger as 'manual' | 'auto' | undefined;
+
+      if (!transcriptPath) return {};
+
+      try {
+        const transcript = readFileSync(transcriptPath, 'utf-8');
+        this.addMilestone(worker, { type: 'status', label: `Transcript archived (${trigger || 'auto'} compaction)`, ts: Date.now() });
+        this.emit({
+          type: 'transcript_archived',
+          worker,
+          data: {
+            trigger: trigger || 'auto',
+            transcriptPath,
+            transcript,
+          },
+        });
+        console.log(`[Worker ${worker.id}] Transcript archived before ${trigger || 'auto'} compaction (${transcript.length} chars)`);
+      } catch {
+        // Transcript file may not exist or be unreadable — non-fatal
+      }
       return {};
     };
   }
@@ -1102,6 +1220,7 @@ export class WorkerManager {
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
+    sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -1120,46 +1239,49 @@ export class WorkerManager {
       const gitConfig = workspaceConfig.gitConfig;
       const isConfigured = workspaceConfig.configStatus === 'admin_confirmed';
 
-      // Build message content with text and images
-      const content: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
+      // Extract image attachments from task context (if any)
+      // Supported formats: image/jpeg, image/png, image/gif, image/webp (Anthropic API)
+      const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+      const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB per image
+      const imageBlocks: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
 
-      // Add text description
-      content.push({ type: 'text', text: task.description || task.title });
-
-      // Add image attachments if present (from task.context.attachments)
-      // Supports both presigned URL format (from R2) and inline base64 data URLs (legacy)
       const ctx = task.context as { attachments?: Array<{ filename: string; mimeType: string; data?: string; url?: string }> } | undefined;
       if (ctx?.attachments && Array.isArray(ctx.attachments)) {
         for (const att of ctx.attachments) {
-          if (att.url && att.mimeType) {
+          if (!SUPPORTED_IMAGE_TYPES.has(att.mimeType)) {
+            this.addMilestone(worker, { type: 'status', label: `Skipped unsupported: ${att.filename} (${att.mimeType})`, ts: Date.now() });
+            continue;
+          }
+
+          if (att.url) {
             // R2 presigned URL format — fetch and convert to base64
             try {
               const response = await fetch(att.url);
+              if (!response.ok) {
+                this.addMilestone(worker, { type: 'status', label: `Failed to fetch image: ${att.filename} (${response.status})`, ts: Date.now() });
+                continue;
+              }
               const arrayBuffer = await response.arrayBuffer();
+              if (arrayBuffer.byteLength > MAX_IMAGE_BYTES) {
+                this.addMilestone(worker, { type: 'status', label: `Skipped oversized: ${att.filename} (${Math.round(arrayBuffer.byteLength / 1024 / 1024)}MB)`, ts: Date.now() });
+                continue;
+              }
               const base64Data = Buffer.from(arrayBuffer).toString('base64');
-              content.push({
+              imageBlocks.push({
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: att.mimeType,
-                  data: base64Data,
-                },
+                source: { type: 'base64', media_type: att.mimeType, data: base64Data },
               });
               this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             } catch (err) {
               this.addMilestone(worker, { type: 'status', label: `Failed to fetch image: ${att.filename}`, ts: Date.now() });
             }
-          } else if (att.data && att.mimeType) {
+          } else if (att.data) {
             // Inline base64 data URL format (legacy)
             const base64Match = att.data.match(/^data:([^;]+);base64,(.+)$/);
             if (base64Match) {
-              content.push({
+              imageBlocks.push({
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: base64Match[1],
-                  data: base64Match[2],
-                },
+                source: { type: 'base64', media_type: base64Match[1], data: base64Match[2] },
               });
               this.addMilestone(worker, { type: 'status', label: `Image: ${att.filename}`, ts: Date.now() });
             }
@@ -1387,6 +1509,9 @@ export class WorkerManager {
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
         ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+        // SDK debug logging from workspace config
+        ...(gitConfig?.debug ? { debug: true } : {}),
+        ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
         // Structured output: pass outputFormat if task defines an outputSchema
         ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
         stderr: (data: string) => {
@@ -1413,17 +1538,33 @@ export class WorkerManager {
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted).
+      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
+        Notification: [{ hooks: [this.createNotificationHook(worker)] }],
+        PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
+        PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
+        SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
+        SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
       };
+
+      // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
+      // so image content blocks are included in the initial message to the agent.
+      const prompt: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
+        ? (async function* () {
+            yield buildUserMessage([
+              { type: 'text', text: promptText },
+              ...imageBlocks,
+            ]);
+          })()
+        : promptText;
 
       // Start query with full options
       const queryInstance = query({
-        prompt: promptText,
+        prompt,
         options: queryOptions,
       });
 
@@ -1462,11 +1603,6 @@ export class WorkerManager {
         }
       }
 
-      // Note: Image attachments temporarily disabled - need to handle via follow-up message
-      if (ctx?.attachments && ctx.attachments.length > 0) {
-        console.log(`[Worker ${worker.id}] Warning: ${ctx.attachments.length} image attachments not sent (TODO)`);
-      }
-
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
       // from agent responses that discuss auth topics
@@ -1478,6 +1614,8 @@ export class WorkerManager {
 
       if (isAuthError) {
         // Auth error - mark as failed, not completed
+        sessionLog(worker.id, 'error', 'auth_error', 'Agent authentication failed — check API key', worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         worker.status = 'error';
         worker.error = 'Agent authentication failed';
         worker.currentAction = 'Auth failed';
@@ -1488,6 +1626,8 @@ export class WorkerManager {
         storeSaveWorker(worker);
       } else if (resultSubtype === 'error_max_budget_usd') {
         // Budget exceeded - report as error with specific message
+        sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
@@ -1504,8 +1644,10 @@ export class WorkerManager {
         storeSaveWorker(worker);
       } else {
         // Actually completed - collect git stats before reporting
+        sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
+        this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
         worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
@@ -1574,9 +1716,12 @@ export class WorkerManager {
       const isAbortError = error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
 
+      this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+
       if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
+        sessionLog(worker.id, 'warn', 'session_abort', worker.error || 'Session aborted', worker.taskId);
         worker.status = 'error';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
@@ -1586,9 +1731,12 @@ export class WorkerManager {
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
         // Unexpected error
+        const errMsg = error instanceof Error ? error.message : 'Unknown error';
+        const errStack = error instanceof Error ? error.stack : undefined;
         console.error(`Worker ${worker.id} error:`, error);
+        sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
         worker.status = 'error';
-        worker.error = error instanceof Error ? error.message : 'Unknown error';
+        worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
@@ -1627,8 +1775,26 @@ export class WorkerManager {
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
+      this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
       // Immediately persist sessionId (critical for resume)
       storeSaveWorker(worker);
+    }
+
+    // Surface rate limit events from SDK (v0.2.45+)
+    if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
+      const event = msg as any;
+      const retryMs = event.retry_after_ms;
+      const utilization = event.utilization;
+      const label = retryMs
+        ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
+        : utilization
+          ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
+          : 'Rate limited';
+      worker.currentAction = label;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
+      this.emit({ type: 'worker_update', worker });
+      return;
     }
 
     // Track file checkpoints from SDK files_persisted events
@@ -1648,7 +1814,57 @@ export class WorkerManager {
       this.emit({ type: 'worker_update', worker });
     }
 
+    // SDK v0.2.45: Subagent task started — track lifecycle from start to completion
+    if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
+      const event = msg as any;
+      const subagentTask: SubagentTask = {
+        taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        description: event.description || '',
+        taskType: event.task_type || 'unknown',
+        startedAt: Date.now(),
+        status: 'running',
+      };
+      worker.subagentTasks.push(subagentTask);
+      // Keep last 100 subagent tasks
+      if (worker.subagentTasks.length > 100) {
+        worker.subagentTasks.shift();
+      }
+      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${subagentTask.description.slice(0, 50)}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent task started: ${subagentTask.taskId} (${subagentTask.taskType}) — ${subagentTask.description}`);
+      this.emit({ type: 'worker_update', worker });
+    }
+
+    // SDK v0.2.45: Subagent task notification — completion/status update for a tracked task
+    if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
+      const event = msg as any;
+      const taskId = event.task_id as string;
+      const status = event.status as string;
+      const message = event.message as string | undefined;
+
+      // Update tracked subagent task
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId);
+      if (tracked) {
+        tracked.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : tracked.status;
+        tracked.completedAt = Date.now();
+        if (message) tracked.message = message;
+      }
+
+      const label = tracked
+        ? `Subagent ${status}: ${tracked.description.slice(0, 50)}`
+        : `Subagent ${status}: ${taskId.slice(0, 12)}`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${message ? ` — ${message}` : ''}`);
+      this.emit({ type: 'worker_update', worker });
+    }
+
     if (msg.type === 'assistant') {
+      // Surface rate_limit errors on assistant messages
+      if ((msg as any).error === 'rate_limit') {
+        worker.currentAction = 'Rate limited — retrying...';
+        console.log(`[Worker ${worker.id}] Assistant rate_limit error — SDK retrying automatically`);
+      }
+
       // Extract text from assistant message
       const content = (msg as any).message?.content || [];
       for (const block of content) {
@@ -1727,6 +1943,13 @@ export class WorkerManager {
             }
           }
 
+          // Fire checkpoint milestones for meaningful first-time events
+          if (toolName === 'Read') {
+            this.addCheckpoint(worker, CheckpointEvent.FIRST_READ);
+          } else if (toolName === 'Edit' || toolName === 'Write') {
+            this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
+          }
+
           // Update currentAction (still useful for live display)
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
@@ -1750,6 +1973,7 @@ export class WorkerManager {
                 worker.commits.shift();
               }
               this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
+              this.addCheckpoint(worker, CheckpointEvent.FIRST_COMMIT);
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
@@ -1783,6 +2007,7 @@ export class WorkerManager {
             // Auto-approve entering plan mode — respond immediately so the SDK doesn't stall
             const enterPlanToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
+            sessionLog(worker.id, 'info', 'enter_plan_mode', `toolUseId=${enterPlanToolUseId}`, worker.taskId);
             worker.currentAction = 'Planning...';
             this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
             // Enqueue approval response so the SDK can proceed
@@ -1803,6 +2028,8 @@ export class WorkerManager {
             console.log(`[Worker ${worker.id}] ExitPlanMode — planContent length: ${worker.planContent.length} chars`);
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
+            sessionLog(worker.id, 'info', 'exit_plan_mode', `planLength=${worker.planContent.length} toolUseId=${planToolUseId}`, worker.taskId);
+            this.addCheckpoint(worker, CheckpointEvent.PLAN_SUBMITTED);
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'plan_approval',
@@ -1841,8 +2068,10 @@ export class WorkerManager {
       const result = msg as any;
       if (result.subtype === 'error_max_budget_usd') {
         this.addMilestone(worker, { type: 'status', label: `Budget limit exceeded ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
+        sessionLog(worker.id, 'error', 'result_budget_exceeded', `cost=$${result.total_cost_usd?.toFixed(2) || '?'}`, worker.taskId);
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
+        sessionLog(worker.id, 'error', 'result_error', `subtype=${result.subtype} stopReason=${result.stop_reason}`, worker.taskId);
       }
 
       // Capture SDK result metadata for server sync
@@ -1967,6 +2196,19 @@ export class WorkerManager {
     }
   }
 
+  // Fire a meaningful checkpoint milestone (each event fires at most once per worker)
+  private addCheckpoint(worker: LocalWorker, event: CheckpointEventType) {
+    if (!worker.checkpointEvents) worker.checkpointEvents = new Set<CheckpointEventType>();
+    if (worker.checkpointEvents.has(event)) return;
+    worker.checkpointEvents.add(event);
+    this.addMilestone(worker, {
+      type: 'checkpoint',
+      event,
+      label: CHECKPOINT_LABELS[event],
+      ts: Date.now(),
+    });
+  }
+
   async abort(workerId: string, reason?: string) {
     const session = this.sessions.get(workerId);
     if (session) {
@@ -1993,6 +2235,10 @@ export class WorkerManager {
       }
       this.emit({ type: 'worker_update', worker });
     }
+  }
+
+  getSessionLogs(workerId: string, maxLines = 100) {
+    return readSessionLogs(workerId, maxLines);
   }
 
   async rollback(workerId: string, checkpointUuid: string, dryRun = false): Promise<{ success: boolean; error?: string; filesChanged?: number; insertions?: number; deletions?: number }> {
@@ -2134,6 +2380,76 @@ export class WorkerManager {
     });
   }
 
+  async retryWithPlan(workerId: string) {
+    const worker = this.workers.get(workerId);
+    if (!worker || !worker.planContent) return;
+
+    sessionLog(worker.id, 'info', 'retry_with_plan', `planLength=${worker.planContent.length}`, worker.taskId);
+
+    // Abort current session if any
+    const session = this.sessions.get(workerId);
+    if (session) {
+      session.abortController.abort();
+      session.inputStream.end();
+      this.sessions.delete(workerId);
+    }
+
+    // Reset worker state
+    worker.status = 'working';
+    worker.error = undefined;
+    worker.currentAction = 'Re-executing plan...';
+    worker.hasNewActivity = true;
+    worker.lastActivity = Date.now();
+    worker.completedAt = undefined;
+    this.addMilestone(worker, { type: 'status', label: 'Retrying with saved plan', ts: Date.now() });
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+
+    await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Re-executing plan...' });
+
+    const workspacePath = this.resolver.resolve({
+      id: worker.workspaceId,
+      name: worker.workspaceName,
+      repo: undefined,
+    });
+
+    if (!workspacePath) {
+      worker.status = 'error';
+      worker.error = 'Cannot resolve workspace path';
+      worker.currentAction = 'Workspace not found';
+      worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
+      this.emit({ type: 'worker_update', worker });
+      await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
+      return;
+    }
+
+    const task: BuilddTask = {
+      id: worker.taskId,
+      title: worker.taskTitle,
+      description: `Execute this plan:\n\n${worker.planContent}`,
+      workspaceId: worker.workspaceId,
+      workspace: { name: worker.workspaceName },
+      status: 'assigned',
+      priority: 1,
+      mode: 'execution',
+    };
+
+    this.startSession(worker, workspacePath, task).catch(err => {
+      const errMsg = err instanceof Error ? err.message : 'Plan retry failed';
+      console.error(`[Worker ${worker.id}] Plan retry failed:`, err);
+      sessionLog(worker.id, 'error', 'plan_retry_failed', errMsg, worker.taskId);
+      if (worker.status === 'working') {
+        worker.status = 'error';
+        worker.error = errMsg;
+        worker.currentAction = 'Plan retry failed';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        this.emit({ type: 'worker_update', worker });
+      }
+    });
+  }
+
   async markDone(workerId: string) {
     const worker = this.workers.get(workerId);
     if (worker) {
@@ -2152,8 +2468,16 @@ export class WorkerManager {
 
     const session = this.sessions.get(workerId);
 
-    // If worker is done, errored, or stale but session ended, restart it
-    if ((worker.status === 'done' || worker.status === 'error' || worker.status === 'stale') && !session) {
+    // If worker is done, errored, or stale — restart with a new session.
+    // Handle both cases: session already cleaned up (!session) or still lingering
+    // during the completion window (race between status='done' and finally-block cleanup).
+    if (worker.status === 'done' || worker.status === 'error' || (worker.status === 'stale' && !session)) {
+      // If old session is still lingering (race condition), clean it up first
+      if (session) {
+        session.abortController.abort();
+        session.inputStream.end();
+        this.sessions.delete(workerId);
+      }
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
 
       // Update worker status (clear any previous error)
@@ -2256,6 +2580,7 @@ export class WorkerManager {
         const planText = worker.planContent || worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
         if (!planText) {
           console.error(`[Worker ${worker.id}] Plan approval but no plan content found — falling through to enqueue`);
+          sessionLog(worker.id, 'warn', 'plan_approval_empty', 'No plan content found, falling through to enqueue', worker.taskId);
           // Fall through to normal enqueue so the message at least reaches the agent
         } else {
           // Kill current session
@@ -2284,6 +2609,7 @@ export class WorkerManager {
           worker.hasNewActivity = true;
           worker.lastActivity = Date.now();
           this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length}`, worker.taskId);
           this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
           this.emit({ type: 'worker_update', worker });
 
@@ -2296,9 +2622,11 @@ export class WorkerManager {
           });
           if (workspacePath) {
             this.startSession(worker, workspacePath, task).catch(err => {
+              const errMsg = err instanceof Error ? err.message : 'Plan execution failed';
               console.error(`[Worker ${worker.id}] Fresh plan execution failed:`, err);
+              sessionLog(worker.id, 'error', 'plan_execution_failed', errMsg, worker.taskId);
               worker.status = 'error';
-              worker.error = err instanceof Error ? err.message : 'Plan execution failed';
+              worker.error = errMsg;
               worker.currentAction = 'Execution failed';
               worker.hasNewActivity = true;
               worker.completedAt = Date.now();

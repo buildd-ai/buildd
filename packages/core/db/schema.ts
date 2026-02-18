@@ -136,6 +136,21 @@ export interface WorkspaceGitConfig {
     };
     excludedCommands?: string[];
   };
+
+  // SDK debug logging (SDK v0.2.44+)
+  debug?: boolean;               // Enable verbose SDK debug output to stderr
+  debugFile?: string;             // File path to write SDK debug logs to
+
+  // Organizer agent configuration — reviews completed tasks and course-corrects
+  organizer?: {
+    enabled?: boolean;
+    // Review window in hours (default: 24)
+    reviewWindowHours?: number;
+    // What to check for
+    requirePR?: boolean;        // Flag tasks that complete without a PR
+    requirePlanSummary?: boolean; // Flag planning tasks without summaries
+    autoCreateFollowUp?: boolean; // Auto-create follow-up tasks for failed tasks
+  };
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

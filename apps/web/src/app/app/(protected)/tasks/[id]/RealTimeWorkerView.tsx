@@ -11,7 +11,8 @@ import TeamPanel from './TeamPanel';
 
 type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label: string; progress?: number; ts: number };
+  | { type: 'status'; label: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label: string; ts: number };
 
 interface Worker {
   id: string;

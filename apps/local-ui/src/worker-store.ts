@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import * as fs from 'fs';
+const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } = fs;
 import { join } from 'path';
 import { homedir } from 'os';
-import type { LocalWorker } from './types';
+import type { LocalWorker, CheckpointEventType } from './types';
 
 const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
 
@@ -161,6 +162,11 @@ export function loadAllWorkers(): LocalWorker[] {
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
+        checkpointEvents: new Set<CheckpointEventType>(
+          ((data.milestones as any[]) || [])
+            .filter((m: any) => m.type === 'checkpoint')
+            .map((m: any) => m.event as CheckpointEventType)
+        ),
         phaseText: null,
         phaseStart: null,
         phaseToolCount: 0,
