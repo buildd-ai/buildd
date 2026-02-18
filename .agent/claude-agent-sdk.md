@@ -7,9 +7,9 @@
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current — fully aligned |
-| `apps/agent` | `>=0.2.45` | Current — fully aligned |
-| `apps/local-ui` | `>=0.2.44` | Needs bump to 0.2.45 (Session.stream() fix, memory improvements) |
+| `packages/core` | `>=0.2.45` | Current |
+| `apps/agent` | `>=0.2.45` | Current |
+| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
 
 ---
 
@@ -153,7 +153,7 @@ The V2 session now supports more options than v0.1.77:
 type SDKSessionOptions = {
   model: string;
   pathToClaudeCodeExecutable?: string;
-  executable?: 'node' | 'bun';
+  executable?: 'node' | 'bun' | 'deno';
   executableArgs?: string[];
   env?: { [envVar: string]: string | undefined };
   // NEW in v0.2.x:
@@ -536,10 +536,21 @@ options: {
 ### Hook Callback Output
 
 ```typescript
-type HookJSONOutput = {
+type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput;
+
+// Async hooks: return immediately, run in background with optional timeout
+type AsyncHookJSONOutput = {
+  async: true;
+  asyncTimeout?: number;       // Max wait time in ms
+};
+
+// Sync hooks: block until complete
+type SyncHookJSONOutput = {
   continue?: boolean;           // Whether agent should continue (default: true)
   stopReason?: string;          // Message when continue is false
   suppressOutput?: boolean;     // Hide stdout from transcript
+  decision?: 'approve' | 'block';  // Shorthand permission decision
+  reason?: string;              // Human-readable reason for decision
   systemMessage?: string;       // Inject context into conversation for Claude
   hookSpecificOutput?:
     | {
@@ -842,6 +853,35 @@ options: {
 
 **Key advantage**: No subprocess startup cost, shared memory with host process.
 
+### MCP Server Transport Types
+
+```typescript
+type McpServerConfig =
+  | McpStdioServerConfig          // Subprocess with stdio transport
+  | McpSSEServerConfig            // Server-Sent Events transport
+  | McpHttpServerConfig           // HTTP Streamable transport (new)
+  | McpSdkServerConfigWithInstance; // In-process SDK server
+
+type McpStdioServerConfig = {
+  type?: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+};
+
+type McpSSEServerConfig = {
+  type: 'sse';
+  url: string;
+  headers?: Record<string, string>;
+};
+
+type McpHttpServerConfig = {
+  type: 'http';
+  url: string;
+  headers?: Record<string, string>;
+};
+```
+
 ---
 
 ## 22. Compact Boundary Messages
@@ -915,6 +955,18 @@ Can be used to surface rate limit warnings to the dashboard or implement backoff
 
 ---
 
+## 25. V2 Session `stream()` Fix (SDK v0.2.45)
+
+Fixed `Session.stream()` returning prematurely when background subagents are still running. The SDK now holds back intermediate result messages until all tasks complete. This is important for V2 API users with agent teams.
+
+---
+
+## 26. Memory Improvement (SDK v0.2.45)
+
+Improved memory usage for shell commands that produce large output — RSS no longer grows unboundedly with command output size. This benefits long-running workers that execute many bash commands.
+
+---
+
 ## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
@@ -936,6 +988,8 @@ Can be used to surface rate limit warnings to the dashboard or implement backoff
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
+- **V2 Session.stream()** no longer returns prematurely when background subagents are running (v0.2.45)
+- **Shell memory leak** fixed — RSS no longer grows unboundedly with large command output (v0.2.45)
 - **Background task notifications** now delivered in streaming SDK mode (v2.1.41) — previously silent
 - **Agent teams model identifiers** fixed for Bedrock/Vertex/Foundry (v2.1.41)
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
@@ -971,6 +1025,19 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 
 ## Additional Options Reference
+
+### Newly Documented Options (v0.2.45 API Reference)
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `allowDangerouslySkipPermissions` | `boolean` | Required when using `permissionMode: 'bypassPermissions'` |
+| `extraArgs` | `Record<string, string \| null>` | Additional CLI arguments |
+| `fallbackModel` | `string` | Model to use if primary fails |
+| `includePartialMessages` | `boolean` | Include `SDKPartialAssistantMessage` streaming events |
+| `maxThinkingTokens` | `number` | Maximum tokens for thinking process |
+| `permissionPromptToolName` | `string` | MCP tool name for permission prompts |
+| `strictMcpConfig` | `boolean` | Enforce strict MCP validation |
+| `tools` | `string[] \| { type: 'preset'; preset: 'claude_code' }` | Tool configuration (distinct from `allowedTools`) |
 
 ### Thinking / Effort Controls
 

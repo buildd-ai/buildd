@@ -1042,7 +1042,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1058,7 +1058,7 @@ export class WorkerManager {
 
       console.log(`[Worker ${worker.id}] Permission requested: ${toolName}`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1087,7 +1087,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Task completed: ${taskSubject} (teammate: ${teammateName || 'leader'}, team: ${teamName || 'none'})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1111,7 +1111,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1126,7 +1126,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1145,7 +1145,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Notification: ${title ? `[${title}] ` : ''}${message}`);
 
-      return {};
+      return { async: true };
     };
   }
 
