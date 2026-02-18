@@ -2198,6 +2198,7 @@ export class WorkerManager {
 
   // Fire a meaningful checkpoint milestone (each event fires at most once per worker)
   private addCheckpoint(worker: LocalWorker, event: CheckpointEventType) {
+    if (!worker.checkpointEvents) worker.checkpointEvents = new Set<CheckpointEventType>();
     if (worker.checkpointEvents.has(event)) return;
     worker.checkpointEvents.add(event);
     this.addMilestone(worker, {
