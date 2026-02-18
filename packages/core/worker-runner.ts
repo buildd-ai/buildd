@@ -120,6 +120,8 @@ export class WorkerRunner extends EventEmitter {
             ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
+            ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
+            ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
           },
         },
       })) {
@@ -394,6 +396,27 @@ export class WorkerRunner extends EventEmitter {
     const teammateName = (input as any).teammate_name as string | undefined;
     const teamName = (input as any).team_name as string | undefined;
     this.emitEvent('worker:task_completed', { taskId, taskSubject, teammateName, teamName });
+    return {};
+  };
+
+  // SubagentStart hook — fires when a subagent is spawned.
+  // Emits event for dashboard visibility.
+  private subagentStartHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SubagentStart') return {};
+
+    const agentId = (input as any).agent_id as string;
+    const agentType = (input as any).agent_type as string;
+    this.emitEvent('worker:subagent_start', { agentId, agentType });
+    return {};
+  };
+
+  // SubagentStop hook — fires when a subagent completes.
+  // Emits event for dashboard visibility.
+  private subagentStopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SubagentStop') return {};
+
+    const stopHookActive = (input as any).stop_hook_active as boolean;
+    this.emitEvent('worker:subagent_stop', { stopHookActive });
     return {};
   };
 
