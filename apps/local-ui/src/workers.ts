@@ -1,5 +1,6 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
@@ -273,6 +274,14 @@ export class WorkerManager {
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
         if (!worker.subagentTasks) worker.subagentTasks = [];
+        // Ensure checkpointEvents set exists (reconstructed from milestones by worker-store)
+        if (!worker.checkpointEvents || !(worker.checkpointEvents instanceof Set)) {
+          worker.checkpointEvents = new Set<CheckpointEventType>(
+            worker.milestones
+              .filter((m): m is Extract<typeof m, { type: 'checkpoint' }> => m.type === 'checkpoint')
+              .map(m => m.event)
+          );
+        }
         this.workers.set(worker.id, worker);
       }
       if (restored.length > 0) {
@@ -809,6 +818,7 @@ export class WorkerManager {
       messages: [],
       checkpoints: [],
       subagentTasks: [],
+      checkpointEvents: new Set<CheckpointEventType>(),
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -1605,6 +1615,7 @@ export class WorkerManager {
       if (isAuthError) {
         // Auth error - mark as failed, not completed
         sessionLog(worker.id, 'error', 'auth_error', 'Agent authentication failed — check API key', worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         worker.status = 'error';
         worker.error = 'Agent authentication failed';
         worker.currentAction = 'Auth failed';
@@ -1616,6 +1627,7 @@ export class WorkerManager {
       } else if (resultSubtype === 'error_max_budget_usd') {
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
@@ -1635,6 +1647,7 @@ export class WorkerManager {
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
+        this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
         worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
@@ -1703,6 +1716,8 @@ export class WorkerManager {
       const isAbortError = error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
 
+      this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+
       if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
@@ -1760,6 +1775,7 @@ export class WorkerManager {
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
+      this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
       // Immediately persist sessionId (critical for resume)
       storeSaveWorker(worker);
     }
@@ -1927,6 +1943,13 @@ export class WorkerManager {
             }
           }
 
+          // Fire checkpoint milestones for meaningful first-time events
+          if (toolName === 'Read') {
+            this.addCheckpoint(worker, CheckpointEvent.FIRST_READ);
+          } else if (toolName === 'Edit' || toolName === 'Write') {
+            this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
+          }
+
           // Update currentAction (still useful for live display)
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
@@ -1950,6 +1973,7 @@ export class WorkerManager {
                 worker.commits.shift();
               }
               this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
+              this.addCheckpoint(worker, CheckpointEvent.FIRST_COMMIT);
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
@@ -2005,6 +2029,7 @@ export class WorkerManager {
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
             sessionLog(worker.id, 'info', 'exit_plan_mode', `planLength=${worker.planContent.length} toolUseId=${planToolUseId}`, worker.taskId);
+            this.addCheckpoint(worker, CheckpointEvent.PLAN_SUBMITTED);
             worker.status = 'waiting';
             worker.waitingFor = {
               type: 'plan_approval',
@@ -2169,6 +2194,18 @@ export class WorkerManager {
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
       this.syncWorkerToServer(worker).catch(() => {});
     }
+  }
+
+  // Fire a meaningful checkpoint milestone (each event fires at most once per worker)
+  private addCheckpoint(worker: LocalWorker, event: CheckpointEventType) {
+    if (worker.checkpointEvents.has(event)) return;
+    worker.checkpointEvents.add(event);
+    this.addMilestone(worker, {
+      type: 'checkpoint',
+      event,
+      label: CHECKPOINT_LABELS[event],
+      ts: Date.now(),
+    });
   }
 
   async abort(workerId: string, reason?: string) {
