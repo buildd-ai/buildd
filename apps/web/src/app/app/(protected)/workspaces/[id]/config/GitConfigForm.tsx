@@ -28,6 +28,8 @@ interface GitConfig {
     };
     debug?: boolean;
     debugFile?: string;
+    thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
+    effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 interface Props {
@@ -66,6 +68,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [sandboxExcludedCommands, setSandboxExcludedCommands] = useState((initialConfig?.sandbox?.excludedCommands || []).join('\n'));
     const [debug, setDebug] = useState(initialConfig?.debug || false);
     const [debugFile, setDebugFile] = useState(initialConfig?.debugFile || '');
+    const [thinkingType, setThinkingType] = useState<'none' | 'adaptive' | 'enabled' | 'disabled'>(
+        initialConfig?.thinking?.type || 'none'
+    );
+    const [thinkingBudgetTokens, setThinkingBudgetTokens] = useState(
+        initialConfig?.thinking?.type === 'enabled' ? initialConfig.thinking.budgetTokens : 10000
+    );
+    const [effort, setEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'max'>(
+        initialConfig?.effort || 'none'
+    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -101,6 +112,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     } : undefined,
                     debug,
                     debugFile: debugFile.trim() || undefined,
+                    thinking: thinkingType === 'none' ? undefined
+                        : thinkingType === 'enabled' ? { type: 'enabled', budgetTokens: thinkingBudgetTokens }
+                        : { type: thinkingType },
+                    effort: effort === 'none' ? undefined : effort,
                 }),
             });
 
@@ -451,6 +466,68 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         />
                         <p className="text-xs text-text-muted mt-1">
                             File path to write SDK debug logs to. When set, debug output goes to this file instead of stderr.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Thinking / Effort Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Thinking &amp; Effort</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Thinking Mode</label>
+                        <select
+                            value={thinkingType}
+                            onChange={(e) => setThinkingType(e.target.value as typeof thinkingType)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                        >
+                            <option value="none">Default (no override)</option>
+                            <option value="adaptive">Adaptive (model decides when to think)</option>
+                            <option value="enabled">Enabled (fixed budget)</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                        <p className="text-xs text-text-muted mt-1">
+                            Controls extended thinking / chain-of-thought reasoning. Can be overridden per-task via task context.
+                        </p>
+                    </div>
+
+                    {thinkingType === 'enabled' && (
+                        <div className="pl-6 border-l-2 border-border-default">
+                            <label className="block text-sm font-medium mb-1">
+                                Budget Tokens
+                            </label>
+                            <input
+                                type="number"
+                                value={thinkingBudgetTokens}
+                                onChange={(e) => setThinkingBudgetTokens(Math.max(1, parseInt(e.target.value) || 1))}
+                                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                                min={1}
+                                step={1000}
+                                placeholder="10000"
+                            />
+                            <p className="text-xs text-text-muted mt-1">
+                                Maximum tokens the model can use for thinking. Higher values allow deeper reasoning at higher cost.
+                            </p>
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Effort Level</label>
+                        <select
+                            value={effort}
+                            onChange={(e) => setEffort(e.target.value as typeof effort)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                        >
+                            <option value="none">Default (no override)</option>
+                            <option value="low">Low (faster, cheaper — simple tasks)</option>
+                            <option value="medium">Medium (balanced)</option>
+                            <option value="high">High (thorough)</option>
+                            <option value="max">Max (most thorough — complex architecture)</option>
+                        </select>
+                        <p className="text-xs text-text-muted mt-1">
+                            Controls how much effort the model puts into responses. Can be overridden per-task via task context.
                         </p>
                     </div>
                 </div>

@@ -147,6 +147,11 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task via task.context.extendedContext.
   extendedContext?: boolean;
 
+  // Thinking / effort controls (SDK v0.2.45+)
+  // Controls Claude's reasoning behavior. Can be overridden per-task via task.context.thinking / task.context.effort.
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
+  effort?: 'low' | 'medium' | 'high' | 'max';
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;
