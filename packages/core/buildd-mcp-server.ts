@@ -85,6 +85,13 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
             };
           }
         },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
+          },
+        },
       ),
 
       // ── buildd_memory tool ────────────────────────────────────────────
@@ -105,6 +112,13 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
               isError: true,
             };
           }
+        },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
+          },
         },
       ),
     ],

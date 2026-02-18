@@ -211,6 +211,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     {
       name: "buildd",
       description: `Task coordination tool. Available actions: ${allActions.join(", ")}. Use action parameter to select operation, params for action-specific arguments.`,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         type: "object",
         properties: {
@@ -241,6 +246,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     {
       name: "buildd_memory",
       description: "Search or save workspace memory (observations about code patterns, gotchas, decisions). Search returns full content inline.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         type: "object",
         properties: {
