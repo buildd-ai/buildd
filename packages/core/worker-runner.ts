@@ -123,6 +123,8 @@ export class WorkerRunner extends EventEmitter {
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
             ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
+            ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
         },
       })) {
@@ -452,6 +454,26 @@ export class WorkerRunner extends EventEmitter {
     const message = (input as any).message as string;
     const title = (input as any).title as string | undefined;
     this.emitEvent('worker:notification', { message, title });
+    return {};
+  };
+
+  // SessionStart hook — fires on session initialization (startup, resume, clear, compact).
+  // Tracks session lifecycle for debugging worker session issues.
+  private sessionStartHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SessionStart') return {};
+
+    const source = (input as any).source as 'startup' | 'resume' | 'clear' | 'compact';
+    this.emitEvent('worker:session_start', { source });
+    return {};
+  };
+
+  // SessionEnd hook — fires on session termination.
+  // Captures the reason for session end (clear, logout, prompt_input_exit, etc.).
+  private sessionEndHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'SessionEnd') return {};
+
+    const reason = (input as any).reason as string;
+    this.emitEvent('worker:session_end', { reason });
     return {};
   };
 

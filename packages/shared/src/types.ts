@@ -594,6 +594,8 @@ export type SSEEventType =
   | 'worker:task_started'
   | 'worker:task_notification'
   | 'worker:notification'
+  | 'worker:session_start'
+  | 'worker:session_end'
   | 'task:updated';
 
 export interface SSEEvent<T = unknown> {
