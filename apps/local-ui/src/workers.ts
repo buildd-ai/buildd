@@ -1493,6 +1493,15 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
 
+      // Resolve 1M context beta: task-level override > workspace-level setting
+      const taskExtendedContext = (task.context as any)?.extendedContext;
+      const extendedContext = taskExtendedContext !== undefined
+        ? Boolean(taskExtendedContext)
+        : Boolean(gitConfig?.extendedContext);
+      const betas = extendedContext && /sonnet/i.test(this.config.model)
+        ? ['context-1m-2025-08-07' as const]
+        : undefined;
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
@@ -1519,6 +1528,8 @@ export class WorkerManager {
         },
         // Resume previous session if provided (loads full conversation history from disk)
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+        // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+        ...(betas ? { betas } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
