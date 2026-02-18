@@ -1123,6 +1123,37 @@ export class WorkerManager {
     };
   }
 
+  // Create a PreCompact hook that archives the full transcript before context compaction.
+  // This preserves worker reasoning history that would otherwise be lost during compaction.
+  private createPreCompactHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreCompact') return {};
+
+      const transcriptPath = (input as any).transcript_path as string | undefined;
+      const trigger = (input as any).trigger as 'manual' | 'auto' | undefined;
+
+      if (!transcriptPath) return {};
+
+      try {
+        const transcript = readFileSync(transcriptPath, 'utf-8');
+        this.addMilestone(worker, { type: 'status', label: `Transcript archived (${trigger || 'auto'} compaction)`, ts: Date.now() });
+        this.emit({
+          type: 'transcript_archived',
+          worker,
+          data: {
+            trigger: trigger || 'auto',
+            transcriptPath,
+            transcript,
+          },
+        });
+        console.log(`[Worker ${worker.id}] Transcript archived before ${trigger || 'auto'} compaction (${transcript.length} chars)`);
+      } catch {
+        // Transcript file may not exist or be unreadable — non-fatal
+      }
+      return {};
+    };
+  }
+
   // Resolve whether to use bypassPermissions mode.
   // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
   private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
@@ -1483,6 +1514,7 @@ export class WorkerManager {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
+        PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
