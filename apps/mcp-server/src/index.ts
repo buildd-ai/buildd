@@ -198,7 +198,7 @@ const server = new Server(
 
 const allActions = [
   "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task", "create_task",
-  "create_schedule", "update_schedule", "list_schedules", "register_skill",
+  "create_schedule", "update_schedule", "list_schedules", "register_skill", "review_workspace",
 ];
 
 // Admin-only actions — checked at execution time, not at listing time
@@ -237,7 +237,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
 - update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
-- register_skill: { name (required), content (required), description?, source?, workspaceId? } [admin]`,
+- register_skill: { name (required), content (required), description?, source?, workspaceId? } [admin]
+- review_workspace: { hoursBack? (default 24, max 168), workspaceId? } — reviews recently completed/failed tasks for protocol violations (missing PRs, failed without follow-up, etc.)`,
           },
         },
         required: ["action"],
@@ -817,6 +818,93 @@ export BUILDD_SERVER=${SERVER_URL}`;
                 text: `Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`,
               },
             ],
+          };
+        }
+
+        case "review_workspace": {
+          const workspaceId = (params.workspaceId as string) || await getWorkspaceId();
+          if (!workspaceId) {
+            throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+          }
+
+          const hoursBack = Math.min(Math.max((params.hoursBack as number) || 24, 1), 168);
+          const data = await apiCall(`/api/workspaces/${workspaceId}/tasks/review?hoursBack=${hoursBack}`);
+
+          const tasksToReview = data.tasks || [];
+          if (tasksToReview.length === 0) {
+            return {
+              content: [{ type: "text", text: `No completed or failed tasks in the last ${hoursBack} hours. Nothing to review.` }],
+            };
+          }
+
+          const findings: string[] = [];
+          const taskSummaries: string[] = [];
+
+          for (const task of tasksToReview) {
+            const issues: string[] = [];
+            const result = task.result || {};
+            const worker = task.worker;
+
+            if (task.status === 'failed') {
+              const hasSubTasks = (task.subTaskCount || 0) > 0;
+              if (!hasSubTasks) {
+                issues.push('FAILED without follow-up task created');
+              }
+            }
+
+            if (task.status === 'completed' && task.mode === 'execution') {
+              if (!result.prUrl && !result.prNumber) {
+                if (result.commits && result.commits > 0) {
+                  issues.push(`Has ${result.commits} commit(s) but NO PR created`);
+                } else if (!result.commits || result.commits === 0) {
+                  issues.push('Completed with NO commits and NO PR — may not have pushed work');
+                }
+              }
+            }
+
+            if (task.status === 'completed' && task.mode === 'planning') {
+              if (!result.summary && !result.structuredOutput) {
+                issues.push('Planning task completed without a plan summary or structured output');
+              }
+            }
+
+            if (worker?.resultMeta?.permissionDenials?.length > 0) {
+              issues.push(`Worker had ${worker.resultMeta.permissionDenials.length} permission denial(s)`);
+            }
+
+            const statusIcon = task.status === 'completed' ? 'OK' : 'FAIL';
+            const prInfo = result.prUrl ? ` | PR: ${result.prUrl}` : '';
+            const commitInfo = result.commits ? ` | ${result.commits} commits` : '';
+
+            let taskLine = `- [${statusIcon}] **${task.title}** (${task.id.slice(0, 8)})${commitInfo}${prInfo}`;
+            if (issues.length > 0) {
+              taskLine += `\n  ⚠ Issues: ${issues.join('; ')}`;
+            }
+            taskSummaries.push(taskLine);
+
+            if (issues.length > 0) {
+              findings.push(
+                `Task "${task.title}" (${task.id}):\n` +
+                issues.map((i: string) => `  - ${i}`).join('\n')
+              );
+            }
+          }
+
+          const completed = tasksToReview.filter((t: { status: string }) => t.status === 'completed').length;
+          const failed = tasksToReview.filter((t: { status: string }) => t.status === 'failed').length;
+          const header = `## Workspace Review (last ${hoursBack}h)\n\n**${tasksToReview.length} tasks** reviewed: ${completed} completed, ${failed} failed\n`;
+
+          const tasksSection = `### Tasks\n${taskSummaries.join('\n')}\n`;
+
+          let findingsSection = '';
+          if (findings.length > 0) {
+            findingsSection = `\n### Findings (${findings.length} issue${findings.length === 1 ? '' : 's'})\n${findings.join('\n\n')}\n\n### Recommended Actions\nFor each finding above, consider creating a follow-up task using \`action=create_task\` to:\n- Create PRs for unpushed work\n- Retry or investigate failed tasks\n- Document plans that were completed without summaries`;
+          } else {
+            findingsSection = '\n### Findings\nAll tasks followed protocols correctly. No issues found.';
+          }
+
+          return {
+            content: [{ type: "text", text: `${header}\n${tasksSection}${findingsSection}` }],
           };
         }
 

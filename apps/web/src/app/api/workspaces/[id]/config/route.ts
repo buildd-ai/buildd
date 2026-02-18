@@ -133,6 +133,21 @@ export async function POST(
                     },
                 }
                 : {}),
+
+            // Organizer agent configuration
+            ...(body.organizer && typeof body.organizer === 'object'
+                ? {
+                    organizer: {
+                        enabled: Boolean(body.organizer.enabled),
+                        ...(typeof body.organizer.reviewWindowHours === 'number' && body.organizer.reviewWindowHours > 0
+                            ? { reviewWindowHours: Math.min(body.organizer.reviewWindowHours, 168) }
+                            : {}),
+                        requirePR: body.organizer.requirePR ?? true,
+                        requirePlanSummary: body.organizer.requirePlanSummary ?? true,
+                        autoCreateFollowUp: body.organizer.autoCreateFollowUp ?? false,
+                    },
+                }
+                : {}),
         };
 
         await db
