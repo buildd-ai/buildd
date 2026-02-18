@@ -141,6 +141,12 @@ export interface WorkspaceGitConfig {
   debug?: boolean;               // Enable verbose SDK debug output to stderr
   debugFile?: string;             // File path to write SDK debug logs to
 
+  // 1M context window beta (SDK v0.2.45+)
+  // Enables 'context-1m-2025-08-07' beta for Sonnet 4.x models only.
+  // Reduces context compaction at higher cost — useful for large codebases.
+  // Can be overridden per-task via task.context.extendedContext.
+  extendedContext?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;

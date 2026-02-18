@@ -78,6 +78,15 @@ export class WorkerRunner extends EventEmitter {
       // Extract outputSchema from task for structured output support
       const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
 
+      // Resolve 1M context beta: task-level override > workspace-level setting
+      const taskExtendedContext = (worker.task as any)?.context?.extendedContext;
+      const extendedContext = taskExtendedContext !== undefined
+        ? Boolean(taskExtendedContext)
+        : Boolean(gitConfig?.extendedContext);
+      const betas = extendedContext && /sonnet/i.test(config.anthropicModel)
+        ? ['context-1m-2025-08-07' as const]
+        : undefined;
+
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
         ? createBuilddMcpServer({
@@ -115,6 +124,8 @@ export class WorkerRunner extends EventEmitter {
           // Structured output: pass outputFormat if task defines an outputSchema
           ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
+          // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+          ...(betas ? { betas } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
