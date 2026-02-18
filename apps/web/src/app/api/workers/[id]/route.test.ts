@@ -218,18 +218,20 @@ describe('PATCH /api/workers/[id]', () => {
     expect(res.status).toBe(403);
   });
 
-  it('returns 409 when worker is already completed', async () => {
+  it('returns 409 when worker is already completed and update is not reactivation', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       accountId: 'account-1',
       status: 'completed',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
     });
 
     const req = createMockRequest({
       method: 'PATCH',
       headers: { Authorization: 'Bearer bld_test' },
-      body: { status: 'running' },
+      body: { status: 'completed' },
     });
     const res = await PATCH(req, { params: mockParams });
 
@@ -238,19 +240,42 @@ describe('PATCH /api/workers/[id]', () => {
     expect(data.error).toBe('Worker already completed');
   });
 
-  it('returns 409 when worker has failed (possibly reassigned)', async () => {
+  it('allows reactivation of completed worker with running status', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+      taskId: 'task-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Processing follow-up...' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 409 when worker has failed and update is not reactivation', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       accountId: 'account-1',
       status: 'failed',
       error: 'Reassigned',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
     });
 
     const req = createMockRequest({
       method: 'PATCH',
       headers: { Authorization: 'Bearer bld_test' },
-      body: { status: 'running' },
+      body: { status: 'completed' },
     });
     const res = await PATCH(req, { params: mockParams });
 
