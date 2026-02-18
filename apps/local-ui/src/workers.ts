@@ -1036,6 +1036,22 @@ export class WorkerManager {
     };
   }
 
+  // Create a PermissionRequest hook that captures permission dialog events for analytics.
+  // Purely observational — emits event with tool_name, tool_input, and permission_suggestions.
+  private createPermissionRequestHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PermissionRequest') return {};
+
+      const toolName = (input as any).tool_name as string;
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+      const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
+
+      console.log(`[Worker ${worker.id}] Permission requested: ${toolName}`);
+
+      return {};
+    };
+  }
+
   // Create a TaskCompleted hook that logs task completions within agent teams.
   // Emits milestones and updates team state for dashboard visibility.
   private createTaskCompletedHook(worker: LocalWorker): HookCallback {
@@ -1515,6 +1531,7 @@ export class WorkerManager {
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
+        PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],

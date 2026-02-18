@@ -121,6 +121,7 @@ export class WorkerRunner extends EventEmitter {
             // Cast needed: packages/core pins SDK v0.1.x which lacks these HookEvent keys,
             // but the underlying CLI runtime supports them when AGENT_TEAMS is enabled.
             ...({ PostToolUseFailure: [{ hooks: [this.postToolUseFailureHook.bind(this)] }] } as any),
+            ...({ PermissionRequest: [{ hooks: [this.permissionRequestHook.bind(this)] }] } as any),
             ...({ TeammateIdle: [{ hooks: [this.teammateIdleHook.bind(this)] }] } as any),
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
@@ -399,6 +400,22 @@ export class WorkerRunner extends EventEmitter {
       toolName,
       error,
       isInterrupt: isInterrupt ?? false,
+    });
+    return {};
+  };
+
+  // PermissionRequest hook — fires when tool permission is requested (analytics only).
+  private permissionRequestHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'PermissionRequest') return {};
+
+    const toolName = (input as any).tool_name as string;
+    const toolInput = (input as any).tool_input as Record<string, unknown>;
+    const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
+
+    this.emitEvent('worker:permission_request', {
+      toolName,
+      toolInput,
+      permissionSuggestions: permissionSuggestions ?? [],
     });
     return {};
   };
