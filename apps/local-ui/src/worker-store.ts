@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import * as fs from 'fs';
+const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } = fs;
 import { join } from 'path';
 import { homedir } from 'os';
 import type { LocalWorker, CheckpointEventType } from './types';

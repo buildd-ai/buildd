@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync, readFileSync } from 'fs';
+import * as fs from 'fs';
+const { existsSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync, readFileSync } = fs;
 import { join } from 'path';
 import { homedir } from 'os';
 
