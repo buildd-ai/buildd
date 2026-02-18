@@ -995,6 +995,32 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
+### Buildd Integration Status (v0.2.45)
+
+Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
+- `SDKTaskStartedMessage` — subagent lifecycle tracking
+- `SDKRateLimitEvent` — rate limit surfacing to dashboard
+- `SDKTaskNotificationMessage` — subagent completion tracking
+- `SDKFilesPersistedEvent` — file checkpoint tracking
+- All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
+- Structured output via `outputFormat`
+- File checkpointing via `enableFileCheckpointing`
+- Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+- Skills-as-subagents via `agents` option
+- In-process MCP server (worker-runner.ts) and subprocess MCP server (local-ui)
+- `sessionId` for worker/session correlation
+- Claude Sonnet 4.6 in model lists
+
+### Pending Enhancements (Buildd tasks created)
+
+| Enhancement | SDK Feature | Priority |
+|-------------|------------|----------|
+| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
+| Effort/thinking controls | `effort`, `thinking` options | P4 |
+| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
+| maxTurns in local-ui | `maxTurns` option | P4 |
+| Fallback model | `fallbackModel` option | P4 |
+
 ---
 
 
