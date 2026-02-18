@@ -2335,8 +2335,16 @@ export class WorkerManager {
 
     const session = this.sessions.get(workerId);
 
-    // If worker is done, errored, or stale but session ended, restart it
-    if ((worker.status === 'done' || worker.status === 'error' || worker.status === 'stale') && !session) {
+    // If worker is done, errored, or stale — restart with a new session.
+    // Handle both cases: session already cleaned up (!session) or still lingering
+    // during the completion window (race between status='done' and finally-block cleanup).
+    if (worker.status === 'done' || worker.status === 'error' || (worker.status === 'stale' && !session)) {
+      // If old session is still lingering (race condition), clean it up first
+      if (session) {
+        session.abortController.abort();
+        session.inputStream.end();
+        this.sessions.delete(workerId);
+      }
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
 
       // Update worker status (clear any previous error)
