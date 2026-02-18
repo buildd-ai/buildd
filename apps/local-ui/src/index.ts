@@ -48,6 +48,7 @@ interface SavedConfig {
   // Remote skill installation
   skillInstallerAllowlist?: string[]; // Override workspace allowlist locally
   rejectRemoteInstallers?: boolean; // Block all remote installer commands
+  maxTurns?: number; // Max turns per worker session (default: no limit)
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -71,6 +72,7 @@ function loadSavedConfig(): SavedConfig {
         llmBaseUrl: data.llmBaseUrl,
         skillInstallerAllowlist: data.skillInstallerAllowlist,
         rejectRemoteInstallers: data.rejectRemoteInstallers,
+        maxTurns: data.maxTurns,
       };
     }
   } catch (err) {
@@ -296,6 +298,8 @@ const config: LocalUIConfig = {
   // Remote skill installation
   skillInstallerAllowlist: savedConfig.skillInstallerAllowlist,
   rejectRemoteInstallers: savedConfig.rejectRemoteInstallers,
+  // Max turns per worker session
+  maxTurns: savedConfig.maxTurns,
 };
 
 const resolver = createWorkspaceResolver(projectRoots);
@@ -520,6 +524,7 @@ const server = Bun.serve({
         accountId: currentAccountId,
         viewerToken: workerManager?.getViewerToken() || null,
         outboxCount: outbox.count(),
+        maxTurns: config.maxTurns || null,
         // LLM provider info
         llmProvider: config.llmProvider?.provider || 'anthropic',
         llmBaseUrl: config.llmProvider?.baseUrl,
@@ -667,6 +672,23 @@ const server = Bun.serve({
       saveConfig({ maxConcurrent });
 
       return Response.json({ ok: true, maxConcurrent }, { headers: corsHeaders });
+    }
+
+    // Update max turns setting
+    if (path === '/api/config/max-turns' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { maxTurns } = body;
+
+      // null/0 means no limit
+      if (maxTurns !== null && maxTurns !== undefined && (typeof maxTurns !== 'number' || maxTurns < 1 || maxTurns > 10000)) {
+        return Response.json({ error: 'maxTurns must be 1-10000 or null for no limit' }, { status: 400, headers: corsHeaders });
+      }
+
+      const value = (typeof maxTurns === 'number' && maxTurns > 0) ? maxTurns : undefined;
+      config.maxTurns = value;
+      saveConfig({ maxTurns: value });
+
+      return Response.json({ ok: true, maxTurns: value || null }, { headers: corsHeaders });
     }
 
     // Update LLM provider settings (OpenRouter, etc.)
@@ -823,6 +845,7 @@ const server = Bun.serve({
           bypassPermissions: config.bypassPermissions || false,
           acceptRemoteTasks: config.acceptRemoteTasks !== false,
           openBrowser: savedConfig.openBrowser !== false,
+          maxTurns: config.maxTurns || null,
         },
       };
       const initMessage = `data: ${JSON.stringify(init)}\n\n`;

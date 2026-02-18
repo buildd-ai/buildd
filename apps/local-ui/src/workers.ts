@@ -1042,7 +1042,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1058,7 +1058,7 @@ export class WorkerManager {
 
       console.log(`[Worker ${worker.id}] Permission requested: ${toolName}`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1087,7 +1087,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Task completed: ${taskSubject} (teammate: ${teammateName || 'leader'}, team: ${teamName || 'none'})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1111,7 +1111,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1126,7 +1126,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1145,7 +1145,7 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Notification: ${title ? `[${title}] ` : ''}${message}`);
 
-      return {};
+      return { async: true };
     };
   }
 
@@ -1214,6 +1214,25 @@ export class WorkerManager {
     // Fall back to local-ui config
     if (typeof this.config.maxBudgetUsd === 'number' && this.config.maxBudgetUsd > 0) {
       return this.config.maxBudgetUsd;
+    }
+
+    return undefined;
+  }
+
+  // Resolve maxTurns for SDK-level turn limiting.
+  // Priority: workspace gitConfig (if admin_confirmed) > local config > undefined (no limit)
+  private resolveMaxTurns(workspaceConfig: { gitConfig?: any; configStatus?: string }): number | undefined {
+    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
+    const wsTurns = workspaceConfig.gitConfig?.maxTurns;
+
+    // Workspace-level setting takes priority if admin confirmed
+    if (isAdminConfirmed && typeof wsTurns === 'number' && wsTurns > 0) {
+      return wsTurns;
+    }
+
+    // Fall back to local-ui config
+    if (typeof this.config.maxTurns === 'number' && this.config.maxTurns > 0) {
+      return this.config.maxTurns;
     }
 
     return undefined;
@@ -1493,6 +1512,18 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
 
+      // Resolve 1M context beta: task-level override > workspace-level setting
+      const taskExtendedContext = (task.context as any)?.extendedContext;
+      const extendedContext = taskExtendedContext !== undefined
+        ? Boolean(taskExtendedContext)
+        : Boolean(gitConfig?.extendedContext);
+      const betas = extendedContext && /sonnet/i.test(this.config.model)
+        ? ['context-1m-2025-08-07' as const]
+        : undefined;
+
+      // Resolve max turns for SDK-level turn limiting
+      const maxTurns = this.resolveMaxTurns(workspaceConfig);
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
@@ -1505,6 +1536,7 @@ export class WorkerManager {
         systemPrompt,
         enableFileCheckpointing: true,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+        ...(maxTurns ? { maxTurns } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
         ...(plugins.length > 0 ? { plugins } : {}),
@@ -1519,6 +1551,8 @@ export class WorkerManager {
         },
         // Resume previous session if provided (loads full conversation history from disk)
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+        // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+        ...(betas ? { betas } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
