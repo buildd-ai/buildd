@@ -26,6 +26,8 @@ interface GitConfig {
         };
         excludedCommands?: string[];
     };
+    debug?: boolean;
+    debugFile?: string;
 }
 
 interface Props {
@@ -62,6 +64,8 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [sandboxAllowedDomains, setSandboxAllowedDomains] = useState((initialConfig?.sandbox?.network?.allowedDomains || []).join('\n'));
     const [sandboxAllowLocalBinding, setSandboxAllowLocalBinding] = useState(initialConfig?.sandbox?.network?.allowLocalBinding || false);
     const [sandboxExcludedCommands, setSandboxExcludedCommands] = useState((initialConfig?.sandbox?.excludedCommands || []).join('\n'));
+    const [debug, setDebug] = useState(initialConfig?.debug || false);
+    const [debugFile, setDebugFile] = useState(initialConfig?.debugFile || '');
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -95,6 +99,8 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         },
                         excludedCommands: sandboxExcludedCommands.split('\n').map(s => s.trim()).filter(Boolean),
                     } : undefined,
+                    debug,
+                    debugFile: debugFile.trim() || undefined,
                 }),
             });
 
@@ -407,6 +413,46 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             </div>
                         </div>
                     )}
+                </div>
+            </div>
+
+            {/* Debug Logging Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Debug Logging</h3>
+
+                <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="debug"
+                            checked={debug}
+                            onChange={(e) => setDebug(e.target.checked)}
+                            className="rounded"
+                        />
+                        <label htmlFor="debug" className="text-sm">
+                            Enable SDK debug logging
+                        </label>
+                    </div>
+                    <p className="text-xs text-text-muted -mt-2">
+                        Outputs verbose SDK debug information to stderr. Useful for troubleshooting worker issues.
+                    </p>
+
+                    <div>
+                        <label className="block text-sm font-medium mb-1">
+                            Debug Log File
+                            <span className="text-text-muted font-normal ml-1">(optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={debugFile}
+                            onChange={(e) => setDebugFile(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            placeholder="/tmp/buildd-debug.log"
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            File path to write SDK debug logs to. When set, debug output goes to this file instead of stderr.
+                        </p>
+                    </div>
                 </div>
             </div>
 
