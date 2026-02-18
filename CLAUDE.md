@@ -91,8 +91,12 @@ DEV_USER_EMAIL=your@email.com bun dev
 ### Seed Scripts
 Create test data without manual setup:
 ```bash
-bun run seed:waiting-input  # Creates task with worker in waiting_input state
-bun run seed:reset          # Cleans up seeded data
+bun run seed:waiting-input     # Task with worker in waiting_input state
+bun run seed:error-worker      # Worker in error state (loop detected)
+bun run seed:completed-tasks   # 10 completed tasks with observations
+bun run seed:multi-user        # Tasks across multiple workspaces in various states
+bun run seed:concurrent        # Account at maxConcurrent limit with active workers
+bun run seed:reset             # Cleans up seeded data (handles all seed types)
 ```
 
 ### UI Fixtures
