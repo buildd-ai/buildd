@@ -1,14 +1,14 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.44 (CLI parity: v2.1.44, Feb 17 2026)
+**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.44` | Aligned to latest |
-| `apps/agent` | `>=0.2.44` | Aligned to latest |
+| `packages/core` | `>=0.2.44` | Needs bump to 0.2.45 |
+| `apps/agent` | `>=0.2.44` | Needs bump to 0.2.45 |
 | `apps/local-ui` | `>=0.2.37` | Full v0.2.x features |
 
 ---
@@ -234,7 +234,7 @@ type SdkBeta = 'context-1m-2025-08-07';
 
 // Usage:
 options: {
-  model: 'claude-sonnet-4-5-20250929',  // Sonnet 4/4.5 only
+  model: 'claude-sonnet-4-5-20250929',  // Sonnet 4/4.5/4.6 only
   betas: ['context-1m-2025-08-07'],
 }
 ```
@@ -877,10 +877,49 @@ hooks: {
 
 ---
 
-## CLI v2.1.32–2.1.44 Changelog (SDK-Relevant)
+## 23. SDKTaskStartedMessage (SDK v0.2.45+)
+
+Emitted when a subagent task is registered during streaming:
+
+```typescript
+type SDKTaskStartedMessage = {
+  type: 'system';
+  subtype: 'task_started';
+  task_id: string;
+  tool_use_id?: string;
+  description: string;
+  task_type?: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+Useful for tracking subagent lifecycle — pair with `SDKTaskNotificationMessage` to track start→completion.
+
+---
+
+## 24. SDKRateLimitEvent (SDK v0.2.45+)
+
+Emitted when the API returns rate limit status information:
+
+```typescript
+type SDKRateLimitEvent = {
+  type: 'system';
+  subtype: 'rate_limit';
+  // Rate limit utilization, reset times, and overage info
+  // (exact fields TBD — type body not fully exposed in sdk.d.ts as of v0.2.45)
+};
+```
+
+Can be used to surface rate limit warnings to the dashboard or implement backoff strategies.
+
+---
+
+## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
 | 2.1.42 | 0.2.42 | Startup perf (deferred Zod); better prompt cache hit rates; image dimension limit errors suggest /compact |
@@ -894,6 +933,9 @@ hooks: {
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
+- **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
+- **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
 - **Background task notifications** now delivered in streaming SDK mode (v2.1.41) — previously silent
 - **Agent teams model identifiers** fixed for Bedrock/Vertex/Foundry (v2.1.41)
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
@@ -979,7 +1021,7 @@ type SDKMessage =
   | SDKCompactBoundaryMessage;   // Conversation compaction boundary
 ```
 
-Additional types emitted during streaming: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+Additional types emitted during streaming: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
 
 ### Available Tools Reference
 
