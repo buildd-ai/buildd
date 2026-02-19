@@ -1033,6 +1033,14 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - **1M context beta** — Integrated conditionally for Sonnet models via `extendedContext` config
 - **maxTurns** — Integrated in worker-runner.ts via workspace/task config
 
+### Python SDK Evaluation (2026-02-18)
+
+**Result: Not recommended for Buildd workers.** See [`.agent/python-sdk-evaluation.md`](python-sdk-evaluation.md) for the full evaluation. Key findings:
+- Both Python (v0.1.37) and TypeScript (v0.2.45) SDKs spawn the same Node.js CLI subprocess
+- Python SDK does not eliminate Node.js dependency or reduce startup time
+- Significant feature gaps: missing `sessionId`, `AbortController`, `SessionStart`/`SessionEnd`/`Notification` hooks
+- Alpha status, API may change
+
 ---
 
 
