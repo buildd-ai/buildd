@@ -1869,15 +1869,18 @@ export class WorkerManager {
       this.emit({ type: 'worker_update', worker });
     }
 
-    // SDK v0.2.45: Subagent task notification — completion/status update for a tracked task
+    // SDK v0.2.45+: Subagent task notification — completion/status update for a tracked task
+    // v0.2.47 adds tool_use_id for start→completion lifecycle correlation
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
       const event = msg as any;
       const taskId = event.task_id as string;
+      const toolUseId = event.tool_use_id as string | undefined;
       const status = event.status as string;
       const message = event.message as string | undefined;
 
-      // Update tracked subagent task
-      const tracked = worker.subagentTasks.find(t => t.taskId === taskId);
+      // Update tracked subagent task — match by taskId, fall back to toolUseId for correlation
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId)
+        || (toolUseId ? worker.subagentTasks.find(t => t.toolUseId === toolUseId) : undefined);
       if (tracked) {
         tracked.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : tracked.status;
         tracked.completedAt = Date.now();
