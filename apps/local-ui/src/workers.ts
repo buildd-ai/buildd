@@ -4,7 +4,7 @@ import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
@@ -102,6 +102,7 @@ interface WorkerSession {
   cwd: string;
   repoPath: string;  // Original repo path (different from cwd when using worktrees)
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
+  generation: number;  // Session generation counter — used to detect stale post-loop cleanup
 }
 
 // Constants for repetition detection
@@ -169,6 +170,7 @@ export class WorkerManager {
   private dirtyForDisk = new Set<string>();
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  private sessionGeneration = 0;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -645,9 +647,13 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
+      }
+      // Emit version info for auto-update checks
+      if (latestCommit) {
+        this.emit({ type: 'version_info', latestCommit });
       }
       // If server reports pending tasks and we have capacity, try to claim them
       if (pendingTaskCount && pendingTaskCount > 0 && this.acceptRemoteTasks) {
@@ -695,9 +701,16 @@ export class WorkerManager {
   private checkStale() {
     const now = Date.now();
     for (const worker of this.workers.values()) {
-      if (worker.status === 'working' && now - worker.lastActivity > 300_000) {
-        worker.status = 'stale';
-        this.emit({ type: 'worker_update', worker });
+      // Skip stale check for workers waiting on user input (plan approval, questions)
+      if (worker.status === 'waiting') continue;
+
+      if (worker.status === 'working') {
+        // Use 15-min timeout when planning is active (agents spend more time investigating)
+        const timeout = worker.planStartMessageIndex != null ? 900_000 : 300_000;
+        if (now - worker.lastActivity > timeout) {
+          worker.status = 'stale';
+          this.emit({ type: 'worker_update', worker });
+        }
       }
     }
   }
@@ -1270,7 +1283,8 @@ export class WorkerManager {
     const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
 
     // Store session state for sendMessage and abort
-    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath });
+    const generation = ++this.sessionGeneration;
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
 
     try {
       // Fetch workspace git config from server
@@ -1360,11 +1374,15 @@ export class WorkerManager {
           gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
         }
 
+        const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
         if (gitConfig.requiresPR) {
-          gitContext.push(`- Changes require PR to ${gitConfig.targetBranch || gitConfig.defaultBranch}`);
+          gitContext.push(`- Changes require PR to \`${prTarget}\``);
+          gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           if (gitConfig.autoCreatePR) {
             gitContext.push(`- Create PR when done`);
           }
+        } else {
+          gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
         }
 
         if (gitConfig.commitStyle === 'conventional') {
@@ -1482,9 +1500,13 @@ export class WorkerManager {
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
 
       // Resolve permission mode
+      // Plan approval mode from context overrides default when executing an approved plan
+      const planApprovalMode = (task.context as any)?.planApprovalMode as string | undefined;
       const bypassPermissions = this.resolveBypassPermissions(workspaceConfig);
       const permissionMode: 'plan' | 'acceptEdits' | 'bypassPermissions' = task.mode === 'planning'
         ? 'plan'
+        : planApprovalMode === 'bypassPermissions' ? 'bypassPermissions'
+        : planApprovalMode === 'acceptEdits' ? 'acceptEdits'
         : bypassPermissions ? 'bypassPermissions' : 'acceptEdits';
 
       // Check if skills should be used as subagents
@@ -1670,6 +1692,24 @@ export class WorkerManager {
         if (msg.type === 'result') {
           break;
         }
+      }
+
+      // If a newer session has been started (e.g. plan approval killed this one),
+      // skip all post-loop cleanup to avoid overwriting the new session's state.
+      const currentSession = this.sessions.get(worker.id);
+      if (currentSession && currentSession.generation !== generation) {
+        console.log(`[Worker ${worker.id}] Session generation mismatch (${generation} vs ${currentSession.generation}) — skipping post-loop cleanup`);
+        sessionLog(worker.id, 'info', 'session_superseded', `gen=${generation} replaced by gen=${currentSession.generation}`, worker.taskId);
+        return;
+      }
+
+      // If the worker is waiting for user input (e.g. ExitPlanMode set status to 'waiting'),
+      // don't overwrite that state with 'done'. The session ended naturally but the worker
+      // needs human input before it can proceed.
+      if (worker.status === 'waiting') {
+        console.log(`[Worker ${worker.id}] Session ended while worker is waiting — skipping post-loop cleanup`);
+        sessionLog(worker.id, 'info', 'session_ended_waiting', `waitingFor=${worker.waitingFor?.type}`, worker.taskId);
+        return;
       }
 
       // Check if session actually did work or just errored
@@ -2083,6 +2123,7 @@ export class WorkerManager {
             console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
             sessionLog(worker.id, 'info', 'enter_plan_mode', `toolUseId=${enterPlanToolUseId}`, worker.taskId);
             worker.currentAction = 'Planning...';
+            worker.planStartMessageIndex = worker.messages.length;
             this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
             // Enqueue approval response so the SDK can proceed
             const session = this.sessions.get(worker.id);
@@ -2093,13 +2134,28 @@ export class WorkerManager {
               }));
             }
           } else if (toolName === 'ExitPlanMode') {
-            // Extract plan content from recent text messages before ExitPlanMode
-            // Plans can span multiple text blocks, so grab the last few and join them
-            const textMessages = worker.messages.filter(m => m.type === 'text');
-            // Take last 3 text messages to capture multi-block plans
-            const planParts = textMessages.slice(-3).map(m => m.content).filter(Boolean);
+            // Extract plan content from text messages since EnterPlanMode
+            // planStartMessageIndex marks where planning began — collect all text from there
+            const startIdx = worker.planStartMessageIndex ?? 0;
+            const planMessages = worker.messages.slice(startIdx).filter(m => m.type === 'text');
+            const planParts = planMessages.map(m => m.content).filter(Boolean);
             worker.planContent = planParts.join('\n\n') || '';
             console.log(`[Worker ${worker.id}] ExitPlanMode — planContent length: ${worker.planContent.length} chars`);
+
+            // Persist plan as markdown file for crash recovery
+            if (worker.planContent) {
+              try {
+                const plansDir = join(homedir(), '.buildd', 'plans');
+                mkdirSync(plansDir, { recursive: true });
+                const planPath = join(plansDir, `${worker.id}.md`);
+                writeFileSync(planPath, worker.planContent, 'utf-8');
+                worker.planFilePath = planPath;
+                console.log(`[Worker ${worker.id}] Plan persisted to ${planPath}`);
+              } catch (err) {
+                console.error(`[Worker ${worker.id}] Failed to persist plan file:`, err);
+              }
+            }
+
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
             sessionLog(worker.id, 'info', 'exit_plan_mode', `planLength=${worker.planContent.length} toolUseId=${planToolUseId}`, worker.taskId);
@@ -2109,7 +2165,8 @@ export class WorkerManager {
               type: 'plan_approval',
               prompt: 'Agent has proposed a plan. Review the plan above, then approve or request changes.',
               options: [
-                { label: 'Approve & implement', description: 'Let the agent proceed with the plan' },
+                { label: 'Approve & implement (bypass permissions)', description: 'Execute without permission prompts' },
+                { label: 'Approve & implement (with review)', description: 'Execute with edit review enabled' },
                 { label: 'Request changes', description: 'Ask the agent to revise its approach' },
               ],
               toolUseId: planToolUseId,
@@ -2119,13 +2176,22 @@ export class WorkerManager {
             worker.lastActivity = Date.now();
             this.addMilestone(worker, { type: 'status', label: 'Plan ready for review', ts: Date.now() });
             this.emit({ type: 'worker_update', worker });
+            // Send tool_result to unblock the SDK — without this, the SDK hangs
+            // waiting for a response to ExitPlanMode (compare with EnterPlanMode above).
+            const planSession = this.sessions.get(worker.id);
+            if (planSession && planToolUseId) {
+              planSession.inputStream.enqueue(buildUserMessage(
+                'Plan captured and sent for human review. STOP — do not proceed until you receive explicit approval.',
+                { parentToolUseId: planToolUseId, sessionId: worker.sessionId },
+              ));
+            }
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
               waitingFor: {
                 type: 'plan_approval',
                 prompt: worker.waitingFor.prompt,
-                options: ['Approve & implement', 'Request changes'],
+                options: ['Approve & implement (bypass permissions)', 'Approve & implement (with review)', 'Request changes'],
               },
             }).catch(() => {});
             storeSaveWorker(worker);
@@ -2647,11 +2713,83 @@ export class WorkerManager {
 
     // Plan approval: kill current session and start fresh with plan as prompt
     if (worker.status === 'waiting' && worker.waitingFor?.type === 'plan_approval') {
-      const isApproval = message === 'Approve & implement';
+      const isApprovalBypass = message === 'Approve & implement (bypass permissions)';
+      const isApprovalReview = message === 'Approve & implement (with review)';
+      const isApproval = isApprovalBypass || isApprovalReview || message === 'Approve & implement';
+      const isRequestChanges = !isApproval && message !== 'Approve & implement';
+
+      if (isRequestChanges) {
+        // Request changes: kill current session and restart with feedback + plan
+        let planText = worker.planContent || '';
+        if (!planText && worker.planFilePath) {
+          try { planText = readFileSync(worker.planFilePath, 'utf-8'); } catch {}
+        }
+        if (planText) {
+          session.abortController.abort();
+          session.inputStream.end();
+          this.sessions.delete(workerId);
+
+          const feedbackPrompt = `The user requested changes to your plan:\n\n${message}\n\nOriginal plan:\n\n${planText}\n\nRevise the plan and call ExitPlanMode again.`;
+          const task: BuilddTask = {
+            id: worker.taskId,
+            title: worker.taskTitle,
+            description: feedbackPrompt,
+            workspaceId: worker.workspaceId,
+            workspace: { name: worker.workspaceName },
+            status: 'assigned',
+            priority: 1,
+            mode: 'planning',
+          };
+
+          worker.status = 'working';
+          worker.waitingFor = undefined;
+          worker.currentAction = 'Revising plan...';
+          worker.hasNewActivity = true;
+          worker.lastActivity = Date.now();
+          this.addMilestone(worker, { type: 'status', label: 'Plan revision requested', ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_changes_requested', `feedbackLength=${message.length}`, worker.taskId);
+          this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
+          this.emit({ type: 'worker_update', worker });
+
+          const workspacePath = this.resolver.resolve({
+            id: worker.workspaceId,
+            name: worker.workspaceName,
+            repo: undefined,
+          });
+          if (workspacePath) {
+            this.startSession(worker, workspacePath, task).catch(err => {
+              const errMsg = err instanceof Error ? err.message : 'Plan revision failed';
+              console.error(`[Worker ${worker.id}] Plan revision session failed:`, err);
+              sessionLog(worker.id, 'error', 'plan_revision_failed', errMsg, worker.taskId);
+              worker.status = 'error';
+              worker.error = errMsg;
+              worker.currentAction = 'Revision failed';
+              worker.hasNewActivity = true;
+              worker.completedAt = Date.now();
+              this.emit({ type: 'worker_update', worker });
+            });
+          }
+
+          this.buildd.updateWorker(worker.id, {
+            status: 'running',
+            currentAction: 'Revising plan...',
+            waitingFor: null,
+          }).catch(() => {});
+
+          return true;
+        }
+        // If no plan text found, fall through to normal enqueue
+      }
 
       if (isApproval) {
-        // Use planContent, fall back to last text message if somehow empty
-        const planText = worker.planContent || worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
+        // Use planContent, fall back to plan file on disk, then last text message
+        let planText = worker.planContent || '';
+        if (!planText && worker.planFilePath) {
+          try { planText = readFileSync(worker.planFilePath, 'utf-8'); } catch {}
+        }
+        if (!planText) {
+          planText = worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
+        }
         if (!planText) {
           console.error(`[Worker ${worker.id}] Plan approval but no plan content found — falling through to enqueue`);
           sessionLog(worker.id, 'warn', 'plan_approval_empty', 'No plan content found, falling through to enqueue', worker.taskId);
@@ -2661,6 +2799,9 @@ export class WorkerManager {
           session.abortController.abort();
           session.inputStream.end();
           this.sessions.delete(workerId);
+
+          // Determine permission mode from approval type
+          const planApprovalMode = isApprovalBypass ? 'bypassPermissions' : 'acceptEdits';
 
           // Build execution task with plan as description
           const executionPrompt = `Execute this plan:\n\n${planText}`;
@@ -2673,22 +2814,22 @@ export class WorkerManager {
             status: 'assigned',
             priority: 1,
             mode: 'execution',
+            context: { planApprovalMode },
           };
 
           // Reset worker state
           worker.status = 'working';
           worker.waitingFor = undefined;
-          worker.planContent = undefined;
           worker.currentAction = 'Executing plan...';
           worker.hasNewActivity = true;
           worker.lastActivity = Date.now();
-          this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
-          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length}`, worker.taskId);
+          const modeLabel = isApprovalBypass ? 'bypass permissions' : 'with review';
+          this.addMilestone(worker, { type: 'status', label: `Plan approved (${modeLabel}) — executing`, ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length} mode=${planApprovalMode}`, worker.taskId);
           this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
           this.emit({ type: 'worker_update', worker });
 
           // Start fresh session (no resumeSessionId = clean context)
-          // Must await to ensure session is registered before returning
           const workspacePath = this.resolver.resolve({
             id: worker.workspaceId,
             name: worker.workspaceName,

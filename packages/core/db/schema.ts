@@ -300,6 +300,8 @@ export const tasks = pgTable('tasks', {
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // Task dependency — tasks with blockers start as 'blocked' and auto-unblock when all blockers complete/fail
+  blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion
@@ -377,10 +379,12 @@ export const artifacts = pgTable('artifacts', {
   title: text('title'),
   content: text('content'),
   storageKey: text('storage_key'),
+  shareToken: text('share_token'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
 }));
 
 // Workspace observations (persistent memory across tasks)

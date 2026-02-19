@@ -601,6 +601,22 @@ export class WorkerRunner extends EventEmitter {
       if (worker.task.description) parts.push(`${worker.task.description}\n`);
     }
     parts.push(`\n## Instructions\n${userPrompt}`);
+
+    // Add git workflow context from workspace config
+    const gitConfig = worker.task?.workspace?.gitConfig;
+    if (gitConfig && gitConfig.branchingStrategy !== 'none') {
+      const gitContext: string[] = ['\n## Git Workflow'];
+      gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
+      const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      if (gitConfig.requiresPR) {
+        gitContext.push(`- Changes require PR to \`${prTarget}\``);
+        gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
+      } else {
+        gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
+      }
+      parts.push(gitContext.join('\n'));
+    }
+
     parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
     return parts.join('\n');
   }

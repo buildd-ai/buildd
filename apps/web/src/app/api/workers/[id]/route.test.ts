@@ -57,6 +57,10 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks',
 }));
 
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mock(() => Promise.resolve()),
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {

@@ -166,6 +166,19 @@ export class BuilddClient {
     });
   }
 
+  async createArtifact(workerId: string, data: {
+    type: string;
+    title: string;
+    content?: string;
+    url?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    return this.fetch(`/api/workers/${workerId}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
   async approvePlan(workerId: string) {
     return this.fetch(`/api/workers/${workerId}/plan/approve`, {
       method: 'POST',
@@ -282,12 +295,12 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number }> {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

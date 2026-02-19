@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, skills, workspaceSkills } from '@buildd/core/db/schema';
-import { desc, eq, and, inArray } from 'drizzle-orm';
+import { desc, eq, and, inArray, not } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -109,6 +109,8 @@ export async function POST(req: NextRequest) {
       skillSlugs: rawSkillSlugs,
       // JSON Schema for structured output
       outputSchema,
+      // Task dependency — blocked tasks start as 'blocked' and auto-unblock
+      blockedByTaskIds: rawBlockedByTaskIds,
     } = body;
 
     if (!workspaceId || !title) {
@@ -232,6 +234,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'outputSchema must be a JSON Schema object' }, { status: 400 });
     }
 
+    // Validate blockedByTaskIds if provided
+    const blockedByTaskIds: string[] = [];
+    if (rawBlockedByTaskIds && Array.isArray(rawBlockedByTaskIds) && rawBlockedByTaskIds.length > 0) {
+      // Validate UUIDs
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      for (const id of rawBlockedByTaskIds) {
+        if (typeof id !== 'string' || !uuidRegex.test(id)) {
+          return NextResponse.json({ error: `Invalid task ID in blockedByTaskIds: ${id}` }, { status: 400 });
+        }
+      }
+
+      // Verify all referenced tasks exist in the same workspace
+      const blockerTasks = await db.query.tasks.findMany({
+        where: and(
+          inArray(tasks.id, rawBlockedByTaskIds),
+          eq(tasks.workspaceId, workspaceId)
+        ),
+        columns: { id: true, blockedByTaskIds: true },
+      });
+
+      if (blockerTasks.length !== rawBlockedByTaskIds.length) {
+        const foundIds = new Set(blockerTasks.map(t => t.id));
+        const missing = rawBlockedByTaskIds.filter((id: string) => !foundIds.has(id));
+        return NextResponse.json(
+          { error: `Blocker tasks not found in workspace: ${missing.join(', ')}` },
+          { status: 400 }
+        );
+      }
+
+      blockedByTaskIds.push(...rawBlockedByTaskIds);
+    }
+
+    const initialStatus = blockedByTaskIds.length > 0 ? 'blocked' : 'pending';
+
     const [task] = await db
       .insert(tasks)
       .values({
@@ -239,7 +275,7 @@ export async function POST(req: NextRequest) {
         title,
         description: description || null,
         priority: priority || 0,
-        status: 'pending',
+        status: initialStatus,
         mode: mode || 'execution',  // Default to execution mode
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
@@ -250,16 +286,19 @@ export async function POST(req: NextRequest) {
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },
         ...(outputSchema ? { outputSchema } : {}),
+        ...(blockedByTaskIds.length > 0 ? { blockedByTaskIds } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })
       .returning();
 
-    // Dispatch via Pusher + webhook
-    await dispatchNewTask(task, targetWorkspace, {
-      assignToLocalUiUrl,
-      runnerPreference,
-    });
+    // Only dispatch if task is pending (not blocked)
+    if (initialStatus === 'pending') {
+      await dispatchNewTask(task, targetWorkspace, {
+        assignToLocalUiUrl,
+        runnerPreference,
+      });
+    }
 
     return NextResponse.json(task);
   } catch (error) {

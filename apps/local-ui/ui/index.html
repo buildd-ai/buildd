@@ -219,6 +219,7 @@
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0 relative">
           <div class="flex flex-wrap gap-2 mb-4" id="modalMeta"></div>
           <div class="mb-4 shrink-0 max-h-[40vh] overflow-y-auto" id="modalDescription"></div>
+          <div id="planArtifact" class="hidden"></div>
           <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
           <button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" onclick="scrollTimelineToBottom()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -461,8 +462,24 @@
             </svg>
             Scan Local
           </button>
+          <button class="btn bg-surface-hover text-text-primary py-2 px-3 rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap text-sm" id="installSkillBtn" onclick="toggleSkillInstallForm()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Install
+          </button>
         </header>
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+          <div id="skillInstallForm" class="hidden mb-3 p-3 bg-surface border border-border-default rounded-lg">
+            <p class="text-xs text-text-secondary mb-2">GitHub repo, local path, or registry slug</p>
+            <div class="flex gap-2">
+              <input type="text" id="skillInstallSource" class="input flex-1 bg-surface border border-border-default rounded-md py-2 px-3 text-sm text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="github:owner/repo or slug">
+              <button class="btn bg-brand text-white py-2 px-3 text-sm rounded-md font-medium cursor-pointer whitespace-nowrap hover:bg-brand-hover" id="skillInstallRunBtn" onclick="installSkillFromSource()">Install</button>
+            </div>
+            <p id="skillInstallStatus" class="text-xs mt-2 hidden"></p>
+          </div>
           <div class="mb-3">
             <input type="text" id="skillsSearch" class="input w-full bg-surface border border-border-default rounded-md py-2 px-3 text-sm text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Search skills..." oninput="filterSkills()">
           </div>

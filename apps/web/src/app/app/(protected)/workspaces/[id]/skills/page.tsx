@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { SkillList } from './SkillList';
 import { SkillForm } from './SkillForm';
+import { SkillInstall } from './SkillInstall';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,14 +59,25 @@ export default async function WorkspaceSkillsPage({
               {skills.length} skill{skills.length !== 1 ? 's' : ''}
             </p>
           </div>
-          {!showNew && (
-            <Link
-              href={`/app/workspaces/${id}/skills?new=1`}
-              className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
+          <div className="flex items-center gap-3">
+            <a
+              href="https://docs.buildd.dev/docs/features/skills"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-3 rounded-lg text-sm"
             >
-              + Register Skill
-            </Link>
-          )}
+              Docs
+            </a>
+            <SkillInstall workspaceId={id} />
+            {!showNew && (
+              <Link
+                href={`/app/workspaces/${id}/skills?new=1`}
+                className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
+              >
+                + Register Skill
+              </Link>
+            )}
+          </div>
         </div>
 
         {showNew && (

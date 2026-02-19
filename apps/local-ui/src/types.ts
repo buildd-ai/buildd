@@ -122,6 +122,8 @@ export interface LocalWorker {
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
+  planStartMessageIndex?: number;  // messages.length when EnterPlanMode fires — used to extract full plan
+  planFilePath?: string;  // Path to persisted plan markdown file (~/.buildd/plans/{workerId}.md)
   teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)

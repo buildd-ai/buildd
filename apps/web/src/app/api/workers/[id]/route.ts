@@ -4,6 +4,7 @@ import { workers, tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -192,6 +193,9 @@ export async function PATCH(
         .update(tasks)
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
+
+      // Resolve dependencies — unblock tasks waiting on this one
+      await resolveCompletedTask(worker.taskId, worker.workspaceId);
     }
   }
 
