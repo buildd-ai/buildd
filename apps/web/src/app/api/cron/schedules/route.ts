@@ -241,6 +241,11 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Dedup trigger-based schedules: same trigger value = same externalId
+        const externalId = triggerResult
+          ? `schedule-${schedule.id}-${triggerResult.currentValue}`
+          : undefined;
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -255,8 +260,16 @@ export async function GET(req: NextRequest) {
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
             creationSource: 'schedule',
+            ...(externalId ? { externalId } : {}),
           })
+          .onConflictDoNothing()
           .returning();
+
+        if (!task) {
+          // Duplicate trigger — task already exists for this trigger value
+          skipped++;
+          continue;
+        }
 
         // Update lastTaskId
         await db

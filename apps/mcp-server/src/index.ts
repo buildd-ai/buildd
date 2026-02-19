@@ -247,7 +247,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - create_task: { title (required), description (required), workspaceId?, priority?, blockedByTaskIds? (array of task UUIDs — task starts as 'blocked' and auto-unblocks when all listed tasks complete/fail), outputSchema? (JSON Schema object — agent returns structured JSON matching this schema) }
 - create_artifact: { workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata? }
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
-- update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? } [admin]
+- update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate? (full template replacement), skillSlugs? (array — shorthand to inject into taskTemplate.context.skillSlugs), workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
 - register_skill: { name (required), content (required), description?, source?, workspaceId? } [admin]
 - review_workspace: { hoursBack? (default 24, max 168), workspaceId? } — reviews recently completed/failed tasks for protocol violations (missing PRs, failed without follow-up, etc.)`,

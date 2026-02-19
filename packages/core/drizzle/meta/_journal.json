@@ -239,6 +239,13 @@
       "when": 1771600000000,
       "tag": "0033_task_blocked_by",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1771700000000,
+      "tag": "0034_schedule_dedup_index",
+      "breakpoints": true
     }
   ]
 }

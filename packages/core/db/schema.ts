@@ -315,6 +315,7 @@ export const tasks = pgTable('tasks', {
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   modeIdx: index('tasks_mode_idx').on(t.mode),
   sourceExternalIdx: uniqueIndex('tasks_source_external_idx').on(t.sourceId, t.externalId),
+  workspaceExternalIdx: uniqueIndex('tasks_workspace_external_idx').on(t.workspaceId, t.externalId),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
 }));
