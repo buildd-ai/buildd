@@ -91,6 +91,12 @@ export class WorkerRunner extends EventEmitter {
         ? ['context-1m-2025-08-07' as const]
         : undefined;
 
+      // Resolve thinking/effort: task-level override > workspace-level setting
+      const taskThinking = (worker.task as any)?.context?.thinking;
+      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const taskEffort = (worker.task as any)?.context?.effort;
+      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
         ? createBuilddMcpServer({
@@ -131,6 +137,9 @@ export class WorkerRunner extends EventEmitter {
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
           ...(betas ? { betas } : {}),
+          // Thinking/effort controls for reasoning behavior
+          ...(thinking ? { thinking } : {}),
+          ...(effort ? { effort } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],

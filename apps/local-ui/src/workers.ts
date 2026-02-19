@@ -1528,6 +1528,12 @@ export class WorkerManager {
       // Resolve max turns for SDK-level turn limiting
       const maxTurns = this.resolveMaxTurns(workspaceConfig);
 
+      // Resolve thinking/effort: task-level override > workspace-level setting
+      const taskThinking = (task.context as any)?.thinking;
+      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const taskEffort = (task.context as any)?.effort;
+      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
@@ -1558,6 +1564,9 @@ export class WorkerManager {
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
         ...(betas ? { betas } : {}),
+        // Thinking/effort controls for reasoning behavior
+        ...(thinking ? { thinking } : {}),
+        ...(effort ? { effort } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
