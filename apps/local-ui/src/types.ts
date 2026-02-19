@@ -137,6 +137,10 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // Prompt suggestions for follow-up actions (populated on completion)
+  promptSuggestions?: string[];
+  // Last assistant message text (captured via Stop hook's last_assistant_message)
+  lastAssistantMessage?: string;
 }
 
 // Per-model token usage from SDK result

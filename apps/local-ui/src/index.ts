@@ -1145,6 +1145,22 @@ const server = Bun.serve({
       return Response.json({ checkpoints: worker.checkpoints || [] }, { headers: corsHeaders });
     }
 
+    // Prompt suggestions endpoint — returns follow-up suggestions for completed workers
+    if (path.startsWith('/api/workers/') && path.endsWith('/suggestions') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({
+        suggestions: worker.promptSuggestions || [],
+        lastAssistantMessage: worker.lastAssistantMessage || null,
+      }, { headers: corsHeaders });
+    }
+
     // Rollback endpoint — rewind files to a checkpoint
     if (path.startsWith('/api/workers/') && path.endsWith('/rollback') && req.method === 'POST') {
       if (!workerManager) {

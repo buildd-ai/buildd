@@ -1163,6 +1163,74 @@ export class WorkerManager {
     };
   }
 
+  // Create a Stop hook that captures the last assistant message (v0.2.47+).
+  // Used to generate prompt suggestions for follow-up actions after task completion.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastMessage) {
+        worker.lastAssistantMessage = lastMessage;
+        // Generate prompt suggestions from the last message and task context
+        worker.promptSuggestions = this.extractPromptSuggestions(worker, lastMessage);
+        if (worker.promptSuggestions.length > 0) {
+          console.log(`[Worker ${worker.id}] Generated ${worker.promptSuggestions.length} prompt suggestion(s)`);
+        }
+      }
+
+      return { async: true };
+    };
+  }
+
+  // Extract prompt suggestions from the last assistant message and task context.
+  // Heuristic: look for actionable follow-up patterns in the final message.
+  private extractPromptSuggestions(worker: LocalWorker, lastMessage: string): string[] {
+    const suggestions: string[] = [];
+
+    // Check for common follow-up patterns in the last message
+    const hasCommits = worker.commits.length > 0;
+    const hasPR = lastMessage.toLowerCase().includes('pull request') || lastMessage.toLowerCase().includes('pr ');
+    const hasTests = lastMessage.toLowerCase().includes('test');
+    const hasBuild = lastMessage.toLowerCase().includes('build');
+
+    // If there are commits but no PR mentioned, suggest creating one
+    if (hasCommits && !hasPR) {
+      suggestions.push('Create a pull request for these changes');
+    }
+
+    // If code was changed, suggest running tests
+    if (hasCommits && !hasTests) {
+      suggestions.push('Run the test suite to verify changes');
+    }
+
+    // If tests were mentioned but not build, suggest build verification
+    if (hasTests && !hasBuild) {
+      suggestions.push('Run the build to check for errors');
+    }
+
+    // Look for explicit "next steps" or "you might want to" patterns
+    const nextStepPatterns = [
+      /(?:next steps?|you (?:can|could|might|may|should) (?:also |want to )?|consider |try |to follow up)[:\-]?\s*(.{10,80})/gi,
+      /(?:TODO|FIXME|NOTE)[:\s]+(.{10,80})/gi,
+    ];
+
+    for (const pattern of nextStepPatterns) {
+      let match;
+      while ((match = pattern.exec(lastMessage)) !== null) {
+        const suggestion = match[1].trim().replace(/[.!,;]+$/, '');
+        if (suggestion.length >= 10 && suggestion.length <= 80) {
+          suggestions.push(suggestion);
+        }
+        if (suggestions.length >= 5) break;
+      }
+      if (suggestions.length >= 5) break;
+    }
+
+    // Deduplicate and limit to 5 suggestions
+    return [...new Set(suggestions)].slice(0, 5);
+  }
+
   // Create a Notification hook that captures agent status messages.
   // Emits milestones for dashboard visibility and logs the notification.
   private createNotificationHook(worker: LocalWorker): HookCallback {
@@ -1635,6 +1703,7 @@ export class WorkerManager {
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
@@ -1761,6 +1830,13 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Generate follow-up prompt suggestions if Stop hook didn't already
+        if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
+          worker.promptSuggestions = this.generatePromptSuggestions(worker);
+          if (worker.promptSuggestions.length > 0) {
+            console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
+          }
+        }
         // Compute aggregate token counts from SDK result metadata
         const resultMeta = worker.resultMeta || undefined;
         let inputTokens: number | undefined;
@@ -3040,6 +3116,48 @@ export class WorkerManager {
 
     const summary = parts.join('\n');
     return summary.length > 600 ? summary.slice(0, 600) + '...' : summary;
+  }
+
+  // Generate follow-up prompt suggestions based on what the worker accomplished.
+  // Uses heuristics from commits, tool calls, and task context — no extra LLM call needed.
+  private generatePromptSuggestions(worker: LocalWorker): string[] {
+    const suggestions: string[] = [];
+
+    // If there are commits, suggest reviewing changes and running tests
+    if (worker.commits.length > 0) {
+      suggestions.push('Run tests to verify the changes');
+
+      // If commits mention a specific feature/fix, suggest a follow-up
+      const lastCommit = worker.commits[worker.commits.length - 1];
+      if (lastCommit) {
+        const msg = lastCommit.message.toLowerCase();
+        if (msg.includes('fix') || msg.includes('bug')) {
+          suggestions.push('Add a regression test for the fix');
+        } else if (msg.includes('feat') || msg.includes('add')) {
+          suggestions.push('Add documentation for the new feature');
+        } else if (msg.includes('refactor')) {
+          suggestions.push('Review the refactored code for edge cases');
+        }
+      }
+    }
+
+    // If files were edited, suggest reviewing them
+    const editedFiles = this.extractFilesFromToolCalls(worker.toolCalls)
+      .filter((_, i) => i < 5);
+    if (editedFiles.length > 0) {
+      const hasTests = editedFiles.some(f => f.includes('test') || f.includes('spec'));
+      if (!hasTests) {
+        suggestions.push('Write tests for the modified files');
+      }
+    }
+
+    // Always offer a create-PR suggestion if there were commits
+    if (worker.commits.length > 0) {
+      suggestions.push('Create a pull request for these changes');
+    }
+
+    // Deduplicate and limit to 3
+    return [...new Set(suggestions)].slice(0, 3);
   }
 
   private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {
