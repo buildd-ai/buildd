@@ -74,6 +74,7 @@ export const SourceType = {
   GITHUB: 'github',
   JIRA: 'jira',
   LINEAR: 'linear',
+  WEBHOOK: 'webhook',
 } as const;
 
 export type SourceTypeValue = typeof SourceType[keyof typeof SourceType];
@@ -85,6 +86,7 @@ export const CreationSource = {
   GITHUB: 'github',
   LOCAL_UI: 'local_ui',
   SCHEDULE: 'schedule',
+  WEBHOOK: 'webhook',
 } as const;
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];

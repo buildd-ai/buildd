@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks } from '@buildd/core/db/schema';
+import { workers, tasks, sources } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -192,6 +192,38 @@ export async function PATCH(
         .update(tasks)
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
+
+      // Fire webhook callback for webhook-sourced tasks (fire-and-forget)
+      if (status === 'completed') {
+        const task = await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+        });
+        if (task?.sourceId && task.externalId) {
+          const source = await db.query.sources.findFirst({
+            where: eq(sources.id, task.sourceId),
+          });
+          const config = source?.config as { callbackUrl?: string; callbackToken?: string } | undefined;
+          if (config?.callbackUrl && task.externalId.startsWith('webhook-')) {
+            const milestoneId = task.externalId.replace('webhook-', '');
+            const result = taskUpdate.result as { summary?: string; prUrl?: string; branch?: string } | undefined;
+            fetch(`${config.callbackUrl}/milestones/${milestoneId}/callback`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(config.callbackToken && { Authorization: `Bearer ${config.callbackToken}` }),
+              },
+              body: JSON.stringify({
+                status: 'completed',
+                summary: result?.summary || undefined,
+                pr_url: result?.prUrl || worker.prUrl || undefined,
+                branch: worker.branch,
+              }),
+            }).catch(err => {
+              console.error(`Webhook callback failed for task ${task.id}:`, err.message);
+            });
+          }
+        }
+      }
     }
   }
 

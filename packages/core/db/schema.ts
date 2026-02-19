@@ -260,7 +260,7 @@ export const workspaces = pgTable('workspaces', {
 export const sources = pgTable('sources', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  type: text('type').notNull().$type<'manual' | 'github' | 'jira' | 'linear'>(),
+  type: text('type').notNull().$type<'manual' | 'github' | 'jira' | 'linear' | 'webhook'>(),
   name: text('name').notNull(),
   config: jsonb('config').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -288,7 +288,7 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
