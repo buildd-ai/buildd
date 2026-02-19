@@ -86,6 +86,8 @@ export class BuilddClient {
     outputTokens?: number;
     // SDK result metadata
     resultMeta?: Record<string, unknown>;
+    // Completion summary (from SDK Stop hook last_assistant_message)
+    summary?: string;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {

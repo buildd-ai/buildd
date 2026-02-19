@@ -16,6 +16,7 @@ export class WorkerRunner extends EventEmitter {
   private turns = 0;
   private startTime: Date | null = null;
   private toolFailures: Record<string, { count: number; errors: string[]; interrupts: number }> = {};
+  private lastAssistantMessage: string | null = null;
 
   constructor(workerId: string) {
     super();
@@ -140,6 +141,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
             ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
@@ -316,6 +318,8 @@ export class WorkerRunner extends EventEmitter {
         // Snapshot deliverables on completion
         if (!resultMsg.is_error) {
           taskUpdate.result = {
+            // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+            ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
             branch: worker.branch,
             commits: worker.commitCount ?? 0,
             sha: worker.lastCommitSha ?? undefined,
@@ -366,6 +370,7 @@ export class WorkerRunner extends EventEmitter {
         durationMs: resultMeta.durationMs || (Date.now() - (this.startTime?.getTime() || 0)),
         resultMeta,
         ...(totalToolFailures > 0 ? { toolFailures: this.toolFailures } : {}),
+        ...(this.lastAssistantMessage ? { lastAssistantMessage: this.lastAssistantMessage } : {}),
       });
     }
   }
@@ -501,7 +506,21 @@ export class WorkerRunner extends EventEmitter {
     if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
     const stopHookActive = (input as any).stop_hook_active as boolean;
-    this.emitEvent('worker:subagent_stop', { stopHookActive });
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+    this.emitEvent('worker:subagent_stop', { stopHookActive, lastAssistantMessage });
+    return { async: true };
+  };
+
+  // Stop hook — fires when the main agent session stops.
+  // Captures last_assistant_message for use as completion summary.
+  private stopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Stop') return {};
+
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+    if (lastAssistantMessage) {
+      this.lastAssistantMessage = lastAssistantMessage;
+    }
+    this.emitEvent('worker:stop', { lastAssistantMessage });
     return { async: true };
   };
 
