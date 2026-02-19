@@ -47,6 +47,9 @@ const settingsModal = document.getElementById('settingsModal');
 // State for collapsed completed section
 let completedCollapsed = true;
 
+// Track whether new activity arrived while user scrolled up
+let hasNewActivityWhileScrolledUp = false;
+
 // Setup UI elements
 const manualKeyBtn = document.getElementById('manualKeyBtn');
 const manualKeyForm = document.getElementById('manualKeyForm');
@@ -690,7 +693,7 @@ function renderTasks() {
   });
 }
 
-function renderWorkerDetail(worker) {
+function renderWorkerDetail(worker, opts = {}) {
   document.getElementById('modalTitle').textContent = worker.taskTitle;
 
   document.getElementById('modalMeta').innerHTML = `
@@ -735,15 +738,23 @@ function renderWorkerDetail(worker) {
   if (hasMessages) {
     // Group consecutive same-type messages for cleaner rendering
     const grouped = groupMessages(messages);
-    timelineEl.innerHTML = grouped.map(group => {
+
+    // Smart collapsing: auto-collapse older content, keep recent groups expanded
+    const RECENT_GROUPS_VISIBLE = 5;
+    const isOlderGroup = (idx) => grouped.length > RECENT_GROUPS_VISIBLE + 2 && idx < grouped.length - RECENT_GROUPS_VISIBLE;
+
+    timelineEl.innerHTML = grouped.map((group, groupIdx) => {
+      const autoCollapse = isOlderGroup(groupIdx);
+
       if (group.type === 'text') {
         const combinedContent = group.items.map(m => m.content).join('\n\n');
         const isLong = combinedContent.length > 800 || combinedContent.split('\n').length > 15;
+        const shouldCollapse = isLong || autoCollapse;
         return `
-          <div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start ${isLong ? 'collapsed' : ''}">
+          <div class="chat-msg chat-agent max-w-[90%] animate-chat-fade-in self-start ${shouldCollapse ? 'collapsed' : ''}">
             <div class="chat-msg-content bg-surface rounded-tl-sm rounded-tr-lg rounded-br-lg rounded-bl-lg py-2.5 px-3.5 text-sm leading-relaxed relative">
               <div class="markdown-content text-sm">${marked.parse(combinedContent)}</div>
-              ${isLong ? `
+              ${shouldCollapse ? `
                 <button class="expand-msg-btn items-center justify-center gap-1 w-full pt-2 pb-0.5 text-xs text-text-secondary bg-none border-none cursor-pointer transition-colors duration-150 hover:text-brand" onclick="toggleAgentMessage(this)">
                   <span class="expand-text">Show more</span>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5 transition-transform duration-200">
@@ -762,8 +773,24 @@ function renderWorkerDetail(worker) {
           </div>`).join('');
       }
       if (group.type === 'tool_use') {
-        const TOOL_COLLAPSE_THRESHOLD = 2;
         const items = group.items;
+        // Auto-collapse older tool groups entirely; for recent ones use threshold
+        if (autoCollapse) {
+          const groupId = 'tg-' + Math.random().toString(36).slice(2, 8);
+          return `
+            <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
+              <button class="flex items-center gap-1.5 py-1 px-2.5 bg-surface/50 rounded text-[11px] text-text-tertiary cursor-pointer transition-colors hover:text-text-secondary border-none" onclick="toggleToolGroup('${groupId}', this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 transition-transform duration-200">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+                <span>${items.length} tool call${items.length > 1 ? 's' : ''}</span>
+              </button>
+              <div id="${groupId}" class="hidden flex flex-col gap-0.5">
+                ${items.map(m => renderToolCallInline(m)).join('')}
+              </div>
+            </div>`;
+        }
+        const TOOL_COLLAPSE_THRESHOLD = 2;
         if (items.length <= TOOL_COLLAPSE_THRESHOLD) {
           return `
             <div class="flex flex-col gap-0.5 self-start max-w-[90%]">
@@ -992,11 +1019,17 @@ function renderWorkerDetail(worker) {
   }
 
   // Restore scroll position (only auto-scroll if was at bottom)
-  if (scrollPos !== null) {
+  if (opts.isInitialOpen) {
+    // Initial open: always scroll to bottom (rAF in openWorkerModal handles timing)
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  } else if (scrollPos !== null) {
     if (wasAtBottom) {
       timelineEl.scrollTop = timelineEl.scrollHeight;
     } else {
       timelineEl.scrollTop = scrollPos;
+      // Show "New activity" button when content arrives while scrolled up
+      hasNewActivityWhileScrolledUp = true;
+      updateScrollToBottomBtn(true);
     }
   } else {
     timelineEl.scrollTop = timelineEl.scrollHeight;
@@ -1189,14 +1222,68 @@ function openWorkerModal(workerId) {
     body: JSON.stringify({ workerId })
   });
 
-  renderWorkerDetail(worker);
+  renderWorkerDetail(worker, { isInitialOpen: true });
   workerModal.classList.remove('hidden');
+
+  // Scroll to bottom after layout - needs rAF since modal just became visible
+  requestAnimationFrame(() => {
+    const timelineEl = document.getElementById('chatTimeline');
+    // The parent scrollable container wraps meta + description + timeline
+    const scrollParent = timelineEl?.parentElement;
+    if (scrollParent) scrollParent.scrollTop = scrollParent.scrollHeight;
+    if (timelineEl) timelineEl.scrollTop = timelineEl.scrollHeight;
+  });
 }
 
 function closeWorkerModal() {
   currentWorkerId = null;
   workerModal.classList.add('hidden');
+  hasNewActivityWhileScrolledUp = false;
+  updateScrollToBottomBtn(false);
 }
+
+// Scroll-to-bottom button management
+function scrollTimelineToBottom() {
+  const timelineEl = document.getElementById('chatTimeline');
+  const scrollParent = timelineEl?.parentElement;
+  if (scrollParent) scrollParent.scrollTo({ top: scrollParent.scrollHeight, behavior: 'smooth' });
+  if (timelineEl) timelineEl.scrollTo({ top: timelineEl.scrollHeight, behavior: 'smooth' });
+  hasNewActivityWhileScrolledUp = false;
+  updateScrollToBottomBtn(false);
+}
+
+function updateScrollToBottomBtn(show) {
+  const btn = document.getElementById('scrollToBottomBtn');
+  if (!btn) return;
+  if (show) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+}
+
+function isTimelineAtBottom() {
+  const timelineEl = document.getElementById('chatTimeline');
+  if (!timelineEl) return true;
+  return timelineEl.scrollHeight - timelineEl.scrollTop - timelineEl.clientHeight < 100;
+}
+
+// Set up scroll listeners to hide "New activity" button when user scrolls to bottom
+document.getElementById('chatTimeline').addEventListener('scroll', () => {
+  if (isTimelineAtBottom()) {
+    hasNewActivityWhileScrolledUp = false;
+    updateScrollToBottomBtn(false);
+  }
+});
+// Also track parent container scroll (wraps meta + description + timeline)
+document.getElementById('chatTimeline').parentElement.addEventListener('scroll', () => {
+  const parent = document.getElementById('chatTimeline').parentElement;
+  const parentAtBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < 100;
+  if (parentAtBottom && isTimelineAtBottom()) {
+    hasNewActivityWhileScrolledUp = false;
+    updateScrollToBottomBtn(false);
+  }
+});
 
 function openTaskModal() {
   loadWorkspaces();

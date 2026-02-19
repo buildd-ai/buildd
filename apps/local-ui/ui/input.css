@@ -404,4 +404,39 @@
     padding-bottom: 8px;
     border-bottom: 1px solid rgb(var(--color-border));
   }
+
+  /* --- Scroll to bottom button --- */
+  .scroll-to-bottom-btn {
+    position: sticky;
+    bottom: 8px;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: rgb(var(--color-brand));
+    color: white;
+    border: none;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 2px 12px rgb(var(--color-brand) / 0.35);
+    transition: transform 0.15s ease, opacity 0.15s ease;
+    z-index: 10;
+    animation: scroll-btn-in 0.2s ease-out;
+  }
+
+  .scroll-to-bottom-btn:hover {
+    transform: scale(1.05);
+  }
+
+  .scroll-to-bottom-btn.hidden {
+    display: none !important;
+  }
+
+  @keyframes scroll-btn-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }
