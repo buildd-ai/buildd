@@ -127,6 +127,7 @@ export interface LocalWorker {
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
+  lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;

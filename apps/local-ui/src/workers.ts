@@ -1122,9 +1122,29 @@ export class WorkerManager {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
       const stopHookActive = (input as any).stop_hook_active as boolean;
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
 
-      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+      const label = lastAssistantMessage
+        ? `Subagent: ${lastAssistantMessage.slice(0, 80)}${lastAssistantMessage.length > 80 ? '...' : ''}`
+        : 'Subagent stopped';
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive}, has_message: ${!!lastAssistantMessage})`);
+
+      return { async: true };
+    };
+  }
+
+  // Create a Stop hook that captures the agent's final response text.
+  // Stores last_assistant_message on the worker for use as completion summary.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastAssistantMessage) {
+        worker.lastAssistantMessage = lastAssistantMessage;
+      }
+      console.log(`[Worker ${worker.id}] Stop hook (has_message: ${!!lastAssistantMessage})`);
 
       return { async: true };
     };
@@ -1597,6 +1617,7 @@ export class WorkerManager {
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -1723,6 +1744,8 @@ export class WorkerManager {
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
+          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -2839,7 +2862,13 @@ export class WorkerManager {
   private buildSessionSummary(worker: LocalWorker): string {
     const parts: string[] = [];
 
-    // Commits first (most useful for future workers)
+    // Prefer last_assistant_message from Stop hook (direct from SDK, no parsing)
+    if (worker.lastAssistantMessage) {
+      const msg = worker.lastAssistantMessage;
+      parts.push(`Outcome: ${msg.length > 400 ? msg.slice(0, 400) + '...' : msg}`);
+    }
+
+    // Commits (most useful for future workers)
     if (worker.commits.length > 0) {
       const commitMsgs = worker.commits.map(c => c.message).slice(-5);
       parts.push(`Commits: ${commitMsgs.join('; ')}`);
@@ -2851,11 +2880,13 @@ export class WorkerManager {
       parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
     }
 
-    // Outcome from last output
-    const lastOutput = worker.output.slice(-3).join(' ').trim();
-    if (lastOutput) {
-      const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
-      parts.push(`Outcome: ${truncated}`);
+    // Fallback: outcome from last output (only if no last_assistant_message)
+    if (!worker.lastAssistantMessage) {
+      const lastOutput = worker.output.slice(-3).join(' ').trim();
+      if (lastOutput) {
+        const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
+        parts.push(`Outcome: ${truncated}`);
+      }
     }
 
     // Milestones (filtered: skip noise like "Reading..." entries)
