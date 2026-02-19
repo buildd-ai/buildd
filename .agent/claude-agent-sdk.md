@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 18 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.45` | Pin bump to `>=0.2.47` pending |
+| `apps/agent` | `>=0.2.45` | Pin bump to `>=0.2.47` pending |
+| `apps/local-ui` | `>=0.2.45` | Pin bump to `>=0.2.47` pending |
 
 ---
 
@@ -967,10 +967,99 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## 27. `promptSuggestion()` Method (SDK v0.2.47+)
+
+Request prompt suggestions based on the current conversation context:
+
+```typescript
+const q = query({ prompt: "...", options: { ... } });
+
+// After processing messages, request suggestions:
+const suggestions = await q.promptSuggestion();
+// Returns: string[] — suggested follow-up prompts
+```
+
+Useful for interactive sessions (local-ui) where the UI can suggest next actions to the user after a worker completes or pauses.
+
+---
+
+## 28. `last_assistant_message` on Stop/SubagentStop Hooks (SDK v0.2.47+)
+
+The `Stop` and `SubagentStop` hook inputs now include the agent's final response text:
+
+```typescript
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  last_assistant_message?: string;  // NEW in v0.2.47
+};
+
+type SubagentStopHookInput = BaseHookInput & {
+  hook_event_name: 'SubagentStop';
+  stop_hook_active: boolean;
+  last_assistant_message?: string;  // NEW in v0.2.47
+};
+```
+
+### Usage for Worker Completion Summaries
+
+```typescript
+hooks: {
+  Stop: [{
+    hooks: [async (input) => {
+      const lastMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastMessage) {
+        // Use as worker completion summary instead of parsing transcript
+        await updateWorkerSummary(workerId, lastMessage);
+      }
+      return {};
+    }]
+  }]
+}
+```
+
+**Key advantage**: No need to parse transcript files to extract the agent's final response. The SDK provides it directly via the hook input.
+
+---
+
+## 29. `tool_use_id` on Task Notification Events (SDK v0.2.47+)
+
+`SDKTaskNotificationMessage` now includes `tool_use_id` for correlating task completions back to the originating `Task` tool_use block:
+
+```typescript
+type SDKTaskNotificationMessage = {
+  type: 'system';
+  subtype: 'task_notification';
+  task_id: string;
+  tool_use_id?: string;  // NEW in v0.2.47 — correlates with task_started.tool_use_id
+  status: string;
+  message?: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+Pair with `SDKTaskStartedMessage.tool_use_id` (v0.2.45) for full start→completion tracking of subagent tasks.
+
+---
+
+## 30. Memory & Performance Improvements (SDK v0.2.47)
+
+v0.2.47 includes several memory and performance fixes critical for long-running workers:
+
+- **O(n²) progress update fix** — message accumulation in progress updates eliminated
+- **Agent task message history trimmed** after tasks complete — reduces memory in agent teams sessions
+- **API stream buffers released** after use — prevents memory growth in long sessions
+- **Deferred SessionStart hook** — ~500ms startup time reduction
+- **Concurrent file operations** — single error no longer aborts all parallel ops
+
+---
+
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `promptSuggestion()` method; `last_assistant_message` on Stop/SubagentStop hooks; `tool_use_id` on task_notification; 50+ bug fixes (memory, sessions, Windows, agents); O(n²) progress update fix; deferred SessionStart hook (~500ms startup improvement); plan mode preserved after compaction |
+| 2.1.46 | 0.2.46 | Fixed orphaned processes on macOS terminal disconnect; claude.ai MCP connectors support |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +1074,16 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **O(n²) progress update memory** — message accumulation in progress updates eliminated (v2.1.47) — critical for long-running workers
+- **Agent task message history trimmed** after tasks complete (v2.1.47) — reduces memory in agent teams sessions
+- **API stream buffers released** after use (v2.1.47) — prevents memory growth in long sessions
+- **Deferred SessionStart hook** (~500ms startup reduction) (v2.1.47)
+- **Plan mode preserved** after context compaction (v2.1.47) — previously lost
+- **Custom agent `model` field** now respected when spawning team teammates (v2.1.47)
+- **Agent Teams teammates** fixed on Bedrock, Vertex, and Foundry (v2.1.47)
+- **Concurrent file operations** no longer abort all parallel ops on single error (v2.1.47)
+- **Compaction with PDFs** fixed — strips document blocks alongside images (v2.1.47)
+- **Orphaned processes** fixed on macOS terminal disconnect (v2.1.46)
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,7 +1094,7 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1015,7 +1114,10 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority |
 |-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
+| Capture `last_assistant_message` from Stop hook | Stop/SubagentStop `last_assistant_message` field (v0.2.47) — use as completion summary | P2 |
+| Add `tool_use_id` to task_notification handler | `tool_use_id` on `task_notification` events (v0.2.47) — correlate start→completion | P3 |
+| Bump SDK pins to `>=0.2.47` | Memory fixes, plan mode compaction fix, deferred SessionStart | P3 |
+| Expose `promptSuggestion()` for interactive sessions | `Query.promptSuggestion()` method (v0.2.47) | P4 |
 | Effort/thinking controls | `effort`, `thinking` options | P4 |
 | 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
 | maxTurns in local-ui | `maxTurns` option | P4 |
@@ -1026,7 +1128,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ## Additional Options Reference
 
-### Newly Documented Options (v0.2.45 API Reference)
+### Newly Documented Options (v0.2.47 API Reference)
 
 | Option | Type | Description |
 |--------|------|-------------|
@@ -1068,6 +1170,7 @@ options: {
 | `setMcpServers(servers)` | Replace dynamic MCP servers |
 | `streamInput(stream)` | Stream user messages |
 | `stopTask(taskId)` | Stop a background task |
+| `promptSuggestion()` | Request prompt suggestions based on conversation context (v0.2.47+) |
 | `close()` | Terminate the query |
 
 ### SDKResultMessage
