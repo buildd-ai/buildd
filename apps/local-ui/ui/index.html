@@ -216,10 +216,16 @@
             </svg>
           </button>
         </header>
-        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0">
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0 relative">
           <div class="flex flex-wrap gap-2 mb-4" id="modalMeta"></div>
           <div class="mb-4 shrink-0 max-h-[40vh] overflow-y-auto" id="modalDescription"></div>
           <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
+          <button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" onclick="scrollTimelineToBottom()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+            New activity
+          </button>
         </div>
         <div class="flex gap-2 py-3 px-4 border-t border-border-default bg-surface">
           <input type="text" id="messageInput" class="input flex-1 w-full bg-surface border border-border-default rounded-md py-2.5 px-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Send a message to the agent...">
