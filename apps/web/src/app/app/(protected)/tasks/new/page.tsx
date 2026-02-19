@@ -40,6 +40,12 @@ export default function NewTaskPage() {
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
 
+  // Dependency state
+  const [depSearch, setDepSearch] = useState('');
+  const [depResults, setDepResults] = useState<{ id: string; title: string; status: string }[]>([]);
+  const [selectedDeps, setSelectedDeps] = useState<{ id: string; title: string }[]>([]);
+  const [depLoading, setDepLoading] = useState(false);
+
   // Structured output state
   const [useOutputSchema, setUseOutputSchema] = useState(false);
   const [outputSchemaText, setOutputSchemaText] = useState('{\n  "type": "object",\n  "properties": {\n    \n  },\n  "required": []\n}');
@@ -124,6 +130,31 @@ export default function NewTaskPage() {
       .catch(() => setAvailableSkills([]));
     setSelectedSkillSlugs([]);
   }, [selectedWorkspaceId]);
+
+  // Debounced dependency search
+  useEffect(() => {
+    if (!depSearch.trim() || !selectedWorkspaceId) {
+      setDepResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setDepLoading(true);
+      try {
+        const res = await fetch(`/api/tasks?workspaceId=${selectedWorkspaceId}&q=${encodeURIComponent(depSearch)}&status=pending,blocked,assigned,in_progress,running`);
+        const data = await res.json();
+        setDepResults((data.tasks || [])
+          .filter((t: any) => !selectedDeps.some(d => d.id === t.id))
+          .slice(0, 5)
+          .map((t: any) => ({ id: t.id, title: t.title, status: t.status }))
+        );
+      } catch {
+        setDepResults([]);
+      } finally {
+        setDepLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [depSearch, selectedWorkspaceId, selectedDeps]);
 
   // Validate cron expression with live preview
   useEffect(() => {
@@ -227,6 +258,7 @@ export default function NewTaskPage() {
             ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
+            ...(selectedDeps.length > 0 && { blockedByTaskIds: selectedDeps.map(d => d.id) }),
             ...(selectedSkillSlugs.length > 0 && {
               context: {
                 skillSlugs: selectedSkillSlugs,
@@ -480,6 +512,66 @@ export default function NewTaskPage() {
                 className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
             </div>
+
+            {/* Dependencies (one-time tasks only) */}
+            {!recurring && selectedWorkspaceId && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Dependencies <span className="text-text-muted font-normal">(optional)</span>
+                </label>
+                {selectedDeps.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {selectedDeps.map(dep => (
+                      <span
+                        key={dep.id}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-status-info/10 text-status-info text-sm rounded-full"
+                      >
+                        {dep.title}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDeps(prev => prev.filter(d => d.id !== dep.id))}
+                          className="hover:text-status-info/80"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  type="text"
+                  value={depSearch}
+                  onChange={(e) => setDepSearch(e.target.value)}
+                  placeholder="Search for tasks to depend on..."
+                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                />
+                {depResults.length > 0 && (
+                  <div className="mt-1 border border-border-default rounded-md bg-surface-1 max-h-40 overflow-y-auto">
+                    {depResults.map(result => (
+                      <button
+                        key={result.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedDeps(prev => [...prev, { id: result.id, title: result.title }]);
+                          setDepSearch('');
+                          setDepResults([]);
+                        }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center justify-between"
+                      >
+                        <span className="truncate">{result.title}</span>
+                        <span className="text-xs text-text-muted ml-2">{result.status}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {depLoading && (
+                  <p className="text-xs text-text-muted mt-1">Searching...</p>
+                )}
+                <p className="text-xs text-text-secondary mt-1">
+                  Task will start as &quot;blocked&quot; until all dependencies complete.
+                </p>
+              </div>
+            )}
 
             {/* Plan mode toggle (one-time tasks only) */}
             {!recurring && (
