@@ -1869,15 +1869,18 @@ export class WorkerManager {
       this.emit({ type: 'worker_update', worker });
     }
 
-    // SDK v0.2.45: Subagent task notification — completion/status update for a tracked task
+    // SDK v0.2.47: Subagent task notification — completion/status update for a tracked task
+    // tool_use_id correlates back to the Task tool call that spawned this subagent
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
       const event = msg as any;
       const taskId = event.task_id as string;
+      const toolUseId = event.tool_use_id as string | undefined;
       const status = event.status as string;
       const message = event.message as string | undefined;
 
-      // Update tracked subagent task
-      const tracked = worker.subagentTasks.find(t => t.taskId === taskId);
+      // Update tracked subagent task — match by taskId first, fall back to toolUseId
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId)
+        || (toolUseId ? worker.subagentTasks.find(t => t.toolUseId === toolUseId) : undefined);
       if (tracked) {
         tracked.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : tracked.status;
         tracked.completedAt = Date.now();
@@ -1888,7 +1891,7 @@ export class WorkerManager {
         ? `Subagent ${status}: ${tracked.description.slice(0, 50)}`
         : `Subagent ${status}: ${taskId.slice(0, 12)}`;
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${message ? ` — ${message}` : ''}`);
+      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${toolUseId ? ` (tool_use_id=${toolUseId.slice(0, 12)})` : ''}${message ? ` — ${message}` : ''}`);
       this.emit({ type: 'worker_update', worker });
     }
 

@@ -938,6 +938,27 @@ Useful for tracking subagent lifecycle — pair with `SDKTaskNotificationMessage
 
 ---
 
+## 23b. SDKTaskNotificationMessage (SDK v0.2.45+, `tool_use_id` added v0.2.47)
+
+Emitted when a subagent task completes or changes status:
+
+```typescript
+type SDKTaskNotificationMessage = {
+  type: 'system';
+  subtype: 'task_notification';
+  task_id: string;
+  tool_use_id?: string;  // Added in v0.2.47 — correlates back to the Task tool_use block
+  status: string;        // 'completed', 'failed', etc.
+  message?: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+`tool_use_id` enables correlating task completions back to the originating `Task` tool call. Both `task_started` and `task_notification` now carry `tool_use_id`, enabling full lifecycle tracking from the tool call through to completion.
+
+---
+
 ## 24. SDKRateLimitEvent (SDK v0.2.45+)
 
 Emitted when the API returns rate limit status information:
@@ -995,12 +1016,12 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
-- `SDKTaskStartedMessage` — subagent lifecycle tracking
+- `SDKTaskStartedMessage` — subagent lifecycle tracking (with `tool_use_id`)
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
-- `SDKTaskNotificationMessage` — subagent completion tracking
+- `SDKTaskNotificationMessage` — subagent completion tracking (with `tool_use_id` correlation, v0.2.47)
 - `SDKFilesPersistedEvent` — file checkpoint tracking
 - All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
 - Structured output via `outputFormat`
