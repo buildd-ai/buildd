@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.45` | Pin bump to `>=0.2.47` recommended |
+| `apps/agent` | `>=0.2.45` | Pin bump to `>=0.2.47` recommended |
+| `apps/local-ui` | `>=0.2.45` | Pin bump to `>=0.2.47` recommended |
 
 ---
 
@@ -418,7 +418,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (12 events)
+### Official HookEvent Type (13 events)
 
 ```typescript
 type HookEvent =
@@ -433,7 +433,8 @@ type HookEvent =
   | 'SubagentStart'       // Subagent initialization
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
-  | 'PermissionRequest';  // Permission dialog
+  | 'PermissionRequest'   // Permission dialog
+  | 'Setup';              // Environment setup (init or maintenance)
 ```
 
 ### Agent Teams Hooks (experimental, not in HookEvent type)
@@ -471,8 +472,15 @@ type PostToolUseFailureHookInput = BaseHookInput & {
   hook_event_name: 'PostToolUseFailure';
   tool_name: string;
   tool_input: unknown;
+  tool_use_id: string;
   error: string;
   is_interrupt?: boolean;
+};
+
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  stop_hook_active: boolean;
+  last_assistant_message?: string;  // NEW v0.2.47: Final assistant response text
 };
 
 type SubagentStartHookInput = BaseHookInput & {
@@ -484,6 +492,15 @@ type SubagentStartHookInput = BaseHookInput & {
 type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: 'SubagentStop';
   stop_hook_active: boolean;
+  agent_id: string;
+  agent_transcript_path: string;
+  agent_type: string;
+  last_assistant_message?: string;  // NEW v0.2.47: Final assistant response text
+};
+
+type SetupHookInput = BaseHookInput & {
+  hook_event_name: 'Setup';
+  trigger: 'init' | 'maintenance';
 };
 
 type PermissionRequestHookInput = BaseHookInput & {
@@ -497,6 +514,7 @@ type NotificationHookInput = BaseHookInput & {
   hook_event_name: 'Notification';
   message: string;
   title?: string;
+  notification_type: string;
 };
 
 type SessionStartHookInput = BaseHookInput & {
@@ -570,6 +588,27 @@ type SyncHookJSONOutput = {
     | {
         hookEventName: 'PostToolUse';
         additionalContext?: string;
+        updatedMCPToolOutput?: unknown;  // Modify MCP tool output
+      }
+    | {
+        hookEventName: 'PostToolUseFailure';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'Notification';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'Setup';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'SubagentStart';
+        additionalContext?: string;
+      }
+    | {
+        hookEventName: 'PermissionRequest';
+        // No additional fields
       };
 };
 ```
@@ -938,7 +977,29 @@ Useful for tracking subagent lifecycle — pair with `SDKTaskNotificationMessage
 
 ---
 
-## 24. SDKRateLimitEvent (SDK v0.2.45+)
+## 24. SDKTaskNotificationMessage (SDK v0.2.45+, enhanced v0.2.47)
+
+Emitted when a subagent task completes, fails, or is stopped:
+
+```typescript
+type SDKTaskNotificationMessage = {
+  type: 'system';
+  subtype: 'task_notification';
+  task_id: string;
+  tool_use_id?: string;  // NEW v0.2.47: Correlate with originating tool call
+  status: 'completed' | 'failed' | 'stopped';
+  output_file: string;
+  summary: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+The `tool_use_id` field (added in v0.2.47) enables correlating task completions with their originating `Task` tool calls. Pair `SDKTaskStartedMessage.tool_use_id` with `SDKTaskNotificationMessage.tool_use_id` for full lifecycle tracking.
+
+---
+
+## 25. SDKRateLimitEvent (SDK v0.2.45+)
 
 Emitted when the API returns rate limit status information:
 
@@ -955,22 +1016,24 @@ Can be used to surface rate limit warnings to the dashboard or implement backoff
 
 ---
 
-## 25. V2 Session `stream()` Fix (SDK v0.2.45)
+## 26. V2 Session `stream()` Fix (SDK v0.2.45)
 
 Fixed `Session.stream()` returning prematurely when background subagents are still running. The SDK now holds back intermediate result messages until all tasks complete. This is important for V2 API users with agent teams.
 
 ---
 
-## 26. Memory Improvement (SDK v0.2.45)
+## 27. Memory Improvement (SDK v0.2.45)
 
 Improved memory usage for shell commands that produce large output — RSS no longer grows unboundedly with command output size. This benefits long-running workers that execute many bash commands.
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `promptSuggestion()` on Query; `tool_use_id` on `SDKTaskNotificationMessage`; `last_assistant_message` on Stop/SubagentStop hooks; massive memory mgmt improvements; plan mode compaction fix; git worktree agents/skills discovery fix; parallel file ops fix; custom agent model fix; `chat:newline` keybinding; 50+ bug fixes |
+| 2.1.46 | 0.2.46 | Orphaned CC process fix on macOS; claude.ai MCP connectors support |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +1048,14 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **Memory management** (v2.1.47) — API stream buffers, agent context, and skill state released after use; O(n²) message accumulation in progress updates eliminated; agent task message history trimmed after tasks complete
+- **Plan mode preserved across compaction** (v2.1.47) — previously lost after context compaction, causing unintended switch from planning to implementation mode
+- **Git worktree agents/skills discovery** (v2.1.47) — project-level `.claude/agents/` and `.claude/skills/` from main repo now included in worktrees
+- **Custom agent model field** (v2.1.47) — `model` field in `.claude/agents/*.md` was being ignored when spawning teammates
+- **Parallel file operations** (v2.1.47) — single file write error no longer aborts all parallel operations; independent mutations now complete even on sibling failure
+- **Concurrent agents API errors** (v2.1.47) — fixed "thinking blocks cannot be modified" 400 errors in sessions with concurrent agents
+- **File Write tool line counting** (v2.1.47) — fixed stripping intentional trailing blank lines
+- **Orphaned CC processes** (v2.1.46) — fixed after terminal disconnect on macOS
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,14 +1066,14 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
-- `SDKTaskNotificationMessage` — subagent completion tracking
+- `SDKTaskNotificationMessage` — subagent completion tracking (without `tool_use_id` correlation yet)
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
+- All 13 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, Setup, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -1015,7 +1086,10 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority |
 |-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
+| Bump SDK pin to `>=0.2.47` | Memory fixes, plan mode compaction fix, parallel file ops, custom agent model fix | P2 |
+| `tool_use_id` on task_notification | Correlate subagent completions with originating tool calls (v0.2.47) | P3 |
+| `last_assistant_message` on Stop hook | Capture worker completion summary without transcript parsing (v0.2.47) | P3 |
+| Setup hook for worker init telemetry | `Setup` hook event with `trigger: 'init' \| 'maintenance'` | P4 |
 | Effort/thinking controls | `effort`, `thinking` options | P4 |
 | 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
 | maxTurns in local-ui | `maxTurns` option | P4 |
@@ -1068,6 +1142,7 @@ options: {
 | `setMcpServers(servers)` | Replace dynamic MCP servers |
 | `streamInput(stream)` | Stream user messages |
 | `stopTask(taskId)` | Stop a background task |
+| `promptSuggestion()` | Request prompt suggestions based on conversation context (v0.2.47+) |
 | `close()` | Terminate the query |
 
 ### SDKResultMessage
