@@ -24,6 +24,7 @@ export type TaskModeValue = typeof TaskMode[keyof typeof TaskMode];
 
 export const TaskStatus = {
   PENDING: 'pending',
+  BLOCKED: 'blocked',
   ASSIGNED: 'assigned',
   IN_PROGRESS: 'in_progress',
   REVIEW: 'review',
@@ -65,6 +66,10 @@ export const ArtifactType = {
   DIFF: 'diff',
   WALKTHROUGH: 'walkthrough',
   SUMMARY: 'summary',
+  CONTENT: 'content',
+  REPORT: 'report',
+  DATA: 'data',
+  LINK: 'link',
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
@@ -241,6 +246,7 @@ export interface Task {
   createdByWorkerId: string | null;
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
+  blockedByTaskIds?: string[];
   outputSchema?: Record<string, unknown> | null;
   result: TaskResult | null;
   createdAt: Date;
@@ -292,9 +298,18 @@ export interface Artifact {
   title: string | null;
   content: string | null;
   storageKey: string | null;
+  shareToken: string | null;
   metadata: Record<string, unknown>;
   createdAt: Date;
   url?: string;
+}
+
+export interface CreateArtifactInput {
+  type: ArtifactTypeValue;
+  title: string;
+  content?: string;
+  url?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Observation {
@@ -446,6 +461,8 @@ export interface CreateTaskInput {
   createdByWorkerId?: string;
   parentTaskId?: string;
   creationSource?: CreationSourceValue;
+  // Task dependency — blocked tasks start as 'blocked' and auto-unblock when all blockers complete
+  blockedByTaskIds?: string[];
   // Skill reference — server resolves slug to contentHash
   skillRef?: { slug: string };
   // JSON Schema for structured output — passed to SDK outputFormat
@@ -504,6 +521,7 @@ export interface ClaimTasksResponse {
     branch: string;
     task: Task;
     skillBundles?: SkillBundle[];
+    childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
   }>;
 }
 
@@ -598,7 +616,9 @@ export type SSEEventType =
   | 'worker:session_end'
   | 'worker:permission_request'
   | 'worker:rate_limit'
-  | 'task:updated';
+  | 'task:updated'
+  | 'task:unblocked'
+  | 'task:children_completed';
 
 export interface SSEEvent<T = unknown> {
   type: SSEEventType;

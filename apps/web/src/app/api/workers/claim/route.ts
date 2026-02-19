@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, sql, inArray, lt } from 'drizzle-orm';
+import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -61,6 +62,12 @@ export async function POST(req: NextRequest) {
       .where(inArray(workers.id, staleWorkerIds));
 
     if (staleTaskIds.length > 0) {
+      // Fetch workspace IDs before updating, for dependency resolution
+      const staleTasks = await db.query.tasks.findMany({
+        where: inArray(tasks.id, staleTaskIds),
+        columns: { id: true, workspaceId: true },
+      });
+
       await db
         .update(tasks)
         .set({
@@ -68,6 +75,11 @@ export async function POST(req: NextRequest) {
           updatedAt: new Date(),
         })
         .where(inArray(tasks.id, staleTaskIds));
+
+      // Resolve dependencies for expired tasks
+      for (const t of staleTasks) {
+        await resolveCompletedTask(t.id, t.workspaceId);
+      }
     }
   }
 
@@ -378,6 +390,24 @@ export async function POST(req: NextRequest) {
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+    }
+  }
+
+  // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
+  for (const cw of claimedWorkers) {
+    const task = filteredTasks.find(t => t.id === cw.taskId);
+    if (!task?.parentTaskId) continue;
+
+    const siblings = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.parentTaskId, task.parentTaskId),
+        not(eq(tasks.id, task.id))
+      ),
+      columns: { id: true, title: true, status: true, result: true },
+    });
+
+    if (siblings.length > 0) {
+      (cw as any).childResults = siblings;
     }
   }
 

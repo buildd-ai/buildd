@@ -276,8 +276,14 @@ GLOBALEOF
     ;;
 esac
 
-# Run
-exec bun run "$HOME/.buildd/apps/local-ui/src/index.ts" "$@"
+# Run with restart loop (exit code 75 = update applied, restart)
+while true; do
+  bun run "$HOME/.buildd/apps/local-ui/src/index.ts" "$@"
+  EXIT_CODE=$?
+  if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
+  echo "Restarting after update..."
+  sleep 1
+done
 LAUNCHER
 
 chmod +x "$BIN_DIR/buildd"

@@ -153,7 +153,19 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
     return (
       <div className="text-center py-12 text-text-muted">
         <p className="text-lg mb-2">No skills registered</p>
-        <p className="text-sm">Register a skill to make reusable agent instructions available to workers.</p>
+        <p className="text-sm mb-3">Register a skill to make reusable agent instructions available to workers.</p>
+        <p className="text-sm mb-1">
+          Install skills locally with{' '}
+          <code className="bg-surface-3 px-1.5 py-0.5 rounded text-xs">buildd skill install</code>
+        </p>
+        <a
+          href="https://docs.buildd.dev/docs/features/skills"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm text-primary hover:underline"
+        >
+          Learn how to create and install skills &rarr;
+        </a>
       </div>
     );
   }

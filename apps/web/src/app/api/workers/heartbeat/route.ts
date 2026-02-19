@@ -4,6 +4,7 @@ import { workerHeartbeats, tasks, workspaces, accountWorkspaces } from '@buildd/
 import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { randomBytes } from 'crypto';
+import { getLatestVersion } from '@/lib/version-cache';
 
 /**
  * POST /api/workers/heartbeat
@@ -117,7 +118,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount });
+    // Include latest commit SHA for auto-update checks (best-effort)
+    let latestCommit: string | undefined;
+    try {
+      const version = await getLatestVersion();
+      latestCommit = version.latestCommit;
+    } catch {
+      // Non-fatal — version check is optional
+    }
+
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount, latestCommit });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

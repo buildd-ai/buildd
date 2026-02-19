@@ -236,6 +236,86 @@ function showConnectionStatus(connected) {
   }
 }
 
+// Auto-update banner
+let updateDismissed = false;
+
+function showUpdateBanner(currentCommit, latestCommit) {
+  if (updateDismissed) return;
+  let banner = document.getElementById('updateBanner');
+  if (banner) return; // Already showing
+
+  banner = document.createElement('div');
+  banner.id = 'updateBanner';
+  banner.className = 'fixed top-0 left-0 right-0 z-[9998] bg-brand/90 text-white text-center py-2 text-xs font-mono font-medium backdrop-blur-sm flex items-center justify-center gap-3';
+
+  const shortCurrent = currentCommit ? currentCommit.slice(0, 7) : '?';
+  const shortLatest = latestCommit ? latestCommit.slice(0, 7) : '?';
+
+  banner.innerHTML = `
+    <span>Update available (${shortCurrent} \u2192 ${shortLatest})</span>
+    <button onclick="applyUpdate()" id="updateBtn" class="bg-white/20 hover:bg-white/30 text-white text-xs font-semibold py-0.5 px-3 rounded transition-colors">Update now</button>
+    <button onclick="dismissUpdateBanner()" class="text-white/60 hover:text-white text-xs ml-1">\u2715</button>
+  `;
+  document.body.prepend(banner);
+}
+
+function hideUpdateBanner() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) banner.remove();
+}
+
+function dismissUpdateBanner() {
+  updateDismissed = true;
+  hideUpdateBanner();
+}
+
+async function applyUpdate() {
+  const btn = document.getElementById('updateBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+  }
+
+  try {
+    const res = await fetch('./api/update/apply', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.success) {
+      // Banner will say "Restarting..." — SSE will reconnect after restart
+      const banner = document.getElementById('updateBanner');
+      if (banner) {
+        banner.innerHTML = '<span>Update applied. Restarting...</span>';
+      }
+    } else {
+      showToast(data.error || 'Update failed', 'error');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Update now';
+      }
+    }
+  } catch (err) {
+    showToast('Update failed: ' + err.message, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Update now';
+    }
+  }
+}
+
+function handleUpdateProgress(event) {
+  const banner = document.getElementById('updateBanner');
+  if (!banner) return;
+
+  if (event.status === 'updating') {
+    banner.innerHTML = '<span>Updating... please wait</span>';
+  } else if (event.status === 'restarting') {
+    banner.innerHTML = '<span>Update applied. Restarting...</span>';
+  } else if (event.status === 'error') {
+    banner.innerHTML = `<span>Update failed: ${escapeHtml(event.error || 'unknown error')}</span>
+      <button onclick="hideUpdateBanner()" class="text-white/60 hover:text-white text-xs ml-2">\u2715</button>`;
+  }
+}
+
 function connectSSE() {
   if (sseRetryTimer) {
     clearTimeout(sseRetryTimer);
@@ -281,6 +361,14 @@ function handleEvent(event) {
       renderWorkers();
       loadTasks(); // Refresh tasks on SSE (re)connect
       updateSettings();
+      // Handle update info from init (clears stale banner on reconnect after restart)
+      if (event.update) {
+        if (event.update.updateAvailable) {
+          showUpdateBanner(event.update.currentCommit, event.update.latestCommit);
+        } else {
+          hideUpdateBanner();
+        }
+      }
       break;
 
     case 'worker_update':
@@ -314,6 +402,18 @@ function handleEvent(event) {
       if (currentWorkerId === event.workerId) {
         appendOutput(event.line);
       }
+      break;
+
+    case 'update_available':
+      showUpdateBanner(event.currentCommit, event.latestCommit);
+      break;
+
+    case 'update_progress':
+      handleUpdateProgress(event);
+      break;
+
+    case 'version_info':
+      // Redundant with update_available but useful for logging
       break;
   }
 }
@@ -720,6 +820,9 @@ function renderWorkerDetail(worker) {
     descriptionEl.innerHTML = '';
   }
 
+  // Render plan artifact (between description and timeline)
+  renderPlanArtifact(worker);
+
   // Render chat timeline
   const timelineEl = document.getElementById('chatTimeline');
   const existingTimeline = timelineEl;
@@ -827,33 +930,14 @@ function renderWorkerDetail(worker) {
   // Question/plan prompt for waiting workers
   if (worker.status === 'waiting' && worker.waitingFor) {
     if (worker.waitingFor.type === 'plan_approval') {
-      // Dedicated plan review UI with cyan accent — include plan content inline
-      const planContent = worker.planContent || '';
-      const planHtml = planContent ? marked.parse(planContent) : '';
+      // Plan approval is handled by the dedicated plan artifact panel above.
+      // Show a small inline indicator pointing to it.
       timelineEl.innerHTML += `
-        <div class="bg-status-info/[0.08] border border-status-info/30 rounded-xl p-4 my-4">
-          <div class="text-xs text-status-info font-mono font-medium uppercase tracking-wide mb-3">
-            Plan ready for review
-          </div>
-          ${planHtml ? `
-            <div class="markdown-content text-sm leading-relaxed mb-4 max-h-[300px] overflow-y-auto border-b border-status-info/30 pb-4">${planHtml}</div>
-          ` : `
-            <div class="text-sm text-text-secondary mb-4">
-              Review the plan above, then approve to execute with a fresh context window or request changes.
-            </div>
-          `}
-          <div class="flex flex-wrap gap-2">
-            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
-              onclick="sendQuestionAnswer('Approve & implement')">
-              Approve & implement
-              <span class="text-[11px] text-text-secondary font-normal">Fresh context — plan only</span>
-            </button>
-            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-status-warning focus-visible:ring-2 focus-visible:ring-status-warning focus-visible:outline-none"
-              onclick="promptPlanChanges()">
-              Request changes
-              <span class="text-[11px] text-text-secondary font-normal">Ask the agent to revise</span>
-            </button>
-          </div>
+        <div class="flex items-center gap-2 py-2 text-[13px] text-brand">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <polyline points="18 15 12 9 6 15"/>
+          </svg>
+          <span>Plan submitted — review and approve above</span>
         </div>`;
     } else {
       // Standard question UI
@@ -2365,11 +2449,110 @@ async function sendQuestionAnswer(answer) {
   }
 }
 
+// Track whether plan artifact is collapsed (after approval)
+let planArtifactCollapsed = false;
+
+// Render the dedicated plan artifact panel
+function renderPlanArtifact(worker) {
+  const container = document.getElementById('planArtifact');
+  if (!container) return;
+
+  const hasPlan = worker.planContent && worker.planContent.length > 0;
+  const isAwaitingApproval = worker.status === 'waiting' && worker.waitingFor?.type === 'plan_approval';
+  const wasApproved = hasPlan && !isAwaitingApproval && worker.status !== 'waiting';
+
+  if (!hasPlan) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+
+  container.classList.remove('hidden');
+
+  // Status badge
+  const statusBadge = isAwaitingApproval
+    ? '<span class="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium uppercase tracking-wide text-brand"><span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-brand"></span></span>Awaiting Review</span>'
+    : '<span class="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium uppercase tracking-wide text-status-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="20 6 9 17 4 12"/></svg>Approved</span>';
+
+  const planHtml = marked.parse(worker.planContent);
+
+  if (wasApproved && planArtifactCollapsed) {
+    // Collapsed state after approval
+    container.innerHTML = `
+      <div class="bg-brand/[0.04] border border-brand/15 rounded-xl mb-3 overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-brand/[0.06] transition-colors" onclick="togglePlanExpand()">
+          <div class="flex items-center gap-3">
+            <span class="text-[11px] font-mono font-semibold uppercase tracking-[2.5px] text-brand">Implementation Plan</span>
+            ${statusBadge}
+          </div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" class="text-text-tertiary">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </div>
+      </div>`;
+    return;
+  }
+
+  // Full expanded state
+  container.innerHTML = `
+    <div class="bg-brand/[0.04] border border-brand/15 rounded-xl mb-3 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-3 ${wasApproved ? 'cursor-pointer hover:bg-brand/[0.06] transition-colors' : ''}" ${wasApproved ? 'onclick="togglePlanExpand()"' : ''}>
+        <div class="flex items-center gap-3">
+          <span class="text-[11px] font-mono font-semibold uppercase tracking-[2.5px] text-brand">Implementation Plan</span>
+          ${statusBadge}
+        </div>
+        ${wasApproved ? `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" class="text-text-tertiary rotate-180">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        ` : ''}
+      </div>
+      <div class="px-4 pb-4">
+        <div class="markdown-content text-sm leading-relaxed max-h-[60vh] overflow-y-auto">${planHtml}</div>
+      </div>
+      ${isAwaitingApproval ? `
+        <div class="border-t border-brand/15 px-4 py-3 flex flex-wrap gap-2">
+          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
+            onclick="approvePlan('bypass')">
+            Implement (bypass)
+            <span class="text-[11px] text-text-secondary font-normal">No permission prompts</span>
+          </button>
+          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/30 rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
+            onclick="approvePlan('review')">
+            Implement (review)
+            <span class="text-[11px] text-text-secondary font-normal">With edit review</span>
+          </button>
+          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-status-warning focus-visible:ring-2 focus-visible:ring-status-warning focus-visible:outline-none"
+            onclick="promptPlanChanges()">
+            Request changes
+            <span class="text-[11px] text-text-secondary font-normal">Ask the agent to revise</span>
+          </button>
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+// Approve plan with specified permission mode
+function approvePlan(mode) {
+  const message = mode === 'bypass'
+    ? 'Approve & implement (bypass permissions)'
+    : 'Approve & implement (with review)';
+  planArtifactCollapsed = true;
+  sendQuestionAnswer(message);
+}
+
+// Toggle plan artifact expanded/collapsed state
+function togglePlanExpand() {
+  planArtifactCollapsed = !planArtifactCollapsed;
+  const worker = workers.find(w => w.id === currentWorkerId);
+  if (worker) renderPlanArtifact(worker);
+}
+
 // Focus message input for plan change requests
 function promptPlanChanges() {
   const input = document.getElementById('messageInput');
   input.focus();
-  input.placeholder = 'What should the agent change in the plan?';
+  input.placeholder = 'Describe changes you want to the plan, then press Send';
 }
 
 async function createTask() {
@@ -3008,6 +3191,54 @@ async function registerSkill(skill) {
     loadSkills();
   } catch (err) {
     showToast('Failed to register skill', 'error');
+  }
+}
+
+function toggleSkillInstallForm() {
+  const form = document.getElementById('skillInstallForm');
+  const isHidden = form.classList.toggle('hidden');
+  if (!isHidden) {
+    document.getElementById('skillInstallSource').focus();
+    // Reset status when reopening
+    const statusEl = document.getElementById('skillInstallStatus');
+    statusEl.classList.add('hidden');
+    statusEl.textContent = '';
+  }
+}
+
+async function installSkillFromSource() {
+  const source = document.getElementById('skillInstallSource').value.trim();
+  if (!source) return;
+
+  const statusEl = document.getElementById('skillInstallStatus');
+  const btn = document.getElementById('skillInstallRunBtn');
+
+  btn.disabled = true;
+  btn.textContent = 'Installing…';
+  statusEl.className = 'text-xs mt-2 text-text-secondary';
+  statusEl.textContent = 'Running buildd skill install…';
+  statusEl.classList.remove('hidden');
+
+  try {
+    const res = await fetch('./api/skills/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.output || 'Install failed');
+
+    statusEl.className = 'text-xs mt-2 text-status-success';
+    statusEl.textContent = `Installed successfully.${data.output ? ' ' + data.output.split('\n')[0] : ''}`;
+    document.getElementById('skillInstallSource').value = '';
+    showToast('Skill installed', 'success');
+    loadSkills();
+  } catch (err) {
+    statusEl.className = 'text-xs mt-2 text-status-error';
+    statusEl.textContent = err.message || 'Install failed';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Install';
   }
 }
 

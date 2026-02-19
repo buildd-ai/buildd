@@ -143,6 +143,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                             placeholder="main"
                         />
+                        <p className="text-xs text-text-muted mt-1">The base branch for worktrees and new feature branches (e.g. <code>dev</code> or <code>main</code>).</p>
                     </div>
 
                     <div>
@@ -223,32 +224,31 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         </label>
                     </div>
 
-                    {requiresPR && (
-                        <>
-                            <div>
-                                <label className="block text-sm font-medium mb-1">Target Branch for PRs</label>
-                                <input
-                                    type="text"
-                                    value={targetBranch}
-                                    onChange={(e) => setTargetBranch(e.target.value)}
-                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                                    placeholder={defaultBranch || 'main'}
-                                />
-                            </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">PR Target Branch</label>
+                        <input
+                            type="text"
+                            value={targetBranch}
+                            onChange={(e) => setTargetBranch(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                            placeholder={defaultBranch || 'main'}
+                        />
+                        <p className="text-xs text-text-muted mt-1">Branch that PRs should target (e.g. <code>dev</code>). Used as <code>--base</code> when creating PRs. Defaults to Default Branch if empty.</p>
+                    </div>
 
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="checkbox"
-                                    id="autoCreatePR"
-                                    checked={autoCreatePR}
-                                    onChange={(e) => setAutoCreatePR(e.target.checked)}
-                                    className="rounded"
-                                />
-                                <label htmlFor="autoCreatePR" className="text-sm">
-                                    Auto-create PR when task completes
-                                </label>
-                            </div>
-                        </>
+                    {requiresPR && (
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="autoCreatePR"
+                                checked={autoCreatePR}
+                                onChange={(e) => setAutoCreatePR(e.target.checked)}
+                                className="rounded"
+                            />
+                            <label htmlFor="autoCreatePR" className="text-sm">
+                                Auto-create PR when task completes
+                            </label>
+                        </div>
                     )}
                 </div>
             </div>

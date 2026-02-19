@@ -69,12 +69,13 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST } from './route';
 
-function createMockRequest(apiKey?: string): NextRequest {
-  const headers: Record<string, string> = {};
+function createMockRequest(apiKey?: string, body?: Record<string, unknown>): NextRequest {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers['authorization'] = `Bearer ${apiKey}`;
   return new NextRequest('http://localhost:3000/api/workers/worker-1/plan/approve', {
     method: 'POST',
     headers: new Headers(headers),
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -204,5 +205,91 @@ describe('POST /api/workers/[id]/plan/approve', () => {
 
     // Should trigger worker:plan_approved and worker:command events
     expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  it('accepts bypass mode parameter', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'awaiting_plan_approval',
+      taskId: 'task-1',
+      workspaceId: 'ws-1',
+      task: { title: 'Test' },
+    });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      content: 'Step 1',
+      metadata: {},
+    });
+
+    const req = createMockRequest('bld_test', { mode: 'bypass' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    // Verify the Pusher command includes the bypass mode in the message text
+    const commandCalls = mockTriggerEvent.mock.calls.filter(
+      (call: any[]) => call[1] === 'worker:command'
+    );
+    expect(commandCalls.length).toBeGreaterThanOrEqual(1);
+    const commandData = commandCalls[0][2] as any;
+    expect(commandData.text).toContain('bypass permissions');
+  });
+
+  it('accepts review mode parameter', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'awaiting_plan_approval',
+      taskId: 'task-1',
+      workspaceId: 'ws-1',
+      task: { title: 'Test' },
+    });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      content: 'Step 1',
+      metadata: {},
+    });
+
+    const req = createMockRequest('bld_test', { mode: 'review' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const commandCalls = mockTriggerEvent.mock.calls.filter(
+      (call: any[]) => call[1] === 'worker:command'
+    );
+    expect(commandCalls.length).toBeGreaterThanOrEqual(1);
+    const commandData = commandCalls[0][2] as any;
+    expect(commandData.text).toContain('with review');
+  });
+
+  it('defaults to review mode when no mode specified', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'awaiting_plan_approval',
+      taskId: 'task-1',
+      workspaceId: 'ws-1',
+      task: { title: 'Test' },
+    });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      content: 'Step 1',
+      metadata: {},
+    });
+
+    // No body at all
+    const req = createMockRequest('bld_test');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const commandCalls = mockTriggerEvent.mock.calls.filter(
+      (call: any[]) => call[1] === 'worker:command'
+    );
+    expect(commandCalls.length).toBeGreaterThanOrEqual(1);
+    const commandData = commandCalls[0][2] as any;
+    expect(commandData.text).toContain('with review');
   });
 });

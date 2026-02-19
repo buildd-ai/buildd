@@ -7,6 +7,7 @@ import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
 import { scanSkills } from './skills';
+import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -307,6 +308,50 @@ let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(conf
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
 
+// Auto-update state
+interface UpdateState {
+  currentCommit: string | null;
+  latestCommit: string | null;
+  updateAvailable: boolean;
+  updating: boolean;
+}
+
+const updateState: UpdateState = {
+  currentCommit: getCurrentCommit(),
+  latestCommit: null,
+  updateAvailable: false,
+  updating: false,
+};
+
+function setLatestCommit(sha: string) {
+  if (updateState.latestCommit === sha) return;
+  updateState.latestCommit = sha;
+  const wasAvailable = updateState.updateAvailable;
+  updateState.updateAvailable = checkForUpdate(updateState.currentCommit, sha);
+  if (updateState.updateAvailable && !wasAvailable) {
+    console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)}`);
+    broadcast({ type: 'update_available', currentCommit: updateState.currentCommit, latestCommit: sha });
+  }
+}
+
+// Serverless mode version polling (every 30 minutes)
+let versionPollInterval: Timer | undefined;
+async function pollVersion() {
+  try {
+    const res = await fetch(`${config.builddServer}/api/version`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.latestCommit) {
+        setLatestCommit(data.latestCommit);
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
 function attachOutbox(client: BuilddClient | null) {
   if (client && !config.serverless) {
     client.setOutbox(outbox);
@@ -385,6 +430,16 @@ function broadcast(event: any) {
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
+  // Listen for version_info events from heartbeat for auto-update
+  workerManager.onEvent((event: any) => {
+    if (event.type === 'version_info' && event.latestCommit) {
+      setLatestCommit(event.latestCommit);
+    }
+  });
+} else if (config.serverless || !config.apiKey) {
+  // In serverless mode, poll the public /api/version endpoint
+  pollVersion();
+  versionPollInterval = setInterval(pollVersion, 30 * 60_000);
 }
 
 // Fetch account info on startup if already configured
@@ -823,6 +878,11 @@ const server = Bun.serve({
           bypassPermissions: config.bypassPermissions || false,
           acceptRemoteTasks: config.acceptRemoteTasks !== false,
           openBrowser: savedConfig.openBrowser !== false,
+        },
+        update: {
+          currentCommit: updateState.currentCommit,
+          latestCommit: updateState.latestCommit,
+          updateAvailable: updateState.updateAvailable,
         },
       };
       const initMessage = `data: ${JSON.stringify(init)}\n\n`;
@@ -1474,6 +1534,66 @@ const server = Bun.serve({
       }
     }
 
+    // Install a skill locally by running buildd skill install <source>
+    if (path === '/api/skills/install' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const { source } = body;
+
+      if (!source || typeof source !== 'string' || !source.trim()) {
+        return Response.json({ error: 'source required' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Reject shell metacharacters to prevent injection
+      if (/[;&|`$<>()\n\r]/.test(source)) {
+        return Response.json({ error: 'Invalid source format' }, { status: 400, headers: corsHeaders });
+      }
+
+      try {
+        const skillScriptPath = join(import.meta.dir, 'skill.ts');
+        const result = Bun.spawnSync(['bun', skillScriptPath, 'install', source.trim()], {
+          env: { ...process.env, HOME: homedir() },
+        });
+        const stdout = result.stdout ? new TextDecoder().decode(result.stdout) : '';
+        const stderr = result.stderr ? new TextDecoder().decode(result.stderr) : '';
+        const success = result.exitCode === 0;
+        return Response.json({ success, output: stdout || stderr }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Install failed' }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Auto-update endpoints
+    if (path === '/api/update/check' && req.method === 'GET') {
+      return Response.json({
+        currentCommit: updateState.currentCommit,
+        latestCommit: updateState.latestCommit,
+        updateAvailable: updateState.updateAvailable,
+        updating: updateState.updating,
+      }, { headers: corsHeaders });
+    }
+
+    if (path === '/api/update/apply' && req.method === 'POST') {
+      if (updateState.updating) {
+        return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
+      }
+
+      updateState.updating = true;
+      broadcast({ type: 'update_progress', status: 'updating' });
+
+      const result = applyUpdate();
+
+      if (result.success) {
+        broadcast({ type: 'update_progress', status: 'restarting' });
+        // Give SSE time to flush, then exit with code 75 for launcher restart
+        setTimeout(() => process.exit(75), 500);
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } else {
+        updateState.updating = false;
+        broadcast({ type: 'update_progress', status: 'error', error: result.error });
+        return Response.json({ success: false, error: result.error }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Debug endpoints for workspace resolution testing
     if (path === '/api/debug/directories' && req.method === 'GET') {
       return Response.json({
@@ -1554,8 +1674,9 @@ const server = Bun.serve({
 const localUrl = `http://localhost:${PORT}`;
 
 console.log('');
+const commitDisplay = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : 'unknown';
 console.log(`╔════════════════════════════════════════════╗`);
-console.log(`║  buildd local-ui                           ║`);
+console.log(`║  buildd local-ui          ${commitDisplay.padEnd(16)}║`);
 console.log(`╚════════════════════════════════════════════╝`);
 console.log(`  URL:        ${terminalLink(localUrl)}`);
 if (config.localUiUrl && config.localUiUrl !== localUrl) {

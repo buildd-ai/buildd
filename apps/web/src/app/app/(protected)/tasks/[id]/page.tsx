@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { tasks, workers, workspaces, artifacts } from '@buildd/core/db/schema';
+import { eq, desc, inArray, sql } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -11,6 +11,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import PlanReviewPanel from './PlanReviewPanel';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
@@ -59,6 +60,21 @@ export default async function TaskDetailPage({
     notFound();
   }
 
+  // Get blocker tasks (tasks that block this one)
+  const blockedByIds = (task.blockedByTaskIds as string[] | null) ?? [];
+  const blockerTasks = blockedByIds.length > 0
+    ? await db.query.tasks.findMany({
+        where: inArray(tasks.id, blockedByIds),
+        columns: { id: true, title: true, status: true },
+      })
+    : [];
+
+  // Get dependent tasks (tasks that this one blocks)
+  const dependentRows = await db.execute(
+    sql`SELECT id, title, status FROM tasks WHERE blocked_by_task_ids @> ${JSON.stringify([id])}::jsonb AND workspace_id = ${task.workspaceId}`
+  );
+  const dependentTasks = (dependentRows.rows ?? dependentRows) as Array<{ id: string; title: string; status: string }>;
+
   // Get workers for this task
   const taskWorkers = await db.query.workers.findMany({
     where: eq(workers.taskId, id),
@@ -67,6 +83,15 @@ export default async function TaskDetailPage({
       account: true,
     },
   });
+
+  // Fetch artifacts for all workers on this task
+  const workerIds = taskWorkers.map(w => w.id);
+  const taskArtifacts = workerIds.length > 0
+    ? await db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
+    : [];
+  const deliverableArtifacts = taskArtifacts.filter(
+    a => a.type !== 'task_plan' && a.type !== 'impl_plan'
+  );
 
   // Get the active worker (if any)
   const activeWorker = taskWorkers.find(w =>
@@ -133,6 +158,7 @@ export default async function TaskDetailPage({
     failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
     waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
     awaiting_plan_approval: { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+    blocked:                { icon: '\u29B8', bg: 'bg-status-info/12',    text: 'text-status-info' },
   };
   const DEFAULT_ICON = TASK_ICONS.pending;
 
@@ -212,7 +238,7 @@ export default async function TaskDetailPage({
         )}
 
         {/* Task Relationships */}
-        {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+        {(task.parentTask || (task.subTasks && task.subTasks.length > 0) || blockerTasks.length > 0 || dependentTasks.length > 0) && (
           <div className="mb-6">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
@@ -247,6 +273,36 @@ export default async function TaskDetailPage({
                         <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
                           {sub.status}
                         </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {blockerTasks.length > 0 && (
+                <div>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Blocked By ({blockerTasks.length}):</span>
+                  <div className="mt-2 space-y-1 ml-4">
+                    {blockerTasks.map((blocker) => (
+                      <div key={blocker.id} className="flex items-center gap-2">
+                        <Link href={`/app/tasks/${blocker.id}`} className="text-sm text-primary-400 hover:underline">
+                          {blocker.title}
+                        </Link>
+                        <StatusBadge status={blocker.status} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {dependentTasks.length > 0 && (
+                <div>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Blocking ({dependentTasks.length}):</span>
+                  <div className="mt-2 space-y-1 ml-4">
+                    {dependentTasks.map((dep) => (
+                      <div key={dep.id} className="flex items-center gap-2">
+                        <Link href={`/app/tasks/${dep.id}`} className="text-sm text-primary-400 hover:underline">
+                          {dep.title}
+                        </Link>
+                        <StatusBadge status={dep.status} />
                       </div>
                     ))}
                   </div>
@@ -309,6 +365,13 @@ export default async function TaskDetailPage({
               <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true"></span>
               Active Worker
             </div>
+            {/* Plan Review Panel — shown when awaiting approval or when a plan artifact exists */}
+            {(displayStatus === 'awaiting_plan_approval' || taskArtifacts.some(a => a.type === 'task_plan' && a.workerId === activeWorker.id)) && (
+              <PlanReviewPanel
+                workerId={activeWorker.id}
+                isAwaitingApproval={displayStatus === 'awaiting_plan_approval'}
+              />
+            )}
             <RealTimeWorkerView
               initialWorker={{
                 id: activeWorker.id,
@@ -344,50 +407,64 @@ export default async function TaskDetailPage({
         {(task.result as any) && (
           (() => {
             const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
+            const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
+
             return (
               <div className="mb-8">
                 <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                   Deliverables
                 </div>
-                <div className="p-4 bg-status-success/10 border border-status-success/20 rounded-[10px]">
-                  <div className="flex items-center gap-3 text-sm flex-wrap">
-                    {result.branch && (
-                      <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
-                        {result.branch}
-                      </code>
-                    )}
-                    {(result.commits ?? 0) > 0 && (
-                      <span className="text-text-secondary text-xs">
-                        {result.commits} commit{result.commits !== 1 ? 's' : ''}
-                      </span>
-                    )}
-                    {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
-                      <span className="text-xs">
-                        <span className="text-status-success">+{result.added}</span>
-                        <span className="text-status-error">/{'-'}{result.removed}</span>
-                      </span>
-                    )}
-                    {(result.files ?? 0) > 0 && (
-                      <span className="text-xs text-text-secondary">{result.files} files</span>
-                    )}
-                    {result.sha && (
-                      <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
-                    )}
-                    {result.prUrl && (
-                      <a
-                        href={result.prUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
-                      >
-                        PR #{result.prNumber}
-                      </a>
+
+                {/* Non-code summary — shown prominently when no code deliverables */}
+                {!hasCodeDeliverables && result.summary && (
+                  <div className="p-5 bg-surface-2 border border-border-default rounded-[10px] mb-4">
+                    <MarkdownContent content={result.summary} />
+                  </div>
+                )}
+
+                {/* Code deliverables bar */}
+                {hasCodeDeliverables && (
+                  <div className="p-4 bg-status-success/10 border border-status-success/20 rounded-[10px]">
+                    <div className="flex items-center gap-3 text-sm flex-wrap">
+                      {result.branch && (
+                        <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
+                          {result.branch}
+                        </code>
+                      )}
+                      {(result.commits ?? 0) > 0 && (
+                        <span className="text-text-secondary text-xs">
+                          {result.commits} commit{result.commits !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
+                        <span className="text-xs">
+                          <span className="text-status-success">+{result.added}</span>
+                          <span className="text-status-error">/{'-'}{result.removed}</span>
+                        </span>
+                      )}
+                      {(result.files ?? 0) > 0 && (
+                        <span className="text-xs text-text-secondary">{result.files} files</span>
+                      )}
+                      {result.sha && (
+                        <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
+                      )}
+                      {result.prUrl && (
+                        <a
+                          href={result.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                        >
+                          PR #{result.prNumber}
+                        </a>
+                      )}
+                    </div>
+                    {result.summary && (
+                      <p className="text-sm text-text-secondary mt-2">{result.summary}</p>
                     )}
                   </div>
-                  {result.summary && (
-                    <p className="text-sm text-text-secondary mt-2">{result.summary}</p>
-                  )}
-                </div>
+                )}
+
                 {/* Structured Output */}
                 {result.structuredOutput && (
                   <div className="mt-4">
@@ -402,6 +479,64 @@ export default async function TaskDetailPage({
               </div>
             );
           })()
+        )}
+
+        {/* Artifacts */}
+        {deliverableArtifacts.length > 0 && (
+          <div className="mb-8">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Artifacts ({deliverableArtifacts.length})
+            </div>
+            <div className="space-y-3">
+              {deliverableArtifacts.map((art) => {
+                const artMeta = art.metadata as Record<string, unknown> | null;
+                const artUrl = artMeta?.url as string | undefined;
+                const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+                const shareLink = art.shareToken ? `${baseUrl}/share/${art.shareToken}` : null;
+
+                return (
+                  <div key={art.id} className="p-4 bg-surface-2 border border-border-default rounded-[10px]">
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider bg-surface-3 text-text-muted rounded">
+                        {art.type}
+                      </span>
+                      <span className="text-sm font-medium text-text-primary">{art.title}</span>
+                      {shareLink && (
+                        <a
+                          href={shareLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-auto px-2.5 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary"
+                        >
+                          Share
+                        </a>
+                      )}
+                    </div>
+                    {art.type === 'link' && artUrl && (
+                      <a
+                        href={artUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary-400 hover:underline break-all"
+                      >
+                        {artUrl}
+                      </a>
+                    )}
+                    {(art.type === 'content' || art.type === 'report' || art.type === 'summary') && art.content && (
+                      <p className="text-sm text-text-secondary line-clamp-3">
+                        {art.content.length > 500 ? art.content.slice(0, 500) + '...' : art.content}
+                      </p>
+                    )}
+                    {art.type === 'data' && art.content && (
+                      <pre className="text-xs font-mono text-text-muted mt-1 line-clamp-3 overflow-hidden">
+                        {art.content.length > 500 ? art.content.slice(0, 500) + '...' : art.content}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
 
         {/* Worker History */}

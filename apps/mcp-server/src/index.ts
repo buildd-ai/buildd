@@ -178,7 +178,12 @@ const server = new Server(
 **Memory (REQUIRED):**
 - BEFORE touching unfamiliar files, use \`buildd_memory\` action=search with keywords
 - AFTER encountering a gotcha, pattern, or decision, use \`buildd_memory\` action=save IMMEDIATELY
-- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)`
+- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)
+
+**Pipeline patterns (optional):**
+- Fan-out: create_task multiple children, then create_task a rollup with blockedByTaskIds=[child1, child2, ...]
+- The rollup task auto-starts when all blockers complete/fail. Its claim response includes childResults.
+- Dynamic expansion: use update_task with addBlockedByTaskIds to add new blockers to an existing task.`
       : `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
 
 **Worker workflow:**
@@ -192,12 +197,18 @@ const server = new Server(
 - When you claim a task, relevant memory is included automatically. READ IT before starting.
 - BEFORE touching unfamiliar files, use \`buildd_memory\` action=search with keywords
 - AFTER encountering a gotcha, pattern, or decision, use \`buildd_memory\` action=save IMMEDIATELY
-- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)`,
+- Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)
+
+**Pipeline patterns (optional):**
+- Fan-out: create_task multiple children, then create_task a rollup with blockedByTaskIds=[child1, child2, ...]
+- The rollup task auto-starts when all blockers complete/fail. Its claim response includes childResults.
+- Dynamic expansion: use update_task with addBlockedByTaskIds to add new blockers to an existing task.`,
   }
 );
 
 const allActions = [
   "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task", "create_task",
+  "create_artifact",
   "create_schedule", "update_schedule", "list_schedules", "register_skill", "review_workspace",
 ];
 
@@ -210,7 +221,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
     {
       name: "buildd",
-      description: `Task coordination tool. Available actions: ${allActions.join(", ")}. Use action parameter to select operation, params for action-specific arguments.`,
+      description: `Task coordination tool. Available actions: ${allActions.join(", ")}. Use action parameter to select operation, params for action-specific arguments. create_artifact produces a shareable link for non-code deliverables.`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -232,8 +243,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - update_progress: { workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }
 - complete_task: { workerId (required), summary?, error?, structuredOutput? (JSON object — validated structured output from agent) } — if error present, marks task as failed
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
-- update_task: { taskId (required), title?, description?, priority? }
-- create_task: { title (required), description (required), workspaceId?, priority?, outputSchema? (JSON Schema object — agent returns structured JSON matching this schema) }
+- update_task: { taskId (required), title?, description?, priority?, addBlockedByTaskIds? (array — add dependency blockers), removeBlockedByTaskIds? (array — remove dependency blockers) }
+- create_task: { title (required), description (required), workspaceId?, priority?, blockedByTaskIds? (array of task UUIDs — task starts as 'blocked' and auto-unblocks when all listed tasks complete/fail), outputSchema? (JSON Schema object — agent returns structured JSON matching this schema) }
+- create_artifact: { workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata? }
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
 - update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
@@ -585,9 +597,15 @@ export BUILDD_SERVER=${SERVER_URL}`;
           if (params.title !== undefined) updateFields.title = params.title;
           if (params.description !== undefined) updateFields.description = params.description;
           if (params.priority !== undefined) updateFields.priority = params.priority;
+          if (params.addBlockedByTaskIds && Array.isArray(params.addBlockedByTaskIds)) {
+            updateFields.addBlockedByTaskIds = params.addBlockedByTaskIds;
+          }
+          if (params.removeBlockedByTaskIds && Array.isArray(params.removeBlockedByTaskIds)) {
+            updateFields.removeBlockedByTaskIds = params.removeBlockedByTaskIds;
+          }
 
           if (Object.keys(updateFields).length === 0) {
-            throw new Error("At least one field (title, description, priority) must be provided");
+            throw new Error("At least one field (title, description, priority, addBlockedByTaskIds, removeBlockedByTaskIds) must be provided");
           }
 
           const updated = await apiCall(`/api/tasks/${params.taskId}`, {
@@ -628,6 +646,11 @@ export BUILDD_SERVER=${SERVER_URL}`;
             taskBody.outputSchema = params.outputSchema;
           }
 
+          // Task dependency — blocked tasks auto-unblock when all blockers complete/fail
+          if (params.blockedByTaskIds && Array.isArray(params.blockedByTaskIds)) {
+            taskBody.blockedByTaskIds = params.blockedByTaskIds;
+          }
+
           if (WORKER_ID) {
             taskBody.createdByWorkerId = WORKER_ID;
           }
@@ -637,11 +660,12 @@ export BUILDD_SERVER=${SERVER_URL}`;
             body: JSON.stringify(taskBody),
           });
 
+          const statusLabel = task.status === 'blocked' ? 'blocked' : 'pending';
           return {
             content: [
               {
                 type: "text",
-                text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${WORKER_ID ? `\nCreated by worker: ${WORKER_ID}` : ''}`,
+                text: `Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nPriority: ${task.priority}${WORKER_ID ? `\nCreated by worker: ${WORKER_ID}` : ''}${task.status === 'blocked' ? `\nBlocked by: ${(params.blockedByTaskIds as string[]).join(', ')}` : ''}`,
               },
             ],
           };
@@ -816,6 +840,43 @@ export BUILDD_SERVER=${SERVER_URL}`;
               {
                 type: "text",
                 text: `Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`,
+              },
+            ],
+          };
+        }
+
+        case "create_artifact": {
+          if (!params.workerId) {
+            throw new Error("workerId is required");
+          }
+          if (!params.type || !params.title) {
+            throw new Error("type and title are required");
+          }
+
+          const validTypes = ['content', 'report', 'data', 'link', 'summary'];
+          if (!validTypes.includes(params.type as string)) {
+            throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+          }
+
+          const artifactBody: Record<string, unknown> = {
+            type: params.type,
+            title: params.title,
+          };
+          if (params.content) artifactBody.content = params.content;
+          if (params.url) artifactBody.url = params.url;
+          if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
+
+          const artifactData = await apiCall(`/api/workers/${params.workerId}/artifacts`, {
+            method: "POST",
+            body: JSON.stringify(artifactBody),
+          });
+
+          const art = artifactData.artifact;
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Artifact created: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`,
               },
             ],
           };

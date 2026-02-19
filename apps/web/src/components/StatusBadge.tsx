@@ -8,6 +8,7 @@ const STATUS_LABELS: Record<string, string> = {
   completed: 'Completed',
   failed: 'Failed',
   idle: 'Idle',
+  blocked: 'Blocked',
 };
 
 // Moodboard: status colors at 10% opacity bg, status color text, pill shape
@@ -21,6 +22,7 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
   failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
   idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
+  blocked:                { dot: 'bg-status-info',                           bg: 'bg-status-info/10',    text: 'text-status-info' },
 };
 
 const DEFAULT_STYLE = STATUS_STYLES.pending;
