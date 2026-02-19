@@ -12,7 +12,7 @@ const PERSISTED_FIELDS = [
   'branch', 'status', 'error', 'completedAt', 'lastActivity', 'sessionId',
   'waitingFor', 'planContent', 'planFilePath', 'planStartMessageIndex',
   'messages', 'milestones', 'toolCalls', 'commits',
-  'output', 'teamState', 'worktreePath',
+  'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -162,6 +162,8 @@ export function loadAllWorkers(): LocalWorker[] {
         output: (data.output as LocalWorker['output']) || [],
         teamState: data.teamState as LocalWorker['teamState'],
         worktreePath: data.worktreePath as string | undefined,
+        promptSuggestions: data.promptSuggestions as string[] | undefined,
+        lastAssistantMessage: data.lastAssistantMessage as string | undefined,
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
