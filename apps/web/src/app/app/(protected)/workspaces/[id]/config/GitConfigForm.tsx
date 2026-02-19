@@ -17,6 +17,7 @@ interface GitConfig {
     useClaudeMd: boolean;
     bypassPermissions?: boolean;
     pluginPaths?: string[];
+    fallbackModel?: string;
     sandbox?: {
         enabled?: boolean;
         autoAllowBashIfSandboxed?: boolean;
@@ -58,6 +59,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
+    const [fallbackModel, setFallbackModel] = useState(initialConfig?.fallbackModel || '');
     const [pluginPaths, setPluginPaths] = useState((initialConfig?.pluginPaths || []).join('\n'));
     const [sandboxEnabled, setSandboxEnabled] = useState(initialConfig?.sandbox?.enabled || false);
     const [sandboxAutoAllowBash, setSandboxAutoAllowBash] = useState(initialConfig?.sandbox?.autoAllowBashIfSandboxed || false);
@@ -89,6 +91,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
+                    fallbackModel: fallbackModel.trim() || undefined,
                     pluginPaths: pluginPaths.split('\n').map(s => s.trim()).filter(Boolean),
                     sandbox: sandboxEnabled ? {
                         enabled: true,
@@ -299,6 +302,30 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <p className="text-xs text-text-muted -mt-2">
                         Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
                     </p>
+                </div>
+            </div>
+
+            {/* Model Settings Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Model Settings</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">
+                            Fallback Model
+                            <span className="text-text-muted font-normal ml-1">(optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={fallbackModel}
+                            onChange={(e) => setFallbackModel(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            placeholder="claude-sonnet-4-5-20250929"
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Model to use if the primary model fails (e.g., rate limited or unavailable). Can be overridden per-task via <code>context.fallbackModel</code>.
+                        </p>
+                    </div>
                 </div>
             </div>
 

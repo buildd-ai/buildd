@@ -223,6 +223,9 @@ export interface WorkspaceGitConfig {
   // Maximum budget in USD per worker session
   maxBudgetUsd?: number;
 
+  // Fallback model (SDK v0.2.45+)
+  fallbackModel?: string;
+
   // SDK debug logging
   debug?: boolean;
   debugFile?: string;
