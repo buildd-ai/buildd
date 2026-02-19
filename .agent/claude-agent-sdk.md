@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.47` | Current |
+| `apps/agent` | `>=0.2.47` | Current |
+| `apps/local-ui` | `>=0.2.47` | Current |
 
 ---
 
@@ -971,6 +971,7 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | O(n²) message accumulation fix; agent context/skill state memory release; background agent results return final answer; custom agents/skills discovered in git worktrees; Edit tool Unicode curly quote fix; shell commands CWD deletion fix; hooks no longer silently fail on Windows; `last_assistant_message` on Stop/SubagentStop hooks; `tool_use_id` on `SDKTaskNotificationMessage` |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +986,13 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **O(n²) message accumulation** eliminated in long agent sessions (v0.2.47) — critical for long-running workers
+- **Agent context/skill state** released after use, reducing memory pressure (v0.2.47)
+- **Background agent results** now return final answer instead of raw transcript data (v0.2.47)
+- **Custom agents/skills** now discovered in git worktrees (v0.2.47) — includes main repo `.claude/`
+- **Edit tool** no longer silently corrupts Unicode curly quotes (v0.2.47)
+- **Shell commands** no longer permanently fail after CWD deletion (v0.2.47)
+- **Hooks** (PreToolUse, PostToolUse) no longer silently fail on Windows (v0.2.47)
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,7 +1003,7 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1015,7 +1023,6 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority |
 |-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
 | Effort/thinking controls | `effort`, `thinking` options | P4 |
 | 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
 | maxTurns in local-ui | `maxTurns` option | P4 |
