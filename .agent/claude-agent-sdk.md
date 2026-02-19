@@ -943,6 +943,27 @@ Useful for tracking subagent lifecycle — pair with `SDKTaskNotificationMessage
 
 ---
 
+## 23b. SDKTaskNotificationMessage (SDK v0.2.45+, updated v0.2.47)
+
+Emitted when a subagent task completes or has a status update:
+
+```typescript
+type SDKTaskNotificationMessage = {
+  type: 'system';
+  subtype: 'task_notification';
+  task_id: string;
+  tool_use_id?: string;  // Added in v0.2.47 — correlates to originating Task tool call
+  status: string;        // 'completed', 'failed', etc.
+  message?: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+Use `tool_use_id` to match a `task_notification` back to its `task_started` event and the original `Task` tool_use block. This enables full subagent lifecycle tracking (start→completion) in dashboards and logs.
+
+---
+
 ## 24. SDKRateLimitEvent (SDK v0.2.45+)
 
 Emitted when the API returns rate limit status information:
@@ -972,10 +993,11 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `tool_use_id` on `SDKTaskNotificationMessage`; `promptSuggestion()` method; `last_assistant_message` on Stop/SubagentStop hooks |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -1000,12 +1022,12 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
-- `SDKTaskNotificationMessage` — subagent completion tracking
+- `SDKTaskNotificationMessage` — subagent completion tracking (with `tool_use_id` correlation, v0.2.47)
 - `SDKFilesPersistedEvent` — file checkpoint tracking
 - All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
 - Structured output via `outputFormat`

@@ -225,11 +225,13 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
-    // SDK v0.2.45: Subagent task notification — emitted on task completion/status updates
+    // SDK v0.2.47: Subagent task notification — emitted on task completion/status updates
+    // tool_use_id added in v0.2.47 for start→completion correlation
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
       const event = msg as any;
       this.emitEvent('worker:task_notification', {
         taskId: event.task_id,
+        toolUseId: event.tool_use_id,
         status: event.status,
         message: event.message,
       });
