@@ -140,6 +140,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
             ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            Stop: [{ hooks: [this.stopHook.bind(this)] }],
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
@@ -501,7 +502,26 @@ export class WorkerRunner extends EventEmitter {
     if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
     const stopHookActive = (input as any).stop_hook_active as boolean;
-    this.emitEvent('worker:subagent_stop', { stopHookActive });
+    const agentId = (input as any).agent_id as string | undefined;
+    const agentType = (input as any).agent_type as string | undefined;
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+    this.emitEvent('worker:subagent_stop', {
+      stopHookActive,
+      agentId: agentId ?? null,
+      agentType: agentType ?? null,
+      lastAssistantMessage: lastAssistantMessage ?? null,
+    });
+    return { async: true };
+  };
+
+  // Stop hook — fires when the agent execution stops.
+  // Captures last_assistant_message (SDK v0.2.47+) for use as task completion summary.
+  private stopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Stop') return {};
+
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+
+    this.emitEvent('worker:stop', { lastAssistantMessage: lastAssistantMessage ?? null });
     return { async: true };
   };
 

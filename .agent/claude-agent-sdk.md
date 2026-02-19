@@ -1,7 +1,7 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
@@ -481,9 +481,21 @@ type SubagentStartHookInput = BaseHookInput & {
   agent_type: string;
 };
 
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  stop_hook_active: boolean;
+  /** Text content of the last assistant message before stopping (SDK v0.2.47+) */
+  last_assistant_message?: string;
+};
+
 type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: 'SubagentStop';
   stop_hook_active: boolean;
+  agent_id: string;
+  agent_transcript_path: string;
+  agent_type: string;
+  /** Text content of the last assistant message before stopping (SDK v0.2.47+) */
+  last_assistant_message?: string;
 };
 
 type PermissionRequestHookInput = BaseHookInput & {

@@ -1117,15 +1117,45 @@ export class WorkerManager {
 
   // Create a SubagentStop hook that tracks subagent completion.
   // Updates team state and emits milestones for dashboard visibility.
+  // Captures last_assistant_message (SDK v0.2.47+) on tracked subagent tasks.
   private createSubagentStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
       const stopHookActive = (input as any).stop_hook_active as boolean;
+      const agentId = (input as any).agent_id as string | undefined;
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
 
-      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+      // Store last_assistant_message on the matching subagent task if tracked
+      if (lastAssistantMessage && agentId) {
+        const subagentTask = worker.subagentTasks.find(t => t.taskId === agentId && t.status === 'running');
+        if (subagentTask) {
+          subagentTask.lastAssistantMessage = lastAssistantMessage;
+        }
+      }
 
+      const label = lastAssistantMessage
+        ? `Subagent stopped: ${lastAssistantMessage.slice(0, 60)}${lastAssistantMessage.length > 60 ? '...' : ''}`
+        : 'Subagent stopped';
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive}, last_msg: ${lastAssistantMessage ? `${lastAssistantMessage.length} chars` : 'none'})`);
+
+      return { async: true };
+    };
+  }
+
+  // Create a Stop hook that captures the agent's last assistant message.
+  // Stores last_assistant_message on the worker for use in completion summaries.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastAssistantMessage) {
+        worker.lastAssistantMessage = lastAssistantMessage;
+      }
+
+      console.log(`[Worker ${worker.id}] Stop hook fired (last_assistant_message: ${lastAssistantMessage ? `${lastAssistantMessage.length} chars` : 'none'})`);
       return { async: true };
     };
   }
@@ -1572,6 +1602,7 @@ export class WorkerManager {
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
+      // Stop hook (captures last_assistant_message for completion summaries),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
@@ -1583,6 +1614,7 @@ export class WorkerManager {
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -2834,10 +2866,10 @@ export class WorkerManager {
       parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
     }
 
-    // Outcome from last output
-    const lastOutput = worker.output.slice(-3).join(' ').trim();
-    if (lastOutput) {
-      const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
+    // Outcome: prefer Stop hook's last_assistant_message (more reliable), fall back to output buffer
+    const outcome = worker.lastAssistantMessage || worker.output.slice(-3).join(' ').trim();
+    if (outcome) {
+      const truncated = outcome.length > 300 ? outcome.slice(0, 300) + '...' : outcome;
       parts.push(`Outcome: ${truncated}`);
     }
 

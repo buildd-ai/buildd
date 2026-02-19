@@ -89,6 +89,8 @@ export interface SubagentTask {
   status: 'running' | 'completed' | 'failed';
   completedAt?: number;
   message?: string;
+  // Last assistant message from SubagentStop hook (SDK v0.2.47+)
+  lastAssistantMessage?: string | null;
 }
 
 // Team state for a worker
@@ -134,6 +136,8 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // Last assistant message captured by Stop hook (SDK v0.2.47+)
+  lastAssistantMessage?: string | null;
 }
 
 // Per-model token usage from SDK result
