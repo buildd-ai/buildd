@@ -1,5 +1,10 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
+> **Rename**: The SDK was officially renamed from "Claude Code SDK" to "Claude Agent SDK" in early 2026.
+> - TypeScript: `@anthropic-ai/claude-agent-sdk` (npm)
+> - Python: `claude-agent-sdk` (PyPI)
+> - Official docs: https://platform.claude.com/docs/en/agent-sdk/overview
+> - Migration guide: https://platform.claude.com/docs/en/agent-sdk/migration-guide
 
 **Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
 
@@ -1013,13 +1018,20 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Pending Enhancements (Buildd tasks created)
 
-| Enhancement | SDK Feature | Priority |
-|-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
-| Effort/thinking controls | `effort`, `thinking` options | P4 |
-| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
-| maxTurns in local-ui | `maxTurns` option | P4 |
-| Fallback model | `fallbackModel` option | P4 |
+| Enhancement | SDK Feature | Priority | Status |
+|-------------|------------|----------|--------|
+| Effort/thinking controls | `effort`, `thinking` options | P4 | Task created |
+| Fallback model | `fallbackModel` option | P4 | Task created |
+| Evaluate Python Agent SDK | `claude-agent-sdk` (PyPI v0.1.37) | P4 | Task created |
+| spinnerTipsOverride | Custom worker status messages | P5 | Task created |
+| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 | Integrated (conditional on Sonnet models) |
+| maxTurns | `maxTurns` option | P4 | Integrated in worker-runner.ts |
+
+### Completed Integrations (previously pending)
+
+- **SDK pin `>=0.2.45`** — Both `packages/core` and `apps/local-ui` now pin `>=0.2.45`
+- **1M context beta** — Integrated conditionally for Sonnet models via `extendedContext` config
+- **maxTurns** — Integrated in worker-runner.ts via workspace/task config
 
 ---
 
@@ -1225,6 +1237,47 @@ If `CLAUDE_CODE_OAUTH_TOKEN` is set with an expired/invalid token, it overrides 
 ```bash
 unset CLAUDE_CODE_OAUTH_TOKEN
 ```
+
+---
+
+## Python Agent SDK
+
+> **Status**: Available but not integrated into Buildd. Evaluation task created (P4).
+
+The Claude Agent SDK now has an official Python package (`claude-agent-sdk` on PyPI, v0.1.37 as of Feb 2026).
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    async for message in query(
+        prompt="Find and fix the bug in auth.py",
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Edit", "Bash"],
+            permission_mode="acceptEdits",
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+### Feature Parity (Python v0.1.37 vs TypeScript v0.2.45)
+
+| Feature | TypeScript | Python |
+|---------|-----------|--------|
+| `query()` with async iteration | Yes | Yes |
+| Hooks (PreToolUse, PostToolUse, etc.) | 12 events | 7 events (no PreCompact, SessionStart/End, TeammateIdle, TaskCompleted) |
+| MCP server integration | Yes (in-process + subprocess) | Yes (subprocess only) |
+| Structured output (`outputFormat`) | Yes | Not documented |
+| Agent teams | Yes | Not documented |
+| Extended thinking / effort | Yes | Yes (`ThinkingConfig` types) |
+| File checkpointing | Yes | Yes (`rewind_files()`) |
+| `createSdkMcpServer` (in-process) | Yes | No equivalent |
+
+**Recommendation**: TypeScript SDK remains the better choice for Buildd workers due to full feature parity with CLI, in-process MCP server support, and agent teams integration.
 
 ---
 
