@@ -1341,3 +1341,15 @@ unset CLAUDE_CODE_OAUTH_TOKEN
 **Run**: `bun run test:integration` (from `apps/local-ui`)
 
 Tests that `query()` with `settingSources: ['project']` correctly loads CLAUDE.md by checking for a unique marker.
+
+---
+
+## Prompt Suggestions (local-ui implementation)
+
+The CLI's `promptSuggestion` feature is internal to the terminal UI and **not exposed** on the programmatic `Query` interface (as of v0.2.45). Local-UI implements its own prompt suggestion system:
+
+- **Location**: `apps/local-ui/src/workers.ts` — `generatePromptSuggestions()` method
+- **Trigger**: Called after successful task completion (when `worker.status = 'done'`)
+- **Approach**: Heuristic-based suggestions from worker context (commits, tool calls, task metadata) — no extra LLM call
+- **Storage**: `worker.promptSuggestions: string[]` — persisted via worker-store, exposed via `/api/workers` and SSE events
+- **UI**: Rendered as clickable chips in the worker detail view that populate the message input

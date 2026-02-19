@@ -1830,6 +1830,13 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Generate follow-up prompt suggestions if Stop hook didn't already
+        if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
+          worker.promptSuggestions = this.generatePromptSuggestions(worker);
+          if (worker.promptSuggestions.length > 0) {
+            console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
+          }
+        }
         // Compute aggregate token counts from SDK result metadata
         const resultMeta = worker.resultMeta || undefined;
         let inputTokens: number | undefined;
@@ -3109,6 +3116,48 @@ export class WorkerManager {
 
     const summary = parts.join('\n');
     return summary.length > 600 ? summary.slice(0, 600) + '...' : summary;
+  }
+
+  // Generate follow-up prompt suggestions based on what the worker accomplished.
+  // Uses heuristics from commits, tool calls, and task context — no extra LLM call needed.
+  private generatePromptSuggestions(worker: LocalWorker): string[] {
+    const suggestions: string[] = [];
+
+    // If there are commits, suggest reviewing changes and running tests
+    if (worker.commits.length > 0) {
+      suggestions.push('Run tests to verify the changes');
+
+      // If commits mention a specific feature/fix, suggest a follow-up
+      const lastCommit = worker.commits[worker.commits.length - 1];
+      if (lastCommit) {
+        const msg = lastCommit.message.toLowerCase();
+        if (msg.includes('fix') || msg.includes('bug')) {
+          suggestions.push('Add a regression test for the fix');
+        } else if (msg.includes('feat') || msg.includes('add')) {
+          suggestions.push('Add documentation for the new feature');
+        } else if (msg.includes('refactor')) {
+          suggestions.push('Review the refactored code for edge cases');
+        }
+      }
+    }
+
+    // If files were edited, suggest reviewing them
+    const editedFiles = this.extractFilesFromToolCalls(worker.toolCalls)
+      .filter((_, i) => i < 5);
+    if (editedFiles.length > 0) {
+      const hasTests = editedFiles.some(f => f.includes('test') || f.includes('spec'));
+      if (!hasTests) {
+        suggestions.push('Write tests for the modified files');
+      }
+    }
+
+    // Always offer a create-PR suggestion if there were commits
+    if (worker.commits.length > 0) {
+      suggestions.push('Create a pull request for these changes');
+    }
+
+    // Deduplicate and limit to 3
+    return [...new Set(suggestions)].slice(0, 3);
   }
 
   private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {

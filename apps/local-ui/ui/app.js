@@ -1102,6 +1102,20 @@ function renderWorkerDetail(worker, opts = {}) {
       </div>`;
   }
 
+  // Prompt suggestions for follow-up actions
+  if (worker.status === 'done' && worker.promptSuggestions && worker.promptSuggestions.length > 0) {
+    timelineEl.innerHTML += `
+      <div class="my-4">
+        <div class="text-[10px] font-mono font-medium text-text-tertiary uppercase tracking-[2px] mb-2">Suggested next steps</div>
+        <div class="flex flex-wrap gap-2">
+          ${worker.promptSuggestions.map(s => `
+            <button class="prompt-suggestion text-xs bg-brand/10 text-brand border border-brand/20 rounded-lg px-3 py-1.5 cursor-pointer transition-all duration-150 hover:bg-brand/20 hover:border-brand/30 active:scale-[0.97]"
+              onclick="useSuggestion(this, '${escapeHtml(s).replace(/'/g, "\\'")}')">${escapeHtml(s)}</button>
+          `).join('')}
+        </div>
+      </div>`;
+  }
+
   // Restore scroll position (only auto-scroll if was at bottom)
   if (opts.isInitialOpen) {
     // Initial open: always scroll to bottom (rAF in openWorkerModal handles timing)
@@ -2564,6 +2578,15 @@ async function sendMessage() {
   } catch (err) {
     console.error('Failed to send message:', err);
     showToast('Failed to send message', 'error');
+  }
+}
+
+// Use a prompt suggestion — populate the message input and focus it
+function useSuggestion(btn, text) {
+  const input = document.getElementById('messageInput');
+  if (input) {
+    input.value = text;
+    input.focus();
   }
 }
 
