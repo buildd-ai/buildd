@@ -72,6 +72,8 @@ function getStatusIndicator(status: string): React.ReactNode {
       );
     case 'failed':
       return <span className="h-2 w-2 rounded-full bg-status-error" />;
+    case 'blocked':
+      return <span className="h-2 w-2 rounded-full bg-status-info" />;
     default:
       return null;
   }
@@ -191,6 +193,19 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     })));
   }, []);
 
+  // Handler for task unblocked (dependency resolved)
+  const handleTaskUnblocked = useCallback((data: { task: { id: string; status: string; workspaceId: string } }) => {
+    const { task } = data;
+    if (!task) return;
+
+    setWorkspaces(prev => prev.map(ws => ({
+      ...ws,
+      tasks: ws.tasks.map(t =>
+        t.id === task.id ? { ...t, status: task.status || 'pending', updatedAt: new Date() } : t
+      ),
+    })));
+  }, []);
+
   // Stable workspace IDs for dependency tracking
   const workspaceIds = workspaces.map(ws => ws.id);
   const workspaceIdsKey = workspaceIds.join(',');
@@ -208,6 +223,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         channel.bind('task:created', handleTaskCreated);
         channel.bind('task:claimed', handleTaskClaimed);
         channel.bind('task:assigned', handleTaskAssigned);
+        channel.bind('task:unblocked', handleTaskUnblocked);
       }
     }
 
@@ -217,7 +233,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated, handleTaskClaimed, handleTaskAssigned]);
+  }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated, handleTaskClaimed, handleTaskAssigned, handleTaskUnblocked]);
 
   // Load collapsed state from localStorage
   useEffect(() => {
@@ -278,6 +294,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       case 'waiting_input':
         return 0; // Highest priority
       case 'pending':
+      case 'blocked':
         return 1;
       case 'failed':
         return 2;
@@ -413,7 +430,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                     {!isCollapsed && (() => {
                       // Split ALL tasks into active vs completed BEFORE slicing
                       const allActiveTasks = ws.tasks.filter(t =>
-                        ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
+                        ['running', 'assigned', 'pending', 'waiting_input', 'blocked'].includes(t.status)
                       );
                       const allCompletedTasks = ws.tasks.filter(t =>
                         ['completed', 'failed'].includes(t.status)

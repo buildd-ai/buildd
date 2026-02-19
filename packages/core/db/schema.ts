@@ -141,11 +141,21 @@ export interface WorkspaceGitConfig {
   debug?: boolean;               // Enable verbose SDK debug output to stderr
   debugFile?: string;             // File path to write SDK debug logs to
 
+  // Fallback model (SDK v0.2.45+)
+  // Automatically switches to this model if the primary model fails (e.g., rate limited, unavailable).
+  // Can be overridden per-task via task.context.fallbackModel.
+  fallbackModel?: string;
+
   // 1M context window beta (SDK v0.2.45+)
   // Enables 'context-1m-2025-08-07' beta for Sonnet 4.x models only.
   // Reduces context compaction at higher cost — useful for large codebases.
   // Can be overridden per-task via task.context.extendedContext.
   extendedContext?: boolean;
+
+  // Thinking / effort controls (SDK v0.2.45+)
+  // Controls Claude's reasoning behavior. Can be overridden per-task via task.context.thinking / task.context.effort.
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
+  effort?: 'low' | 'medium' | 'high' | 'max';
 
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
@@ -260,7 +270,7 @@ export const workspaces = pgTable('workspaces', {
 export const sources = pgTable('sources', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  type: text('type').notNull().$type<'manual' | 'github' | 'jira' | 'linear'>(),
+  type: text('type').notNull().$type<'manual' | 'github' | 'jira' | 'linear' | 'webhook'>(),
   name: text('name').notNull(),
   config: jsonb('config').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -288,8 +298,10 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // Task dependency — tasks with blockers start as 'blocked' and auto-unblock when all blockers complete/fail
+  blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion
@@ -367,10 +379,12 @@ export const artifacts = pgTable('artifacts', {
   title: text('title'),
   content: text('content'),
   storageKey: text('storage_key'),
+  shareToken: text('share_token'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
 }));
 
 // Workspace observations (persistent memory across tasks)

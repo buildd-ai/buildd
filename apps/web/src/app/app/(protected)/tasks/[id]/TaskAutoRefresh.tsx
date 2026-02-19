@@ -22,8 +22,8 @@ export default function TaskAutoRefresh({
   const refreshedRef = useRef(false);
 
   useEffect(() => {
-    // Only auto-refresh for pending/assigned tasks (waiting for worker)
-    if (!['pending', 'assigned'].includes(taskStatus)) return;
+    // Only auto-refresh for pending/assigned/blocked tasks (waiting for worker or unblock)
+    if (!['pending', 'assigned', 'blocked'].includes(taskStatus)) return;
 
     const channelName = `workspace-${workspaceId}`;
     const channel = subscribeToChannel(channelName);
@@ -44,12 +44,21 @@ export default function TaskAutoRefresh({
       }
     };
 
+    const handleUnblocked = (data: { task: { id: string } }) => {
+      if (data.task?.id === taskId && !refreshedRef.current) {
+        refreshedRef.current = true;
+        setTimeout(() => router.refresh(), 500);
+      }
+    };
+
     channel.bind('task:claimed', handleClaimed);
     channel.bind('worker:progress', handleWorkerProgress);
+    channel.bind('task:unblocked', handleUnblocked);
 
     return () => {
       channel.unbind('task:claimed', handleClaimed);
       channel.unbind('worker:progress', handleWorkerProgress);
+      channel.unbind('task:unblocked', handleUnblocked);
       unsubscribeFromChannel(channelName);
     };
   }, [taskId, workspaceId, taskStatus, router]);

@@ -86,6 +86,8 @@ export class BuilddClient {
     outputTokens?: number;
     // SDK result metadata
     resultMeta?: Record<string, unknown>;
+    // Completion summary (from SDK Stop hook last_assistant_message)
+    summary?: string;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
@@ -161,6 +163,19 @@ export class BuilddClient {
     return this.fetch(`/api/workers/${workerId}/plan`, {
       method: 'POST',
       body: JSON.stringify({ plan }),
+    });
+  }
+
+  async createArtifact(workerId: string, data: {
+    type: string;
+    title: string;
+    content?: string;
+    url?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    return this.fetch(`/api/workers/${workerId}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
   }
 
@@ -280,12 +295,12 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number }> {
+  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

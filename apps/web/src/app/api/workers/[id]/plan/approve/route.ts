@@ -30,6 +30,17 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // Parse optional mode from request body
+  let mode: 'bypass' | 'review' = 'review';
+  try {
+    const body = await req.json();
+    if (body.mode === 'bypass' || body.mode === 'review') {
+      mode = body.mode;
+    }
+  } catch {
+    // No body or invalid JSON — use default
+  }
+
   // Verify worker is in the correct state
   if (worker.status !== 'awaiting_plan_approval') {
     return NextResponse.json({
@@ -74,14 +85,8 @@ export async function POST(
   }
 
   // Update worker status to running and set pending instructions
-  const approvalMessage = `
-Your implementation plan has been APPROVED. You may now proceed with the implementation.
-
-Follow your approved plan:
-${plan.content}
-
-Begin implementation now. Make the necessary code changes as outlined in your plan.
-`;
+  const modeLabel = mode === 'bypass' ? 'bypass permissions' : 'with review';
+  const approvalMessage = `Approve & implement (${modeLabel === 'bypass permissions' ? 'bypass permissions' : 'with review'})`;
 
   const [updatedWorker] = await db
     .update(workers)

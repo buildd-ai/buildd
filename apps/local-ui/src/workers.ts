@@ -4,7 +4,7 @@ import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle, type SkillInstallPayload, type SkillInstallResult, validateInstallerCommand } from '@buildd/shared';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
@@ -102,6 +102,7 @@ interface WorkerSession {
   cwd: string;
   repoPath: string;  // Original repo path (different from cwd when using worktrees)
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
+  generation: number;  // Session generation counter — used to detect stale post-loop cleanup
 }
 
 // Constants for repetition detection
@@ -169,6 +170,7 @@ export class WorkerManager {
   private dirtyForDisk = new Set<string>();
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  private sessionGeneration = 0;
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -645,9 +647,13 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
+      }
+      // Emit version info for auto-update checks
+      if (latestCommit) {
+        this.emit({ type: 'version_info', latestCommit });
       }
       // If server reports pending tasks and we have capacity, try to claim them
       if (pendingTaskCount && pendingTaskCount > 0 && this.acceptRemoteTasks) {
@@ -695,9 +701,16 @@ export class WorkerManager {
   private checkStale() {
     const now = Date.now();
     for (const worker of this.workers.values()) {
-      if (worker.status === 'working' && now - worker.lastActivity > 300_000) {
-        worker.status = 'stale';
-        this.emit({ type: 'worker_update', worker });
+      // Skip stale check for workers waiting on user input (plan approval, questions)
+      if (worker.status === 'waiting') continue;
+
+      if (worker.status === 'working') {
+        // Use 15-min timeout when planning is active (agents spend more time investigating)
+        const timeout = worker.planStartMessageIndex != null ? 900_000 : 300_000;
+        if (now - worker.lastActivity > timeout) {
+          worker.status = 'stale';
+          this.emit({ type: 'worker_update', worker });
+        }
       }
     }
   }
@@ -1122,12 +1135,100 @@ export class WorkerManager {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
       const stopHookActive = (input as any).stop_hook_active as boolean;
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
 
-      this.addMilestone(worker, { type: 'status', label: 'Subagent stopped', ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive})`);
+      const label = lastAssistantMessage
+        ? `Subagent: ${lastAssistantMessage.slice(0, 80)}${lastAssistantMessage.length > 80 ? '...' : ''}`
+        : 'Subagent stopped';
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive}, has_message: ${!!lastAssistantMessage})`);
 
       return { async: true };
     };
+  }
+
+  // Create a Stop hook that captures the agent's final response text.
+  // Stores last_assistant_message on the worker for use as completion summary.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastAssistantMessage) {
+        worker.lastAssistantMessage = lastAssistantMessage;
+      }
+      console.log(`[Worker ${worker.id}] Stop hook (has_message: ${!!lastAssistantMessage})`);
+
+      return { async: true };
+    };
+  }
+
+  // Create a Stop hook that captures the last assistant message (v0.2.47+).
+  // Used to generate prompt suggestions for follow-up actions after task completion.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastMessage = (input as any).last_assistant_message as string | undefined;
+      if (lastMessage) {
+        worker.lastAssistantMessage = lastMessage;
+        // Generate prompt suggestions from the last message and task context
+        worker.promptSuggestions = this.extractPromptSuggestions(worker, lastMessage);
+        if (worker.promptSuggestions.length > 0) {
+          console.log(`[Worker ${worker.id}] Generated ${worker.promptSuggestions.length} prompt suggestion(s)`);
+        }
+      }
+
+      return { async: true };
+    };
+  }
+
+  // Extract prompt suggestions from the last assistant message and task context.
+  // Heuristic: look for actionable follow-up patterns in the final message.
+  private extractPromptSuggestions(worker: LocalWorker, lastMessage: string): string[] {
+    const suggestions: string[] = [];
+
+    // Check for common follow-up patterns in the last message
+    const hasCommits = worker.commits.length > 0;
+    const hasPR = lastMessage.toLowerCase().includes('pull request') || lastMessage.toLowerCase().includes('pr ');
+    const hasTests = lastMessage.toLowerCase().includes('test');
+    const hasBuild = lastMessage.toLowerCase().includes('build');
+
+    // If there are commits but no PR mentioned, suggest creating one
+    if (hasCommits && !hasPR) {
+      suggestions.push('Create a pull request for these changes');
+    }
+
+    // If code was changed, suggest running tests
+    if (hasCommits && !hasTests) {
+      suggestions.push('Run the test suite to verify changes');
+    }
+
+    // If tests were mentioned but not build, suggest build verification
+    if (hasTests && !hasBuild) {
+      suggestions.push('Run the build to check for errors');
+    }
+
+    // Look for explicit "next steps" or "you might want to" patterns
+    const nextStepPatterns = [
+      /(?:next steps?|you (?:can|could|might|may|should) (?:also |want to )?|consider |try |to follow up)[:\-]?\s*(.{10,80})/gi,
+      /(?:TODO|FIXME|NOTE)[:\s]+(.{10,80})/gi,
+    ];
+
+    for (const pattern of nextStepPatterns) {
+      let match;
+      while ((match = pattern.exec(lastMessage)) !== null) {
+        const suggestion = match[1].trim().replace(/[.!,;]+$/, '');
+        if (suggestion.length >= 10 && suggestion.length <= 80) {
+          suggestions.push(suggestion);
+        }
+        if (suggestions.length >= 5) break;
+      }
+      if (suggestions.length >= 5) break;
+    }
+
+    // Deduplicate and limit to 5 suggestions
+    return [...new Set(suggestions)].slice(0, 5);
   }
 
   // Create a Notification hook that captures agent status messages.
@@ -1250,7 +1351,8 @@ export class WorkerManager {
     const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
 
     // Store session state for sendMessage and abort
-    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath });
+    const generation = ++this.sessionGeneration;
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
 
     try {
       // Fetch workspace git config from server
@@ -1340,11 +1442,15 @@ export class WorkerManager {
           gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
         }
 
+        const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
         if (gitConfig.requiresPR) {
-          gitContext.push(`- Changes require PR to ${gitConfig.targetBranch || gitConfig.defaultBranch}`);
+          gitContext.push(`- Changes require PR to \`${prTarget}\``);
+          gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           if (gitConfig.autoCreatePR) {
             gitContext.push(`- Create PR when done`);
           }
+        } else {
+          gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
         }
 
         if (gitConfig.commitStyle === 'conventional') {
@@ -1462,9 +1568,13 @@ export class WorkerManager {
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
 
       // Resolve permission mode
+      // Plan approval mode from context overrides default when executing an approved plan
+      const planApprovalMode = (task.context as any)?.planApprovalMode as string | undefined;
       const bypassPermissions = this.resolveBypassPermissions(workspaceConfig);
       const permissionMode: 'plan' | 'acceptEdits' | 'bypassPermissions' = task.mode === 'planning'
         ? 'plan'
+        : planApprovalMode === 'bypassPermissions' ? 'bypassPermissions'
+        : planApprovalMode === 'acceptEdits' ? 'acceptEdits'
         : bypassPermissions ? 'bypassPermissions' : 'acceptEdits';
 
       // Check if skills should be used as subagents
@@ -1512,6 +1622,10 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
 
+      // Resolve fallback model: task-level override > workspace-level setting
+      const taskFallbackModel = (task.context as any)?.fallbackModel as string | undefined;
+      const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
+
       // Resolve 1M context beta: task-level override > workspace-level setting
       const taskExtendedContext = (task.context as any)?.extendedContext;
       const extendedContext = taskExtendedContext !== undefined
@@ -1524,11 +1638,18 @@ export class WorkerManager {
       // Resolve max turns for SDK-level turn limiting
       const maxTurns = this.resolveMaxTurns(workspaceConfig);
 
+      // Resolve thinking/effort: task-level override > workspace-level setting
+      const taskThinking = (task.context as any)?.thinking;
+      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const taskEffort = (task.context as any)?.effort;
+      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
         cwd,
         model: this.config.model,
+        ...(fallbackModel ? { fallbackModel } : {}),
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
@@ -1553,6 +1674,9 @@ export class WorkerManager {
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
         ...(betas ? { betas } : {}),
+        // Thinking/effort controls for reasoning behavior
+        ...(thinking ? { thinking } : {}),
+        ...(effort ? { effort } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
@@ -1579,10 +1703,12 @@ export class WorkerManager {
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -1637,6 +1763,24 @@ export class WorkerManager {
         }
       }
 
+      // If a newer session has been started (e.g. plan approval killed this one),
+      // skip all post-loop cleanup to avoid overwriting the new session's state.
+      const currentSession = this.sessions.get(worker.id);
+      if (currentSession && currentSession.generation !== generation) {
+        console.log(`[Worker ${worker.id}] Session generation mismatch (${generation} vs ${currentSession.generation}) — skipping post-loop cleanup`);
+        sessionLog(worker.id, 'info', 'session_superseded', `gen=${generation} replaced by gen=${currentSession.generation}`, worker.taskId);
+        return;
+      }
+
+      // If the worker is waiting for user input (e.g. ExitPlanMode set status to 'waiting'),
+      // don't overwrite that state with 'done'. The session ended naturally but the worker
+      // needs human input before it can proceed.
+      if (worker.status === 'waiting') {
+        console.log(`[Worker ${worker.id}] Session ended while worker is waiting — skipping post-loop cleanup`);
+        sessionLog(worker.id, 'info', 'session_ended_waiting', `waitingFor=${worker.waitingFor?.type}`, worker.taskId);
+        return;
+      }
+
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
       // from agent responses that discuss auth topics
@@ -1686,6 +1830,13 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Generate follow-up prompt suggestions if Stop hook didn't already
+        if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
+          worker.promptSuggestions = this.generatePromptSuggestions(worker);
+          if (worker.promptSuggestions.length > 0) {
+            console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
+          }
+        }
         // Compute aggregate token counts from SDK result metadata
         const resultMeta = worker.resultMeta || undefined;
         let inputTokens: number | undefined;
@@ -1709,6 +1860,8 @@ export class WorkerManager {
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
+          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -1869,15 +2022,18 @@ export class WorkerManager {
       this.emit({ type: 'worker_update', worker });
     }
 
-    // SDK v0.2.45: Subagent task notification — completion/status update for a tracked task
+    // SDK v0.2.47: Subagent task notification — completion/status update for a tracked task
+    // tool_use_id added in v0.2.47 for start→completion correlation
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
       const event = msg as any;
       const taskId = event.task_id as string;
+      const toolUseId = event.tool_use_id as string | undefined;
       const status = event.status as string;
       const message = event.message as string | undefined;
 
-      // Update tracked subagent task
-      const tracked = worker.subagentTasks.find(t => t.taskId === taskId);
+      // Update tracked subagent task — match by taskId first, fallback to toolUseId
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId)
+        || (toolUseId ? worker.subagentTasks.find(t => t.toolUseId === toolUseId) : undefined);
       if (tracked) {
         tracked.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : tracked.status;
         tracked.completedAt = Date.now();
@@ -1888,7 +2044,7 @@ export class WorkerManager {
         ? `Subagent ${status}: ${tracked.description.slice(0, 50)}`
         : `Subagent ${status}: ${taskId.slice(0, 12)}`;
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${message ? ` — ${message}` : ''}`);
+      console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${toolUseId ? ` (tool_use_id=${toolUseId.slice(0, 12)})` : ''}${message ? ` — ${message}` : ''}`);
       this.emit({ type: 'worker_update', worker });
     }
 
@@ -2043,6 +2199,7 @@ export class WorkerManager {
             console.log(`[Worker ${worker.id}] EnterPlanMode detected — auto-approving, toolUseId=${enterPlanToolUseId}`);
             sessionLog(worker.id, 'info', 'enter_plan_mode', `toolUseId=${enterPlanToolUseId}`, worker.taskId);
             worker.currentAction = 'Planning...';
+            worker.planStartMessageIndex = worker.messages.length;
             this.addMilestone(worker, { type: 'status', label: 'Entering plan mode', ts: Date.now() });
             // Enqueue approval response so the SDK can proceed
             const session = this.sessions.get(worker.id);
@@ -2053,13 +2210,28 @@ export class WorkerManager {
               }));
             }
           } else if (toolName === 'ExitPlanMode') {
-            // Extract plan content from recent text messages before ExitPlanMode
-            // Plans can span multiple text blocks, so grab the last few and join them
-            const textMessages = worker.messages.filter(m => m.type === 'text');
-            // Take last 3 text messages to capture multi-block plans
-            const planParts = textMessages.slice(-3).map(m => m.content).filter(Boolean);
+            // Extract plan content from text messages since EnterPlanMode
+            // planStartMessageIndex marks where planning began — collect all text from there
+            const startIdx = worker.planStartMessageIndex ?? 0;
+            const planMessages = worker.messages.slice(startIdx).filter(m => m.type === 'text');
+            const planParts = planMessages.map(m => m.content).filter(Boolean);
             worker.planContent = planParts.join('\n\n') || '';
             console.log(`[Worker ${worker.id}] ExitPlanMode — planContent length: ${worker.planContent.length} chars`);
+
+            // Persist plan as markdown file for crash recovery
+            if (worker.planContent) {
+              try {
+                const plansDir = join(homedir(), '.buildd', 'plans');
+                mkdirSync(plansDir, { recursive: true });
+                const planPath = join(plansDir, `${worker.id}.md`);
+                writeFileSync(planPath, worker.planContent, 'utf-8');
+                worker.planFilePath = planPath;
+                console.log(`[Worker ${worker.id}] Plan persisted to ${planPath}`);
+              } catch (err) {
+                console.error(`[Worker ${worker.id}] Failed to persist plan file:`, err);
+              }
+            }
+
             const planToolUseId = block.id as string | undefined;
             console.log(`[Worker ${worker.id}] ExitPlanMode detected — toolUseId=${planToolUseId}`);
             sessionLog(worker.id, 'info', 'exit_plan_mode', `planLength=${worker.planContent.length} toolUseId=${planToolUseId}`, worker.taskId);
@@ -2069,7 +2241,8 @@ export class WorkerManager {
               type: 'plan_approval',
               prompt: 'Agent has proposed a plan. Review the plan above, then approve or request changes.',
               options: [
-                { label: 'Approve & implement', description: 'Let the agent proceed with the plan' },
+                { label: 'Approve & implement (bypass permissions)', description: 'Execute without permission prompts' },
+                { label: 'Approve & implement (with review)', description: 'Execute with edit review enabled' },
                 { label: 'Request changes', description: 'Ask the agent to revise its approach' },
               ],
               toolUseId: planToolUseId,
@@ -2079,13 +2252,22 @@ export class WorkerManager {
             worker.lastActivity = Date.now();
             this.addMilestone(worker, { type: 'status', label: 'Plan ready for review', ts: Date.now() });
             this.emit({ type: 'worker_update', worker });
+            // Send tool_result to unblock the SDK — without this, the SDK hangs
+            // waiting for a response to ExitPlanMode (compare with EnterPlanMode above).
+            const planSession = this.sessions.get(worker.id);
+            if (planSession && planToolUseId) {
+              planSession.inputStream.enqueue(buildUserMessage(
+                'Plan captured and sent for human review. STOP — do not proceed until you receive explicit approval.',
+                { parentToolUseId: planToolUseId, sessionId: worker.sessionId },
+              ));
+            }
             this.buildd.updateWorker(worker.id, {
               status: 'waiting_input',
               currentAction: worker.currentAction,
               waitingFor: {
                 type: 'plan_approval',
                 prompt: worker.waitingFor.prompt,
-                options: ['Approve & implement', 'Request changes'],
+                options: ['Approve & implement (bypass permissions)', 'Approve & implement (with review)', 'Request changes'],
               },
             }).catch(() => {});
             storeSaveWorker(worker);
@@ -2607,11 +2789,83 @@ export class WorkerManager {
 
     // Plan approval: kill current session and start fresh with plan as prompt
     if (worker.status === 'waiting' && worker.waitingFor?.type === 'plan_approval') {
-      const isApproval = message === 'Approve & implement';
+      const isApprovalBypass = message === 'Approve & implement (bypass permissions)';
+      const isApprovalReview = message === 'Approve & implement (with review)';
+      const isApproval = isApprovalBypass || isApprovalReview || message === 'Approve & implement';
+      const isRequestChanges = !isApproval && message !== 'Approve & implement';
+
+      if (isRequestChanges) {
+        // Request changes: kill current session and restart with feedback + plan
+        let planText = worker.planContent || '';
+        if (!planText && worker.planFilePath) {
+          try { planText = readFileSync(worker.planFilePath, 'utf-8'); } catch {}
+        }
+        if (planText) {
+          session.abortController.abort();
+          session.inputStream.end();
+          this.sessions.delete(workerId);
+
+          const feedbackPrompt = `The user requested changes to your plan:\n\n${message}\n\nOriginal plan:\n\n${planText}\n\nRevise the plan and call ExitPlanMode again.`;
+          const task: BuilddTask = {
+            id: worker.taskId,
+            title: worker.taskTitle,
+            description: feedbackPrompt,
+            workspaceId: worker.workspaceId,
+            workspace: { name: worker.workspaceName },
+            status: 'assigned',
+            priority: 1,
+            mode: 'planning',
+          };
+
+          worker.status = 'working';
+          worker.waitingFor = undefined;
+          worker.currentAction = 'Revising plan...';
+          worker.hasNewActivity = true;
+          worker.lastActivity = Date.now();
+          this.addMilestone(worker, { type: 'status', label: 'Plan revision requested', ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_changes_requested', `feedbackLength=${message.length}`, worker.taskId);
+          this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
+          this.emit({ type: 'worker_update', worker });
+
+          const workspacePath = this.resolver.resolve({
+            id: worker.workspaceId,
+            name: worker.workspaceName,
+            repo: undefined,
+          });
+          if (workspacePath) {
+            this.startSession(worker, workspacePath, task).catch(err => {
+              const errMsg = err instanceof Error ? err.message : 'Plan revision failed';
+              console.error(`[Worker ${worker.id}] Plan revision session failed:`, err);
+              sessionLog(worker.id, 'error', 'plan_revision_failed', errMsg, worker.taskId);
+              worker.status = 'error';
+              worker.error = errMsg;
+              worker.currentAction = 'Revision failed';
+              worker.hasNewActivity = true;
+              worker.completedAt = Date.now();
+              this.emit({ type: 'worker_update', worker });
+            });
+          }
+
+          this.buildd.updateWorker(worker.id, {
+            status: 'running',
+            currentAction: 'Revising plan...',
+            waitingFor: null,
+          }).catch(() => {});
+
+          return true;
+        }
+        // If no plan text found, fall through to normal enqueue
+      }
 
       if (isApproval) {
-        // Use planContent, fall back to last text message if somehow empty
-        const planText = worker.planContent || worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
+        // Use planContent, fall back to plan file on disk, then last text message
+        let planText = worker.planContent || '';
+        if (!planText && worker.planFilePath) {
+          try { planText = readFileSync(worker.planFilePath, 'utf-8'); } catch {}
+        }
+        if (!planText) {
+          planText = worker.messages.filter(m => m.type === 'text').slice(-1)[0]?.content || '';
+        }
         if (!planText) {
           console.error(`[Worker ${worker.id}] Plan approval but no plan content found — falling through to enqueue`);
           sessionLog(worker.id, 'warn', 'plan_approval_empty', 'No plan content found, falling through to enqueue', worker.taskId);
@@ -2621,6 +2875,9 @@ export class WorkerManager {
           session.abortController.abort();
           session.inputStream.end();
           this.sessions.delete(workerId);
+
+          // Determine permission mode from approval type
+          const planApprovalMode = isApprovalBypass ? 'bypassPermissions' : 'acceptEdits';
 
           // Build execution task with plan as description
           const executionPrompt = `Execute this plan:\n\n${planText}`;
@@ -2633,22 +2890,22 @@ export class WorkerManager {
             status: 'assigned',
             priority: 1,
             mode: 'execution',
+            context: { planApprovalMode },
           };
 
           // Reset worker state
           worker.status = 'working';
           worker.waitingFor = undefined;
-          worker.planContent = undefined;
           worker.currentAction = 'Executing plan...';
           worker.hasNewActivity = true;
           worker.lastActivity = Date.now();
-          this.addMilestone(worker, { type: 'status', label: 'Plan approved — executing with fresh context', ts: Date.now() });
-          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length}`, worker.taskId);
+          const modeLabel = isApprovalBypass ? 'bypass permissions' : 'with review';
+          this.addMilestone(worker, { type: 'status', label: `Plan approved (${modeLabel}) — executing`, ts: Date.now() });
+          sessionLog(worker.id, 'info', 'plan_approved', `planLength=${planText.length} mode=${planApprovalMode}`, worker.taskId);
           this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
           this.emit({ type: 'worker_update', worker });
 
           // Start fresh session (no resumeSessionId = clean context)
-          // Must await to ensure session is registered before returning
           const workspacePath = this.resolver.resolve({
             id: worker.workspaceId,
             name: worker.workspaceName,
@@ -2822,7 +3079,13 @@ export class WorkerManager {
   private buildSessionSummary(worker: LocalWorker): string {
     const parts: string[] = [];
 
-    // Commits first (most useful for future workers)
+    // Prefer last_assistant_message from Stop hook (direct from SDK, no parsing)
+    if (worker.lastAssistantMessage) {
+      const msg = worker.lastAssistantMessage;
+      parts.push(`Outcome: ${msg.length > 400 ? msg.slice(0, 400) + '...' : msg}`);
+    }
+
+    // Commits (most useful for future workers)
     if (worker.commits.length > 0) {
       const commitMsgs = worker.commits.map(c => c.message).slice(-5);
       parts.push(`Commits: ${commitMsgs.join('; ')}`);
@@ -2834,11 +3097,13 @@ export class WorkerManager {
       parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
     }
 
-    // Outcome from last output
-    const lastOutput = worker.output.slice(-3).join(' ').trim();
-    if (lastOutput) {
-      const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
-      parts.push(`Outcome: ${truncated}`);
+    // Fallback: outcome from last output (only if no last_assistant_message)
+    if (!worker.lastAssistantMessage) {
+      const lastOutput = worker.output.slice(-3).join(' ').trim();
+      if (lastOutput) {
+        const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
+        parts.push(`Outcome: ${truncated}`);
+      }
     }
 
     // Milestones (filtered: skip noise like "Reading..." entries)
@@ -2851,6 +3116,48 @@ export class WorkerManager {
 
     const summary = parts.join('\n');
     return summary.length > 600 ? summary.slice(0, 600) + '...' : summary;
+  }
+
+  // Generate follow-up prompt suggestions based on what the worker accomplished.
+  // Uses heuristics from commits, tool calls, and task context — no extra LLM call needed.
+  private generatePromptSuggestions(worker: LocalWorker): string[] {
+    const suggestions: string[] = [];
+
+    // If there are commits, suggest reviewing changes and running tests
+    if (worker.commits.length > 0) {
+      suggestions.push('Run tests to verify the changes');
+
+      // If commits mention a specific feature/fix, suggest a follow-up
+      const lastCommit = worker.commits[worker.commits.length - 1];
+      if (lastCommit) {
+        const msg = lastCommit.message.toLowerCase();
+        if (msg.includes('fix') || msg.includes('bug')) {
+          suggestions.push('Add a regression test for the fix');
+        } else if (msg.includes('feat') || msg.includes('add')) {
+          suggestions.push('Add documentation for the new feature');
+        } else if (msg.includes('refactor')) {
+          suggestions.push('Review the refactored code for edge cases');
+        }
+      }
+    }
+
+    // If files were edited, suggest reviewing them
+    const editedFiles = this.extractFilesFromToolCalls(worker.toolCalls)
+      .filter((_, i) => i < 5);
+    if (editedFiles.length > 0) {
+      const hasTests = editedFiles.some(f => f.includes('test') || f.includes('spec'));
+      if (!hasTests) {
+        suggestions.push('Write tests for the modified files');
+      }
+    }
+
+    // Always offer a create-PR suggestion if there were commits
+    if (worker.commits.length > 0) {
+      suggestions.push('Create a pull request for these changes');
+    }
+
+    // Deduplicate and limit to 3
+    return [...new Set(suggestions)].slice(0, 3);
   }
 
   private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {

@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.45` | Should bump to `>=0.2.47` |
+| `apps/agent` | `>=0.2.45` | Should bump to `>=0.2.47` |
+| `apps/local-ui` | `>=0.2.45` | Should bump to `>=0.2.47` |
 
 ---
 
@@ -484,6 +484,13 @@ type SubagentStartHookInput = BaseHookInput & {
 type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: 'SubagentStop';
   stop_hook_active: boolean;
+  last_assistant_message?: string;  // v0.2.47+ — final response text from subagent
+};
+
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  stop_hook_active: boolean;
+  last_assistant_message?: string;  // v0.2.47+ — final response text from agent
 };
 
 type PermissionRequestHookInput = BaseHookInput & {
@@ -967,10 +974,88 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## 27. `promptSuggestion()` Method (SDK v0.2.47)
+
+New method on `Query` to request prompt suggestions based on the current conversation context:
+
+```typescript
+const queryInstance = query({ prompt, options });
+
+// After streaming some messages, request suggestions:
+const suggestions = await queryInstance.promptSuggestion();
+```
+
+Returns prompt suggestions that can be used to offer next-step recommendations to users in the dashboard or local-ui.
+
+---
+
+## 28. `tool_use_id` on Task Notifications (SDK v0.2.47)
+
+`SDKTaskNotificationMessage` now includes `tool_use_id` for correlating task completions with the originating tool calls:
+
+```typescript
+// In message handler:
+if (msg.type === 'system' && msg.subtype === 'task_notification') {
+  const { task_id, status, message, tool_use_id } = msg;
+  // tool_use_id links back to the Task tool call that spawned this subagent
+}
+```
+
+Previously only `SDKTaskStartedMessage` had `tool_use_id`. Now both start and notification events can be correlated with their originating tool use.
+
+---
+
+## 29. `last_assistant_message` on Stop/SubagentStop Hooks (SDK v0.2.47)
+
+Both `StopHookInput` and `SubagentStopHookInput` now include `last_assistant_message?: string`, providing the agent's final response text without needing to read/parse the transcript file:
+
+```typescript
+hooks: {
+  Stop: [{
+    hooks: [async (input) => {
+      const { last_assistant_message } = input as StopHookInput;
+      // Use final message for summaries, logging, or worker status updates
+      return {};
+    }]
+  }],
+  SubagentStop: [{
+    hooks: [async (input) => {
+      const { last_assistant_message } = input as SubagentStopHookInput;
+      // Capture subagent's final answer
+      return {};
+    }]
+  }]
+}
+```
+
+**Buildd use case**: Use `last_assistant_message` in the Stop hook to capture the worker's final summary for task completion, eliminating the need to parse transcripts.
+
+---
+
+## 30. Memory & Performance Improvements (CLI v2.1.47)
+
+Several memory and performance improvements relevant to long-running Buildd workers:
+
+- **API stream buffer release**: Buffers released after use, reducing memory for long sessions
+- **Agent task message trimming**: Message history trimmed after subagent tasks complete
+- **O(n²) progress update elimination**: Progress updates no longer accumulate quadratically
+- **Deferred SessionStart hook**: ~500ms faster startup by deferring hook execution
+- **Concurrent agent fix**: API 400 errors ("thinking blocks cannot be modified") fixed for concurrent agents
+
+---
+
+## 31. claude.ai MCP Connectors (CLI v2.1.46)
+
+Support for using claude.ai MCP connectors within Claude Code. This allows workers to access MCP servers configured through the claude.ai web interface.
+
+---
+
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `promptSuggestion()` method; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop hooks; memory improvements (stream buffers, task history trimming, O(n²) progress fix); concurrent agent API 400 fix; deferred SessionStart hook (~500ms faster); bash permission classifier fix |
+| 2.1.46 | 0.2.46 | claude.ai MCP connectors support; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +1070,11 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **Concurrent agent API 400 fix** — prevents "thinking blocks cannot be modified" errors with concurrent subagents (v2.1.47)
+- **Memory improvements** — API stream buffer release, agent task message trimming, O(n²) progress update fix (v2.1.47)
+- **Deferred SessionStart hook** — ~500ms faster startup (v2.1.47)
+- **Bash permission classifier** — hallucinated descriptions no longer incorrectly grant permissions (v2.1.47)
+- **Orphaned process fix** — Claude Code processes no longer persist after terminal disconnect on macOS (v2.1.46)
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,7 +1085,7 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1013,13 +1103,29 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Pending Enhancements (Buildd tasks created)
 
-| Enhancement | SDK Feature | Priority |
-|-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
-| Effort/thinking controls | `effort`, `thinking` options | P4 |
-| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
-| maxTurns in local-ui | `maxTurns` option | P4 |
-| Fallback model | `fallbackModel` option | P4 |
+| Enhancement | SDK Feature | Priority | Status |
+|-------------|------------|----------|--------|
+| Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Effort/thinking controls | `effort`, `thinking` options | P4 | Integrated (#82) |
+| Fallback model | `fallbackModel` option | P4 | Integrated (#81) |
+| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 | Integrated (conditional on Sonnet models) |
+| maxTurns | `maxTurns` option | P4 | Integrated in worker-runner.ts |
+
+### Completed Integrations (previously pending)
+
+- **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
+- **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
+- **`tool_use_id` on task notifications** — Integrated (#90)
+- **1M context beta** — Integrated conditionally for Sonnet models via `extendedContext` config
+- **maxTurns** — Integrated in worker-runner.ts via workspace/task config
+
+### Python SDK Evaluation (2026-02-18)
+
+**Result: Not recommended for Buildd workers.** See [`.agent/python-sdk-evaluation.md`](python-sdk-evaluation.md) for the full evaluation. Key findings:
+- Both Python (v0.1.37) and TypeScript (v0.2.45) SDKs spawn the same Node.js CLI subprocess
+- Python SDK does not eliminate Node.js dependency or reduce startup time
+- Significant feature gaps: missing `sessionId`, `AbortController`, `SessionStart`/`SessionEnd`/`Notification` hooks
+- Alpha status, API may change
 
 ---
 
@@ -1068,6 +1174,7 @@ options: {
 | `setMcpServers(servers)` | Replace dynamic MCP servers |
 | `streamInput(stream)` | Stream user messages |
 | `stopTask(taskId)` | Stop a background task |
+| `promptSuggestion()` | Request prompt suggestions based on conversation context (v0.2.47+) |
 | `close()` | Terminate the query |
 
 ### SDKResultMessage
@@ -1234,3 +1341,15 @@ unset CLAUDE_CODE_OAUTH_TOKEN
 **Run**: `bun run test:integration` (from `apps/local-ui`)
 
 Tests that `query()` with `settingSources: ['project']` correctly loads CLAUDE.md by checking for a unique marker.
+
+---
+
+## Prompt Suggestions (local-ui implementation)
+
+The CLI's `promptSuggestion` feature is internal to the terminal UI and **not exposed** on the programmatic `Query` interface (as of v0.2.45). Local-UI implements its own prompt suggestion system:
+
+- **Location**: `apps/local-ui/src/workers.ts` — `generatePromptSuggestions()` method
+- **Trigger**: Called after successful task completion (when `worker.status = 'done'`)
+- **Approach**: Heuristic-based suggestions from worker context (commits, tool calls, task metadata) — no extra LLM call
+- **Storage**: `worker.promptSuggestions: string[]` — persisted via worker-store, exposed via `/api/workers` and SSE events
+- **UI**: Rendered as clickable chips in the worker detail view that populate the message input

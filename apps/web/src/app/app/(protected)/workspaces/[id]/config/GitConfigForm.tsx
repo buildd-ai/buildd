@@ -17,6 +17,7 @@ interface GitConfig {
     useClaudeMd: boolean;
     bypassPermissions?: boolean;
     pluginPaths?: string[];
+    fallbackModel?: string;
     sandbox?: {
         enabled?: boolean;
         autoAllowBashIfSandboxed?: boolean;
@@ -28,6 +29,8 @@ interface GitConfig {
     };
     debug?: boolean;
     debugFile?: string;
+    thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
+    effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 interface Props {
@@ -58,6 +61,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
+    const [fallbackModel, setFallbackModel] = useState(initialConfig?.fallbackModel || '');
     const [pluginPaths, setPluginPaths] = useState((initialConfig?.pluginPaths || []).join('\n'));
     const [sandboxEnabled, setSandboxEnabled] = useState(initialConfig?.sandbox?.enabled || false);
     const [sandboxAutoAllowBash, setSandboxAutoAllowBash] = useState(initialConfig?.sandbox?.autoAllowBashIfSandboxed || false);
@@ -66,6 +70,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [sandboxExcludedCommands, setSandboxExcludedCommands] = useState((initialConfig?.sandbox?.excludedCommands || []).join('\n'));
     const [debug, setDebug] = useState(initialConfig?.debug || false);
     const [debugFile, setDebugFile] = useState(initialConfig?.debugFile || '');
+    const [thinkingType, setThinkingType] = useState<'none' | 'adaptive' | 'enabled' | 'disabled'>(
+        initialConfig?.thinking?.type || 'none'
+    );
+    const [thinkingBudgetTokens, setThinkingBudgetTokens] = useState(
+        initialConfig?.thinking?.type === 'enabled' ? initialConfig.thinking.budgetTokens : 10000
+    );
+    const [effort, setEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'max'>(
+        initialConfig?.effort || 'none'
+    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -89,6 +102,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
+                    fallbackModel: fallbackModel.trim() || undefined,
                     pluginPaths: pluginPaths.split('\n').map(s => s.trim()).filter(Boolean),
                     sandbox: sandboxEnabled ? {
                         enabled: true,
@@ -101,6 +115,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     } : undefined,
                     debug,
                     debugFile: debugFile.trim() || undefined,
+                    thinking: thinkingType === 'none' ? undefined
+                        : thinkingType === 'enabled' ? { type: 'enabled', budgetTokens: thinkingBudgetTokens }
+                        : { type: thinkingType },
+                    effort: effort === 'none' ? undefined : effort,
                 }),
             });
 
@@ -143,6 +161,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                             placeholder="main"
                         />
+                        <p className="text-xs text-text-muted mt-1">The base branch for worktrees and new feature branches (e.g. <code>dev</code> or <code>main</code>).</p>
                     </div>
 
                     <div>
@@ -223,32 +242,31 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         </label>
                     </div>
 
-                    {requiresPR && (
-                        <>
-                            <div>
-                                <label className="block text-sm font-medium mb-1">Target Branch for PRs</label>
-                                <input
-                                    type="text"
-                                    value={targetBranch}
-                                    onChange={(e) => setTargetBranch(e.target.value)}
-                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                                    placeholder={defaultBranch || 'main'}
-                                />
-                            </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">PR Target Branch</label>
+                        <input
+                            type="text"
+                            value={targetBranch}
+                            onChange={(e) => setTargetBranch(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                            placeholder={defaultBranch || 'main'}
+                        />
+                        <p className="text-xs text-text-muted mt-1">Branch that PRs should target (e.g. <code>dev</code>). Used as <code>--base</code> when creating PRs. Defaults to Default Branch if empty.</p>
+                    </div>
 
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="checkbox"
-                                    id="autoCreatePR"
-                                    checked={autoCreatePR}
-                                    onChange={(e) => setAutoCreatePR(e.target.checked)}
-                                    className="rounded"
-                                />
-                                <label htmlFor="autoCreatePR" className="text-sm">
-                                    Auto-create PR when task completes
-                                </label>
-                            </div>
-                        </>
+                    {requiresPR && (
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="autoCreatePR"
+                                checked={autoCreatePR}
+                                onChange={(e) => setAutoCreatePR(e.target.checked)}
+                                className="rounded"
+                            />
+                            <label htmlFor="autoCreatePR" className="text-sm">
+                                Auto-create PR when task completes
+                            </label>
+                        </div>
                     )}
                 </div>
             </div>
@@ -299,6 +317,30 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <p className="text-xs text-text-muted -mt-2">
                         Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
                     </p>
+                </div>
+            </div>
+
+            {/* Model Settings Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Model Settings</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">
+                            Fallback Model
+                            <span className="text-text-muted font-normal ml-1">(optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={fallbackModel}
+                            onChange={(e) => setFallbackModel(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            placeholder="claude-sonnet-4-5-20250929"
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Model to use if the primary model fails (e.g., rate limited or unavailable). Can be overridden per-task via <code>context.fallbackModel</code>.
+                        </p>
+                    </div>
                 </div>
             </div>
 
@@ -451,6 +493,68 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         />
                         <p className="text-xs text-text-muted mt-1">
                             File path to write SDK debug logs to. When set, debug output goes to this file instead of stderr.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Thinking / Effort Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Thinking &amp; Effort</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Thinking Mode</label>
+                        <select
+                            value={thinkingType}
+                            onChange={(e) => setThinkingType(e.target.value as typeof thinkingType)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                        >
+                            <option value="none">Default (no override)</option>
+                            <option value="adaptive">Adaptive (model decides when to think)</option>
+                            <option value="enabled">Enabled (fixed budget)</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                        <p className="text-xs text-text-muted mt-1">
+                            Controls extended thinking / chain-of-thought reasoning. Can be overridden per-task via task context.
+                        </p>
+                    </div>
+
+                    {thinkingType === 'enabled' && (
+                        <div className="pl-6 border-l-2 border-border-default">
+                            <label className="block text-sm font-medium mb-1">
+                                Budget Tokens
+                            </label>
+                            <input
+                                type="number"
+                                value={thinkingBudgetTokens}
+                                onChange={(e) => setThinkingBudgetTokens(Math.max(1, parseInt(e.target.value) || 1))}
+                                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                                min={1}
+                                step={1000}
+                                placeholder="10000"
+                            />
+                            <p className="text-xs text-text-muted mt-1">
+                                Maximum tokens the model can use for thinking. Higher values allow deeper reasoning at higher cost.
+                            </p>
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Effort Level</label>
+                        <select
+                            value={effort}
+                            onChange={(e) => setEffort(e.target.value as typeof effort)}
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                        >
+                            <option value="none">Default (no override)</option>
+                            <option value="low">Low (faster, cheaper — simple tasks)</option>
+                            <option value="medium">Medium (balanced)</option>
+                            <option value="high">High (thorough)</option>
+                            <option value="max">Max (most thorough — complex architecture)</option>
+                        </select>
+                        <p className="text-xs text-text-muted mt-1">
+                            Controls how much effort the model puts into responses. Can be overridden per-task via task context.
                         </p>
                     </div>
                 </div>

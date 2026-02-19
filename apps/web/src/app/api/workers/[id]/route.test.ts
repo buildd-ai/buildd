@@ -40,6 +40,8 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
+      tasks: { findFirst: mock(() => Promise.resolve(null)) },
+      sources: { findFirst: mock(() => Promise.resolve(null)) },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -55,6 +57,11 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
+  sources: 'sources',
+}));
+
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mock(() => Promise.resolve()),
 }));
 
 import { GET, PATCH } from './route';

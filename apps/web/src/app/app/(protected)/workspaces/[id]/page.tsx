@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, observations, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, desc, and, count } from 'drizzle-orm';
+import { workspaces, tasks, accountWorkspaces, observations, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
+import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
@@ -86,6 +86,24 @@ export default async function WorkspaceDetailPage({
     .where(eq(workspaceSkills.workspaceId, id));
   const skillsCount = Number(skillCount?.count || 0);
 
+  // Count deliverable artifacts (exclude plan types)
+  const wsWorkerIds = await db
+    .select({ id: workers.id })
+    .from(workers)
+    .where(eq(workers.workspaceId, id));
+  const wIds = wsWorkerIds.map(w => w.id);
+  let artifactCount = 0;
+  if (wIds.length > 0) {
+    const [artCount] = await db
+      .select({ count: count() })
+      .from(artifacts)
+      .where(and(
+        inArray(artifacts.workerId, wIds),
+        notInArray(artifacts.type, ['task_plan', 'impl_plan']),
+      ));
+    artifactCount = Number(artCount?.count || 0);
+  }
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -101,6 +119,12 @@ export default async function WorkspaceDetailPage({
             )}
           </div>
           <div className="flex gap-2">
+            <Link
+              href={`/app/workspaces/${workspace.id}/artifacts`}
+              className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"
+            >
+              Artifacts{artifactCount > 0 ? ` (${artifactCount})` : ''}
+            </Link>
             <Link
               href={`/app/workspaces/${workspace.id}/schedules`}
               className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"

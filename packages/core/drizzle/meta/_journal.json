@@ -225,6 +225,20 @@
       "when": 1771400000000,
       "tag": "0031_task_output_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "5",
+      "when": 1771500000000,
+      "tag": "0032_artifact_share_token",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1771600000000,
+      "tag": "0033_task_blocked_by",
+      "breakpoints": true
     }
   ]
 }

@@ -253,9 +253,9 @@ describe('WorkerManager — sendMessage', () => {
       // A new session should have been started
       expect(queryCallCount).toBeGreaterThan(queryCountBefore);
 
-      // Worker state should be cleared
+      // Worker state should be cleared (planContent preserved for display)
       expect(worker.waitingFor).toBeUndefined();
-      expect(worker.planContent).toBeUndefined();
+      expect(worker.planContent).toBeDefined();
     });
 
     test('emits worker_update with working status', async () => {
@@ -323,7 +323,7 @@ describe('WorkerManager — sendMessage', () => {
   });
 
   describe('Plan revision — custom text', () => {
-    test('enqueues message and clears waiting state', async () => {
+    test('starts revision session and clears waiting state', async () => {
       manager = new WorkerManager(makeConfig());
 
       const worker = makeWorker({
@@ -338,12 +338,24 @@ describe('WorkerManager — sendMessage', () => {
       });
       injectWorker(manager, worker, { withSession: true });
 
+      // Set up messages for the revision session
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-revise' },
+        { type: 'result', subtype: 'success', session_id: 'sess-revise' },
+      ];
+
+      const queryCountBefore = queryCallCount;
       const result = await manager.sendMessage('w-msg-1', 'Please add error handling');
       expect(result).toBe(true);
 
-      expect(worker.status).toBe('working');
+      // Immediately after sendMessage: state set synchronously before async session starts
       expect(worker.waitingFor).toBeUndefined();
-      expect(worker.currentAction).toBe('Processing response...');
+
+      // Wait for the revision session to start
+      await new Promise(r => setTimeout(r, 200));
+
+      // A new revision session should have been started
+      expect(queryCallCount).toBeGreaterThan(queryCountBefore);
     });
   });
 

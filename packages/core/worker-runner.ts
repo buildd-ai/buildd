@@ -16,6 +16,7 @@ export class WorkerRunner extends EventEmitter {
   private turns = 0;
   private startTime: Date | null = null;
   private toolFailures: Record<string, { count: number; errors: string[]; interrupts: number }> = {};
+  private lastAssistantMessage: string | null = null;
 
   constructor(workerId: string) {
     super();
@@ -78,6 +79,10 @@ export class WorkerRunner extends EventEmitter {
       // Extract outputSchema from task for structured output support
       const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
 
+      // Resolve fallback model: task-level override > workspace-level setting
+      const taskFallbackModel = (worker.task as any)?.context?.fallbackModel as string | undefined;
+      const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
+
       // Resolve 1M context beta: task-level override > workspace-level setting
       const taskExtendedContext = (worker.task as any)?.context?.extendedContext;
       const extendedContext = taskExtendedContext !== undefined
@@ -86,6 +91,12 @@ export class WorkerRunner extends EventEmitter {
       const betas = extendedContext && /sonnet/i.test(config.anthropicModel)
         ? ['context-1m-2025-08-07' as const]
         : undefined;
+
+      // Resolve thinking/effort: task-level override > workspace-level setting
+      const taskThinking = (worker.task as any)?.context?.thinking;
+      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const taskEffort = (worker.task as any)?.context?.effort;
+      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
@@ -107,6 +118,7 @@ export class WorkerRunner extends EventEmitter {
           sessionId: this.workerId,
           cwd: worker.workspace?.localPath || process.cwd(),
           model: config.anthropicModel,
+          ...(fallbackModel ? { fallbackModel } : {}),
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,
@@ -126,6 +138,9 @@ export class WorkerRunner extends EventEmitter {
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
           ...(betas ? { betas } : {}),
+          // Thinking/effort controls for reasoning behavior
+          ...(thinking ? { thinking } : {}),
+          ...(effort ? { effort } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
@@ -140,6 +155,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
             ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
@@ -211,11 +227,13 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
-    // SDK v0.2.45: Subagent task notification — emitted on task completion/status updates
+    // SDK v0.2.47: Subagent task notification — emitted on task completion/status updates
+    // tool_use_id added in v0.2.47 for start→completion correlation
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {
       const event = msg as any;
       this.emitEvent('worker:task_notification', {
         taskId: event.task_id,
+        toolUseId: event.tool_use_id,
         status: event.status,
         message: event.message,
       });
@@ -316,6 +334,8 @@ export class WorkerRunner extends EventEmitter {
         // Snapshot deliverables on completion
         if (!resultMsg.is_error) {
           taskUpdate.result = {
+            // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+            ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
             branch: worker.branch,
             commits: worker.commitCount ?? 0,
             sha: worker.lastCommitSha ?? undefined,
@@ -366,6 +386,7 @@ export class WorkerRunner extends EventEmitter {
         durationMs: resultMeta.durationMs || (Date.now() - (this.startTime?.getTime() || 0)),
         resultMeta,
         ...(totalToolFailures > 0 ? { toolFailures: this.toolFailures } : {}),
+        ...(this.lastAssistantMessage ? { lastAssistantMessage: this.lastAssistantMessage } : {}),
       });
     }
   }
@@ -501,7 +522,21 @@ export class WorkerRunner extends EventEmitter {
     if ((input as any).hook_event_name !== 'SubagentStop') return {};
 
     const stopHookActive = (input as any).stop_hook_active as boolean;
-    this.emitEvent('worker:subagent_stop', { stopHookActive });
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+    this.emitEvent('worker:subagent_stop', { stopHookActive, lastAssistantMessage });
+    return { async: true };
+  };
+
+  // Stop hook — fires when the main agent session stops.
+  // Captures last_assistant_message for use as completion summary.
+  private stopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Stop') return {};
+
+    const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
+    if (lastAssistantMessage) {
+      this.lastAssistantMessage = lastAssistantMessage;
+    }
+    this.emitEvent('worker:stop', { lastAssistantMessage });
     return { async: true };
   };
 
@@ -566,6 +601,22 @@ export class WorkerRunner extends EventEmitter {
       if (worker.task.description) parts.push(`${worker.task.description}\n`);
     }
     parts.push(`\n## Instructions\n${userPrompt}`);
+
+    // Add git workflow context from workspace config
+    const gitConfig = worker.task?.workspace?.gitConfig;
+    if (gitConfig && gitConfig.branchingStrategy !== 'none') {
+      const gitContext: string[] = ['\n## Git Workflow'];
+      gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
+      const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      if (gitConfig.requiresPR) {
+        gitContext.push(`- Changes require PR to \`${prTarget}\``);
+        gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
+      } else {
+        gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
+      }
+      parts.push(gitContext.join('\n'));
+    }
+
     parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
     return parts.join('\n');
   }

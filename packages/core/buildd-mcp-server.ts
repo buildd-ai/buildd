@@ -62,11 +62,11 @@ export function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
       // ── buildd tool ──────────────────────────────────────────────────
       tool(
         'buildd',
-        `Task coordination tool. Available actions: list_tasks, claim_task, update_progress, complete_task, create_pr, update_task, create_task, create_schedule, update_schedule, list_schedules, register_skill, review_workspace. Use action parameter to select operation, params for action-specific arguments.`,
+        `Task coordination tool. Available actions: list_tasks, claim_task, update_progress, complete_task, create_pr, update_task, create_task, create_artifact, create_schedule, update_schedule, list_schedules, register_skill, review_workspace. Use action parameter to select operation, params for action-specific arguments.`,
         {
           action: z.enum([
             'list_tasks', 'claim_task', 'update_progress', 'complete_task',
-            'create_pr', 'update_task', 'create_task',
+            'create_pr', 'update_task', 'create_task', 'create_artifact',
             'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
             'review_workspace',
           ]),
@@ -343,9 +343,15 @@ async function handleBuilddAction(
       if (params.title !== undefined) updateFields.title = params.title;
       if (params.description !== undefined) updateFields.description = params.description;
       if (params.priority !== undefined) updateFields.priority = params.priority;
+      if (params.addBlockedByTaskIds && Array.isArray(params.addBlockedByTaskIds)) {
+        updateFields.addBlockedByTaskIds = params.addBlockedByTaskIds;
+      }
+      if (params.removeBlockedByTaskIds && Array.isArray(params.removeBlockedByTaskIds)) {
+        updateFields.removeBlockedByTaskIds = params.removeBlockedByTaskIds;
+      }
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority) must be provided');
+        throw new Error('At least one field (title, description, priority, addBlockedByTaskIds, removeBlockedByTaskIds) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
@@ -370,13 +376,17 @@ async function handleBuilddAction(
         creationSource: 'mcp',
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
+      if (params.blockedByTaskIds && Array.isArray(params.blockedByTaskIds)) {
+        taskBody.blockedByTaskIds = params.blockedByTaskIds;
+      }
 
       const task = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const statusLabel = task.status === 'blocked' ? 'blocked' : 'pending';
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nPriority: ${task.priority}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${task.status === 'blocked' ? `\nBlocked by: ${(params.blockedByTaskIds as string[]).join(', ')}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -495,6 +505,32 @@ async function handleBuilddAction(
 
       const skill = data.skill;
       return text(`Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`);
+    }
+
+    case 'create_artifact': {
+      if (!params.workerId) throw new Error('workerId is required');
+      if (!params.type || !params.title) throw new Error('type and title are required');
+
+      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary'];
+      if (!validArtifactTypes.includes(params.type as string)) {
+        throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
+      }
+
+      const artifactBody: Record<string, unknown> = {
+        type: params.type,
+        title: params.title,
+      };
+      if (params.content) artifactBody.content = params.content;
+      if (params.url) artifactBody.url = params.url;
+      if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
+
+      const artifactData = await api(`/api/workers/${params.workerId}/artifacts`, {
+        method: 'POST',
+        body: JSON.stringify(artifactBody),
+      });
+
+      const art = artifactData.artifact;
+      return text(`Artifact created: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
     }
 
     case 'review_workspace': {

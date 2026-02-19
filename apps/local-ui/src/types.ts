@@ -122,11 +122,14 @@ export interface LocalWorker {
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
   planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
+  planStartMessageIndex?: number;  // messages.length when EnterPlanMode fires — used to extract full plan
+  planFilePath?: string;  // Path to persisted plan markdown file (~/.buildd/plans/{workerId}.md)
   teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
+  lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -134,6 +137,10 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // Prompt suggestions for follow-up actions (populated on completion)
+  promptSuggestions?: string[];
+  // Last assistant message text (captured via Stop hook's last_assistant_message)
+  lastAssistantMessage?: string;
 }
 
 // Per-model token usage from SDK result
@@ -222,6 +229,9 @@ export interface WorkspaceGitConfig {
 
   // Maximum budget in USD per worker session
   maxBudgetUsd?: number;
+
+  // Fallback model (SDK v0.2.45+)
+  fallbackModel?: string;
 
   // SDK debug logging
   debug?: boolean;

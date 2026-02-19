@@ -10,8 +10,9 @@ const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
 const PERSISTED_FIELDS = [
   'id', 'taskId', 'taskTitle', 'taskDescription', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'lastActivity', 'sessionId',
-  'waitingFor', 'planContent', 'messages', 'milestones', 'toolCalls', 'commits',
-  'output', 'teamState', 'worktreePath',
+  'waitingFor', 'planContent', 'planFilePath', 'planStartMessageIndex',
+  'messages', 'milestones', 'toolCalls', 'commits',
+  'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -152,6 +153,8 @@ export function loadAllWorkers(): LocalWorker[] {
         sessionId: data.sessionId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
         planContent: data.planContent as string | undefined,
+        planStartMessageIndex: data.planStartMessageIndex as number | undefined,
+        planFilePath: data.planFilePath as string | undefined,
         messages: (data.messages as LocalWorker['messages']) || [],
         milestones: (data.milestones as LocalWorker['milestones']) || [],
         toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
@@ -159,9 +162,13 @@ export function loadAllWorkers(): LocalWorker[] {
         output: (data.output as LocalWorker['output']) || [],
         teamState: data.teamState as LocalWorker['teamState'],
         worktreePath: data.worktreePath as string | undefined,
+        promptSuggestions: data.promptSuggestions as string[] | undefined,
+        lastAssistantMessage: data.lastAssistantMessage as string | undefined,
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
+        subagentTasks: [],
+        checkpoints: [],
         checkpointEvents: new Set<CheckpointEventType>(
           ((data.milestones as any[]) || [])
             .filter((m: any) => m.type === 'checkpoint')
