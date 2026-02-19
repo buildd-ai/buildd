@@ -1130,6 +1130,21 @@ export class WorkerManager {
     };
   }
 
+  // Create a Stop hook that captures last_assistant_message for completion summaries.
+  // The SDK provides the final assistant response text directly, eliminating transcript parsing.
+  private createStopHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'Stop') return {};
+
+      const lastMsg = (input as any).last_assistant_message as string | undefined;
+      if (lastMsg) {
+        worker.lastAssistantMessage = lastMsg;
+      }
+      console.log(`[Worker ${worker.id}] Stop hook: last_assistant_message=${lastMsg ? `${lastMsg.length} chars` : 'none'}`);
+      return {};
+    };
+  }
+
   // Create a Notification hook that captures agent status messages.
   // Emits milestones for dashboard visibility and logs the notification.
   private createNotificationHook(worker: LocalWorker): HookCallback {
@@ -1583,6 +1598,7 @@ export class WorkerManager {
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
+        Stop: [{ hooks: [this.createStopHook(worker)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -1709,6 +1725,8 @@ export class WorkerManager {
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
+          // Use last_assistant_message from Stop hook as completion summary
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -2834,10 +2852,10 @@ export class WorkerManager {
       parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
     }
 
-    // Outcome from last output
-    const lastOutput = worker.output.slice(-3).join(' ').trim();
-    if (lastOutput) {
-      const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
+    // Outcome: prefer last_assistant_message from Stop hook, fall back to last output lines
+    const outcome = worker.lastAssistantMessage || worker.output.slice(-3).join(' ').trim();
+    if (outcome) {
+      const truncated = outcome.length > 300 ? outcome.slice(0, 300) + '...' : outcome;
       parts.push(`Outcome: ${truncated}`);
     }
 

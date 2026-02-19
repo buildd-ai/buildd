@@ -16,6 +16,7 @@ export class WorkerRunner extends EventEmitter {
   private turns = 0;
   private startTime: Date | null = null;
   private toolFailures: Record<string, { count: number; errors: string[]; interrupts: number }> = {};
+  private lastAssistantMessage: string | null = null;
 
   constructor(workerId: string) {
     super();
@@ -140,6 +141,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ TaskCompleted: [{ hooks: [this.taskCompletedHook.bind(this)] }] } as any),
             ...({ SubagentStart: [{ hooks: [this.subagentStartHook.bind(this)] }] } as any),
             ...({ SubagentStop: [{ hooks: [this.subagentStopHook.bind(this)] }] } as any),
+            ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
           },
@@ -316,6 +318,7 @@ export class WorkerRunner extends EventEmitter {
         // Snapshot deliverables on completion
         if (!resultMsg.is_error) {
           taskUpdate.result = {
+            ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
             branch: worker.branch,
             commits: worker.commitCount ?? 0,
             sha: worker.lastCommitSha ?? undefined,
@@ -503,6 +506,18 @@ export class WorkerRunner extends EventEmitter {
     const stopHookActive = (input as any).stop_hook_active as boolean;
     this.emitEvent('worker:subagent_stop', { stopHookActive });
     return { async: true };
+  };
+
+  // Stop hook — fires when the main session is about to stop.
+  // Captures last_assistant_message for use as completion summary.
+  private stopHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'Stop') return {};
+
+    const lastMsg = (input as any).last_assistant_message as string | undefined;
+    if (lastMsg) {
+      this.lastAssistantMessage = lastMsg;
+    }
+    return {};
   };
 
   // Notification hook — fires when the agent emits status messages.
