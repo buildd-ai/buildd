@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.45 (CLI parity: v2.1.45, Feb 17 2026)
+**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Current |
-| `apps/agent` | `>=0.2.45` | Current |
-| `apps/local-ui` | `>=0.2.45` | Bumped from 0.2.44 |
+| `packages/core` | `>=0.2.45` | Current — bump to `>=0.2.47` recommended |
+| `apps/agent` | `>=0.2.45` | Current — bump to `>=0.2.47` recommended |
+| `apps/local-ui` | `>=0.2.45` | Current — bump to `>=0.2.47` recommended |
 
 ---
 
@@ -484,6 +484,7 @@ type SubagentStartHookInput = BaseHookInput & {
 type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: 'SubagentStop';
   stop_hook_active: boolean;
+  last_assistant_message?: string;  // v2.1.47+
 };
 
 type PermissionRequestHookInput = BaseHookInput & {
@@ -967,10 +968,75 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 
 ---
 
-## CLI v2.1.32–2.1.45 Changelog (SDK-Relevant)
+## 27. `promptSuggestion()` Method (SDK v0.2.47+)
+
+Request prompt suggestions based on the current conversation context:
+
+```typescript
+const q = query({ prompt: "...", options: { ... } });
+
+// After conversation has progressed:
+const suggestion = await q.promptSuggestion();
+// Returns a suggested next prompt based on conversation context
+```
+
+**Note**: This method is on the `Query` interface (V1 API). As of v0.2.47, it is NOT available on V2 sessions. The CLI uses it internally for terminal prompt suggestions.
+
+**Potential use**: Could power a "suggested next steps" feature in the dashboard after a worker pauses or completes, guiding users on what to ask next.
+
+---
+
+## 28. `last_assistant_message` in Stop/SubagentStop Hooks (CLI v2.1.47+)
+
+The `Stop` and `SubagentStop` hook inputs now include `last_assistant_message`:
+
+```typescript
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  last_assistant_message?: string;  // NEW in v2.1.47
+};
+
+type SubagentStopHookInput = BaseHookInput & {
+  hook_event_name: 'SubagentStop';
+  stop_hook_active: boolean;
+  last_assistant_message?: string;  // NEW in v2.1.47
+};
+```
+
+This provides direct access to the agent's final message without needing to parse transcript files. Useful for:
+- Worker completion summaries (instead of extracting from output buffer)
+- Subagent result capture for dashboard display
+- Automated task summary generation
+
+---
+
+## 29. `tool_use_id` on `SDKTaskNotificationMessage` (SDK v0.2.47+)
+
+Task notification events now include `tool_use_id` for correlating completions back to originating Tool calls:
+
+```typescript
+type SDKTaskNotificationMessage = {
+  type: 'system';
+  subtype: 'task_notification';
+  task_id: string;
+  tool_use_id?: string;  // NEW in v0.2.47 — correlates to originating Task tool_use block
+  status: string;
+  message?: string;
+  uuid: UUID;
+  session_id: string;
+};
+```
+
+Enables precise subagent lifecycle tracking: match `task_started.tool_use_id` → `task_notification.tool_use_id` to track a subagent from spawn to completion.
+
+---
+
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.47 | 0.2.47 | `promptSuggestion()` on Query; `last_assistant_message` in Stop/SubagentStop hooks; `tool_use_id` on task_notification; 80+ fixes — memory improvements (O(n²) message accumulation, agent context/skill state release); background agent results fix; bash permission classifier fix; `chat:newline` keybinding; custom agents/skills in git worktrees; Edit tool Unicode fix; improved startup perf; Windows rendering fixes |
+| 2.1.46 | 0.2.46 | Orphaned CC process fix (macOS); claude.ai MCP connectors support |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
 | 2.1.44 | 0.2.44 | Auth refresh error fixes |
 | 2.1.43 | 0.2.43 | AWS auth refresh 3-min timeout; structured-outputs beta header fix for Vertex/Bedrock |
@@ -985,6 +1051,15 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **O(n²) message accumulation** eliminated in long agent sessions (v2.1.47) — critical for long-running workers
+- **Agent context/skill state** released after use, reducing memory pressure (v2.1.47)
+- **Background agent results** now return final answer instead of raw transcript data (v2.1.47)
+- **Bash permission classifier** no longer hallucinates descriptions or incorrectly grants permissions (v2.1.47)
+- **Custom agents/skills** now discovered in git worktrees (v2.1.47) — includes main repo `.claude/`
+- **Edit tool** no longer silently corrupts Unicode curly quotes (v2.1.47)
+- **Shell commands** no longer permanently fail after a command deletes its working directory (v2.1.47)
+- **Hooks** (PreToolUse, PostToolUse) no longer silently fail on Windows (v2.1.47)
+- **Orphaned CC processes** after terminal disconnect fixed on macOS (v2.1.46)
 - **Agent Teams env propagation** to tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45) — teammates now inherit API provider env vars
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
 - **Skills invoked by subagents** no longer leak into main session context after compaction (v2.1.45)
@@ -995,12 +1070,12 @@ Improved memory usage for shell commands that produce large output — RSS no lo
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.45)
+### Buildd Integration Status (v0.2.47)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
-- `SDKTaskNotificationMessage` — subagent completion tracking
+- `SDKTaskNotificationMessage` — subagent completion tracking (+ `tool_use_id` correlation)
 - `SDKFilesPersistedEvent` — file checkpoint tracking
 - All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
 - Structured output via `outputFormat`
@@ -1011,11 +1086,14 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
 
-### Pending Enhancements (Buildd tasks created)
+### Pending Enhancements (Buildd tasks to create)
 
 | Enhancement | SDK Feature | Priority |
 |-------------|------------|----------|
-| Bump local-ui SDK pin to `>=0.2.45` | Session.stream() fix, memory improvements | P3 |
+| Capture `last_assistant_message` in Stop hook for worker completion summaries | Stop hook `last_assistant_message` (v2.1.47) | P2 |
+| Bump SDK version pins to `>=0.2.47` | Memory fixes, worktree support, background agent results fix | P2 |
+| Register Stop hook in worker-runner.ts and local-ui/workers.ts | Stop hook (v2.1.47) — direct access to final agent message | P2 |
+| Capture `last_assistant_message` in SubagentStop hook for subagent result display | SubagentStop `last_assistant_message` (v2.1.47) | P3 |
 | Effort/thinking controls | `effort`, `thinking` options | P4 |
 | 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 |
 | maxTurns in local-ui | `maxTurns` option | P4 |
@@ -1068,6 +1146,7 @@ options: {
 | `setMcpServers(servers)` | Replace dynamic MCP servers |
 | `streamInput(stream)` | Stream user messages |
 | `stopTask(taskId)` | Stop a background task |
+| `promptSuggestion()` | Request prompt suggestions based on conversation context (v0.2.47+) |
 | `close()` | Terminate the query |
 
 ### SDKResultMessage
