@@ -97,38 +97,3 @@ Specify → Plan → Act → Review → Vault — structured workflow phases tha
 ### 5. Multi-Provider Fallback (from agentic-flow)
 Configure fallback chains: Anthropic → Bedrock → Vertex. SDK supports multi-provider auth natively.
 
-## Recommended Recurring Research Job
-
-### Purpose
-Automated weekly scan of the Claude Agent SDK ecosystem to surface:
-1. New SDK releases and changelog highlights
-2. Trending community repos/tools built on the SDK
-3. New patterns or integrations worth evaluating
-4. Competitor feature parity changes
-
-### Schedule Specification
-- **Cadence**: Weekly (every Monday 9 AM ET)
-- **Cron**: `0 13 * * 1` (UTC)
-- **Model**: sonnet (cost-effective for research tasks)
-- **Mode**: research (read-only, no code changes)
-- **Skills**: `sdk-ecosystem-research` skill for structured output
-
-### Research Skill Prompt
-The recurring task should use a skill that:
-1. Checks npm for `@anthropic-ai/claude-agent-sdk` version changes since last run
-2. Searches GitHub for new/trending repos using the SDK (sorted by stars/recent)
-3. Checks Anthropic blog/docs for announcements
-4. Compares findings against `.agent/sdk-ecosystem-research.md` for delta
-5. Saves new observations to workspace memory via `buildd_memory`
-6. Outputs structured JSON with: `{ newVersion, breakingChanges, trendingRepos, newPatterns, featureGaps, recommendations }`
-
-### Expected Output Schema
-```json
-{
-  "sdkVersion": { "current": "0.2.47", "previous": "0.2.45", "changelog": "..." },
-  "trendingRepos": [{ "name": "...", "stars": 0, "description": "...", "relevance": "high|medium|low" }],
-  "newPatterns": [{ "name": "...", "description": "...", "applicability": "..." }],
-  "featureGaps": [{ "feature": "...", "competitors": ["..."], "priority": "high|medium|low" }],
-  "recommendations": [{ "action": "...", "effort": "small|medium|large", "impact": "high|medium|low" }]
-}
-```
