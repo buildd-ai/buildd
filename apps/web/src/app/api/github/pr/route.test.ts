@@ -381,8 +381,9 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
-    const [installId, path, options] = mockGithubApi.mock.calls[0];
+    // First call is the dedup check, second call is the PR creation
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+    const [installId, path, options] = mockGithubApi.mock.calls[1];
     expect(installId).toBe(12345);
     expect(path).toBe('/repos/owner/repo/pulls');
     expect(options.method).toBe('POST');
@@ -426,7 +427,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('dev');
   });
@@ -461,7 +462,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('develop');
   });
@@ -496,7 +497,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('main');
   });
@@ -535,7 +536,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('release/1.0');
   });
@@ -574,7 +575,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('hotfix');
   });
@@ -609,9 +610,92 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.body).toBe('Created by buildd worker test-worker');
+  });
+
+  it('deduplicates when worker already has a PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: 'https://github.com/owner/repo/pull/99',
+      prNumber: 99,
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deduplicated).toBe(true);
+    expect(data.pr.number).toBe(99);
+    expect(data.pr.url).toBe('https://github.com/owner/repo/pull/99');
+    // Should NOT have called githubApi to create a new PR
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates when GitHub already has an open PR for the head branch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+
+    // First call: list existing PRs (returns one match)
+    // Second call should not happen (dedup)
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Existing PR',
+      },
+    ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deduplicated).toBe(true);
+    expect(data.pr.number).toBe(42);
+    expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
+    // Should have called githubApi only once (the list check), not a second time (create)
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
   });
 
   it('returns 500 when githubApi throws an error', async () => {

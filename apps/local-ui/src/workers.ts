@@ -1465,9 +1465,14 @@ export class WorkerManager {
         const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
         if (gitConfig.requiresPR) {
           gitContext.push(`- Changes require PR to \`${prTarget}\``);
-          gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           if (gitConfig.autoCreatePR) {
             gitContext.push(`- Create PR when done`);
+          }
+          // If buildd MCP is available, prefer create_pr action over gh pr create to avoid duplicates
+          if (this.config.apiKey) {
+            gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
+          } else {
+            gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           }
         } else {
           gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);

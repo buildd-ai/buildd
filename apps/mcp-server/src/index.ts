@@ -236,6 +236,10 @@ const server = new Server(
 2. Report progress at milestones (25%, 50%, 75%) via action=update_progress with workerId="${WORKER_ID}". Include plan param to submit a plan for review.
 3. When done: push commits → action=create_pr → action=complete_task (with summary). If blocked, use action=complete_task with error param instead.
 
+**IMPORTANT — PR creation:**
+- Use \`action=create_pr\` (the buildd tool) instead of \`gh pr create\`. Do NOT use both — create_pr handles deduplication and tracks the PR on the worker.
+- If you have no commits to push, skip create_pr and go straight to complete_task.
+
 **Memory (REQUIRED):**
 - BEFORE touching unfamiliar files, use \`buildd_memory\` action=search with keywords
 - AFTER encountering a gotcha, pattern, or decision, use \`buildd_memory\` action=save IMMEDIATELY
@@ -251,6 +255,10 @@ const server = new Server(
 1. \`buildd\` action=claim_task → checkout the returned branch → do the work. claim_task auto-assigns the highest-priority pending task — you do NOT pick a task by ID. Use list_tasks only to preview what's available.
 2. Report progress at milestones (25%, 50%, 75%) via action=update_progress. Include plan param to submit a plan for review.
 3. When done: push commits → action=create_pr → action=complete_task (with summary). If blocked, use action=complete_task with error param instead.
+
+**IMPORTANT — PR creation:**
+- Use \`action=create_pr\` (the buildd tool) instead of \`gh pr create\`. Do NOT use both — create_pr handles deduplication and tracks the PR on the worker.
+- If you have no commits to push, skip create_pr and go straight to complete_task.
 
 **Admin actions** (require admin-level API key): create_schedule, update_schedule, list_schedules, register_skill
 
