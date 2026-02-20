@@ -343,7 +343,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             value={fallbackModel}
                             onChange={(e) => setFallbackModel(e.target.value)}
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
-                            placeholder="claude-sonnet-4-5-20250929"
+                            placeholder="claude-sonnet-4-6"
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Model to use if the primary model fails (e.g., rate limited or unavailable). Can be overridden per-task via <code>context.fallbackModel</code>.

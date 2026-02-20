@@ -147,7 +147,7 @@ export interface WorkspaceGitConfig {
   fallbackModel?: string;
 
   // 1M context window beta (SDK v0.2.45+)
-  // Enables 'context-1m-2025-08-07' beta for Sonnet 4.x models only.
+  // Enables 'context-1m-2025-08-07' beta for Sonnet models (4.5, 4.6+).
   // Reduces context compaction at higher cost — useful for large codebases.
   // Can be overridden per-task via task.context.extendedContext.
   extendedContext?: boolean;
