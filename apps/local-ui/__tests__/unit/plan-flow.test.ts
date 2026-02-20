@@ -26,6 +26,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
     let idx = 0;
     return {
       streamInput: mockStreamInputFn,
+      supportedModels: async () => [],
       [Symbol.asyncIterator]() {
         return {
           async next() {

@@ -691,6 +691,17 @@ export class WorkerManager {
         (worker.status === 'done' || worker.status === 'error') &&
         now - worker.lastActivity > RETENTION_MS
       ) {
+        // Clean up worktree if it still exists (completed workers keep worktree for resume)
+        if (worker.worktreePath && existsSync(worker.worktreePath)) {
+          const worktreeMarker = join('.buildd-worktrees', '');
+          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
+          const repoPath = worktreeIdx > 0
+            ? worker.worktreePath.substring(0, worktreeIdx)
+            : worker.worktreePath;
+          this.cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+            console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
+          });
+        }
         this.workers.delete(id);
         this.sessions.delete(id);
         storeDeleteWorker(id);
@@ -1231,6 +1242,29 @@ export class WorkerManager {
     return [...new Set(suggestions)].slice(0, 5);
   }
 
+  // Create a ConfigChange hook that logs config file changes (SDK v0.2.49+).
+  // Emits milestones for audit trail and optionally blocks changes per workspace config.
+  private createConfigChangeHook(worker: LocalWorker, blockChanges: boolean): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+      const filePath = (input as any).file_path as string;
+      const changeType = (input as any).change_type as string;
+
+      const label = blockChanges
+        ? `Config change blocked: ${filePath}`
+        : `Config changed: ${filePath} (${changeType})`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] ConfigChange: ${filePath} (${changeType}, blocked=${blockChanges})`);
+
+      if (blockChanges) {
+        return { continue: false };
+      }
+
+      return { async: true };
+    };
+  }
+
   // Create a Notification hook that captures agent status messages.
   // Emits milestones for dashboard visibility and logs the notification.
   private createNotificationHook(worker: LocalWorker): HookCallback {
@@ -1278,6 +1312,26 @@ export class WorkerManager {
         // Transcript file may not exist or be unreadable — non-fatal
       }
       return {};
+    };
+  }
+
+  // Create a ConfigChange hook that logs config file changes during a session (SDK v0.2.49+).
+  // Emits milestones for dashboard visibility and audit trail.
+  private createConfigChangeHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+      const filePath = (input as any).file_path as string;
+      const configScope = (input as any).config_scope as string | undefined;
+
+      const fileName = filePath?.split('/').pop() || filePath || 'unknown';
+      const label = configScope
+        ? `Config changed (${configScope}): ${fileName}`
+        : `Config changed: ${fileName}`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Config change: ${filePath} (scope: ${configScope || 'unknown'})`);
+
+      return { async: true };
     };
   }
 
@@ -1337,6 +1391,86 @@ export class WorkerManager {
     }
 
     return undefined;
+  }
+
+  /**
+   * Discover model capabilities via SDK v0.2.49+ supportedModels().
+   * Validates configured effort/thinking against actual model support and
+   * stores capability info on the worker for dashboard visibility.
+   * Runs in background (fire-and-forget) to avoid blocking the message loop.
+   */
+  private discoverModelCapabilities(
+    queryInstance: ReturnType<typeof query>,
+    worker: LocalWorker,
+    configured: {
+      effort?: string;
+      thinking?: { type: string; budgetTokens?: number };
+      extendedContext?: boolean;
+    },
+  ): void {
+    const modelId = this.config.model;
+
+    // Fire-and-forget — capability discovery should not block the worker
+    queryInstance.supportedModels().then((models: any[]) => {
+      const currentModel = models.find((m: any) => m.value === modelId);
+
+      if (!currentModel) {
+        console.warn(`[Worker ${worker.id}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
+        worker.modelCapabilities = { warnings: [`Model "${modelId}" not found in supported models list`] };
+        this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+        return;
+      }
+
+      // Extract capability fields added in SDK v0.2.49
+      const supportsEffort = currentModel.supportsEffort ?? false;
+      const supportedEffortLevels: string[] = currentModel.supportedEffortLevels ?? [];
+      const supportsAdaptiveThinking = currentModel.supportsAdaptiveThinking ?? false;
+
+      const warnings: string[] = [];
+
+      // Validate effort configuration
+      if (configured.effort && !supportsEffort) {
+        warnings.push(`Effort "${configured.effort}" configured but model "${modelId}" does not support effort — option will be ignored by SDK`);
+      } else if (configured.effort && supportsEffort && supportedEffortLevels.length > 0) {
+        if (!supportedEffortLevels.includes(configured.effort)) {
+          warnings.push(`Effort "${configured.effort}" not in supported levels [${supportedEffortLevels.join(', ')}] for model "${modelId}"`);
+        }
+      }
+
+      // Validate thinking configuration
+      if (configured.thinking) {
+        if (configured.thinking.type === 'adaptive' && !supportsAdaptiveThinking) {
+          warnings.push(`Adaptive thinking configured but model "${modelId}" does not support it — option will be ignored by SDK`);
+        }
+        if (configured.thinking.type === 'enabled' && !supportsAdaptiveThinking) {
+          warnings.push(`Extended thinking configured but model "${modelId}" does not support thinking — option will be ignored by SDK`);
+        }
+      }
+
+      // Log warnings
+      for (const warning of warnings) {
+        console.warn(`[Worker ${worker.id}] ${warning}`);
+        sessionLog(worker.id, 'warn', 'model_capability', warning, worker.taskId);
+      }
+
+      // Store capabilities on worker for API/dashboard access
+      worker.modelCapabilities = {
+        model: modelId,
+        capabilities: {
+          supportsEffort,
+          supportedEffortLevels,
+          supportsAdaptiveThinking,
+        },
+        warnings,
+      };
+
+      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+    }).catch((err: Error) => {
+      // Non-fatal — capability discovery failure should not block the worker
+      console.warn(`[Worker ${worker.id}] Model capability discovery failed: ${err.message}`);
+      worker.modelCapabilities = { warnings: [`Capability discovery failed: ${err.message}`] };
+      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+    });
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
@@ -1445,9 +1579,14 @@ export class WorkerManager {
         const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
         if (gitConfig.requiresPR) {
           gitContext.push(`- Changes require PR to \`${prTarget}\``);
-          gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           if (gitConfig.autoCreatePR) {
             gitContext.push(`- Create PR when done`);
+          }
+          // If buildd MCP is available, prefer create_pr action over gh pr create to avoid duplicates
+          if (this.config.apiKey) {
+            gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
+          } else {
+            gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
           }
         } else {
           gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
@@ -1601,7 +1740,13 @@ export class WorkerManager {
       }
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> | undefined;
+      // Resolve worktree isolation: task-level override > workspace-level setting
+      const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
+      const useWorktreeIsolation = taskWorktreeIsolation !== undefined
+        ? Boolean(taskWorktreeIsolation)
+        : Boolean(gitConfig?.useWorktreeIsolation);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
       if (useSkillAgents && skillBundles && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
@@ -1610,6 +1755,8 @@ export class WorkerManager {
             prompt: bundle.content,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
             model: 'inherit',
+            // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
+            ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
           };
         }
       }
@@ -1640,9 +1787,9 @@ export class WorkerManager {
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
-      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const configuredThinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
       const taskEffort = (task.context as any)?.effort;
-      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+      const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
@@ -1672,11 +1819,11 @@ export class WorkerManager {
         },
         // Resume previous session if provided (loads full conversation history from disk)
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-        // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+        // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
-        // Thinking/effort controls for reasoning behavior
-        ...(thinking ? { thinking } : {}),
-        ...(effort ? { effort } : {}),
+        // Thinking/effort controls — validated against model capabilities below
+        ...(configuredThinking ? { thinking: configuredThinking } : {}),
+        ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
@@ -1709,6 +1856,7 @@ export class WorkerManager {
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
         Stop: [{ hooks: [this.createStopHook(worker)] }],
+        ConfigChange: [{ hooks: [this.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -1736,6 +1884,14 @@ export class WorkerManager {
 
       // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
       queryInstance.streamInput(inputStream);
+
+      // Discover model capabilities via SDK v0.2.49+ supportedModels()
+      // Validates configured effort/thinking against actual model support
+      this.discoverModelCapabilities(queryInstance, worker, {
+        effort: configuredEffort,
+        thinking: configuredThinking,
+        extendedContext,
+      });
 
       // Stream responses
       let resultSubtype: string | undefined;
@@ -1939,8 +2095,10 @@ export class WorkerManager {
       if (session) {
         session.inputStream.end();
 
-        // Clean up worktree if used (after session is fully done)
-        if (worker.worktreePath) {
+        // Only clean up worktree immediately on error/abort — completed workers
+        // keep worktree alive for session resume (follow-up messages).
+        // Worktrees for completed workers get cleaned up during eviction.
+        if (worker.worktreePath && worker.status !== 'done') {
           await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
@@ -2730,9 +2888,14 @@ export class WorkerManager {
         return false;
       }
 
+      // Use worktree path for resume if available (session was created in worktree)
+      const sessionCwd = worker.worktreePath && existsSync(worker.worktreePath)
+        ? worker.worktreePath
+        : workspacePath;
+
       // Layer 1: Try resuming the SDK session (preserves full context from disk)
       if (worker.sessionId) {
-        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up`);
+        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up (cwd: ${sessionCwd})`);
 
         // For resume, the prompt is just the follow-up message — the SDK loads full history
         const task = {
@@ -2745,11 +2908,11 @@ export class WorkerManager {
           priority: 1,
         };
 
-        this.startSession(worker, workspacePath, task as any, worker.sessionId).catch(err => {
+        this.startSession(worker, sessionCwd, task as any, worker.sessionId).catch(err => {
           console.error(`[Worker ${worker.id}] Resume failed, falling back to reconstruction:`, err);
 
           // Fallback: restart with text-reconstructed context
-          this.restartWithReconstructedContext(worker, workspacePath!, message).catch(err2 => {
+          this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err2 => {
             console.error(`[Worker ${worker.id}] Fallback session error:`, err2);
             if (worker.status === 'working') {
               worker.status = 'error';
@@ -2767,7 +2930,7 @@ export class WorkerManager {
 
       // Layer 3 fallback: No sessionId available, use text reconstruction
       console.log(`[Worker ${worker.id}] No sessionId — using reconstructed context`);
-      this.restartWithReconstructedContext(worker, workspacePath, message).catch(err => {
+      this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
         if (worker.status === 'working') {
           worker.status = 'error';

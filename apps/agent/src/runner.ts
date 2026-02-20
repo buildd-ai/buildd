@@ -111,7 +111,7 @@ export class WorkerRunner {
     for await (const message of query({
       prompt,
       options: {
-        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',
+        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
         permissionMode: 'acceptEdits',
         maxTurns: 100,
       },

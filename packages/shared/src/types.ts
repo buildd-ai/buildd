@@ -296,6 +296,8 @@ export interface WaitingFor {
 export interface Artifact {
   id: string;
   workerId: string;
+  workspaceId: string | null;
+  key: string | null;
   type: ArtifactTypeValue;
   title: string | null;
   content: string | null;
@@ -303,6 +305,7 @@ export interface Artifact {
   shareToken: string | null;
   metadata: Record<string, unknown>;
   createdAt: Date;
+  updatedAt: Date;
   url?: string;
 }
 
@@ -311,6 +314,13 @@ export interface CreateArtifactInput {
   title: string;
   content?: string;
   url?: string;
+  key?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateArtifactInput {
+  title?: string;
+  content?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -420,6 +430,22 @@ export interface SkillMetadata {
   referenceFiles?: Record<string, string>;
   repoUrl?: string;
   commitSha?: string;
+}
+
+// ============================================================================
+// MODEL CAPABILITIES (SDK v0.2.49+)
+// ============================================================================
+
+export interface ModelCapabilities {
+  supportsEffort: boolean;
+  supportedEffortLevels: string[];
+  supportsAdaptiveThinking: boolean;
+}
+
+export interface ModelCapabilitiesEvent {
+  model: string;
+  capabilities: ModelCapabilities | null;
+  warnings: string[];
 }
 
 // ============================================================================
@@ -617,7 +643,10 @@ export type SSEEventType =
   | 'worker:session_start'
   | 'worker:session_end'
   | 'worker:permission_request'
+  | 'worker:config_change'
   | 'worker:rate_limit'
+  | 'worker:config_change'
+  | 'worker:model_capabilities'
   | 'task:updated'
   | 'task:unblocked'
   | 'task:children_completed';

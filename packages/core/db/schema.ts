@@ -147,7 +147,7 @@ export interface WorkspaceGitConfig {
   fallbackModel?: string;
 
   // 1M context window beta (SDK v0.2.45+)
-  // Enables 'context-1m-2025-08-07' beta for Sonnet 4.x models only.
+  // Enables 'context-1m-2025-08-07' beta for Sonnet models (4.5, 4.6+).
   // Reduces context compaction at higher cost — useful for large codebases.
   // Can be overridden per-task via task.context.extendedContext.
   extendedContext?: boolean;
@@ -156,6 +156,16 @@ export interface WorkspaceGitConfig {
   // Controls Claude's reasoning behavior. Can be overridden per-task via task.context.thinking / task.context.effort.
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
+
+  // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
+  // When true, returns { continue: false } to prevent agents from modifying config files.
+  blockConfigChanges?: boolean;
+
+  // Worktree isolation for subagents (SDK v0.2.49+)
+  // When enabled, skill-as-subagent definitions include `isolation: 'worktree'`
+  // so each subagent runs in its own temporary git worktree, preventing file conflicts
+  // during parallel work. Requires git repo context — non-git workspaces ignore this.
+  useWorktreeIsolation?: boolean;
 
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
@@ -375,6 +385,8 @@ export const workers = pgTable('workers', {
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  key: text('key'),
   type: text('type').notNull(),
   title: text('title'),
   content: text('content'),
@@ -382,9 +394,12 @@ export const artifacts = pgTable('artifacts', {
   shareToken: text('share_token'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
+  workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
+  workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
 }));
 
 // Workspace observations (persistent memory across tasks)
@@ -613,6 +628,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
   observations: many(observations),
+  artifacts: many(artifacts),
   taskSchedules: many(taskSchedules),
   workspaceSkills: many(workspaceSkills),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
@@ -648,6 +664,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
 
 export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
+  workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
 }));
 
 export const observationsRelations = relations(observations, ({ one }) => ({

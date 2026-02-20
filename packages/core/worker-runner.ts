@@ -54,17 +54,21 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
-      // Extract skill slugs from task context for native SDK discovery
+      // Extract skill slugs and bundles from task context
       const skillSlugs: string[] = (worker.task as any)?.context?.skillSlugs || [];
+      const skillBundles: Array<{ slug: string; name: string; description?: string; content: string }> =
+        (worker.task as any)?.context?.skillBundles || [];
+      const useSkillAgents = !!(worker.task as any)?.context?.useSkillAgents;
+
       const allowedTools: string[] = [];
-      if (skillSlugs.length > 0) {
+      if (skillSlugs.length > 0 && !useSkillAgents) {
         for (const slug of skillSlugs) {
           allowedTools.push(`Skill(${slug})`);
         }
       }
 
       const systemPrompt: any = { type: 'preset', preset: 'claude_code' };
-      if (skillSlugs.length > 0) {
+      if (skillSlugs.length > 0 && !useSkillAgents) {
         systemPrompt.append = skillSlugs.length === 1
           ? `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
@@ -72,6 +76,28 @@ export class WorkerRunner extends EventEmitter {
 
       // Build plugins and sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
+
+      // Convert skills to subagent definitions when useSkillAgents is enabled
+      // Resolve worktree isolation: task-level override > workspace-level setting
+      const taskWorktreeIsolation = (worker.task as any)?.context?.useWorktreeIsolation;
+      const useWorktreeIsolation = taskWorktreeIsolation !== undefined
+        ? Boolean(taskWorktreeIsolation)
+        : Boolean(gitConfig?.useWorktreeIsolation);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
+      if (useSkillAgents && skillBundles.length > 0) {
+        agents = {};
+        for (const bundle of skillBundles) {
+          agents[bundle.slug] = {
+            description: bundle.description || bundle.name,
+            prompt: bundle.content,
+            tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+            model: 'inherit',
+            // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
+            ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+          };
+        }
+      }
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
@@ -94,9 +120,9 @@ export class WorkerRunner extends EventEmitter {
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (worker.task as any)?.context?.thinking;
-      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const configuredThinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
       const taskEffort = (worker.task as any)?.context?.effort;
-      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+      const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
@@ -112,7 +138,8 @@ export class WorkerRunner extends EventEmitter {
         allowedTools.push('mcp__buildd__buildd', 'mcp__buildd__buildd_memory');
       }
 
-      for await (const message of query({
+      // Create query instance first (without effort/thinking) to discover model capabilities
+      const queryInstance = query({
         prompt: fullPrompt,
         options: {
           sessionId: this.workerId,
@@ -128,6 +155,7 @@ export class WorkerRunner extends EventEmitter {
           settingSources: ['user', 'project'],
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
+          ...(agents ? { agents } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
           // SDK debug logging from workspace config
@@ -136,11 +164,11 @@ export class WorkerRunner extends EventEmitter {
           // Structured output: pass outputFormat if task defines an outputSchema
           ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
-          // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+          // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
           ...(betas ? { betas } : {}),
-          // Thinking/effort controls for reasoning behavior
-          ...(thinking ? { thinking } : {}),
-          ...(effort ? { effort } : {}),
+          // Thinking/effort controls — validated against model capabilities below
+          ...(configuredThinking ? { thinking: configuredThinking } : {}),
+          ...(configuredEffort ? { effort: configuredEffort } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
@@ -158,11 +186,22 @@ export class WorkerRunner extends EventEmitter {
             ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
+            ...({ ConfigChange: [{ hooks: [this.configChangeHook(gitConfig?.blockConfigChanges ?? false).bind(this)] }] } as any),
           },
         },
-      })) {
+      });
+
+      // Discover model capabilities via SDK v0.2.49+ supportedModels()
+      // This validates configured effort/thinking against actual model support
+      await this.discoverModelCapabilities(queryInstance, config.anthropicModel, {
+        effort: configuredEffort,
+        thinking: configuredThinking,
+        extendedContext,
+      });
+
+      for await (const message of queryInstance) {
         await this.handleMessage(message);
-        
+
         if (this.costUsd >= config.maxCostPerWorker) {
           this.cancel();
           await this.setStatus('error');
@@ -391,6 +430,86 @@ export class WorkerRunner extends EventEmitter {
     }
   }
 
+  /**
+   * Discover model capabilities via SDK v0.2.49+ supportedModels().
+   * Validates configured effort/thinking against actual model support and emits
+   * capability info for the dashboard. Logs warnings for unsupported options.
+   */
+  private async discoverModelCapabilities(
+    queryInstance: ReturnType<typeof query>,
+    modelId: string,
+    configured: {
+      effort?: string;
+      thinking?: { type: string; budgetTokens?: number };
+      extendedContext?: boolean;
+    },
+  ): Promise<void> {
+    try {
+      const models = await queryInstance.supportedModels();
+      const currentModel = models.find((m: any) => m.value === modelId);
+
+      if (!currentModel) {
+        console.warn(`[Worker ${this.workerId}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
+        this.emitEvent('worker:model_capabilities', {
+          model: modelId,
+          capabilities: null,
+          warnings: [`Model "${modelId}" not found in supported models list`],
+        });
+        return;
+      }
+
+      // Extract capability fields added in SDK v0.2.49
+      const supportsEffort = (currentModel as any).supportsEffort ?? false;
+      const supportedEffortLevels: string[] = (currentModel as any).supportedEffortLevels ?? [];
+      const supportsAdaptiveThinking = (currentModel as any).supportsAdaptiveThinking ?? false;
+
+      const warnings: string[] = [];
+
+      // Validate effort configuration
+      if (configured.effort && !supportsEffort) {
+        warnings.push(`Effort "${configured.effort}" configured but model "${modelId}" does not support effort — option will be ignored by SDK`);
+      } else if (configured.effort && supportsEffort && supportedEffortLevels.length > 0) {
+        if (!supportedEffortLevels.includes(configured.effort)) {
+          warnings.push(`Effort "${configured.effort}" not in supported levels [${supportedEffortLevels.join(', ')}] for model "${modelId}"`);
+        }
+      }
+
+      // Validate thinking configuration
+      if (configured.thinking) {
+        if (configured.thinking.type === 'adaptive' && !supportsAdaptiveThinking) {
+          warnings.push(`Adaptive thinking configured but model "${modelId}" does not support it — option will be ignored by SDK`);
+        }
+        if (configured.thinking.type === 'enabled' && !supportsAdaptiveThinking) {
+          warnings.push(`Extended thinking configured but model "${modelId}" does not support thinking — option will be ignored by SDK`);
+        }
+      }
+
+      // Log warnings
+      for (const warning of warnings) {
+        console.warn(`[Worker ${this.workerId}] ${warning}`);
+      }
+
+      // Emit capabilities for dashboard visibility
+      this.emitEvent('worker:model_capabilities', {
+        model: modelId,
+        capabilities: {
+          supportsEffort,
+          supportedEffortLevels,
+          supportsAdaptiveThinking,
+        },
+        warnings,
+      });
+    } catch (err) {
+      // Non-fatal — capability discovery failure should not block the worker
+      console.warn(`[Worker ${this.workerId}] Model capability discovery failed: ${(err as Error).message}`);
+      this.emitEvent('worker:model_capabilities', {
+        model: modelId,
+        capabilities: null,
+        warnings: [`Capability discovery failed: ${(err as Error).message}`],
+      });
+    }
+  }
+
   private preToolUseHook: HookCallback = async (input) => {
     if ((input as any).hook_event_name !== 'PreToolUse') return {};
     
@@ -571,6 +690,29 @@ export class WorkerRunner extends EventEmitter {
     return { async: true };
   };
 
+  // ConfigChange hook — fires when config files change during a session (SDK v0.2.49+).
+  // Logs changes for audit trail and optionally blocks them per workspace config.
+  private configChangeHook(blockChanges: boolean): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+      const filePath = (input as any).file_path as string;
+      const changeType = (input as any).change_type as string;
+
+      this.emitEvent('worker:config_change', {
+        filePath,
+        changeType,
+        blocked: blockChanges,
+      });
+
+      if (blockChanges) {
+        return { continue: false };
+      }
+
+      return { async: true };
+    };
+  }
+
   // PreCompact hook — fires before conversation compaction.
   // Archives the full transcript so worker reasoning history is preserved.
   private preCompactHook: HookCallback = async (input) => {
@@ -610,7 +752,12 @@ export class WorkerRunner extends EventEmitter {
       const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
       if (gitConfig.requiresPR) {
         gitContext.push(`- Changes require PR to \`${prTarget}\``);
-        gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
+        // If buildd MCP is available, prefer create_pr action to avoid double PR creation
+        if (config.builddApiKey) {
+          gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
+        } else {
+          gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
+        }
       } else {
         gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
       }

@@ -1715,6 +1715,7 @@ function getModelDisplayName(model) {
   const names = {
     'claude-opus-4-6': 'Opus 4.6',
     'claude-opus-4-5-20251101': 'Opus 4.5',
+    'claude-sonnet-4-6': 'Sonnet 4.6',
     'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
     'claude-haiku-4-5-20251001': 'Haiku 4.5',
     'claude-haiku-4-20250514': 'Haiku 4',
