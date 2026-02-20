@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces, accounts } from '@buildd/core/db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -73,7 +73,36 @@ export async function GET(
             .where(and(...conditions))
             .orderBy(desc(workspaceSkills.createdAt));
 
-        return NextResponse.json({ skills: results });
+        // Compute usage stats in one efficient query using jsonb_array_elements_text
+        const statsMap = new Map<string, { recentRuns: number; totalRuns: number }>();
+        if (results.length > 0) {
+            const raw = await db.execute(sql`
+                SELECT
+                    elem AS skill_slug,
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS recent_runs,
+                    COUNT(*) AS total_runs
+                FROM tasks,
+                    jsonb_array_elements_text(context->'skillSlugs') elem
+                WHERE workspace_id = ${id}
+                    AND context ? 'skillSlugs'
+                GROUP BY elem
+            `);
+            const statsRows = (raw.rows ?? raw) as Array<{ skill_slug: string; recent_runs: string; total_runs: string }>;
+            for (const r of statsRows) {
+                statsMap.set(r.skill_slug, {
+                    recentRuns: Number(r.recent_runs),
+                    totalRuns: Number(r.total_runs),
+                });
+            }
+        }
+
+        const skillsWithStats = results.map(s => ({
+            ...s,
+            recentRuns: statsMap.get(s.slug)?.recentRuns ?? 0,
+            totalRuns: statsMap.get(s.slug)?.totalRuns ?? 0,
+        }));
+
+        return NextResponse.json({ skills: skillsWithStats });
     } catch (error) {
         console.error('List workspace skills error:', error);
         return NextResponse.json({ error: 'Failed to list workspace skills' }, { status: 500 });

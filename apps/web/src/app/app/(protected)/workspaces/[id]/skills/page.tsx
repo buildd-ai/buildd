@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { workspaces, workspaceSkills, tasks } from '@buildd/core/db/schema';
+import { eq, desc, sql } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -45,6 +45,35 @@ export default async function WorkspaceSkillsPage({
     orderBy: [desc(workspaceSkills.createdAt)],
   });
 
+  // Compute usage stats for each skill
+  const statsMap = new Map<string, { recentRuns: number; totalRuns: number }>();
+  if (skills.length > 0) {
+    const raw = await db.execute(sql`
+        SELECT
+            elem AS skill_slug,
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS recent_runs,
+            COUNT(*) AS total_runs
+        FROM tasks,
+            jsonb_array_elements_text(context->'skillSlugs') elem
+        WHERE workspace_id = ${id}
+            AND context ? 'skillSlugs'
+        GROUP BY elem
+    `);
+    const statsRows = (raw.rows ?? raw) as Array<{ skill_slug: string; recent_runs: string; total_runs: string }>;
+    for (const r of statsRows) {
+      statsMap.set(r.skill_slug, {
+        recentRuns: Number(r.recent_runs),
+        totalRuns: Number(r.total_runs),
+      });
+    }
+  }
+
+  const skillsWithStats = skills.map(s => ({
+    ...s,
+    recentRuns: statsMap.get(s.slug)?.recentRuns ?? 0,
+    totalRuns: statsMap.get(s.slug)?.totalRuns ?? 0,
+  }));
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -86,7 +115,7 @@ export default async function WorkspaceSkillsPage({
           </div>
         )}
 
-        <SkillList workspaceId={id} initialSkills={JSON.parse(JSON.stringify(skills))} />
+        <SkillList workspaceId={id} initialSkills={JSON.parse(JSON.stringify(skillsWithStats))} />
       </div>
     </main>
   );

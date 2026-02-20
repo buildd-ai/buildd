@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { uploadImagesToR2 } from '@/lib/upload';
 
@@ -34,6 +34,7 @@ interface CronPreview {
 
 export default function NewTaskPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -44,7 +45,7 @@ export default function NewTaskPage() {
   const [taskTargetBranch, setTaskTargetBranch] = useState('');
 
   // Skills state
-  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string }[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
 
@@ -102,17 +103,22 @@ export default function NewTaskPage() {
         setWorkspaces(ws);
 
         if (ws.length > 0) {
-          const lastUsed = localStorage.getItem(LAST_WORKSPACE_KEY);
-          const lastUsedExists = lastUsed && ws.some((w: Workspace) => w.id === lastUsed);
-
-          if (lastUsedExists) {
-            setSelectedWorkspaceId(lastUsed);
+          const wsParam = searchParams.get('workspaceId');
+          if (wsParam && ws.some((w: Workspace) => w.id === wsParam)) {
+            setSelectedWorkspaceId(wsParam);
           } else {
-            const defaultWs = ws.find((w: Workspace) => w.isDefault);
-            if (defaultWs) {
-              setSelectedWorkspaceId(defaultWs.id);
-            } else if (ws.length === 1) {
-              setSelectedWorkspaceId(ws[0].id);
+            const lastUsed = localStorage.getItem(LAST_WORKSPACE_KEY);
+            const lastUsedExists = lastUsed && ws.some((w: Workspace) => w.id === lastUsed);
+
+            if (lastUsedExists) {
+              setSelectedWorkspaceId(lastUsed);
+            } else {
+              const defaultWs = ws.find((w: Workspace) => w.isDefault);
+              if (defaultWs) {
+                setSelectedWorkspaceId(defaultWs.id);
+              } else if (ws.length === 1) {
+                setSelectedWorkspaceId(ws[0].id);
+              }
             }
           }
         }
@@ -131,9 +137,12 @@ export default function NewTaskPage() {
     fetch(`/api/workspaces/${selectedWorkspaceId}/skills?enabled=true`)
       .then(res => res.json())
       .then(data => {
-        setAvailableSkills(
-          (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name }))
-        );
+        const loadedSkills = (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description, recentRuns: s.recentRuns || 0 }));
+        setAvailableSkills(loadedSkills);
+        const skillSlugParam = searchParams.get('skillSlug');
+        if (skillSlugParam && loadedSkills.some((s: { slug: string }) => s.slug === skillSlugParam)) {
+          setSelectedSkillSlugs([skillSlugParam]);
+        }
       })
       .catch(() => setAvailableSkills([]));
     setSelectedSkillSlugs([]);
@@ -503,45 +512,46 @@ export default function NewTaskPage() {
             {availableSkills.length > 0 && (
               <div>
                 <label className="block text-sm font-medium mb-2">Skills</label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {selectedSkillSlugs.map(slug => {
-                    const skill = availableSkills.find(s => s.slug === slug);
+                <div className="border border-border-default rounded-lg overflow-hidden divide-y divide-border-default">
+                  {availableSkills.map(skill => {
+                    const selected = selectedSkillSlugs.includes(skill.slug);
                     return (
-                      <span
-                        key={slug}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 text-primary text-sm rounded-full"
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => setSelectedSkillSlugs(prev =>
+                          selected ? prev.filter(s => s !== skill.slug) : [...prev, skill.slug]
+                        )}
+                        className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors ${
+                          selected ? 'bg-primary/5' : 'hover:bg-surface-3'
+                        }`}
                       >
-                        {skill?.name || slug}
-                        <button
-                          type="button"
-                          onClick={() => setSelectedSkillSlugs(prev => prev.filter(s => s !== slug))}
-                          className="hover:text-primary-hover"
-                        >
-                          &times;
-                        </button>
-                      </span>
+                        <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
+                          selected ? 'bg-primary border-primary' : 'border-border-default'
+                        }`}>
+                          {selected && (
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-sm font-medium ${selected ? 'text-primary' : 'text-text-primary'}`}>{skill.name}</span>
+                            <code className="text-[11px] bg-surface-3 px-1.5 py-0.5 rounded text-text-muted">{skill.slug}</code>
+                            {(skill.recentRuns ?? 0) > 0 && (
+                              <span className="text-[11px] text-text-muted">{skill.recentRuns} run{skill.recentRuns === 1 ? '' : 's'} (30d)</span>
+                            )}
+                          </div>
+                          {skill.description && (
+                            <p className="text-xs text-text-muted mt-0.5 truncate">{skill.description}</p>
+                          )}
+                        </div>
+                      </button>
                     );
                   })}
                 </div>
-                <select
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value && !selectedSkillSlugs.includes(e.target.value)) {
-                      setSelectedSkillSlugs(prev => [...prev, e.target.value]);
-                    }
-                    e.target.value = '';
-                  }}
-                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
-                >
-                  <option value="">+ Add skill...</option>
-                  {availableSkills
-                    .filter(s => !selectedSkillSlugs.includes(s.slug))
-                    .map(s => (
-                      <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>
-                    ))
-                  }
-                </select>
-                <p className="text-xs text-text-secondary mt-1">
+                <p className="text-xs text-text-secondary mt-1.5">
                   Skills provide reusable instructions to the worker agent.
                 </p>
                 {selectedSkillSlugs.length > 0 && (
