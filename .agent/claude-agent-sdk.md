@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.49 (CLI parity: v2.1.49, Feb 20 2026)
+**Version documented**: 0.2.49 (CLI parity: v2.1.49, Feb 19 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.49` | Model capability discovery |
-| `apps/agent` | `>=0.2.49` | Model capability discovery |
-| `apps/local-ui` | `>=0.2.49` | Model capability discovery |
+| `packages/core` | `>=0.2.47` | Should bump to `>=0.2.49` |
+| `apps/agent` | `>=0.2.47` | Should bump to `>=0.2.49` |
+| `apps/local-ui` | `>=0.2.47` | Should bump to `>=0.2.49` |
 
 ---
 
@@ -44,7 +44,7 @@ const queryInstance = query({
   prompt: taskDescription,
   options: {
     cwd: workspacePath,
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-4-5-20250929',
     abortController,
     env: cleanEnv,
     settingSources: ['project'],
@@ -133,7 +133,7 @@ function unstable_v2_resumeSession(sessionId: string, options: SDKSessionOptions
 
 ```typescript
 await using session = unstable_v2_createSession({
-  model: 'claude-sonnet-4-6',
+  model: 'claude-sonnet-4-5-20250929',
   permissionMode: 'acceptEdits',
   allowedTools: ['Read', 'Write', 'Bash'],
 });
@@ -234,7 +234,7 @@ type SdkBeta = 'context-1m-2025-08-07';
 
 // Usage:
 options: {
-  model: 'claude-sonnet-4-6',  // Sonnet 4/4.5/4.6 only
+  model: 'claude-sonnet-4-5-20250929',  // Sonnet 4/4.5/4.6 only
   betas: ['context-1m-2025-08-07'],
 }
 ```
@@ -434,7 +434,7 @@ type HookEvent =
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
   | 'PermissionRequest'   // Permission dialog
-  | 'ConfigChange';       // Config file changed (v0.2.49+)
+  | 'ConfigChange';       // Configuration file changes (v0.2.49+)
 ```
 
 ### Agent Teams Hooks (experimental, not in HookEvent type)
@@ -515,12 +515,6 @@ type SessionStartHookInput = BaseHookInput & {
 type SessionEndHookInput = BaseHookInput & {
   hook_event_name: 'SessionEnd';
   reason: string;  // 'clear' | 'logout' | 'prompt_input_exit' | 'bypass_permissions_disabled' | 'other'
-};
-
-type ConfigChangeHookInput = BaseHookInput & {
-  hook_event_name: 'ConfigChange';
-  file_path: string;        // Path to the changed config file (e.g., CLAUDE.md, .claude/settings.json)
-  config_scope?: string;    // Scope of the config: 'project', 'user', 'local'
 };
 ```
 
@@ -1057,142 +1051,101 @@ Support for using claude.ai MCP connectors within Claude Code. This allows worke
 
 ---
 
-## 32. ConfigChange Hook (SDK v0.2.49+)
+## 32. ConfigChange Hook Event (SDK v0.2.49)
 
-New `ConfigChange` hook event fires when configuration files change during a session. Enables enterprise security auditing of worker config modifications.
-
-### Hook Input
+New hook event that fires when configuration files change during a session. Enables enterprise security auditing and optional blocking of settings changes.
 
 ```typescript
 type ConfigChangeHookInput = BaseHookInput & {
   hook_event_name: 'ConfigChange';
-  file_path: string;        // Path to the changed config file
-  config_scope?: string;    // 'project', 'user', or 'local'
+  // Configuration file change details
 };
-```
 
-### Usage
-
-```typescript
+// Usage:
 hooks: {
   ConfigChange: [{
     hooks: [async (input) => {
-      const { file_path, config_scope } = input as ConfigChangeHookInput;
-      console.log(`Config changed: ${file_path} (scope: ${config_scope})`);
-      // Audit log, alert, or optionally block
+      const configInput = input as ConfigChangeHookInput;
+      // Audit or block configuration changes
+      // Return { continue: false } to block the change
       return {};
     }]
   }]
 }
 ```
 
-### Buildd Integration
-
-Both `worker-runner.ts` and `local-ui/workers.ts` register a `ConfigChange` hook that:
-- Emits a `worker:config_change` SSE event with `filePath` and `configScope`
-- Adds a milestone to the worker activity timeline (displayed with `c` icon in yellow)
-- Logs the change for audit purposes
-
-**Use case**: Enterprise customers can audit when workers modify CLAUDE.md, `.claude/settings.json`, or other project config during execution. Important for verifying workers aren't modifying their own instructions.
-
-**Note**: Requires SDK `>=0.2.49`. The hook key needs `as any` cast until the SDK type definitions are updated.
+**Buildd use case**: Monitor and audit configuration changes in long-running workers, especially when workers modify CLAUDE.md or other project settings. Could log config changes to the dashboard for audit trails.
 
 ---
 
-<<<<<<< HEAD
-## 33. Model Capability Discovery (SDK v0.2.49, CLI v2.1.49)
+## 33. Model Capability Discovery (SDK v0.2.49)
 
-`supportedModels()` now returns `ModelInfo` objects with capability fields:
+SDK model info now includes capability fields for runtime feature detection:
 
 ```typescript
-type ModelInfo = {
-  value: string;           // Model identifier (e.g., 'claude-opus-4-6')
-  displayName: string;     // Human-readable name
-  description: string;     // Model description
-  // NEW in v0.2.49:
-  supportsEffort: boolean;              // Whether model supports effort levels
-  supportedEffortLevels: string[];      // e.g., ['low', 'medium', 'high', 'max']
+// Fields available on model info objects (from supportedModels()):
+{
+  supportsEffort: boolean;              // Whether model supports effort specification
+  supportedEffortLevels: string[];      // Available effort levels (e.g., ['low', 'medium', 'high', 'max'])
   supportsAdaptiveThinking: boolean;    // Whether model supports adaptive thinking
-};
+}
 ```
 
-### Usage
+**Buildd use case**: Instead of hardcoding model capability assumptions, workers can query model capabilities at runtime. This enables:
+- Dynamic effort level selection based on model support
+- Graceful degradation when a model doesn't support thinking/effort
+- Dashboard UI showing available model features per workspace
 
-```typescript
-const q = query({ prompt, options });
-const models = await q.supportedModels();
-const current = models.find(m => m.value === 'claude-opus-4-6');
+---
 
-if (current?.supportsEffort) {
-  console.log(`Effort levels: ${current.supportedEffortLevels.join(', ')}`);
-}
-if (current?.supportsAdaptiveThinking) {
-  console.log('Adaptive thinking available');
-=======
-## 33. Worktree Isolation for Subagents (SDK v0.2.49 / CLI v2.1.49)
+## 34. Worktree Isolation for Subagents (CLI v2.1.49)
 
-Agent definitions now support `isolation: 'worktree'`, which runs each subagent in a temporary git worktree. This prevents file conflicts when multiple subagents work in parallel on the same repository.
-
-### Agent Definition with Isolation
+Agent definitions now support `isolation: "worktree"` to run subagents in temporary git worktrees:
 
 ```typescript
 options: {
   agents: {
-    'security-auditor': {
-      description: 'Audit code for vulnerabilities',
-      prompt: 'You are a security expert...',
-      tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+    'isolated-worker': {
+      description: 'Works in isolated worktree',
+      prompt: 'Do the work...',
+      tools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
       model: 'inherit',
-      isolation: 'worktree',  // Each subagent gets its own git worktree
+      isolation: 'worktree',  // v2.1.49+
     }
   }
->>>>>>> ff39928 (feat: add worktree isolation support for subagent definitions)
 }
 ```
 
-### Buildd Integration
+Also available via CLI: `claude --worktree` (`-w`) flag.
 
-<<<<<<< HEAD
-Both `worker-runner.ts` and `local-ui/workers.ts` call `supportedModels()` after query creation to:
-1. Validate configured `effort` and `thinking` options against actual model capabilities
-2. Log warnings (not errors) when configured options are unsupported
-3. Emit `worker:model_capabilities` SSE events with capability info for the dashboard
-4. Store capabilities on worker state for API access
+**Buildd use case**: Subagents working on different parts of a task can operate in isolated worktrees, preventing file conflicts when multiple subagents are active. Particularly useful for agent teams doing parallel work on the same repo.
 
-The SDK gracefully handles unsupported options (ignores them without erroring), so the capability check is informational — preventing user confusion when settings don't take effect.
+---
+
+## 35. Sonnet 4.6 with 1M Context (CLI v2.1.49)
+
+Sonnet 4.5 with 1M context is being removed in favor of Sonnet 4.6 with 1M context. Update any `betas: ['context-1m-2025-08-07']` usage to target Sonnet 4.6 instead of Sonnet 4.5.
+
+---
+
+## 36. Additional v2.1.49 Improvements
+
+- **WASM memory fix**: Fixed unbounded WASM memory growth during long sessions by periodically resetting tree-sitter parser — critical for long-running Buildd workers
+- **Non-interactive performance**: Improved performance in `-p` mode by skipping unnecessary API calls — benefits Buildd workers which always run non-interactively
+- **MCP auth caching**: Improved performance by caching authentication failures for HTTP/SSE MCP servers — reduces overhead for Buildd's MCP integration
+- **CWD recovery**: Fixed shell commands permanently failing after a command deletes its own working directory — prevents worker stalls
+- **Unicode fix**: Fixed Edit tool silently corrupting Unicode curly quotes
+- **Background agent management**: Ctrl+C now properly kills background agents (two-press confirmation) instead of being silently ignored
+- **Plugin settings**: Plugins can now ship `settings.json` for default configuration
+- **Permission suggestions**: Permission suggestions now populated when safety checks trigger an "ask" response (already captured by Buildd's PermissionRequest hook)
 
 ---
 
 ## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
-=======
-Controlled via `gitConfig.useWorktreeIsolation` (workspace-level) or `task.context.useWorktreeIsolation` (task-level override):
-
-```typescript
-// Resolve worktree isolation: task-level override > workspace-level setting
-const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
-const useWorktreeIsolation = taskWorktreeIsolation !== undefined
-  ? Boolean(taskWorktreeIsolation)
-  : Boolean(gitConfig?.useWorktreeIsolation);
-
-// Add to agent definitions
-agents[bundle.slug] = {
-  ...agentDef,
-  ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
-};
-```
-
-**Requirements**: Git repo context. Non-git workspaces should not enable this option.
-
-**Use case**: Agent teams doing parallel work — multiple subagents can edit files without clobbering each other.
-
----
-
-## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
->>>>>>> ff39928 (feat: add worktree isolation support for subagent definitions)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
-| 2.1.49 | 0.2.49 | `ModelInfo` includes `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` for capability discovery |
+| 2.1.49 | 0.2.49 | `ConfigChange` hook event; model capability discovery (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`); worktree isolation for subagents (`isolation: "worktree"`); `--worktree` CLI flag; Sonnet 4.6 replaces Sonnet 4.5 for 1M context; WASM memory fix (tree-sitter reset); non-interactive perf improvement; MCP auth caching; CWD recovery fix; Unicode edit fix; background agent kill (Ctrl+C); plugin settings.json; permission suggestions on safety checks |
 | 2.1.47 | 0.2.47 | `promptSuggestion()` method; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop hooks; memory improvements (stream buffers, task history trimming, O(n²) progress fix); concurrent agent API 400 fix; deferred SessionStart hook (~500ms faster); bash permission classifier fix |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors support; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
@@ -1209,6 +1162,12 @@ agents[bundle.slug] = {
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
+- **WASM memory fix** — Fixed unbounded WASM memory growth during long sessions by periodically resetting tree-sitter parser (v2.1.49) — critical for long-running workers
+- **CWD recovery** — Shell commands no longer permanently fail after a command deletes its own working directory (v2.1.49)
+- **Non-interactive performance** — Improved performance in `-p` mode by skipping unnecessary API calls (v2.1.49) — benefits all Buildd workers
+- **MCP auth caching** — Improved performance by caching auth failures for HTTP/SSE MCP servers (v2.1.49)
+- **Unicode edit fix** — Edit tool no longer silently corrupts Unicode curly quotes (v2.1.49)
+- **Background agent kill** — Ctrl+C/ESC no longer silently ignored when background agents running (v2.1.49)
 - **Concurrent agent API 400 fix** — prevents "thinking blocks cannot be modified" errors with concurrent subagents (v2.1.47)
 - **Memory improvements** — API stream buffer release, agent task message trimming, O(n²) progress update fix (v2.1.47)
 - **Deferred SessionStart hook** — ~500ms faster startup (v2.1.47)
@@ -1231,7 +1190,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 13 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange)
+- All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -1239,24 +1198,28 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - In-process MCP server (worker-runner.ts) and subprocess MCP server (local-ui)
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
-- **Model capability discovery** — `supportedModels()` validates effort/thinking at startup, emits `worker:model_capabilities` events
 
 ### Pending Enhancements (Buildd tasks created)
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes during worker sessions | P3 | Task created |
+| Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` fields | P3 | Task created |
+| Worktree isolation for subagents | `isolation: "worktree"` on agent definitions for parallel-safe subagents | P2 | Task created |
+| Bump SDK pin to `>=0.2.49` | Get WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Task created |
+| Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed; Sonnet 4.6 1M is replacement | P2 | Task created |
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Effort/thinking controls | `effort`, `thinking` options | P4 | Integrated (#82) |
+| Fallback model | `fallbackModel` option | P4 | Integrated (#81) |
+| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 | Integrated (conditional on Sonnet models) |
+| maxTurns | `maxTurns` option | P4 | Integrated in worker-runner.ts |
 
 ### Completed Integrations (previously pending)
 
-- **`ConfigChange` hook** — Integrated in both workers.ts and worker-runner.ts; emits `worker:config_change` SSE event; displayed in dashboard timeline with yellow `c` icon
-- **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
-- **Model capability discovery** — `supportedModels()` validates effort/thinking/betas at worker startup
+- **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)
 - **1M context beta** — Integrated conditionally for Sonnet models via `extendedContext` config
-- **Effort/thinking controls** — Integrated with capability validation (#82)
-- **Fallback model** — Integrated (#81)
 - **maxTurns** — Integrated in worker-runner.ts via workspace/task config
 
 ### Python SDK Evaluation (2026-02-18)
@@ -1305,7 +1268,7 @@ options: {
 | `setModel(model?)` | Switch model mid-session |
 | `setMaxThinkingTokens(n)` | Change max thinking tokens mid-session |
 | `supportedCommands()` | List available slash commands |
-| `supportedModels()` | List available models with capabilities (v0.2.49+: `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) |
+| `supportedModels()` | List available models with display info |
 | `mcpServerStatus()` | Get MCP server statuses |
 | `accountInfo()` | Get account info |
 | `rewindFiles(messageId, opts?)` | Rewind file changes (requires `enableFileCheckpointing`) |

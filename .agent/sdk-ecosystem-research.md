@@ -1,6 +1,6 @@
 # Claude Agent SDK Ecosystem Research
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-20
 > Purpose: Track how the community uses the Claude Agent SDK and identify features/patterns Buildd should adopt.
 
 ## Community Projects Using the SDK
@@ -58,6 +58,12 @@
 7. **`thinking` / Extended Reasoning** — `{ type: 'adaptive' }` or `{ type: 'enabled', budgetTokens: N }` for complex architectural tasks.
 8. **Plan Mode Review UI** — Currently plans are auto-approved. Could add dashboard step for human review.
 9. **`additionalDirectories`** — Workers accessing shared monorepo packages outside CWD.
+
+### New in v0.2.49
+14. **`ConfigChange` hook** — Enterprise security auditing of config changes during worker sessions.
+15. **Model capability discovery** (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) — Runtime feature detection instead of hardcoded model assumptions.
+16. **Worktree isolation** (`isolation: "worktree"` on agent definitions) — Subagents in isolated worktrees for parallel-safe work.
+17. **Sonnet 4.6 1M context** — Sonnet 4.5 1M being removed; update 1M context beta to target Sonnet 4.6.
 
 ### Lower Priority
 10. **`forkSession`** — A/B testing agent behavior, branching workflows.
