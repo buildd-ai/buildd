@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, artifacts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ArtifactType } from '@buildd/shared';
@@ -15,7 +15,7 @@ const DELIVERABLE_TYPES = new Set([
   ArtifactType.SUMMARY,
 ]);
 
-// POST /api/workers/[id]/artifacts - Create an artifact for a worker
+// POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -44,7 +44,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { type, title, content, url, metadata } = body;
+  const { type, title, content, url, metadata, key } = body;
 
   if (!type || !DELIVERABLE_TYPES.has(type)) {
     return NextResponse.json(
@@ -62,18 +62,72 @@ export async function POST(
     return NextResponse.json({ error: 'url is required for link artifacts' }, { status: 400 });
   }
 
-  const shareToken = randomBytes(24).toString('base64url');
-
   // Merge url into metadata for LINK type
   const artifactMetadata = {
     ...(metadata || {}),
     ...(url ? { url } : {}),
   };
 
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'https://buildd.dev';
+
+  // If key is provided, try to upsert by (workspaceId, key)
+  if (key && typeof key === 'string' && worker.workspaceId) {
+    const existing = await db.query.artifacts.findFirst({
+      where: and(
+        eq(artifacts.workspaceId, worker.workspaceId),
+        eq(artifacts.key, key),
+      ),
+    });
+
+    if (existing) {
+      // Update existing artifact, preserve shareToken
+      const [updated] = await db
+        .update(artifacts)
+        .set({
+          title,
+          content: content || null,
+          metadata: artifactMetadata,
+          workerId: id,
+          type,
+          updatedAt: new Date(),
+        })
+        .where(eq(artifacts.id, existing.id))
+        .returning();
+
+      const shareUrl = `${baseUrl}/share/${updated.shareToken}`;
+
+      await triggerEvent(
+        channels.worker(id),
+        events.WORKER_PROGRESS,
+        { worker, artifact: { ...updated, shareUrl } }
+      );
+
+      if (worker.workspaceId) {
+        await triggerEvent(
+          channels.workspace(worker.workspaceId),
+          'worker:artifact',
+          { worker, artifact: { ...updated, shareUrl } }
+        );
+      }
+
+      return NextResponse.json({
+        artifact: { ...updated, shareUrl },
+        upserted: true,
+      });
+    }
+  }
+
+  // Insert new artifact
+  const shareToken = randomBytes(24).toString('base64url');
+
   const [artifact] = await db
     .insert(artifacts)
     .values({
       workerId: id,
+      workspaceId: worker.workspaceId || null,
+      key: key || null,
       type,
       title,
       content: content || null,
@@ -82,10 +136,6 @@ export async function POST(
     })
     .returning();
 
-  // Compute share URL
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
   const shareUrl = `${baseUrl}/share/${shareToken}`;
 
   // Trigger realtime events
