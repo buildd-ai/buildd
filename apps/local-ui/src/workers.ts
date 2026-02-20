@@ -1672,7 +1672,7 @@ export class WorkerManager {
         },
         // Resume previous session if provided (loads full conversation history from disk)
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-        // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+        // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls for reasoning behavior
         ...(thinking ? { thinking } : {}),

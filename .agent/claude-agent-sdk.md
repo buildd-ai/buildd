@@ -44,7 +44,7 @@ const queryInstance = query({
   prompt: taskDescription,
   options: {
     cwd: workspacePath,
-    model: 'claude-sonnet-4-5-20250929',
+    model: 'claude-sonnet-4-6',
     abortController,
     env: cleanEnv,
     settingSources: ['project'],
@@ -133,7 +133,7 @@ function unstable_v2_resumeSession(sessionId: string, options: SDKSessionOptions
 
 ```typescript
 await using session = unstable_v2_createSession({
-  model: 'claude-sonnet-4-5-20250929',
+  model: 'claude-sonnet-4-6',
   permissionMode: 'acceptEdits',
   allowedTools: ['Read', 'Write', 'Bash'],
 });
@@ -234,7 +234,7 @@ type SdkBeta = 'context-1m-2025-08-07';
 
 // Usage:
 options: {
-  model: 'claude-sonnet-4-5-20250929',  // Sonnet 4/4.5/4.6 only
+  model: 'claude-sonnet-4-6',  // Sonnet 4/4.5/4.6 only
   betas: ['context-1m-2025-08-07'],
 }
 ```

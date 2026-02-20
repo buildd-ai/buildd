@@ -136,7 +136,7 @@ export class WorkerRunner extends EventEmitter {
           // Structured output: pass outputFormat if task defines an outputSchema
           ...(outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: outputSchema } } : {}),
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
-          // 1M context beta for Sonnet 4.x models (reduces compaction at higher cost)
+          // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
           ...(betas ? { betas } : {}),
           // Thinking/effort controls for reasoning behavior
           ...(thinking ? { thinking } : {}),
