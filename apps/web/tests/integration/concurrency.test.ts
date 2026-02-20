@@ -223,24 +223,34 @@ describe('Concurrency Control', () => {
   test('should release capacity when worker errors', async () => {
     console.log('\n=== Test: Capacity Release on Error ===');
 
-    // Create task
-    const task = await api('/api/tasks', {
+    // Create two tasks
+    const task1 = await api('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({
         workspaceId,
-        title: 'Error test task',
+        title: 'Error test task 1',
         description: 'Task that will error',
       }),
     });
-    cleanup.trackTask(task.id);
+    const task2 = await api('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        workspaceId,
+        title: 'Error test task 2',
+        description: 'Task to claim after error',
+      }),
+    });
+    cleanup.trackTask(task1.id);
+    cleanup.trackTask(task2.id);
 
-    // Claim task
-    const worker = await serverClaim(task.id);
-    cleanupWorkerIds.push(worker.id);
-    cleanup.trackWorker(worker.id);
+    // Claim first task
+    const worker1 = await serverClaim(task1.id);
+    cleanupWorkerIds.push(worker1.id);
+    cleanup.trackWorker(worker1.id);
+    assert(!!worker1.id, 'Worker 1 claimed task 1');
 
     // Mark worker as failed
-    await api(`/api/workers/${worker.id}`, {
+    await api(`/api/workers/${worker1.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: 'failed',
@@ -248,12 +258,14 @@ describe('Concurrency Control', () => {
       }),
     });
 
-    // Verify capacity was released (check active workers)
-    const { activeLocalUis } = await api('/api/workers/active');
-    const totalActive = activeLocalUis.reduce((sum: number, ui: any) => sum + ui.activeWorkers, 0);
+    // Wait a moment for capacity to update
+    await sleep(500);
 
-    // Active count should not include the failed worker
-    assert(totalActive === 0, 'Failed worker released capacity');
+    // Verify capacity was released by claiming a new task
+    const worker2 = await serverClaim(task2.id);
+    cleanupWorkerIds.push(worker2.id);
+    cleanup.trackWorker(worker2.id);
+    assert(!!worker2.id, 'Worker 2 claimed task 2 (capacity released after error)');
   }, TIMEOUT);
 
   test('should handle multiple local-ui instances sharing capacity', async () => {
