@@ -135,7 +135,7 @@ export async function POST(
                 : {}),
 
             // Block config file changes during worker sessions (ConfigChange hook)
-            ...(body.blockConfigChanges === true ? { blockConfigChanges: true } : {}),
+            ...(typeof body.blockConfigChanges === 'boolean' ? { blockConfigChanges: body.blockConfigChanges } : {}),
 
             // Fallback model (SDK v0.2.45+)
             ...(typeof body.fallbackModel === 'string' && body.fallbackModel.trim()

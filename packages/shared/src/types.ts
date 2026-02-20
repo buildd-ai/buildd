@@ -645,7 +645,6 @@ export type SSEEventType =
   | 'worker:permission_request'
   | 'worker:config_change'
   | 'worker:rate_limit'
-  | 'worker:config_change'
   | 'worker:model_capabilities'
   | 'task:updated'
   | 'task:unblocked'

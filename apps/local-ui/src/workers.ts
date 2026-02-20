@@ -1158,22 +1158,6 @@ export class WorkerManager {
     };
   }
 
-  // Create a Stop hook that captures the agent's final response text.
-  // Stores last_assistant_message on the worker for use as completion summary.
-  private createStopHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'Stop') return {};
-
-      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
-      if (lastAssistantMessage) {
-        worker.lastAssistantMessage = lastAssistantMessage;
-      }
-      console.log(`[Worker ${worker.id}] Stop hook (has_message: ${!!lastAssistantMessage})`);
-
-      return { async: true };
-    };
-  }
-
   // Create a Stop hook that captures the last assistant message (v0.2.47+).
   // Used to generate prompt suggestions for follow-up actions after task completion.
   private createStopHook(worker: LocalWorker): HookCallback {
@@ -1312,26 +1296,6 @@ export class WorkerManager {
         // Transcript file may not exist or be unreadable — non-fatal
       }
       return {};
-    };
-  }
-
-  // Create a ConfigChange hook that logs config file changes during a session (SDK v0.2.49+).
-  // Emits milestones for dashboard visibility and audit trail.
-  private createConfigChangeHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'ConfigChange') return {};
-
-      const filePath = (input as any).file_path as string;
-      const configScope = (input as any).config_scope as string | undefined;
-
-      const fileName = filePath?.split('/').pop() || filePath || 'unknown';
-      const label = configScope
-        ? `Config changed (${configScope}): ${fileName}`
-        : `Config changed: ${fileName}`;
-      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Config change: ${filePath} (scope: ${configScope || 'unknown'})`);
-
-      return { async: true };
     };
   }
 
@@ -1850,7 +1814,6 @@ export class WorkerManager {
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
-        Stop: [{ hooks: [this.createStopHook(worker)] }],
         TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
