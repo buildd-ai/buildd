@@ -6,8 +6,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { execSync } from "child_process";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync } from "fs";
+import { join, resolve } from "path";
 import { homedir } from "os";
 
 /**
@@ -155,6 +155,67 @@ async function apiCall(endpoint: string, options: RequestInit = {}) {
   return response.json();
 }
 
+/**
+ * Parse YAML-like frontmatter from SKILL.md content
+ */
+function parseFrontmatter(content: string): { meta: Record<string, string>; body: string } {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { meta: {}, body: content };
+
+  const meta: Record<string, string> = {};
+  for (const line of match[1].split('\n')) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0) {
+      const key = line.slice(0, colonIdx).trim();
+      const value = line.slice(colonIdx + 1).trim();
+      meta[key] = value;
+    }
+  }
+  return { meta, body: match[2] };
+}
+
+/**
+ * Parse a GitHub source string like "github:owner/repo/path@ref"
+ */
+function parseGitHubSource(source: string): { owner: string; repo: string; path: string; ref: string } {
+  let rest = source.replace(/^github:/, '');
+
+  let ref = '';
+  const atIdx = rest.indexOf('@');
+  if (atIdx > 0) {
+    ref = rest.slice(atIdx + 1);
+    rest = rest.slice(0, atIdx);
+  }
+
+  const parts = rest.split('/');
+  const owner = parts[0];
+  const repo = parts[1];
+  const path = parts.slice(2).join('/');
+
+  return { owner, repo, path, ref };
+}
+
+/**
+ * Fetch a single SKILL.md file from GitHub using raw.githubusercontent.com
+ */
+async function fetchGitHubSkill(gh: { owner: string; repo: string; path: string; ref: string }): Promise<string> {
+  const filePath = gh.path || 'SKILL.md';
+  const ref = gh.ref || 'main';
+  const url = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${ref}/${filePath}`;
+
+  const headers: Record<string, string> = {};
+  const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (ghToken) {
+    headers['Authorization'] = `token ${ghToken}`;
+  }
+
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    throw new Error(`GitHub fetch failed (${response.status}): ${url}`);
+  }
+  return response.text();
+}
+
 // Create MCP server
 const server = new Server(
   {
@@ -249,7 +310,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
 - update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate? (full template replacement), skillSlugs? (array — shorthand to inject into taskTemplate.context.skillSlugs), workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
-- register_skill: { name (required), content (required), description?, source?, workspaceId? } [admin]
+- register_skill: { name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin] — Provide content directly, OR filePath to read a local .md file, OR repo to fetch from GitHub (format: "github:owner/repo/path@ref"). name and description are auto-extracted from SKILL.md frontmatter if not provided.
 - review_workspace: { hoursBack? (default 24, max 168), workspaceId? } — reviews recently completed/failed tasks for protocol violations (missing PRs, failed without follow-up, etc.)`,
           },
         },
@@ -760,8 +821,22 @@ export BUILDD_SERVER=${SERVER_URL}`;
           if (params.enabled !== undefined) updateBody.enabled = params.enabled;
           if (params.name !== undefined) updateBody.name = params.name;
 
+          // Support taskTemplate replacement and skillSlugs shorthand
+          if (params.taskTemplate !== undefined) {
+            updateBody.taskTemplate = params.taskTemplate;
+          }
+          if (params.skillSlugs && Array.isArray(params.skillSlugs) && params.skillSlugs.length > 0) {
+            // Fetch current schedule to merge skillSlugs into existing taskTemplate
+            const current = await apiCall(`/api/workspaces/${workspaceId2}/schedules/${params.scheduleId}`);
+            const currentTemplate = current.schedule?.taskTemplate || {};
+            updateBody.taskTemplate = {
+              ...currentTemplate,
+              context: { ...(currentTemplate.context || {}), skillSlugs: params.skillSlugs },
+            };
+          }
+
           if (Object.keys(updateBody).length === 0) {
-            throw new Error("At least one field (cronExpression, timezone, enabled, name) must be provided");
+            throw new Error("At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs) must be provided");
           }
 
           const updated = await apiCall(`/api/workspaces/${workspaceId2}/schedules/${params.scheduleId}`, {
@@ -815,9 +890,37 @@ export BUILDD_SERVER=${SERVER_URL}`;
             throw new Error("This operation requires an admin-level token");
           }
 
-          if (!params.name || !params.content) {
-            throw new Error("name and content are required");
+          // Resolve content from one of three sources
+          let skillContent: string;
+          let resolvedSource: string;
+
+          if (params.filePath) {
+            const resolvedPath = resolve(params.filePath as string);
+            if (!existsSync(resolvedPath)) {
+              throw new Error(`File not found: ${resolvedPath}`);
+            }
+            skillContent = readFileSync(resolvedPath, 'utf-8');
+            resolvedSource = `file:${resolvedPath}`;
+          } else if (params.repo) {
+            const gh = parseGitHubSource(params.repo as string);
+            skillContent = await fetchGitHubSkill(gh);
+            resolvedSource = params.repo as string;
+          } else if (params.content) {
+            skillContent = params.content as string;
+            resolvedSource = (params.source as string) || 'mcp';
+          } else {
+            throw new Error("One of content, filePath, or repo is required");
           }
+
+          // Parse frontmatter for auto-extracted metadata
+          const { meta: frontmatter } = parseFrontmatter(skillContent);
+
+          const skillName = (params.name as string) || frontmatter.name;
+          if (!skillName) {
+            throw new Error("name is required — provide it as a parameter or in SKILL.md frontmatter");
+          }
+
+          const skillDescription = (params.description as string) || frontmatter.description || undefined;
 
           const workspaceId = (params.workspaceId as string) || await getWorkspaceId();
           if (!workspaceId) {
@@ -827,10 +930,10 @@ export BUILDD_SERVER=${SERVER_URL}`;
           const data = await apiCall(`/api/workspaces/${workspaceId}/skills`, {
             method: "POST",
             body: JSON.stringify({
-              name: params.name,
-              content: params.content,
-              description: params.description || undefined,
-              source: params.source || 'mcp',
+              name: skillName,
+              content: skillContent,
+              description: skillDescription,
+              source: (params.source as string) || resolvedSource,
             }),
           });
 
