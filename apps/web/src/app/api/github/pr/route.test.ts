@@ -501,6 +501,84 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.base).toBe('main');
   });
 
+  it('uses task context targetBranch over workspace gitConfig', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+        gitConfig: { targetBranch: 'dev' },
+      },
+      task: {
+        context: { targetBranch: 'release/1.0' },
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 10,
+      html_url: 'https://github.com/owner/repo/pull/10',
+      state: 'open',
+      title: 'Test PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'Test PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    const [, , options] = mockGithubApi.mock.calls[0];
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.base).toBe('release/1.0');
+  });
+
+  it('explicit base param overrides task context targetBranch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+        gitConfig: { targetBranch: 'dev' },
+      },
+      task: {
+        context: { targetBranch: 'release/1.0' },
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 10,
+      html_url: 'https://github.com/owner/repo/pull/10',
+      state: 'open',
+      title: 'Test PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'Test PR', head: 'feature-branch', base: 'hotfix' },
+    });
+    await POST(req);
+
+    const [, , options] = mockGithubApi.mock.calls[0];
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.base).toBe('hotfix');
+  });
+
   it('uses default body text when prBody not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
