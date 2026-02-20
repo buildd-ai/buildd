@@ -6,9 +6,9 @@
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.47` | Should bump to `>=0.2.49` |
-| `apps/agent` | `>=0.2.47` | Should bump to `>=0.2.49` |
-| `apps/local-ui` | `>=0.2.47` | Should bump to `>=0.2.49` |
+| `packages/core` | `>=0.2.49` | Current |
+| `apps/agent` | `>=0.2.49` | Current |
+| `apps/local-ui` | `>=0.2.49` | Current |
 
 ---
 

@@ -277,7 +277,7 @@ type PermissionRequestHookInput = BaseHookInput & {
   hook_event_name: 'PermissionRequest';
   tool_name: string;
   tool_input: unknown;
-  permission_suggestions?: PermissionUpdate[];
+  permission_suggestions?: PermissionUpdate[];  // v0.2.49: now populated on safety check triggers
 };
 
 type NotificationHookInput = BaseHookInput & {
