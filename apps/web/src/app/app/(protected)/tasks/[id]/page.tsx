@@ -213,6 +213,7 @@ export default async function TaskDetailPage({
           </div>
         </div>
 
+        <div className="flex flex-col">
         {/* Description */}
         {task.description && (
           <div className="mb-6">
@@ -360,7 +361,7 @@ export default async function TaskDetailPage({
 
         {/* Active Worker */}
         {activeWorker && (
-          <div className="mb-8">
+          <div className="mb-8 order-first md:order-none">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true"></span>
               Active Worker
@@ -402,6 +403,8 @@ export default async function TaskDetailPage({
             />
           </div>
         )}
+
+        </div>{/* end flex container */}
 
         {/* Deliverables */}
         {(task.result as any) && (

@@ -49,6 +49,9 @@ export default function NewTaskPage() {
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
 
+  // Advanced options toggle
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Dependency state
   const [depSearch, setDepSearch] = useState('');
   const [depResults, setDepResults] = useState<{ id: string; title: string; status: string }[]>([]);
@@ -408,34 +411,9 @@ export default function NewTaskPage() {
                         <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">configure</Link>
                       </span>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const input = document.getElementById('taskTargetBranch');
-                        if (input) input.focus();
-                        else setTaskTargetBranch(taskTargetBranch ? '' : ' ');
-                      }}
-                      className="text-xs text-text-muted hover:text-primary"
-                    >
-                      {taskTargetBranch ? 'clear override' : 'override for this task'}
-                    </button>
                   </div>
                 );
               })()}
-              {(taskTargetBranch !== '') && (
-                <div className="mt-2">
-                  <input
-                    id="taskTargetBranch"
-                    type="text"
-                    value={taskTargetBranch}
-                    onChange={(e) => setTaskTargetBranch(e.target.value.trim())}
-                    placeholder="e.g. release/1.0, hotfix, main"
-                    className="w-full px-3 py-1.5 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-                    autoFocus
-                  />
-                  <p className="text-xs text-text-muted mt-1">Override workspace default for this task only. PRs will target this branch.</p>
-                </div>
-              )}
             </div>
 
             {/* Schedule name (recurring only) */}
@@ -468,44 +446,6 @@ export default function NewTaskPage() {
                 placeholder={recurring ? "Run full test suite" : "Fix login bug"}
                 className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
-            </div>
-
-            <div>
-              <label htmlFor="description" className="block text-sm font-medium mb-2">
-                Description
-              </label>
-              <textarea
-                id="description"
-                name="description"
-                required={!recurring}
-                rows={recurring ? 4 : 6}
-                placeholder={recurring
-                  ? "Instructions for each run. Agents receive this every time the schedule fires."
-                  : "Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
-                }
-                onPaste={handlePaste}
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-              />
-              {pastedImages.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {pastedImages.map((img, i) => (
-                    <div key={i} className="relative group">
-                      <img
-                        src={img.data}
-                        alt={img.filename}
-                        className="max-h-24 rounded border border-border-default"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(i)}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Skills picker */}
@@ -574,150 +514,238 @@ export default function NewTaskPage() {
             )}
 
             <div>
-              <label htmlFor="priority" className="block text-sm font-medium mb-2">
-                Priority (0-10)
+              <label htmlFor="description" className="block text-sm font-medium mb-2">
+                Description
               </label>
-              <input
-                type="number"
-                id="priority"
-                name="priority"
-                min="0"
-                max="10"
-                defaultValue="5"
+              <textarea
+                id="description"
+                name="description"
+                required={!recurring}
+                rows={recurring ? 4 : 6}
+                placeholder={recurring
+                  ? "Instructions for each run. Agents receive this every time the schedule fires."
+                  : "Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
+                }
+                onPaste={handlePaste}
                 className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
+              {pastedImages.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {pastedImages.map((img, i) => (
+                    <div key={i} className="relative group">
+                      <img
+                        src={img.data}
+                        alt={img.filename}
+                        className="max-h-24 rounded border border-border-default"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImage(i)}
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Dependencies (one-time tasks only) */}
-            {!recurring && selectedWorkspaceId && (
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Dependencies <span className="text-text-muted font-normal">(optional)</span>
-                </label>
-                {selectedDeps.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {selectedDeps.map(dep => (
-                      <span
-                        key={dep.id}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-status-info/10 text-status-info text-sm rounded-full"
-                      >
-                        {dep.title}
-                        <button
-                          type="button"
-                          onClick={() => setSelectedDeps(prev => prev.filter(d => d.id !== dep.id))}
-                          className="hover:text-status-info/80"
-                        >
-                          &times;
-                        </button>
-                      </span>
-                    ))}
-                  </div>
+            {/* ── Advanced Options (Progressive Disclosure) ── */}
+            <div className="border-t border-border-default pt-4">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                <svg
+                  className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Advanced options
+                {(requirePlan || useOutputSchema || selectedDeps.length > 0 || taskTargetBranch) && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
-                <input
-                  type="text"
-                  value={depSearch}
-                  onChange={(e) => setDepSearch(e.target.value)}
-                  placeholder="Search for tasks to depend on..."
-                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
-                />
-                {depResults.length > 0 && (
-                  <div className="mt-1 border border-border-default rounded-md bg-surface-1 max-h-40 overflow-y-auto">
-                    {depResults.map(result => (
-                      <button
-                        key={result.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedDeps(prev => [...prev, { id: result.id, title: result.title }]);
-                          setDepSearch('');
-                          setDepResults([]);
-                        }}
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center justify-between"
-                      >
-                        <span className="truncate">{result.title}</span>
-                        <span className="text-xs text-text-muted ml-2">{result.status}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {depLoading && (
-                  <p className="text-xs text-text-muted mt-1">Searching...</p>
-                )}
-                <p className="text-xs text-text-secondary mt-1">
-                  Task will start as &quot;blocked&quot; until all dependencies complete.
-                </p>
-              </div>
-            )}
+              </button>
 
-            {/* Plan mode toggle (one-time tasks only) */}
-            {!recurring && (
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={requirePlan}
-                  onChange={(e) => setRequirePlan(e.target.checked)}
-                  className="w-[18px] h-[18px] accent-primary cursor-pointer"
-                />
-                <div>
-                  <span className="text-sm font-medium">Require plan first</span>
-                  <p className="text-xs text-text-secondary mt-0.5">
-                    Agent will create an implementation plan for your approval before writing code
-                  </p>
-                </div>
-              </label>
-            )}
-
-            {/* Structured output schema (one-time tasks only) */}
-            {!recurring && (
-              <div>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={useOutputSchema}
-                    onChange={(e) => setUseOutputSchema(e.target.checked)}
-                    className="w-[18px] h-[18px] accent-primary cursor-pointer"
-                  />
+              {showAdvanced && (
+                <div className="mt-4 space-y-6">
+                  {/* Priority — hidden input always present for form submission */}
                   <div>
-                    <span className="text-sm font-medium">Require structured output</span>
-                    <p className="text-xs text-text-secondary mt-0.5">
-                      Agent will return validated JSON matching a schema you define
-                    </p>
-                  </div>
-                </label>
-                {useOutputSchema && (
-                  <div className="mt-3 border border-border-default rounded-lg p-4 bg-surface-2">
-                    <label htmlFor="outputSchema" className="block text-sm font-medium mb-2">
-                      JSON Schema
+                    <label htmlFor="priority" className="block text-sm font-medium mb-2">
+                      Priority (0-10)
                     </label>
-                    <textarea
-                      id="outputSchema"
-                      value={outputSchemaText}
-                      onChange={(e) => {
-                        setOutputSchemaText(e.target.value);
-                        setOutputSchemaError('');
-                        try {
-                          JSON.parse(e.target.value);
-                        } catch {
-                          setOutputSchemaError('Invalid JSON');
-                        }
-                      }}
-                      rows={8}
-                      spellCheck={false}
-                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
-                      placeholder='{"type": "object", "properties": {...}, "required": [...]}'
+                    <input
+                      type="number"
+                      id="priority"
+                      name="priority"
+                      min="0"
+                      max="10"
+                      defaultValue="5"
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                     />
-                    {outputSchemaError && (
-                      <p className="text-xs text-status-error mt-1">{outputSchemaError}</p>
-                    )}
-                    <p className="text-xs text-text-secondary mt-1">
-                      Define the shape of the data you want back. Uses{' '}
-                      <a href="https://json-schema.org/understanding-json-schema/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                        JSON Schema
-                      </a>{' '}
-                      syntax.
-                    </p>
                   </div>
-                )}
-              </div>
+
+                  {/* Dependencies (one-time tasks only) */}
+                  {!recurring && selectedWorkspaceId && (
+                    <div>
+                      <label className="block text-sm font-medium mb-2">
+                        Dependencies <span className="text-text-muted font-normal">(optional)</span>
+                      </label>
+                      {selectedDeps.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {selectedDeps.map(dep => (
+                            <span
+                              key={dep.id}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-status-info/10 text-status-info text-sm rounded-full"
+                            >
+                              {dep.title}
+                              <button
+                                type="button"
+                                onClick={() => setSelectedDeps(prev => prev.filter(d => d.id !== dep.id))}
+                                className="hover:text-status-info/80"
+                              >
+                                &times;
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        value={depSearch}
+                        onChange={(e) => setDepSearch(e.target.value)}
+                        placeholder="Search for tasks to depend on..."
+                        className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                      />
+                      {depResults.length > 0 && (
+                        <div className="mt-1 border border-border-default rounded-md bg-surface-1 max-h-40 overflow-y-auto">
+                          {depResults.map(result => (
+                            <button
+                              key={result.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedDeps(prev => [...prev, { id: result.id, title: result.title }]);
+                                setDepSearch('');
+                                setDepResults([]);
+                              }}
+                              className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center justify-between"
+                            >
+                              <span className="truncate">{result.title}</span>
+                              <span className="text-xs text-text-muted ml-2">{result.status}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {depLoading && (
+                        <p className="text-xs text-text-muted mt-1">Searching...</p>
+                      )}
+                      <p className="text-xs text-text-secondary mt-1">
+                        Task will start as &quot;blocked&quot; until all dependencies complete.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Plan mode toggle (one-time tasks only) */}
+                  {!recurring && (
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={requirePlan}
+                        onChange={(e) => setRequirePlan(e.target.checked)}
+                        className="w-[18px] h-[18px] accent-primary cursor-pointer"
+                      />
+                      <div>
+                        <span className="text-sm font-medium">Require plan first</span>
+                        <p className="text-xs text-text-secondary mt-0.5">
+                          Agent will create an implementation plan for your approval before writing code
+                        </p>
+                      </div>
+                    </label>
+                  )}
+
+                  {/* Structured output schema (one-time tasks only) */}
+                  {!recurring && (
+                    <div>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useOutputSchema}
+                          onChange={(e) => setUseOutputSchema(e.target.checked)}
+                          className="w-[18px] h-[18px] accent-primary cursor-pointer"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Require structured output</span>
+                          <p className="text-xs text-text-secondary mt-0.5">
+                            Agent will return validated JSON matching a schema you define
+                          </p>
+                        </div>
+                      </label>
+                      {useOutputSchema && (
+                        <div className="mt-3 border border-border-default rounded-lg p-4 bg-surface-2">
+                          <label htmlFor="outputSchema" className="block text-sm font-medium mb-2">
+                            JSON Schema
+                          </label>
+                          <textarea
+                            id="outputSchema"
+                            value={outputSchemaText}
+                            onChange={(e) => {
+                              setOutputSchemaText(e.target.value);
+                              setOutputSchemaError('');
+                              try {
+                                JSON.parse(e.target.value);
+                              } catch {
+                                setOutputSchemaError('Invalid JSON');
+                              }
+                            }}
+                            rows={8}
+                            spellCheck={false}
+                            className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
+                            placeholder='{"type": "object", "properties": {...}, "required": [...]}'
+                          />
+                          {outputSchemaError && (
+                            <p className="text-xs text-status-error mt-1">{outputSchemaError}</p>
+                          )}
+                          <p className="text-xs text-text-secondary mt-1">
+                            Define the shape of the data you want back. Uses{' '}
+                            <a href="https://json-schema.org/understanding-json-schema/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                              JSON Schema
+                            </a>{' '}
+                            syntax.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Git branch override */}
+                  {selectedWorkspaceId && !recurring && (
+                    <div>
+                      <label htmlFor="taskTargetBranch" className="block text-sm font-medium mb-2">
+                        Git branch override <span className="text-text-muted font-normal">(optional)</span>
+                      </label>
+                      <input
+                        id="taskTargetBranch"
+                        type="text"
+                        value={taskTargetBranch}
+                        onChange={(e) => setTaskTargetBranch(e.target.value.trim())}
+                        placeholder="e.g. release/1.0, hotfix, main"
+                        className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                      />
+                      <p className="text-xs text-text-secondary mt-1">Override workspace default for this task only. PRs will target this branch.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Hidden priority input when advanced is collapsed (form needs it) */}
+            {!showAdvanced && (
+              <input type="hidden" name="priority" value="5" />
             )}
 
             {/* Cron fields (recurring only) */}

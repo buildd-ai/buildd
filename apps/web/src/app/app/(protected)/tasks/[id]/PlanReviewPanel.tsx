@@ -17,6 +17,15 @@ export default function PlanReviewPanel({ workerId, isAwaitingApproval }: PlanRe
   const [showFeedback, setShowFeedback] = useState(false);
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [collapsed, setCollapsed] = useState(!isAwaitingApproval);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 767px)');
+    setIsMobile(mql.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
 
   useEffect(() => {
     async function fetchPlan() {
@@ -151,6 +160,96 @@ export default function PlanReviewPanel({ workerId, isAwaitingApproval }: PlanRe
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </button>
+      </div>
+    );
+  }
+
+  // Mobile full-screen sheet when awaiting approval
+  if (isMobile && isAwaitingApproval) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setCollapsed(true)}>
+        <div
+          className="absolute bottom-0 left-0 right-0 bg-surface-2 rounded-t-2xl max-h-[95vh] flex flex-col animate-slide-up"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Sticky header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border-default shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[2.5px] text-text-muted">Implementation Plan</span>
+              {statusBadge}
+            </div>
+            <button
+              onClick={() => setCollapsed(true)}
+              className="p-1 text-text-muted hover:text-text-primary"
+              aria-label="Close plan"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="20" height="20">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Scrollable plan body */}
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            <MarkdownContent content={plan} />
+          </div>
+
+          {/* Action result */}
+          {actionResult && (
+            <div className={`px-5 py-2 text-sm ${actionResult.type === 'success' ? 'text-status-success' : 'text-status-error'}`}>
+              {actionResult.message}
+            </div>
+          )}
+
+          {/* Sticky action footer */}
+          {!actionResult?.type && (
+            <div className="border-t border-border-default bg-surface-3/50 px-5 py-4 shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => handleApprove('bypass')}
+                  disabled={actionLoading}
+                  className="w-full px-4 py-3 text-sm bg-primary text-white rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity font-medium"
+                >
+                  {actionLoading ? 'Processing...' : 'Implement (bypass)'}
+                </button>
+                <button
+                  onClick={() => handleApprove('review')}
+                  disabled={actionLoading}
+                  className="w-full px-4 py-3 text-sm bg-surface-4 text-text-primary border border-border-default rounded-lg hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {actionLoading ? 'Processing...' : 'Implement (review)'}
+                </button>
+                <button
+                  onClick={() => setShowFeedback(!showFeedback)}
+                  disabled={actionLoading}
+                  className="w-full px-4 py-3 text-sm border border-status-warning/30 text-status-warning rounded-lg hover:bg-status-warning/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Request Changes
+                </button>
+              </div>
+
+              {showFeedback && (
+                <div className="mt-3">
+                  <textarea
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    placeholder="Describe what changes you'd like to the plan..."
+                    className="w-full px-3 py-2 text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary min-h-[80px]"
+                    rows={3}
+                    disabled={actionLoading}
+                  />
+                  <button
+                    onClick={handleRevise}
+                    disabled={actionLoading || !feedback.trim()}
+                    className="mt-2 w-full px-4 py-3 text-sm bg-status-warning text-white rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    {actionLoading ? 'Sending...' : 'Send Feedback'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
