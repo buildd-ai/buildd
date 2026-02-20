@@ -83,3 +83,80 @@ body {
 .animate-status-pulse {
   animation: status-pulse 1.5s ease-in-out infinite;
 }
+
+/* ── Glass Panels ──
+ * Semi-transparent surfaces with backdrop blur for elevated depth.
+ * Use on cards, modals, and panels over --surface-1 backgrounds.
+ */
+@layer components {
+  .glass-panel {
+    background: rgba(30, 31, 43, 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+  }
+  .glass-panel-light {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 10px;
+  }
+}
+
+/* ── Status Glow Dots ──
+ * Targeted neon glow on status indicators. Color earns its place.
+ */
+@keyframes glow-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--glow-color); }
+  50% { opacity: 0.6; box-shadow: 0 0 14px var(--glow-color); }
+}
+
+@layer components {
+  .glow-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .glow-dot-success {
+    background: var(--status-success);
+    --glow-color: rgba(52, 211, 153, 0.4);
+    box-shadow: 0 0 8px var(--glow-color);
+  }
+  .glow-dot-running {
+    background: var(--status-running);
+    --glow-color: rgba(167, 139, 250, 0.4);
+    animation: glow-pulse 1.5s ease-in-out infinite;
+  }
+  .glow-dot-warning {
+    background: var(--status-warning);
+    --glow-color: rgba(251, 191, 36, 0.4);
+    animation: glow-pulse 1.5s ease-in-out infinite;
+  }
+  .glow-dot-error {
+    background: var(--status-error);
+    --glow-color: rgba(248, 113, 113, 0.4);
+    box-shadow: 0 0 8px var(--glow-color);
+  }
+  .glow-dot-info {
+    background: var(--status-info);
+    --glow-color: rgba(96, 165, 250, 0.4);
+    box-shadow: 0 0 8px var(--glow-color);
+  }
+}
+
+/* ── Section Labels ──
+ * JetBrains Mono uppercase micro-labels for sidebar sections and panels.
+ */
+@layer components {
+  .section-label {
+    font-family: var(--font-jetbrains), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-muted);
+  }
+}
