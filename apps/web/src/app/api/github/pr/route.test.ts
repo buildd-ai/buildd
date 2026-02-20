@@ -381,8 +381,9 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
-    const [installId, path, options] = mockGithubApi.mock.calls[0];
+    // First call is the dedup check, second call is the PR creation
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+    const [installId, path, options] = mockGithubApi.mock.calls[1];
     expect(installId).toBe(12345);
     expect(path).toBe('/repos/owner/repo/pulls');
     expect(options.method).toBe('POST');
@@ -426,7 +427,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('dev');
   });
@@ -461,7 +462,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('develop');
   });
@@ -496,7 +497,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('main');
   });
@@ -535,7 +536,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('release/1.0');
   });
@@ -574,7 +575,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('hotfix');
   });
@@ -609,7 +610,7 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    const [, , options] = mockGithubApi.mock.calls[0];
+    const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.body).toBe('Created by buildd worker test-worker');
   });
