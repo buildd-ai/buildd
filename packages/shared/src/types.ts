@@ -617,6 +617,7 @@ export type SSEEventType =
   | 'worker:session_start'
   | 'worker:session_end'
   | 'worker:permission_request'
+  | 'worker:config_change'
   | 'worker:rate_limit'
   | 'worker:config_change'
   | 'task:updated'

@@ -157,6 +157,10 @@ export interface WorkspaceGitConfig {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
 
+  // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
+  // When true, returns { continue: false } to prevent agents from modifying config files.
+  blockConfigChanges?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;

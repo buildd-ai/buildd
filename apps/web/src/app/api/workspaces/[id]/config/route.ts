@@ -134,6 +134,9 @@ export async function POST(
                 }
                 : {}),
 
+            // Block config file changes during worker sessions (ConfigChange hook)
+            ...(body.blockConfigChanges === true ? { blockConfigChanges: true } : {}),
+
             // Organizer agent configuration
             ...(body.organizer && typeof body.organizer === 'object'
                 ? {

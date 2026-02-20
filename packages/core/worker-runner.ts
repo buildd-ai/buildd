@@ -158,8 +158,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
-            // ConfigChange: SDK v0.2.49+ — fires when config files change during session
-            ...({ ConfigChange: [{ hooks: [this.configChangeHook.bind(this)] }] } as any),
+            ...({ ConfigChange: [{ hooks: [this.configChangeHook(gitConfig?.blockConfigChanges ?? false).bind(this)] }] } as any),
           },
         },
       })) {
@@ -573,20 +572,28 @@ export class WorkerRunner extends EventEmitter {
     return { async: true };
   };
 
-  // ConfigChange hook — fires when configuration files change during a session (SDK v0.2.49+).
-  // Logs config changes for enterprise security auditing.
-  private configChangeHook: HookCallback = async (input) => {
-    if ((input as any).hook_event_name !== 'ConfigChange') return {};
+  // ConfigChange hook — fires when config files change during a session (SDK v0.2.49+).
+  // Logs changes for audit trail and optionally blocks them per workspace config.
+  private configChangeHook(blockChanges: boolean): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
 
-    const filePath = (input as any).file_path as string;
-    const configScope = (input as any).config_scope as string | undefined;
+      const filePath = (input as any).file_path as string;
+      const changeType = (input as any).change_type as string;
 
-    this.emitEvent('worker:config_change', {
-      filePath,
-      configScope: configScope ?? null,
-    });
-    return { async: true };
-  };
+      this.emitEvent('worker:config_change', {
+        filePath,
+        changeType,
+        blocked: blockChanges,
+      });
+
+      if (blockChanges) {
+        return { continue: false };
+      }
+
+      return { async: true };
+    };
+  }
 
   // PreCompact hook — fires before conversation compaction.
   // Archives the full transcript so worker reasoning history is preserved.
