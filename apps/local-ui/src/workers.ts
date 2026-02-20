@@ -1,5 +1,5 @@
 import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, PermissionSuggestion } from './types';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
@@ -171,6 +171,14 @@ export class WorkerManager {
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
   private sessionGeneration = 0;
+  // Pending permission request resolvers — keyed by worker ID.
+  // When a PermissionRequest hook fires, we store a resolver here.
+  // The UI calls resolvePermission() to complete the promise with allow/deny.
+  private pendingPermissionRequests = new Map<string, {
+    resolve: (result: any) => void;
+    toolInput: Record<string, unknown>;
+    suggestions: unknown[];
+  }>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -1070,8 +1078,9 @@ export class WorkerManager {
     };
   }
 
-  // Create a PermissionRequest hook that captures permission dialog events for analytics.
-  // Purely observational — emits event with tool_name, tool_input, and permission_suggestions.
+  // Create a PermissionRequest hook that blocks until the user approves or denies.
+  // Displays tool_name, tool_input, and permission_suggestions in the worker detail UI.
+  // Returns a decision (allow/deny) based on user input via resolvePermission().
   private createPermissionRequestHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PermissionRequest') return {};
@@ -1080,10 +1089,137 @@ export class WorkerManager {
       const toolInput = (input as any).tool_input as Record<string, unknown>;
       const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
 
-      console.log(`[Worker ${worker.id}] Permission requested: ${toolName}`);
+      console.log(`[Worker ${worker.id}] Permission requested: ${toolName}, suggestions=${permissionSuggestions?.length || 0}`);
 
-      return { async: true };
+      // Build human-readable labels for each suggestion
+      const suggestions: PermissionSuggestion[] = (permissionSuggestions || []).map((s: any) => {
+        let label = '';
+        if (s.type === 'addRules' || s.type === 'replaceRules') {
+          const rules = (s.rules as Array<{ toolName: string; ruleContent?: string }>)?.map(
+            r => r.ruleContent ? `${r.toolName}: ${r.ruleContent}` : r.toolName
+          ) || [];
+          label = `Allow ${rules.join(', ')}`;
+        } else if (s.type === 'setMode') {
+          label = `Switch to ${s.mode} mode`;
+        } else if (s.type === 'addDirectories') {
+          label = `Allow access to ${(s.directories as string[])?.join(', ') || 'directories'}`;
+        } else {
+          label = `${s.type}`;
+        }
+        return { type: s.type, label, raw: s };
+      });
+
+      // Build a descriptive prompt
+      const cmdPreview = toolName === 'Bash'
+        ? (toolInput.command as string)?.slice(0, 120) || ''
+        : '';
+      const prompt = cmdPreview
+        ? `Permission required for ${toolName}: ${cmdPreview}`
+        : `Permission required for ${toolName}`;
+
+      // Set worker to waiting state
+      worker.status = 'waiting';
+      worker.waitingFor = {
+        type: 'permission',
+        prompt,
+        toolName,
+        toolInput,
+        permissionSuggestions: suggestions,
+        options: [
+          { label: 'Allow once', description: 'Allow this single tool call' },
+          ...(suggestions.length > 0 ? [{ label: 'Always allow', description: 'Apply suggested permission rules for the session' }] : []),
+          { label: 'Deny', description: 'Block this tool call' },
+        ],
+      };
+      worker.currentAction = `Permission: ${toolName}`;
+      worker.hasNewActivity = true;
+      worker.lastActivity = Date.now();
+      this.addMilestone(worker, { type: 'status', label: `Permission: ${toolName}`, ts: Date.now() });
+
+      // Sync to server and persist
+      this.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: {
+          type: 'permission',
+          prompt,
+          options: worker.waitingFor.options?.map(o => typeof o === 'string' ? o : o.label),
+        },
+      }).catch(() => {});
+      storeSaveWorker(worker);
+      this.emit({ type: 'worker_update', worker });
+
+      // Block the hook until the user resolves the permission decision
+      return new Promise<any>((resolve) => {
+        this.pendingPermissionRequests.set(worker.id, {
+          resolve,
+          toolInput,
+          suggestions: permissionSuggestions || [],
+        });
+      });
     };
+  }
+
+  // Resolve a pending permission request for a worker.
+  // Called when the user clicks Allow, Always Allow, or Deny in the UI.
+  resolvePermission(workerId: string, decision: 'allow' | 'allow_always' | 'deny'): boolean {
+    const pending = this.pendingPermissionRequests.get(workerId);
+    if (!pending) return false;
+
+    this.pendingPermissionRequests.delete(workerId);
+    const worker = this.workers.get(workerId);
+
+    if (decision === 'allow') {
+      pending.resolve({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'allow',
+            updatedInput: pending.toolInput,
+          },
+        },
+      });
+    } else if (decision === 'allow_always') {
+      // Pass back the SDK's suggested permission updates so the session remembers
+      pending.resolve({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'allow',
+            updatedInput: pending.toolInput,
+            updatedPermissions: pending.suggestions,
+          },
+        },
+      });
+    } else {
+      pending.resolve({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'deny',
+            message: 'Denied by user via local-ui',
+          },
+        },
+      });
+    }
+
+    // Clear waiting state
+    if (worker) {
+      worker.status = 'working';
+      worker.waitingFor = undefined;
+      worker.currentAction = decision === 'deny' ? 'Permission denied' : 'Resuming...';
+      worker.hasNewActivity = true;
+      worker.lastActivity = Date.now();
+      this.buildd.updateWorker(worker.id, {
+        status: 'running',
+        currentAction: worker.currentAction,
+        waitingFor: null,
+      }).catch(() => {});
+      storeSaveWorker(worker);
+      this.emit({ type: 'worker_update', worker });
+    }
+
+    return true;
   }
 
   // Create a TaskCompleted hook that logs task completions within agent teams.
@@ -2592,6 +2728,18 @@ export class WorkerManager {
       this.sessions.delete(workerId);
     }
 
+    // Clear any pending permission request (unblocks the hook with deny)
+    const pending = this.pendingPermissionRequests.get(workerId);
+    if (pending) {
+      pending.resolve({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'deny', message: 'Aborted by user' },
+        },
+      });
+      this.pendingPermissionRequests.delete(workerId);
+    }
+
     // Unsubscribe from Pusher
     this.unsubscribeFromWorker(workerId);
 
@@ -2948,6 +3096,14 @@ export class WorkerManager {
     // Normal case - active session (also handle 'waiting' and 'stale' status)
     if (!session || !['working', 'waiting', 'stale'].includes(worker.status)) {
       return false;
+    }
+
+    // Permission request: route to resolvePermission
+    if (worker.status === 'waiting' && worker.waitingFor?.type === 'permission') {
+      const decision = message === 'Deny' ? 'deny'
+        : message === 'Always allow' ? 'allow_always'
+        : 'allow';  // "Allow once" or any other text
+      return this.resolvePermission(workerId, decision);
     }
 
     // Plan approval: kill current session and start fresh with plan as prompt
