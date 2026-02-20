@@ -161,6 +161,12 @@ export interface WorkspaceGitConfig {
   // When true, returns { continue: false } to prevent agents from modifying config files.
   blockConfigChanges?: boolean;
 
+  // Worktree isolation for subagents (SDK v0.2.49+)
+  // When enabled, skill-as-subagent definitions include `isolation: 'worktree'`
+  // so each subagent runs in its own temporary git worktree, preventing file conflicts
+  // during parallel work. Requires git repo context — non-git workspaces ignore this.
+  useWorktreeIsolation?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;
