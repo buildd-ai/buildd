@@ -233,6 +233,15 @@ afterAll(async () => {
     }
   }
 
+  // Cleanup: delete test tasks from the server
+  for (const taskId of createdTaskIds) {
+    try {
+      await api(`/api/tasks/${taskId}`, 'DELETE');
+    } catch {
+      // Ignore - task may already be deleted
+    }
+  }
+
   // Clean up temp repo (override becomes stale → resolver falls through to normal resolution)
   if (tempRepoPath) {
     try {
