@@ -385,6 +385,8 @@ export const workers = pgTable('workers', {
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  key: text('key'),
   type: text('type').notNull(),
   title: text('title'),
   content: text('content'),
@@ -392,9 +394,12 @@ export const artifacts = pgTable('artifacts', {
   shareToken: text('share_token'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
+  workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
+  workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
 }));
 
 // Workspace observations (persistent memory across tasks)
@@ -623,6 +628,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
   observations: many(observations),
+  artifacts: many(artifacts),
   taskSchedules: many(taskSchedules),
   workspaceSkills: many(workspaceSkills),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
@@ -658,6 +664,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
 
 export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
+  workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
 }));
 
 export const observationsRelations = relations(observations, ({ one }) => ({

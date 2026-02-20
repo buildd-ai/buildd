@@ -277,7 +277,7 @@ const server = new Server(
 
 const allActions = [
   "list_tasks", "claim_task", "update_progress", "complete_task", "create_pr", "update_task", "create_task",
-  "create_artifact",
+  "create_artifact", "list_artifacts", "update_artifact",
   "create_schedule", "update_schedule", "list_schedules", "register_skill", "review_workspace",
 ];
 
@@ -314,7 +314,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 - create_pr: { workerId (required), title (required), head (required), body?, base?, draft? }
 - update_task: { taskId (required), title?, description?, priority?, addBlockedByTaskIds? (array — add dependency blockers), removeBlockedByTaskIds? (array — remove dependency blockers) }
 - create_task: { title (required), description (required), workspaceId?, priority?, blockedByTaskIds? (array of task UUIDs — task starts as 'blocked' and auto-unblocks when all listed tasks complete/fail), outputSchema? (JSON Schema object — agent returns structured JSON matching this schema) }
-- create_artifact: { workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata? }
+- create_artifact: { workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata?, key? (stable lookup key for upsert — if an artifact with this key exists in the workspace, it will be updated instead of creating a new one) }
+- list_artifacts: { workspaceId?, key?, type?, limit? } — list artifacts in a workspace, filterable by key and type. Returns content and share URLs.
+- update_artifact: { artifactId (required), title?, content?, metadata? } — update an existing artifact by ID
 - create_schedule: { name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs? (array), trigger? ({ type: 'rss'|'http-json', url, path?, headers? } — only creates task when value at URL changes), workspaceId? } [admin]
 - update_schedule: { scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate? (full template replacement), skillSlugs? (array — shorthand to inject into taskTemplate.context.skillSlugs), workspaceId? } [admin]
 - list_schedules: { workspaceId? } [admin]
@@ -976,6 +978,7 @@ export BUILDD_SERVER=${SERVER_URL}`;
           if (params.content) artifactBody.content = params.content;
           if (params.url) artifactBody.url = params.url;
           if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
+          if (params.key) artifactBody.key = params.key;
 
           const artifactData = await apiCall(`/api/workers/${params.workerId}/artifacts`, {
             method: "POST",
@@ -983,11 +986,72 @@ export BUILDD_SERVER=${SERVER_URL}`;
           });
 
           const art = artifactData.artifact;
+          const upserted = artifactData.upserted ? ' (updated existing)' : '';
           return {
             content: [
               {
                 type: "text",
-                text: `Artifact created: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`,
+                text: `Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`,
+              },
+            ],
+          };
+        }
+
+        case "list_artifacts": {
+          const workspaceId = (params.workspaceId as string) || await getWorkspaceId();
+          if (!workspaceId) {
+            throw new Error("Could not determine workspace. Provide workspaceId or run from a git repo linked to a workspace.");
+          }
+
+          const searchParams = new URLSearchParams();
+          if (params.key) searchParams.set("key", params.key as string);
+          if (params.type) searchParams.set("type", params.type as string);
+          if (params.limit) searchParams.set("limit", String(params.limit));
+
+          const data = await apiCall(`/api/workspaces/${workspaceId}/artifacts?${searchParams}`);
+          const artifactsList = data.artifacts || [];
+
+          if (artifactsList.length === 0) {
+            return {
+              content: [{ type: "text", text: `No artifacts found${params.key ? ` with key "${params.key}"` : ''}.` }],
+            };
+          }
+
+          const summary = artifactsList.map((a: { id: string; title: string; type: string; key: string | null; shareUrl: string | null; content: string | null; updatedAt: string }) => {
+            const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
+            return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
+          }).join("\n\n");
+
+          return {
+            content: [{ type: "text", text: `${artifactsList.length} artifact(s):\n\n${summary}` }],
+          };
+        }
+
+        case "update_artifact": {
+          if (!params.artifactId) {
+            throw new Error("artifactId is required");
+          }
+
+          const updateBody: Record<string, unknown> = {};
+          if (params.title !== undefined) updateBody.title = params.title;
+          if (params.content !== undefined) updateBody.content = params.content;
+          if (params.metadata !== undefined) updateBody.metadata = params.metadata;
+
+          if (Object.keys(updateBody).length === 0) {
+            throw new Error("At least one field (title, content, metadata) must be provided");
+          }
+
+          const updated = await apiCall(`/api/artifacts/${params.artifactId}`, {
+            method: "PATCH",
+            body: JSON.stringify(updateBody),
+          });
+
+          const updatedArt = updated.artifact;
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`,
               },
             ],
           };
