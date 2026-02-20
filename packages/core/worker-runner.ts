@@ -72,6 +72,7 @@ export class WorkerRunner extends EventEmitter {
 
       // Build plugins and sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
+      this.blockConfigChanges = Boolean(gitConfig?.blockConfigChanges);
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
@@ -158,6 +159,7 @@ export class WorkerRunner extends EventEmitter {
             ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
+            ...({ ConfigChange: [{ hooks: [this.configChangeHook.bind(this)] }] } as any),
           },
         },
       })) {
@@ -568,6 +570,23 @@ export class WorkerRunner extends EventEmitter {
 
     const reason = (input as any).reason as string;
     this.emitEvent('worker:session_end', { reason });
+    return { async: true };
+  };
+
+  // ConfigChange hook — fires when config files change during a session (SDK v0.2.49+).
+  // Emits event for audit trail. Optionally blocks changes when workspace config requires it.
+  private blockConfigChanges = false;
+  private configChangeHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+    const filePath = (input as any).file_path as string;
+    const changeType = (input as any).change_type as string;
+
+    this.emitEvent('worker:config_change', { filePath, changeType });
+
+    if (this.blockConfigChanges) {
+      return { continue: false };
+    }
     return { async: true };
   };
 

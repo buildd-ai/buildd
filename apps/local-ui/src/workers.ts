@@ -1231,6 +1231,31 @@ export class WorkerManager {
     return [...new Set(suggestions)].slice(0, 5);
   }
 
+  // Create a ConfigChange hook that logs config file modifications (SDK v0.2.49+).
+  // Emits milestones for audit trail. Optionally blocks changes via workspace config.
+  private createConfigChangeHook(worker: LocalWorker, blockConfigChanges: boolean): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+      const filePath = (input as any).file_path as string;
+      const changeType = (input as any).change_type as string;
+
+      this.addMilestone(worker, {
+        type: 'status',
+        label: `Config ${changeType}: ${filePath}`,
+        ts: Date.now(),
+      });
+      sessionLog(worker.id, 'info', 'config_change', `${changeType}: ${filePath}`, worker.taskId);
+
+      if (blockConfigChanges) {
+        sessionLog(worker.id, 'warn', 'config_change_blocked', `Blocked ${changeType}: ${filePath}`, worker.taskId);
+        return { continue: false };
+      }
+
+      return { async: true };
+    };
+  }
+
   // Create a Notification hook that captures agent status messages.
   // Emits milestones for dashboard visibility and logs the notification.
   private createNotificationHook(worker: LocalWorker): HookCallback {
@@ -1709,6 +1734,7 @@ export class WorkerManager {
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
         Stop: [{ hooks: [this.createStopHook(worker)] }],
+        ConfigChange: [{ hooks: [this.createConfigChangeHook(worker, Boolean(gitConfig?.blockConfigChanges))] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,

@@ -105,6 +105,9 @@ export async function POST(
                 ? { maxBudgetUsd: body.maxBudgetUsd }
                 : {}),
 
+            // Block config file changes during worker sessions (ConfigChange hook)
+            ...(body.blockConfigChanges === true ? { blockConfigChanges: true } : {}),
+
             // SDK debug logging
             ...(body.debug === true ? { debug: true } : {}),
             ...(typeof body.debugFile === 'string' && body.debugFile.trim()
