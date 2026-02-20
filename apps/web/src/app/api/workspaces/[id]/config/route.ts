@@ -137,6 +137,24 @@ export async function POST(
             // Block config file changes during worker sessions (ConfigChange hook)
             ...(body.blockConfigChanges === true ? { blockConfigChanges: true } : {}),
 
+            // Fallback model (SDK v0.2.45+)
+            ...(typeof body.fallbackModel === 'string' && body.fallbackModel.trim()
+                ? { fallbackModel: body.fallbackModel.trim() }
+                : {}),
+
+            // 1M context window beta
+            ...(typeof body.extendedContext === 'boolean'
+                ? { extendedContext: body.extendedContext }
+                : {}),
+
+            // Thinking / effort controls (SDK v0.2.45+)
+            ...(body.thinking && typeof body.thinking === 'object' && body.thinking.type
+                ? { thinking: body.thinking }
+                : {}),
+            ...(typeof body.effort === 'string' && ['low', 'medium', 'high', 'max'].includes(body.effort)
+                ? { effort: body.effort }
+                : {}),
+
             // Organizer agent configuration
             ...(body.organizer && typeof body.organizer === 'object'
                 ? {

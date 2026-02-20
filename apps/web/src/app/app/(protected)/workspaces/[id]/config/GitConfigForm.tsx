@@ -509,6 +509,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
             {/* Thinking / Effort Section */}
             <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Thinking &amp; Effort</h3>
+                <p className="text-xs text-text-muted mb-4">
+                    Not all models support these features. Workers will automatically detect model capabilities
+                    at startup and skip unsupported options. Check worker logs for capability warnings.
+                </p>
 
                 <div className="space-y-4">
                     <div>
