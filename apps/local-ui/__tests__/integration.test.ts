@@ -145,6 +145,15 @@ afterAll(async () => {
     }
   }
 
+  // Cleanup: delete test tasks from the server
+  for (const taskId of createdTaskIds) {
+    try {
+      await api(`/api/tasks/${taskId}`, 'DELETE');
+    } catch {
+      // Ignore - task may already be deleted
+    }
+  }
+
   // Restore original server URL
   if (originalServer) {
     try {
