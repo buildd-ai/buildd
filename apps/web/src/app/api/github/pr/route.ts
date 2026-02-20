@@ -57,6 +57,53 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
+    // Dedup: if worker already has a PR, return the existing one
+    if (worker.prUrl && worker.prNumber) {
+      return NextResponse.json({
+        ok: true,
+        pr: {
+          number: worker.prNumber,
+          url: worker.prUrl,
+          state: 'open',
+          title: title,
+        },
+        deduplicated: true,
+      });
+    }
+
+    // Dedup: check if a PR already exists for this head branch
+    try {
+      const existingPrs = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(repo.fullName.split('/')[0] + ':' + head)}&state=open`,
+      );
+      if (Array.isArray(existingPrs) && existingPrs.length > 0) {
+        const existing = existingPrs[0];
+        // Update worker with the existing PR info
+        await db
+          .update(workers)
+          .set({
+            prUrl: existing.html_url,
+            prNumber: existing.number,
+            updatedAt: new Date(),
+          })
+          .where(eq(workers.id, workerId));
+
+        return NextResponse.json({
+          ok: true,
+          pr: {
+            number: existing.number,
+            url: existing.html_url,
+            state: existing.state,
+            title: existing.title,
+          },
+          deduplicated: true,
+        });
+      }
+    } catch {
+      // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
+    }
+
     // Create the PR via GitHub API
     const prData = await githubApi(
       repo.installation.installationId,
