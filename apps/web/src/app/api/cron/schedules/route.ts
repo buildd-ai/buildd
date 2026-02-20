@@ -241,7 +241,23 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Dedup trigger-based schedules: same trigger value = same externalId
+        // Dedup trigger-based schedules: skip if an active task already exists
+        // for this schedule with the same trigger value
+        if (triggerResult) {
+          const externalId = `schedule-${schedule.id}-${triggerResult.currentValue}`;
+          const existing = await db.query.tasks.findFirst({
+            where: and(
+              eq(tasks.workspaceId, schedule.workspaceId),
+              eq(tasks.externalId, externalId),
+              inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
+            ),
+          });
+          if (existing) {
+            skipped++;
+            continue;
+          }
+        }
+
         const externalId = triggerResult
           ? `schedule-${schedule.id}-${triggerResult.currentValue}`
           : undefined;
@@ -262,14 +278,7 @@ export async function GET(req: NextRequest) {
             creationSource: 'schedule',
             ...(externalId ? { externalId } : {}),
           })
-          .onConflictDoNothing()
           .returning();
-
-        if (!task) {
-          // Duplicate trigger — task already exists for this trigger value
-          skipped++;
-          continue;
-        }
 
         // Update lastTaskId
         await db

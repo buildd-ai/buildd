@@ -395,7 +395,7 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.body).toBe('Custom body');
   });
 
-  it('uses repo default branch when base not provided', async () => {
+  it('defaults to dev branch when base not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -409,7 +409,7 @@ describe('POST /api/github/pr', () => {
     mockGithubReposFindFirst.mockResolvedValue({
       id: 'repo-1',
       fullName: 'owner/repo',
-      defaultBranch: 'develop',
+      defaultBranch: 'main',
       installation: { installationId: 12345 },
     });
     mockGithubApi.mockResolvedValue({
@@ -427,7 +427,7 @@ describe('POST /api/github/pr', () => {
 
     const [, , options] = mockGithubApi.mock.calls[0];
     const parsedBody = JSON.parse(options.body);
-    expect(parsedBody.base).toBe('develop');
+    expect(parsedBody.base).toBe('dev');
   });
 
   it('uses default body text when prBody not provided', async () => {

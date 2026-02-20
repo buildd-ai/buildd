@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
           title,
           body: prBody || `Created by buildd worker ${worker.name}`,
           head,
-          base: base || repo.defaultBranch || 'main',
+          base: base || 'dev',
           draft: draft || false,
         }),
       }
