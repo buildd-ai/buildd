@@ -73,27 +73,31 @@ export async function GET(
             .where(and(...conditions))
             .orderBy(desc(workspaceSkills.createdAt));
 
-        // Compute usage stats in one efficient query using jsonb_array_elements_text
+        // Compute usage stats (best-effort — falls back to zero on any error)
         const statsMap = new Map<string, { recentRuns: number; totalRuns: number }>();
-        if (results.length > 0) {
-            const raw = await db.execute(sql`
-                SELECT
-                    elem AS skill_slug,
-                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS recent_runs,
-                    COUNT(*) AS total_runs
-                FROM tasks,
-                    jsonb_array_elements_text(context->'skillSlugs') elem
-                WHERE workspace_id = ${id}
-                    AND context ? 'skillSlugs'
-                GROUP BY elem
-            `);
-            const statsRows = (raw.rows ?? raw) as Array<{ skill_slug: string; recent_runs: string; total_runs: string }>;
-            for (const r of statsRows) {
-                statsMap.set(r.skill_slug, {
-                    recentRuns: Number(r.recent_runs),
-                    totalRuns: Number(r.total_runs),
-                });
+        try {
+            if (results.length > 0) {
+                const raw = await db.execute(sql`
+                    SELECT
+                        elem AS skill_slug,
+                        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS recent_runs,
+                        COUNT(*) AS total_runs
+                    FROM tasks,
+                        jsonb_array_elements_text(context->'skillSlugs') elem
+                    WHERE workspace_id = ${id}
+                        AND context ? 'skillSlugs'
+                    GROUP BY elem
+                `);
+                const statsRows = (raw.rows ?? raw) as Array<{ skill_slug: string; recent_runs: string; total_runs: string }>;
+                for (const r of statsRows) {
+                    statsMap.set(r.skill_slug, {
+                        recentRuns: Number(r.recent_runs),
+                        totalRuns: Number(r.total_runs),
+                    });
+                }
             }
+        } catch {
+            // Stats are non-critical — return skills without them
         }
 
         const skillsWithStats = results.map(s => ({
