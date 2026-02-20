@@ -395,7 +395,7 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.body).toBe('Custom body');
   });
 
-  it('defaults to dev branch when base not provided', async () => {
+  it('uses workspace gitConfig.targetBranch when base not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -404,6 +404,7 @@ describe('POST /api/github/pr', () => {
       workspace: {
         githubRepoId: 'repo-1',
         githubInstallationId: 'inst-1',
+        gitConfig: { targetBranch: 'dev' },
       },
     });
     mockGithubReposFindFirst.mockResolvedValue({
@@ -428,6 +429,76 @@ describe('POST /api/github/pr', () => {
     const [, , options] = mockGithubApi.mock.calls[0];
     const parsedBody = JSON.parse(options.body);
     expect(parsedBody.base).toBe('dev');
+  });
+
+  it('falls back to repo defaultBranch when no gitConfig.targetBranch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'develop',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 10,
+      html_url: 'https://github.com/owner/repo/pull/10',
+      state: 'open',
+      title: 'Test PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'Test PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    const [, , options] = mockGithubApi.mock.calls[0];
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.base).toBe('develop');
+  });
+
+  it('falls back to main when no gitConfig and no repo defaultBranch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: null,
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 10,
+      html_url: 'https://github.com/owner/repo/pull/10',
+      state: 'open',
+      title: 'Test PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'Test PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    const [, , options] = mockGithubApi.mock.calls[0];
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.base).toBe('main');
   });
 
   it('uses default body text when prBody not provided', async () => {

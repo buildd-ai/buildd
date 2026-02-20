@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
           title,
           body: prBody || `Created by buildd worker ${worker.name}`,
           head,
-          base: base || 'dev',
+          base: base || workspace.gitConfig?.targetBranch || repo.defaultBranch || 'main',
           draft: draft || false,
         }),
       }
