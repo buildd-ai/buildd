@@ -23,6 +23,7 @@ export default async function TasksLayout({
   let workspacesWithTasks: Array<{
     id: string;
     name: string;
+    gitConfig?: { targetBranch?: string; defaultBranch?: string } | null;
     tasks: Array<{
       id: string;
       title: string;
@@ -37,7 +38,7 @@ export default async function TasksLayout({
       const wsIds = await getUserWorkspaceIds(user.id);
       const userWorkspaces = wsIds.length > 0 ? await db.query.workspaces.findMany({
         where: inArray(workspaces.id, wsIds),
-        columns: { id: true, name: true },
+        columns: { id: true, name: true, gitConfig: true },
         orderBy: desc(workspaces.updatedAt),
       }) : [];
 
@@ -87,6 +88,10 @@ export default async function TasksLayout({
         workspacesWithTasks = userWorkspaces.map(ws => ({
           id: ws.id,
           name: ws.name,
+          gitConfig: ws.gitConfig ? {
+            targetBranch: ws.gitConfig.targetBranch,
+            defaultBranch: ws.gitConfig.defaultBranch,
+          } : null,
           tasks: tasksByWorkspace[ws.id] || [],
         }));
       }

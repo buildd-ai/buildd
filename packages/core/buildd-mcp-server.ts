@@ -452,9 +452,24 @@ async function handleBuilddAction(
       if (params.timezone !== undefined) updateBody.timezone = params.timezone;
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
+      if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
+
+      // Shorthand: skillSlugs merges into existing taskTemplate.context
+      if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
+        // Fetch current schedule to merge skillSlugs into existing template
+        const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
+        const existingTemplate = current.schedule?.taskTemplate || {};
+        updateBody.taskTemplate = {
+          ...existingTemplate,
+          context: {
+            ...(existingTemplate.context || {}),
+            skillSlugs: params.skillSlugs,
+          },
+        };
+      }
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (cronExpression, timezone, enabled, name) must be provided');
+        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs) must be provided');
       }
 
       const updated = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {

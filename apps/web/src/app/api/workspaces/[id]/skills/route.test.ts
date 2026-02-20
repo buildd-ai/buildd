@@ -9,6 +9,7 @@ const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockSkillsSelect = mock(() => null as any);
 const mockSkillsInsert = mock(() => null as any);
 const mockSkillsUpdate = mock(() => null as any);
+const mockExecute = mock(() => Promise.resolve({ rows: [] }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
 
@@ -39,6 +40,7 @@ mock.module('@buildd/core/db', () => ({
     select: mockSkillsSelect,
     insert: mockSkillsInsert,
     update: mockSkillsUpdate,
+    execute: mockExecute,
   },
 }));
 
@@ -47,6 +49,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), { empty: '' }),
 }));
 
 // Mock schema
@@ -99,6 +102,8 @@ describe('GET /api/workspaces/[id]/skills', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockSkillsSelect.mockReset();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
   });

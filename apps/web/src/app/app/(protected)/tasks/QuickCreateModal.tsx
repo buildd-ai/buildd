@@ -13,6 +13,7 @@ interface PastedImage {
 interface Props {
   workspaceId: string;
   workspaceName: string;
+  targetBranch?: string | null;
   onClose: () => void;
   onCreated: (taskId: string) => void;
 }
@@ -22,6 +23,7 @@ const ASSIGNMENT_TIMEOUT_MS = 8000; // 8 seconds to accept before reassigning
 export default function QuickCreateModal({
   workspaceId,
   workspaceName,
+  targetBranch,
   onClose,
   onCreated,
 }: Props) {
@@ -32,7 +34,7 @@ export default function QuickCreateModal({
   const [error, setError] = useState('');
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
-  const [assignmentStatus, setAssignmentStatus] = useState<'idle' | 'waiting' | 'accepted' | 'reassigned'>('idle');
+  const [assignmentStatus, setAssignmentStatus] = useState<'idle' | 'waiting' | 'accepted' | 'reassigned' | 'created'>('idle');
   const [countdown, setCountdown] = useState(0);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
@@ -229,8 +231,10 @@ export default function QuickCreateModal({
         // Initial poll
         pollTaskStatus(task.id, startTime, targetUrl);
       } else {
-        // No specific assignment, just complete
-        onCreated(task.id);
+        // No specific assignment — show created state with "Create Another" option
+        setCreatedTaskId(task.id);
+        setAssignmentStatus('created');
+        setLoading(false);
       }
     } catch (err: any) {
       setError(err.message);
@@ -242,6 +246,19 @@ export default function QuickCreateModal({
     if (e.key === 'Escape' && assignmentStatus === 'idle') {
       onClose();
     }
+  };
+
+  const resetForm = () => {
+    setTitle('');
+    setDescription('');
+    setShowDescription(false);
+    setPastedImages([]);
+    setError('');
+    setAssignmentStatus('idle');
+    setCreatedTaskId(null);
+    setClaimedWorker(null);
+    setLoading(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   return (
@@ -299,9 +316,15 @@ export default function QuickCreateModal({
                   }}
                   className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-3"
                 >
-                  View in Dashboard
+                  View Task
                 </button>
               )}
+              <button
+                onClick={resetForm}
+                className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 rounded-lg"
+              >
+                Create Another
+              </button>
             </div>
           </div>
         ) : assignmentStatus === 'reassigned' ? (
@@ -327,9 +350,50 @@ export default function QuickCreateModal({
                 }}
                 className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-3"
               >
-                View in Dashboard
+                View Task
               </button>
             )}
+            <button
+              onClick={resetForm}
+              className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 rounded-lg"
+            >
+              Create Another
+            </button>
+          </div>
+        ) : assignmentStatus === 'created' ? (
+          // Task created (no worker assignment)
+          <div className="p-6">
+            <div className="text-center mb-4">
+              <div className="w-10 h-10 bg-status-success/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-status-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <p className="text-text-primary font-medium">
+                Task created!
+              </p>
+              <p className="text-sm text-text-secondary mt-1">
+                Queued and waiting for a worker
+              </p>
+            </div>
+            <div className="space-y-2">
+              {createdTaskId && (
+                <button
+                  onClick={() => {
+                    onCreated(createdTaskId);
+                  }}
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-lg hover:opacity-90 transition-opacity text-sm font-medium"
+                >
+                  View Task
+                </button>
+              )}
+              <button
+                onClick={resetForm}
+                className="flex items-center justify-center gap-2 w-full px-4 py-2.5 text-sm border border-border-default rounded-lg hover:bg-surface-3"
+              >
+                Create Another
+              </button>
+            </div>
           </div>
         ) : (
           // Normal form
@@ -338,6 +402,12 @@ export default function QuickCreateModal({
               <div className="flex items-center justify-between">
                 <div className="text-sm text-text-secondary">
                   New task in <span className="font-medium text-text-primary">{workspaceName}</span>
+                  {targetBranch && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-xs text-text-muted">
+                      <svg className="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                      {targetBranch}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"

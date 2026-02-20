@@ -24,6 +24,7 @@ interface Task {
 interface Workspace {
   id: string;
   name: string;
+  gitConfig?: { targetBranch?: string; defaultBranch?: string } | null;
   tasks: Task[];
 }
 
@@ -34,16 +35,9 @@ interface Props {
 function getStatusIndicator(status: string): React.ReactNode {
   switch (status) {
     case 'running':
-      return (
-        <span className="h-2 w-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" />
-      );
+      return <span className="glow-dot glow-dot-running" />;
     case 'assigned':
-      return (
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-info opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-status-info"></span>
-        </span>
-      );
+      return <span className="glow-dot glow-dot-info" />;
     case 'pending':
       return <span className="h-2 w-2 rounded-full bg-text-muted" />;
     case 'completed':
@@ -64,16 +58,11 @@ function getStatusIndicator(status: string): React.ReactNode {
         </svg>
       );
     case 'waiting_input':
-      return (
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning"></span>
-        </span>
-      );
+      return <span className="glow-dot glow-dot-warning" />;
     case 'failed':
-      return <span className="h-2 w-2 rounded-full bg-status-error" />;
+      return <span className="glow-dot glow-dot-error" />;
     case 'blocked':
-      return <span className="h-2 w-2 rounded-full bg-status-info" />;
+      return <span className="glow-dot glow-dot-info" />;
     default:
       return null;
   }
@@ -400,17 +389,15 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                         </span>
                         <span className="truncate">{ws.name}</span>
                         {activeCount > 0 && (
-                          <span className="ml-auto flex items-center gap-1">
-                            <span className="relative flex h-2 w-2">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-running opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-status-running"></span>
-                            </span>
+                          <span className="ml-auto flex items-center gap-1.5">
+                            <span className="glow-dot glow-dot-running" />
+                            <span className="text-[10px] font-mono text-status-running">{activeCount}</span>
                           </span>
                         )}
                       </button>
                       <button
                         onClick={() => setQuickCreateWorkspaceId(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                        className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Quick create task"
                         aria-label={`Quick create task in ${ws.name}`}
                       >
@@ -418,7 +405,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       </button>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                        className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Hide workspace"
                         aria-label={`Hide ${ws.name}`}
                       >
@@ -452,6 +439,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                           ) : (
                             <>
                               {/* Active/Pending tasks - always show all */}
+                              {allActiveTasks.length > 0 && (
+                                <div className="section-label px-2 py-1.5 mb-0.5">Active</div>
+                              )}
                               {allActiveTasks.map((task) => (
                                 <Link
                                   key={task.id}
@@ -484,10 +474,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                   <button
                                     onClick={() => toggleCompletedCollapsed(ws.id)}
                                     aria-expanded={!isCompletedHidden}
-                                    className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text-secondary w-full"
+                                    className="flex items-center gap-1.5 px-2 py-1.5 section-label hover:text-text-secondary w-full mt-1"
                                   >
-                                    <span className="w-3 text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
-                                    <span>Completed ({allCompletedTasks.length})</span>
+                                    <span className="text-[10px]">{isCompletedHidden ? '›' : '▼'}</span>
+                                    <span>Done ({allCompletedTasks.length})</span>
                                   </button>
                                   {!isCompletedHidden && (
                                     <>
@@ -541,9 +531,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
               <button
                 onClick={() => setShowHiddenSection(!showHiddenSection)}
                 aria-expanded={showHiddenSection}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text-secondary w-full"
+                className="flex items-center gap-1.5 px-2 py-1.5 section-label hover:text-text-secondary w-full"
               >
-                <span className="w-3 text-[10px]">{showHiddenSection ? '▼' : '›'}</span>
+                <span className="text-[10px]">{showHiddenSection ? '▼' : '›'}</span>
                 <span>Hidden ({hiddenCount})</span>
               </button>
               {showHiddenSection && (
@@ -555,7 +545,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       </span>
                       <button
                         onClick={() => toggleHideWorkspace(ws.id)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                        className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
                         title="Show workspace"
                         aria-label={`Show ${ws.name}`}
                       >
@@ -575,6 +565,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         <QuickCreateModal
           workspaceId={quickCreateWorkspaceId}
           workspaceName={workspaces.find(w => w.id === quickCreateWorkspaceId)?.name || ''}
+          targetBranch={(() => {
+            const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
+            return ws?.gitConfig?.targetBranch || ws?.gitConfig?.defaultBranch || null;
+          })()}
           onClose={() => setQuickCreateWorkspaceId(null)}
           onCreated={handleQuickCreateComplete}
         />

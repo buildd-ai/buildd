@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-task PR target branch override
+- Show PR target branch in task creation UI
+- Schedule deduplication and MCP taskTemplate support
+- Make skills prominent on dashboard with custom task picker
+- Enhance MCP register_skill and update_schedule, add sdk-ecosystem-research skill
+- Mobile UX fixes for task creation, worker monitoring, plan review
+
+### Fixed
+
+- Use workspace gitConfig.targetBranch for PR base branch
+- Remove problematic unique index, use query-based dedup, default PRs to dev
+- Wrap skills stats query in try/catch
+
 ## [0.8.0] - 2026-02-19
 
 ### Added
