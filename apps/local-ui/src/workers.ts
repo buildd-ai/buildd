@@ -1729,7 +1729,13 @@ export class WorkerManager {
       }
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> | undefined;
+      // Resolve worktree isolation: task-level override > workspace-level setting
+      const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
+      const useWorktreeIsolation = taskWorktreeIsolation !== undefined
+        ? Boolean(taskWorktreeIsolation)
+        : Boolean(gitConfig?.useWorktreeIsolation);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
       if (useSkillAgents && skillBundles && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
@@ -1738,6 +1744,8 @@ export class WorkerManager {
             prompt: bundle.content,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
             model: 'inherit',
+            // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
+            ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
           };
         }
       }

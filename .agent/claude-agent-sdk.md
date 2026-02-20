@@ -1099,6 +1099,7 @@ Both `worker-runner.ts` and `local-ui/workers.ts` register a `ConfigChange` hook
 
 ---
 
+<<<<<<< HEAD
 ## 33. Model Capability Discovery (SDK v0.2.49, CLI v2.1.49)
 
 `supportedModels()` now returns `ModelInfo` objects with capability fields:
@@ -1127,11 +1128,31 @@ if (current?.supportsEffort) {
 }
 if (current?.supportsAdaptiveThinking) {
   console.log('Adaptive thinking available');
+=======
+## 33. Worktree Isolation for Subagents (SDK v0.2.49 / CLI v2.1.49)
+
+Agent definitions now support `isolation: 'worktree'`, which runs each subagent in a temporary git worktree. This prevents file conflicts when multiple subagents work in parallel on the same repository.
+
+### Agent Definition with Isolation
+
+```typescript
+options: {
+  agents: {
+    'security-auditor': {
+      description: 'Audit code for vulnerabilities',
+      prompt: 'You are a security expert...',
+      tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+      model: 'inherit',
+      isolation: 'worktree',  // Each subagent gets its own git worktree
+    }
+  }
+>>>>>>> ff39928 (feat: add worktree isolation support for subagent definitions)
 }
 ```
 
 ### Buildd Integration
 
+<<<<<<< HEAD
 Both `worker-runner.ts` and `local-ui/workers.ts` call `supportedModels()` after query creation to:
 1. Validate configured `effort` and `thinking` options against actual model capabilities
 2. Log warnings (not errors) when configured options are unsupported
@@ -1143,6 +1164,31 @@ The SDK gracefully handles unsupported options (ignores them without erroring), 
 ---
 
 ## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
+=======
+Controlled via `gitConfig.useWorktreeIsolation` (workspace-level) or `task.context.useWorktreeIsolation` (task-level override):
+
+```typescript
+// Resolve worktree isolation: task-level override > workspace-level setting
+const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
+const useWorktreeIsolation = taskWorktreeIsolation !== undefined
+  ? Boolean(taskWorktreeIsolation)
+  : Boolean(gitConfig?.useWorktreeIsolation);
+
+// Add to agent definitions
+agents[bundle.slug] = {
+  ...agentDef,
+  ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+};
+```
+
+**Requirements**: Git repo context. Non-git workspaces should not enable this option.
+
+**Use case**: Agent teams doing parallel work — multiple subagents can edit files without clobbering each other.
+
+---
+
+## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
+>>>>>>> ff39928 (feat: add worktree isolation support for subagent definitions)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|

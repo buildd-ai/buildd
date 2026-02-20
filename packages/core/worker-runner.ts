@@ -54,17 +54,21 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
-      // Extract skill slugs from task context for native SDK discovery
+      // Extract skill slugs and bundles from task context
       const skillSlugs: string[] = (worker.task as any)?.context?.skillSlugs || [];
+      const skillBundles: Array<{ slug: string; name: string; description?: string; content: string }> =
+        (worker.task as any)?.context?.skillBundles || [];
+      const useSkillAgents = !!(worker.task as any)?.context?.useSkillAgents;
+
       const allowedTools: string[] = [];
-      if (skillSlugs.length > 0) {
+      if (skillSlugs.length > 0 && !useSkillAgents) {
         for (const slug of skillSlugs) {
           allowedTools.push(`Skill(${slug})`);
         }
       }
 
       const systemPrompt: any = { type: 'preset', preset: 'claude_code' };
-      if (skillSlugs.length > 0) {
+      if (skillSlugs.length > 0 && !useSkillAgents) {
         systemPrompt.append = skillSlugs.length === 1
           ? `You MUST use the ${skillSlugs[0]} skill for this task. Invoke it with the Skill tool before starting work.`
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
@@ -72,6 +76,28 @@ export class WorkerRunner extends EventEmitter {
 
       // Build plugins and sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
+
+      // Convert skills to subagent definitions when useSkillAgents is enabled
+      // Resolve worktree isolation: task-level override > workspace-level setting
+      const taskWorktreeIsolation = (worker.task as any)?.context?.useWorktreeIsolation;
+      const useWorktreeIsolation = taskWorktreeIsolation !== undefined
+        ? Boolean(taskWorktreeIsolation)
+        : Boolean(gitConfig?.useWorktreeIsolation);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
+      if (useSkillAgents && skillBundles.length > 0) {
+        agents = {};
+        for (const bundle of skillBundles) {
+          agents[bundle.slug] = {
+            description: bundle.description || bundle.name,
+            prompt: bundle.content,
+            tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+            model: 'inherit',
+            // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
+            ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+          };
+        }
+      }
       const pluginPaths: string[] = gitConfig?.pluginPaths || [];
       const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
@@ -129,6 +155,7 @@ export class WorkerRunner extends EventEmitter {
           settingSources: ['user', 'project'],
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
+          ...(agents ? { agents } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
           // SDK debug logging from workspace config

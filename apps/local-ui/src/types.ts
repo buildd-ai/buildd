@@ -246,6 +246,10 @@ export interface WorkspaceGitConfig {
   // SDK debug logging
   debug?: boolean;
   debugFile?: string;
+
+  // Worktree isolation for subagents (SDK v0.2.49+)
+  // When enabled, skill-as-subagent definitions include `isolation: 'worktree'`
+  useWorktreeIsolation?: boolean;
 }
 
 // SSE event types
