@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
+**Version documented**: 0.2.49 (CLI parity: v2.1.49, Feb 20 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Should bump to `>=0.2.47` |
-| `apps/agent` | `>=0.2.45` | Should bump to `>=0.2.47` |
-| `apps/local-ui` | `>=0.2.45` | Should bump to `>=0.2.47` |
+| `packages/core` | `>=0.2.47` | Should bump to `>=0.2.49` |
+| `apps/agent` | `>=0.2.47` | Should bump to `>=0.2.49` |
+| `apps/local-ui` | `>=0.2.47` | Should bump to `>=0.2.49` |
 
 ---
 
@@ -418,7 +418,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (12 events)
+### Official HookEvent Type (13 events)
 
 ```typescript
 type HookEvent =
@@ -433,7 +433,8 @@ type HookEvent =
   | 'SubagentStart'       // Subagent initialization
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
-  | 'PermissionRequest';  // Permission dialog
+  | 'PermissionRequest'   // Permission dialog
+  | 'ConfigChange';       // Configuration file changes (v0.2.49+)
 ```
 
 ### Agent Teams Hooks (experimental, not in HookEvent type)
@@ -654,23 +655,35 @@ options: {
       prompt: 'You are a security expert...',
       tools: ['Read', 'Grep'],
       model: 'claude-opus-4-6',
+      isolation: 'worktree',  // v0.2.49+: run in isolated git worktree
+      background: true,       // v0.2.49+: always run as background task
     }
   }
 }
 ```
+
+Agent definition fields (v0.2.49):
+- `description` — shown to the model for tool selection
+- `prompt` — system prompt for the subagent
+- `tools` — allowed tools for the subagent
+- `model` — model to use (`'inherit'` uses parent model)
+- `isolation` — `'worktree'` creates a temporary git worktree (v0.2.49+)
+- `background` — `true` to always run as background task (v0.2.49+)
 
 ### Skills as Subagents (Buildd Pattern)
 
 **Implementation**: `apps/local-ui/src/workers.ts:936-947`
 
 ```typescript
-const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
+const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean }> = {};
 for (const bundle of skillBundles) {
   agents[bundle.slug] = {
     description: bundle.description || bundle.name,
     prompt: bundle.content,
     tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
     model: 'inherit',
+    // v0.2.49+: optionally add isolation/background based on workspace config
+    ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
   };
 }
 
@@ -1050,10 +1063,122 @@ Support for using claude.ai MCP connectors within Claude Code. This allows worke
 
 ---
 
-## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
+## 32. Subagent Worktree Isolation (SDK v0.2.49 / CLI v2.1.49)
+
+Subagents can now run in isolated git worktrees via the `isolation` field in agent definitions:
+
+```typescript
+options: {
+  agents: {
+    'deploy': {
+      description: 'Handles deployment workflows',
+      prompt: '<skill content>',
+      tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
+      model: 'inherit',
+      isolation: 'worktree',  // NEW: run in a temporary git worktree
+    }
+  }
+}
+```
+
+When `isolation: 'worktree'` is set, the CLI creates a temporary git worktree for the subagent, providing filesystem isolation between concurrent agents. The worktree is cleaned up when the subagent completes.
+
+**CLI flag**: `--worktree` (`-w`) starts the entire Claude session in an isolated worktree.
+
+**Buildd use case**: Skills-as-subagents that modify files (e.g., deploy, refactor) can safely run in parallel without conflicts. Combined with Buildd's existing per-worker worktree isolation, this provides two-level isolation: worker-level (managed by local-ui) and subagent-level (managed by SDK).
+
+---
+
+## 33. Background Agent Definitions (SDK v0.2.49 / CLI v2.1.49)
+
+Agent definitions support `background: true` to always spawn as background tasks:
+
+```typescript
+options: {
+  agents: {
+    'linter': {
+      description: 'Continuous code quality checker',
+      prompt: 'Watch for code quality issues...',
+      tools: ['Read', 'Grep', 'Glob'],
+      model: 'inherit',
+      background: true,  // NEW: always run as background task
+    }
+  }
+}
+```
+
+Background agents run concurrently with the main agent and don't block the conversation flow. The CLI added Ctrl+F keybinding to kill background agents (two-press confirmation).
+
+**Buildd use case**: Long-running monitoring or validation agents (e.g., test watchers, lint checkers) can be defined as background agents in skill bundles.
+
+---
+
+## 34. ConfigChange Hook Event (SDK v0.2.49 / CLI v2.1.49)
+
+New hook event that fires when configuration files change during a session:
+
+```typescript
+hooks: {
+  ConfigChange: [{
+    hooks: [async (input) => {
+      // input includes: session_id, transcript_path, cwd
+      // Audit configuration changes, optionally block them
+      return {};  // or { continue: false, stopReason: 'Config change blocked' }
+    }]
+  }]
+}
+```
+
+**Buildd use case**: Enterprise security auditing — log when workers modify `.claude/` config files. Can optionally block unauthorized config changes in managed workspaces.
+
+---
+
+## 35. Model Capability Discovery (SDK v0.2.49)
+
+SDK model info now includes fields for discovering model capabilities programmatically:
+
+```typescript
+// Available via supportedModels():
+interface ModelInfo {
+  // ... existing fields ...
+  supportsEffort: boolean;              // Whether model supports effort levels
+  supportedEffortLevels: string[];      // e.g. ['low', 'medium', 'high', 'max']
+  supportsAdaptiveThinking: boolean;    // Whether model supports adaptive thinking
+}
+```
+
+**Buildd use case**: Dashboard model selector can dynamically show/hide effort and thinking controls based on the selected model's capabilities, rather than hardcoding model-to-capability mappings.
+
+---
+
+## 36. Memory & Performance Improvements (CLI v2.1.49)
+
+Several memory and performance improvements relevant to long-running Buildd workers:
+
+- **Tree-sitter WASM memory fix**: Periodic parser reset prevents unbounded WASM memory growth
+- **Yoga WASM memory fix**: Linear memory no longer grows unbounded during long sessions
+- **MCP auth caching**: Authentication failures cached to avoid redundant connection attempts on startup
+- **Batched MCP token counting**: Single API call for all MCP tool token counting (was one per tool)
+- **Reduced analytics calls**: Fewer HTTP calls for token counting at startup
+- **Non-interactive mode perf**: Skips unnecessary API calls during startup in `-p` mode
+- **Concurrent agent fix (improved)**: Additional fix for "thinking blocks cannot be modified" API 400 errors
+- **Prompt cache regression fix**: Prompt suggestion caching restored to proper hit rates
+
+---
+
+## 37. Sonnet 4.6 Native 1M Context (CLI v2.1.49)
+
+Sonnet 4.5 with 1M context is being removed from the Max plan. Sonnet 4.6 now natively supports 1M context without requiring the `context-1m-2025-08-07` beta flag.
+
+**Buildd impact**: The `extendedContext` config and beta flag logic may need updating — Sonnet 4.6 models may not need the beta flag at all. The current implementation conditionally applies `betas: ['context-1m-2025-08-07']` for `/sonnet/i` models, which should be verified against Sonnet 4.6 behavior.
+
+---
+
+## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.49 | 0.2.49 | Subagent `isolation: 'worktree'`; agent `background: true`; `ConfigChange` hook event; model info `supportsEffort`/`supportedEffortLevels`/`supportsAdaptiveThinking` fields; permission suggestions populated on safety-check ask; `--worktree` CLI flag; Sonnet 4.6 gets 1M context (replaces Sonnet 4.5 1M); WASM memory leak fixes (tree-sitter, Yoga); startup perf improvements (MCP auth caching, batched token counting) |
 | 2.1.47 | 0.2.47 | `promptSuggestion()` method; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop hooks; memory improvements (stream buffers, task history trimming, O(n²) progress fix); concurrent agent API 400 fix; deferred SessionStart hook (~500ms faster); bash permission classifier fix |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors support; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
@@ -1070,7 +1195,9 @@ Support for using claude.ai MCP connectors within Claude Code. This allows worke
 | 2.1.32 | 0.2.32 | Opus 4.6; agent teams research preview; auto memory; skills from additional dirs; skill budget scales with context |
 
 ### Key Fixes for Buildd Workers
-- **Concurrent agent API 400 fix** — prevents "thinking blocks cannot be modified" errors with concurrent subagents (v2.1.47)
+- **WASM memory leak fixes** — tree-sitter parser and Yoga layout engine WASM memory now periodically reset, preventing unbounded growth in long-running workers (v2.1.49)
+- **Startup performance** — MCP auth failure caching, batched MCP tool token counting, reduced analytics HTTP calls (v2.1.49)
+- **Concurrent agent API 400 fix** — prevents "thinking blocks cannot be modified" errors with concurrent subagents (v2.1.49, improved from v2.1.47)
 - **Memory improvements** — API stream buffer release, agent task message trimming, O(n²) progress update fix (v2.1.47)
 - **Deferred SessionStart hook** — ~500ms faster startup (v2.1.47)
 - **Bash permission classifier** — hallucinated descriptions no longer incorrectly grant permissions (v2.1.47)
@@ -1085,7 +1212,7 @@ Support for using claude.ai MCP connectors within Claude Code. This allows worke
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.47)
+### Buildd Integration Status (v0.2.49)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1100,12 +1227,19 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - In-process MCP server (worker-runner.ts) and subprocess MCP server (local-ui)
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
+- Git worktree isolation per worker (local-ui manages worktree setup)
 
 ### Pending Enhancements (Buildd tasks created)
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Bump SDK pin to `>=0.2.49` | SDK v0.2.49 with worktree, background agents, ConfigChange hook | P2 | Task created |
+| Add `isolation: 'worktree'` to skills-as-subagents | SDK-native worktree isolation for subagents | P2 | Task created |
+| Add `background: true` support for agent definitions | Always-background agent tasks | P3 | Task created |
+| Integrate `ConfigChange` hook | Enterprise security auditing of config changes | P3 | Task created |
+| Use model capability fields for dynamic UI | `supportsEffort`/`supportedEffortLevels`/`supportsAdaptiveThinking` | P3 | Task created |
+| Update 1M context beta for Sonnet 4.6 | Sonnet 4.6 now has native 1M context | P3 | Task created |
 | Effort/thinking controls | `effort`, `thinking` options | P4 | Integrated (#82) |
 | Fallback model | `fallbackModel` option | P4 | Integrated (#81) |
 | 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 | Integrated (conditional on Sonnet models) |
