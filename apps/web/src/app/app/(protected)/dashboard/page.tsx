@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats } from '@buildd/core/db/schema';
-import { desc, inArray, eq, and, sql, gt } from 'drizzle-orm';
+import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills } from '@buildd/core/db/schema';
+import { desc, inArray, eq, and, sql, gt, asc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { isGitHubAppConfigured } from '@/lib/github';
@@ -24,6 +24,7 @@ export default async function DashboardPage() {
   let githubConfigured = false;
   let completedRecentCount = 0;
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
+  let dashboardSkills: any[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -105,6 +106,14 @@ export default async function DashboardPage() {
         }) as any : [];
 
         recentTasks = [...activeTasks.slice(0, maxDisplay), ...completedTasks];
+
+        // Get enabled skills for dashboard
+        dashboardSkills = await db.query.workspaceSkills.findMany({
+          where: and(inArray(workspaceSkills.workspaceId, workspaceIds), eq(workspaceSkills.enabled, true)),
+          orderBy: asc(workspaceSkills.name),
+          limit: 6,
+          with: { workspace: { columns: { id: true, name: true } } },
+        });
 
         // Get active workers (from user's workspaces)
         activeWorkers = await db.query.workers.findMany({
@@ -440,6 +449,76 @@ export default async function DashboardPage() {
             </div>
           )}
         </div>
+
+        {/* Skills */}
+        {userWorkspaces.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
+              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Skills</span>
+              <Link
+                href={`/app/workspaces/${dashboardSkills[0]?.workspace?.id || userWorkspaces[0]?.id}/skills`}
+                className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+              >
+                Manage
+              </Link>
+            </div>
+
+            {dashboardSkills.length === 0 ? (
+              <div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { name: 'Fan-Out & Merge', description: 'Break work into parallel tasks with a merge rollup' },
+                    { name: 'Sequential Pipeline', description: 'Create a chain of dependent tasks' },
+                    { name: 'Release Pipeline', description: 'Parallel validation followed by a guarded release step' },
+                  ].map((template) => (
+                    <Link
+                      key={template.name}
+                      href={`/app/workspaces/${userWorkspaces[0]?.id}/skills`}
+                      className="border border-dashed border-border-default rounded-[10px] p-4 hover:border-text-muted hover:bg-surface-2 transition-colors"
+                    >
+                      <div className="text-[13px] font-medium text-text-primary mb-1">{template.name}</div>
+                      <div className="text-[12px] text-text-muted">{template.description}</div>
+                      <div className="text-[12px] text-primary mt-2">Install →</div>
+                    </Link>
+                  ))}
+                </div>
+                <div className="mt-3 text-center">
+                  <Link
+                    href={`/app/workspaces/${userWorkspaces[0]?.id}/skills`}
+                    className="text-[12px] text-text-muted hover:text-text-primary"
+                  >
+                    Browse all templates
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <div className="border border-border-default rounded-[10px] overflow-hidden">
+                {dashboardSkills.map((skill: any) => (
+                  <div
+                    key={skill.id}
+                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-text-primary">{skill.name}</div>
+                      {skill.description && (
+                        <div className="font-mono text-[11px] text-text-muted truncate">{skill.description}</div>
+                      )}
+                    </div>
+                    <span className="hidden sm:block text-[11px] text-text-muted px-2 py-0.5 bg-surface-3 rounded">
+                      {skill.workspace?.name}
+                    </span>
+                    <Link
+                      href={`/app/tasks/new?workspaceId=${skill.workspaceId}&skillSlug=${skill.slug}`}
+                      className="px-3 py-[5px] text-xs bg-primary/10 text-primary rounded-[6px] hover:bg-primary/20 whitespace-nowrap"
+                    >
+                      New Task →
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Connected Agents */}
         {connectedAgents.length > 0 && (

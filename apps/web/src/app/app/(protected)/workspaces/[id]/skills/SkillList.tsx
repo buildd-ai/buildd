@@ -12,6 +12,8 @@ interface Skill {
   enabled: boolean;
   origin: 'scan' | 'manual' | 'promoted';
   createdAt: string;
+  recentRuns?: number;
+  totalRuns?: number;
 }
 
 interface Props {
@@ -222,7 +224,16 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                   {skill.description && (
                     <p className="text-sm text-text-muted mt-0.5 ml-5 line-clamp-1">{skill.description}</p>
                   )}
-                  <div className="flex items-center gap-4 mt-1 ml-5 text-xs text-text-muted">
+                  <div className="flex items-center gap-3 mt-1 ml-5 text-xs text-text-muted flex-wrap">
+                    {(skill.recentRuns ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-status-success/10 text-status-success rounded">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        {skill.recentRuns} run{skill.recentRuns === 1 ? '' : 's'} (30d)
+                      </span>
+                    )}
+                    {(skill.totalRuns ?? 0) > 0 && (skill.recentRuns ?? 0) !== (skill.totalRuns ?? 0) && (
+                      <span>{skill.totalRuns} total</span>
+                    )}
                     {skill.source && <span>Source: {skill.source}</span>}
                     <span>{new Date(skill.createdAt).toLocaleDateString()}</span>
                   </div>
