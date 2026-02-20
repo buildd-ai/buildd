@@ -11,6 +11,13 @@ interface Workspace {
   id: string;
   name: string;
   isDefault?: boolean;
+  gitConfig?: {
+    targetBranch?: string;
+    defaultBranch?: string;
+    requiresPR?: boolean;
+    autoCreatePR?: boolean;
+  } | null;
+  configStatus?: 'unconfigured' | 'admin_confirmed';
 }
 
 interface PastedImage {
@@ -362,6 +369,29 @@ export default function NewTaskPage() {
                   </option>
                 ))}
               </select>
+              {selectedWorkspaceId && (() => {
+                const ws = workspaces.find(w => w.id === selectedWorkspaceId);
+                if (!ws) return null;
+                const branch = ws.gitConfig?.targetBranch || ws.gitConfig?.defaultBranch;
+                const isConfigured = ws.configStatus === 'admin_confirmed';
+                return (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {branch ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-text-secondary">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                        PRs target <code className="px-1 py-0.5 bg-surface-3 rounded text-text-primary">{branch}</code>
+                        <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">change</Link>
+                      </span>
+                    ) : !isConfigured ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-status-warning">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        No PR target branch set — will use repo default
+                        <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">configure</Link>
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Schedule name (recurring only) */}
