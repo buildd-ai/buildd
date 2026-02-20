@@ -691,6 +691,17 @@ export class WorkerManager {
         (worker.status === 'done' || worker.status === 'error') &&
         now - worker.lastActivity > RETENTION_MS
       ) {
+        // Clean up worktree if it still exists (completed workers keep worktree for resume)
+        if (worker.worktreePath && existsSync(worker.worktreePath)) {
+          const worktreeMarker = join('.buildd-worktrees', '');
+          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
+          const repoPath = worktreeIdx > 0
+            ? worker.worktreePath.substring(0, worktreeIdx)
+            : worker.worktreePath;
+          this.cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+            console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
+          });
+        }
         this.workers.delete(id);
         this.sessions.delete(id);
         storeDeleteWorker(id);
@@ -2084,8 +2095,10 @@ export class WorkerManager {
       if (session) {
         session.inputStream.end();
 
-        // Clean up worktree if used (after session is fully done)
-        if (worker.worktreePath) {
+        // Only clean up worktree immediately on error/abort — completed workers
+        // keep worktree alive for session resume (follow-up messages).
+        // Worktrees for completed workers get cleaned up during eviction.
+        if (worker.worktreePath && worker.status !== 'done') {
           await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
@@ -2875,9 +2888,14 @@ export class WorkerManager {
         return false;
       }
 
+      // Use worktree path for resume if available (session was created in worktree)
+      const sessionCwd = worker.worktreePath && existsSync(worker.worktreePath)
+        ? worker.worktreePath
+        : workspacePath;
+
       // Layer 1: Try resuming the SDK session (preserves full context from disk)
       if (worker.sessionId) {
-        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up`);
+        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up (cwd: ${sessionCwd})`);
 
         // For resume, the prompt is just the follow-up message — the SDK loads full history
         const task = {
@@ -2890,11 +2908,11 @@ export class WorkerManager {
           priority: 1,
         };
 
-        this.startSession(worker, workspacePath, task as any, worker.sessionId).catch(err => {
+        this.startSession(worker, sessionCwd, task as any, worker.sessionId).catch(err => {
           console.error(`[Worker ${worker.id}] Resume failed, falling back to reconstruction:`, err);
 
           // Fallback: restart with text-reconstructed context
-          this.restartWithReconstructedContext(worker, workspacePath!, message).catch(err2 => {
+          this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err2 => {
             console.error(`[Worker ${worker.id}] Fallback session error:`, err2);
             if (worker.status === 'working') {
               worker.status = 'error';
@@ -2912,7 +2930,7 @@ export class WorkerManager {
 
       // Layer 3 fallback: No sessionId available, use text reconstruction
       console.log(`[Worker ${worker.id}] No sessionId — using reconstructed context`);
-      this.restartWithReconstructedContext(worker, workspacePath, message).catch(err => {
+      this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
         if (worker.status === 'working') {
           worker.status = 'error';

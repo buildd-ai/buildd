@@ -17,6 +17,10 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { execSync } from 'child_process';
 
 const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TEST_TIMEOUT = 180_000; // 3 min — agent must commit + resume
@@ -164,7 +168,9 @@ function buildDiagnosticState(worker: any, logs: any[], marker: string): Diagnos
 // --- Test Setup ---
 
 let testWorkspaceId: string;
+let testWorkspaceName: string;
 let originalServer: string | null = null;
+let tempRepoPath: string | null = null;
 
 beforeAll(async () => {
   // Verify server is running
@@ -197,7 +203,24 @@ beforeAll(async () => {
   // Prefer buildd workspace for consistent testing
   const workspace = workspaces.find(w => w.name?.includes('buildd')) || workspaces[0];
   testWorkspaceId = workspace.id;
+  testWorkspaceName = workspace.name;
+
+  // Create a temporary git repo to isolate test commits from the real repo
+  tempRepoPath = mkdtempSync(join(tmpdir(), 'buildd-test-resume-'));
+  execSync('git init && git commit --allow-empty -m "initial"', {
+    cwd: tempRepoPath,
+    encoding: 'utf-8',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' },
+  });
   console.log(`Using workspace: ${workspace.name} (${testWorkspaceId})`);
+  console.log(`Temporary repo: ${tempRepoPath}`);
+
+  // Override workspace path to use the temp repo (agent runs here instead of real repo)
+  await api('/api/debug/override', 'POST', {
+    workspaceName: testWorkspaceName,
+    localPath: tempRepoPath,
+  });
+  console.log(`Path override set: "${testWorkspaceName}" → ${tempRepoPath}`);
 });
 
 afterAll(async () => {
@@ -208,6 +231,14 @@ afterAll(async () => {
     } catch {
       // Ignore - worker may already be done
     }
+  }
+
+  // Clean up temp repo (override becomes stale → resolver falls through to normal resolution)
+  if (tempRepoPath) {
+    try {
+      rmSync(tempRepoPath, { recursive: true, force: true });
+      console.log(`Cleaned up temp repo: ${tempRepoPath}`);
+    } catch { /* best effort */ }
   }
 
   // Restore original server URL
