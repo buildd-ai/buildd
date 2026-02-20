@@ -27,10 +27,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'title and head branch required' }, { status: 400 });
     }
 
-    // Get the worker and its workspace
+    // Get the worker with its workspace and task
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true },
+      with: { workspace: true, task: true },
     });
 
     if (!worker) {
@@ -68,7 +68,11 @@ export async function POST(req: NextRequest) {
           title,
           body: prBody || `Created by buildd worker ${worker.name}`,
           head,
-          base: base || repo.defaultBranch || 'main',
+          base: base
+            || (worker.task?.context as Record<string, unknown> | null)?.targetBranch as string
+            || workspace.gitConfig?.targetBranch
+            || repo.defaultBranch
+            || 'main',
           draft: draft || false,
         }),
       }

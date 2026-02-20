@@ -251,7 +251,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
                             placeholder={defaultBranch || 'main'}
                         />
-                        <p className="text-xs text-text-muted mt-1">Branch that PRs should target (e.g. <code>dev</code>). Used as <code>--base</code> when creating PRs. Defaults to Default Branch if empty.</p>
+                        <p className="text-xs text-text-muted mt-1">
+                            Where agent PRs are opened against. For example, set to <code>dev</code> if you merge features into dev before releasing to main.
+                            Falls back to Default Branch above if empty, then the GitHub repo&apos;s default branch.
+                        </p>
+                        {!targetBranch && (
+                            <p className="text-xs text-status-warning mt-1">
+                                Not set — PRs will target <code>{defaultBranch || 'main'}</code> (from Default Branch above).
+                            </p>
+                        )}
                     </div>
 
                     {requiresPR && (

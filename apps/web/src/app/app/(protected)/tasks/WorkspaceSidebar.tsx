@@ -24,6 +24,7 @@ interface Task {
 interface Workspace {
   id: string;
   name: string;
+  gitConfig?: { targetBranch?: string; defaultBranch?: string } | null;
   tasks: Task[];
 }
 
@@ -575,6 +576,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         <QuickCreateModal
           workspaceId={quickCreateWorkspaceId}
           workspaceName={workspaces.find(w => w.id === quickCreateWorkspaceId)?.name || ''}
+          targetBranch={(() => {
+            const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
+            return ws?.gitConfig?.targetBranch || ws?.gitConfig?.defaultBranch || null;
+          })()}
           onClose={() => setQuickCreateWorkspaceId(null)}
           onCreated={handleQuickCreateComplete}
         />

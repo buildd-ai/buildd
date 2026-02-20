@@ -11,6 +11,13 @@ interface Workspace {
   id: string;
   name: string;
   isDefault?: boolean;
+  gitConfig?: {
+    targetBranch?: string;
+    defaultBranch?: string;
+    requiresPR?: boolean;
+    autoCreatePR?: boolean;
+  } | null;
+  configStatus?: 'unconfigured' | 'admin_confirmed';
 }
 
 interface PastedImage {
@@ -34,6 +41,7 @@ export default function NewTaskPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [requirePlan, setRequirePlan] = useState(false);
+  const [taskTargetBranch, setTaskTargetBranch] = useState('');
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string }[]>([]);
@@ -246,6 +254,16 @@ export default function NewTaskPage() {
           }
         }
 
+        // Build context — merge skills and target branch override
+        const taskContext: Record<string, unknown> = {};
+        if (selectedSkillSlugs.length > 0) {
+          taskContext.skillSlugs = selectedSkillSlugs;
+          if (useSkillAgents) taskContext.useSkillAgents = true;
+        }
+        if (taskTargetBranch) {
+          taskContext.targetBranch = taskTargetBranch;
+        }
+
         // Create one-time task
         const res = await fetch('/api/tasks', {
           method: 'POST',
@@ -259,12 +277,7 @@ export default function NewTaskPage() {
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
             ...(selectedDeps.length > 0 && { blockedByTaskIds: selectedDeps.map(d => d.id) }),
-            ...(selectedSkillSlugs.length > 0 && {
-              context: {
-                skillSlugs: selectedSkillSlugs,
-                ...(useSkillAgents && { useSkillAgents: true }),
-              },
-            }),
+            ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
           }),
         });
 
@@ -362,6 +375,58 @@ export default function NewTaskPage() {
                   </option>
                 ))}
               </select>
+              {selectedWorkspaceId && (() => {
+                const ws = workspaces.find(w => w.id === selectedWorkspaceId);
+                if (!ws) return null;
+                const defaultTarget = ws.gitConfig?.targetBranch || ws.gitConfig?.defaultBranch;
+                const isConfigured = ws.configStatus === 'admin_confirmed';
+                const effectiveBranch = taskTargetBranch || defaultTarget;
+                return (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {effectiveBranch ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-text-secondary">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                        PRs target <code className="px-1 py-0.5 bg-surface-3 rounded text-text-primary">{effectiveBranch}</code>
+                        {taskTargetBranch && <span className="text-primary">(override)</span>}
+                        {!taskTargetBranch && (
+                          <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">change default</Link>
+                        )}
+                      </span>
+                    ) : !isConfigured ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-status-warning">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        No PR target branch set — will use repo default
+                        <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">configure</Link>
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const input = document.getElementById('taskTargetBranch');
+                        if (input) input.focus();
+                        else setTaskTargetBranch(taskTargetBranch ? '' : ' ');
+                      }}
+                      className="text-xs text-text-muted hover:text-primary"
+                    >
+                      {taskTargetBranch ? 'clear override' : 'override for this task'}
+                    </button>
+                  </div>
+                );
+              })()}
+              {(taskTargetBranch !== '') && (
+                <div className="mt-2">
+                  <input
+                    id="taskTargetBranch"
+                    type="text"
+                    value={taskTargetBranch}
+                    onChange={(e) => setTaskTargetBranch(e.target.value.trim())}
+                    placeholder="e.g. release/1.0, hotfix, main"
+                    className="w-full px-3 py-1.5 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                    autoFocus
+                  />
+                  <p className="text-xs text-text-muted mt-1">Override workspace default for this task only. PRs will target this branch.</p>
+                </div>
+              )}
             </div>
 
             {/* Schedule name (recurring only) */}

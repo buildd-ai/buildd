@@ -13,6 +13,7 @@ interface PastedImage {
 interface Props {
   workspaceId: string;
   workspaceName: string;
+  targetBranch?: string | null;
   onClose: () => void;
   onCreated: (taskId: string) => void;
 }
@@ -22,6 +23,7 @@ const ASSIGNMENT_TIMEOUT_MS = 8000; // 8 seconds to accept before reassigning
 export default function QuickCreateModal({
   workspaceId,
   workspaceName,
+  targetBranch,
   onClose,
   onCreated,
 }: Props) {
@@ -338,6 +340,12 @@ export default function QuickCreateModal({
               <div className="flex items-center justify-between">
                 <div className="text-sm text-text-secondary">
                   New task in <span className="font-medium text-text-primary">{workspaceName}</span>
+                  {targetBranch && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-xs text-text-muted">
+                      <svg className="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                      {targetBranch}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"

@@ -241,6 +241,27 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Dedup trigger-based schedules: skip if an active task already exists
+        // for this schedule with the same trigger value
+        if (triggerResult) {
+          const externalId = `schedule-${schedule.id}-${triggerResult.currentValue}`;
+          const existing = await db.query.tasks.findFirst({
+            where: and(
+              eq(tasks.workspaceId, schedule.workspaceId),
+              eq(tasks.externalId, externalId),
+              inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
+            ),
+          });
+          if (existing) {
+            skipped++;
+            continue;
+          }
+        }
+
+        const externalId = triggerResult
+          ? `schedule-${schedule.id}-${triggerResult.currentValue}`
+          : undefined;
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -255,6 +276,7 @@ export async function GET(req: NextRequest) {
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
             creationSource: 'schedule',
+            ...(externalId ? { externalId } : {}),
           })
           .returning();
 
