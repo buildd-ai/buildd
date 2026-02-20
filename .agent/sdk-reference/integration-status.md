@@ -31,6 +31,8 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ## Completed Integrations
 
+- **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in local-ui
+
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)

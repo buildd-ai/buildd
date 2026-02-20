@@ -1746,7 +1746,13 @@ export class WorkerManager {
         ? Boolean(taskWorktreeIsolation)
         : Boolean(gitConfig?.useWorktreeIsolation);
 
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
+      // Resolve background agents: task-level override > workspace-level setting
+      const taskBackgroundAgents = (task.context as any)?.useBackgroundAgents;
+      const useBackgroundAgents = taskBackgroundAgents !== undefined
+        ? Boolean(taskBackgroundAgents)
+        : Boolean(gitConfig?.useBackgroundAgents);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean }> | undefined;
       if (useSkillAgents && skillBundles && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
@@ -1757,6 +1763,8 @@ export class WorkerManager {
             model: 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+            // SDK v0.2.49+: run subagent as background task
+            ...(useBackgroundAgents ? { background: true } : {}),
           };
         }
       }
@@ -2162,6 +2170,7 @@ export class WorkerManager {
     // SDK v0.2.45: Subagent task started — track lifecycle from start to completion
     if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
       const event = msg as any;
+      const isBackground = Boolean(event.is_background);
       const subagentTask: SubagentTask = {
         taskId: event.task_id,
         toolUseId: event.tool_use_id,
@@ -2169,14 +2178,16 @@ export class WorkerManager {
         taskType: event.task_type || 'unknown',
         startedAt: Date.now(),
         status: 'running',
+        ...(isBackground ? { isBackground: true } : {}),
       };
       worker.subagentTasks.push(subagentTask);
       // Keep last 100 subagent tasks
       if (worker.subagentTasks.length > 100) {
         worker.subagentTasks.shift();
       }
-      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${subagentTask.description.slice(0, 50)}`, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent task started: ${subagentTask.taskId} (${subagentTask.taskType}) — ${subagentTask.description}`);
+      const bgLabel = isBackground ? ' (background)' : '';
+      this.addMilestone(worker, { type: 'status', label: `Subagent started${bgLabel}: ${subagentTask.description.slice(0, 50)}`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Subagent task started${bgLabel}: ${subagentTask.taskId} (${subagentTask.taskType}) — ${subagentTask.description}`);
       this.emit({ type: 'worker_update', worker });
     }
 

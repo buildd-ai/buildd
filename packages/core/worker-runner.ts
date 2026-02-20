@@ -84,7 +84,13 @@ export class WorkerRunner extends EventEmitter {
         ? Boolean(taskWorktreeIsolation)
         : Boolean(gitConfig?.useWorktreeIsolation);
 
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
+      // Resolve background agents: task-level override > workspace-level setting
+      const taskBackgroundAgents = (worker.task as any)?.context?.useBackgroundAgents;
+      const useBackgroundAgents = taskBackgroundAgents !== undefined
+        ? Boolean(taskBackgroundAgents)
+        : Boolean(gitConfig?.useBackgroundAgents);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean }> | undefined;
       if (useSkillAgents && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
@@ -95,6 +101,8 @@ export class WorkerRunner extends EventEmitter {
             model: 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+            // SDK v0.2.49+: run subagent as background task
+            ...(useBackgroundAgents ? { background: true } : {}),
           };
         }
       }
@@ -262,6 +270,8 @@ export class WorkerRunner extends EventEmitter {
         toolUseId: event.tool_use_id,
         description: event.description,
         taskType: event.task_type,
+        // SDK v0.2.49+: indicates agent was defined with `background: true`
+        ...(event.is_background ? { isBackground: true } : {}),
       });
       return;
     }

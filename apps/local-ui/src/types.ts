@@ -89,6 +89,7 @@ export interface SubagentTask {
   status: 'running' | 'completed' | 'failed';
   completedAt?: number;
   message?: string;
+  isBackground?: boolean;  // SDK v0.2.49+: true when agent definition has `background: true`
 }
 
 // Team state for a worker
