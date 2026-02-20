@@ -618,6 +618,7 @@ export type SSEEventType =
   | 'worker:session_end'
   | 'worker:permission_request'
   | 'worker:rate_limit'
+  | 'worker:config_change'
   | 'task:updated'
   | 'task:unblocked'
   | 'task:children_completed';

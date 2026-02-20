@@ -418,7 +418,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (12 events)
+### Official HookEvent Type (13 events)
 
 ```typescript
 type HookEvent =
@@ -433,7 +433,8 @@ type HookEvent =
   | 'SubagentStart'       // Subagent initialization
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
-  | 'PermissionRequest';  // Permission dialog
+  | 'PermissionRequest'   // Permission dialog
+  | 'ConfigChange';       // Config file changed (v0.2.49+)
 ```
 
 ### Agent Teams Hooks (experimental, not in HookEvent type)
@@ -514,6 +515,12 @@ type SessionStartHookInput = BaseHookInput & {
 type SessionEndHookInput = BaseHookInput & {
   hook_event_name: 'SessionEnd';
   reason: string;  // 'clear' | 'logout' | 'prompt_input_exit' | 'bypass_permissions_disabled' | 'other'
+};
+
+type ConfigChangeHookInput = BaseHookInput & {
+  hook_event_name: 'ConfigChange';
+  file_path: string;        // Path to the changed config file (e.g., CLAUDE.md, .claude/settings.json)
+  config_scope?: string;    // Scope of the config: 'project', 'user', 'local'
 };
 ```
 
@@ -1050,6 +1057,48 @@ Support for using claude.ai MCP connectors within Claude Code. This allows worke
 
 ---
 
+## 32. ConfigChange Hook (SDK v0.2.49+)
+
+New `ConfigChange` hook event fires when configuration files change during a session. Enables enterprise security auditing of worker config modifications.
+
+### Hook Input
+
+```typescript
+type ConfigChangeHookInput = BaseHookInput & {
+  hook_event_name: 'ConfigChange';
+  file_path: string;        // Path to the changed config file
+  config_scope?: string;    // 'project', 'user', or 'local'
+};
+```
+
+### Usage
+
+```typescript
+hooks: {
+  ConfigChange: [{
+    hooks: [async (input) => {
+      const { file_path, config_scope } = input as ConfigChangeHookInput;
+      console.log(`Config changed: ${file_path} (scope: ${config_scope})`);
+      // Audit log, alert, or optionally block
+      return {};
+    }]
+  }]
+}
+```
+
+### Buildd Integration
+
+Both `worker-runner.ts` and `local-ui/workers.ts` register a `ConfigChange` hook that:
+- Emits a `worker:config_change` SSE event with `filePath` and `configScope`
+- Adds a milestone to the worker activity timeline (displayed with `c` icon in yellow)
+- Logs the change for audit purposes
+
+**Use case**: Enterprise customers can audit when workers modify CLAUDE.md, `.claude/settings.json`, or other project config during execution. Important for verifying workers aren't modifying their own instructions.
+
+**Note**: Requires SDK `>=0.2.49`. The hook key needs `as any` cast until the SDK type definitions are updated.
+
+---
+
 ## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
@@ -1092,7 +1141,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 12 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd)
+- All 13 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -1113,6 +1162,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Completed Integrations (previously pending)
 
+- **`ConfigChange` hook** — Integrated in both workers.ts and worker-runner.ts; emits `worker:config_change` SSE event; displayed in dashboard timeline with yellow `c` icon
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)

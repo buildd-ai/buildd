@@ -174,6 +174,7 @@ function StatusRow({
     if (lower.includes('complete') || lower.includes('done')) return '+';
     if (lower.includes('plan')) return '~';
     if (lower.includes('question') || lower.includes('user:')) return '?';
+    if (lower.includes('config changed')) return 'c';
     if (lower.includes('skill')) return '*';
     if (typeof milestone.progress === 'number') return '%';
     return '-';
@@ -182,16 +183,17 @@ function StatusRow({
   const icon = getIcon(milestone.label);
   const isError = icon === '!';
   const isComplete = icon === '+';
+  const isConfigChange = icon === 'c';
 
   return (
     <div className="flex items-start gap-2 py-1 text-sm">
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
-        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-muted'
+        isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-yellow-500' : 'text-text-muted'
       }`}>
         {icon}
       </span>
       <span className={`flex-1 truncate ${
-        isError ? 'text-status-error' : 'text-text-secondary'
+        isError ? 'text-status-error' : isConfigChange ? 'text-yellow-600 dark:text-yellow-400' : 'text-text-secondary'
       }`}>
         {milestone.label}
         {typeof milestone.progress === 'number' && (

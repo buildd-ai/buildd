@@ -1281,6 +1281,26 @@ export class WorkerManager {
     };
   }
 
+  // Create a ConfigChange hook that logs config file changes during a session (SDK v0.2.49+).
+  // Emits milestones for dashboard visibility and audit trail.
+  private createConfigChangeHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+      const filePath = (input as any).file_path as string;
+      const configScope = (input as any).config_scope as string | undefined;
+
+      const fileName = filePath?.split('/').pop() || filePath || 'unknown';
+      const label = configScope
+        ? `Config changed (${configScope}): ${fileName}`
+        : `Config changed: ${fileName}`;
+      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] Config change: ${filePath} (scope: ${configScope || 'unknown'})`);
+
+      return { async: true };
+    };
+  }
+
   // Resolve whether to use bypassPermissions mode.
   // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
   private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
@@ -1709,6 +1729,8 @@ export class WorkerManager {
         SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
         Stop: [{ hooks: [this.createStopHook(worker)] }],
+        // ConfigChange: SDK v0.2.49+ — fires when config files change during session
+        ConfigChange: [{ hooks: [this.createConfigChangeHook(worker)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,

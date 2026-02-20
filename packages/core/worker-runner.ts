@@ -158,6 +158,8 @@ export class WorkerRunner extends EventEmitter {
             ...({ Stop: [{ hooks: [this.stopHook.bind(this)] }] } as any),
             ...({ SessionStart: [{ hooks: [this.sessionStartHook.bind(this)] }] } as any),
             ...({ SessionEnd: [{ hooks: [this.sessionEndHook.bind(this)] }] } as any),
+            // ConfigChange: SDK v0.2.49+ — fires when config files change during session
+            ...({ ConfigChange: [{ hooks: [this.configChangeHook.bind(this)] }] } as any),
           },
         },
       })) {
@@ -568,6 +570,21 @@ export class WorkerRunner extends EventEmitter {
 
     const reason = (input as any).reason as string;
     this.emitEvent('worker:session_end', { reason });
+    return { async: true };
+  };
+
+  // ConfigChange hook — fires when configuration files change during a session (SDK v0.2.49+).
+  // Logs config changes for enterprise security auditing.
+  private configChangeHook: HookCallback = async (input) => {
+    if ((input as any).hook_event_name !== 'ConfigChange') return {};
+
+    const filePath = (input as any).file_path as string;
+    const configScope = (input as any).config_scope as string | undefined;
+
+    this.emitEvent('worker:config_change', {
+      filePath,
+      configScope: configScope ?? null,
+    });
     return { async: true };
   };
 
