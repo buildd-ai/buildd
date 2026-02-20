@@ -141,6 +141,16 @@ export interface LocalWorker {
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
   lastAssistantMessage?: string;
+  // Model capabilities discovered via SDK v0.2.49+ supportedModels()
+  modelCapabilities?: {
+    model?: string;
+    capabilities?: {
+      supportsEffort: boolean;
+      supportedEffortLevels: string[];
+      supportsAdaptiveThinking: boolean;
+    };
+    warnings: string[];
+  };
 }
 
 // Per-model token usage from SDK result

@@ -94,9 +94,9 @@ export class WorkerRunner extends EventEmitter {
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (worker.task as any)?.context?.thinking;
-      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const configuredThinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
       const taskEffort = (worker.task as any)?.context?.effort;
-      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+      const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
@@ -112,7 +112,8 @@ export class WorkerRunner extends EventEmitter {
         allowedTools.push('mcp__buildd__buildd', 'mcp__buildd__buildd_memory');
       }
 
-      for await (const message of query({
+      // Create query instance first (without effort/thinking) to discover model capabilities
+      const queryInstance = query({
         prompt: fullPrompt,
         options: {
           sessionId: this.workerId,
@@ -138,9 +139,9 @@ export class WorkerRunner extends EventEmitter {
           ...(builddMcpServer ? { mcpServers: { buildd: builddMcpServer } } : {}),
           // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
           ...(betas ? { betas } : {}),
-          // Thinking/effort controls for reasoning behavior
-          ...(thinking ? { thinking } : {}),
-          ...(effort ? { effort } : {}),
+          // Thinking/effort controls — validated against model capabilities below
+          ...(configuredThinking ? { thinking: configuredThinking } : {}),
+          ...(configuredEffort ? { effort: configuredEffort } : {}),
           hooks: {
             PreToolUse: [{ hooks: [this.preToolUseHook.bind(this)] }],
             PostToolUse: [{ hooks: [this.postToolUseHook.bind(this)] }],
@@ -161,9 +162,19 @@ export class WorkerRunner extends EventEmitter {
             ...({ ConfigChange: [{ hooks: [this.configChangeHook(gitConfig?.blockConfigChanges ?? false).bind(this)] }] } as any),
           },
         },
-      })) {
+      });
+
+      // Discover model capabilities via SDK v0.2.49+ supportedModels()
+      // This validates configured effort/thinking against actual model support
+      await this.discoverModelCapabilities(queryInstance, config.anthropicModel, {
+        effort: configuredEffort,
+        thinking: configuredThinking,
+        extendedContext,
+      });
+
+      for await (const message of queryInstance) {
         await this.handleMessage(message);
-        
+
         if (this.costUsd >= config.maxCostPerWorker) {
           this.cancel();
           await this.setStatus('error');
@@ -388,6 +399,86 @@ export class WorkerRunner extends EventEmitter {
         resultMeta,
         ...(totalToolFailures > 0 ? { toolFailures: this.toolFailures } : {}),
         ...(this.lastAssistantMessage ? { lastAssistantMessage: this.lastAssistantMessage } : {}),
+      });
+    }
+  }
+
+  /**
+   * Discover model capabilities via SDK v0.2.49+ supportedModels().
+   * Validates configured effort/thinking against actual model support and emits
+   * capability info for the dashboard. Logs warnings for unsupported options.
+   */
+  private async discoverModelCapabilities(
+    queryInstance: ReturnType<typeof query>,
+    modelId: string,
+    configured: {
+      effort?: string;
+      thinking?: { type: string; budgetTokens?: number };
+      extendedContext?: boolean;
+    },
+  ): Promise<void> {
+    try {
+      const models = await queryInstance.supportedModels();
+      const currentModel = models.find((m: any) => m.value === modelId);
+
+      if (!currentModel) {
+        console.warn(`[Worker ${this.workerId}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
+        this.emitEvent('worker:model_capabilities', {
+          model: modelId,
+          capabilities: null,
+          warnings: [`Model "${modelId}" not found in supported models list`],
+        });
+        return;
+      }
+
+      // Extract capability fields added in SDK v0.2.49
+      const supportsEffort = (currentModel as any).supportsEffort ?? false;
+      const supportedEffortLevels: string[] = (currentModel as any).supportedEffortLevels ?? [];
+      const supportsAdaptiveThinking = (currentModel as any).supportsAdaptiveThinking ?? false;
+
+      const warnings: string[] = [];
+
+      // Validate effort configuration
+      if (configured.effort && !supportsEffort) {
+        warnings.push(`Effort "${configured.effort}" configured but model "${modelId}" does not support effort — option will be ignored by SDK`);
+      } else if (configured.effort && supportsEffort && supportedEffortLevels.length > 0) {
+        if (!supportedEffortLevels.includes(configured.effort)) {
+          warnings.push(`Effort "${configured.effort}" not in supported levels [${supportedEffortLevels.join(', ')}] for model "${modelId}"`);
+        }
+      }
+
+      // Validate thinking configuration
+      if (configured.thinking) {
+        if (configured.thinking.type === 'adaptive' && !supportsAdaptiveThinking) {
+          warnings.push(`Adaptive thinking configured but model "${modelId}" does not support it — option will be ignored by SDK`);
+        }
+        if (configured.thinking.type === 'enabled' && !supportsAdaptiveThinking) {
+          warnings.push(`Extended thinking configured but model "${modelId}" does not support thinking — option will be ignored by SDK`);
+        }
+      }
+
+      // Log warnings
+      for (const warning of warnings) {
+        console.warn(`[Worker ${this.workerId}] ${warning}`);
+      }
+
+      // Emit capabilities for dashboard visibility
+      this.emitEvent('worker:model_capabilities', {
+        model: modelId,
+        capabilities: {
+          supportsEffort,
+          supportedEffortLevels,
+          supportsAdaptiveThinking,
+        },
+        warnings,
+      });
+    } catch (err) {
+      // Non-fatal — capability discovery failure should not block the worker
+      console.warn(`[Worker ${this.workerId}] Model capability discovery failed: ${(err as Error).message}`);
+      this.emitEvent('worker:model_capabilities', {
+        model: modelId,
+        capabilities: null,
+        warnings: [`Capability discovery failed: ${(err as Error).message}`],
       });
     }
   }

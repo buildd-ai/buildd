@@ -1,15 +1,15 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
 
-**Version documented**: 0.2.47 (CLI parity: v2.1.47, Feb 19 2026)
+**Version documented**: 0.2.49 (CLI parity: v2.1.49, Feb 20 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.45` | Should bump to `>=0.2.47` |
-| `apps/agent` | `>=0.2.45` | Should bump to `>=0.2.47` |
-| `apps/local-ui` | `>=0.2.45` | Should bump to `>=0.2.47` |
+| `packages/core` | `>=0.2.49` | Model capability discovery |
+| `apps/agent` | `>=0.2.49` | Model capability discovery |
+| `apps/local-ui` | `>=0.2.49` | Model capability discovery |
 
 ---
 
@@ -1099,10 +1099,54 @@ Both `worker-runner.ts` and `local-ui/workers.ts` register a `ConfigChange` hook
 
 ---
 
-## CLI v2.1.32–2.1.47 Changelog (SDK-Relevant)
+## 33. Model Capability Discovery (SDK v0.2.49, CLI v2.1.49)
+
+`supportedModels()` now returns `ModelInfo` objects with capability fields:
+
+```typescript
+type ModelInfo = {
+  value: string;           // Model identifier (e.g., 'claude-opus-4-6')
+  displayName: string;     // Human-readable name
+  description: string;     // Model description
+  // NEW in v0.2.49:
+  supportsEffort: boolean;              // Whether model supports effort levels
+  supportedEffortLevels: string[];      // e.g., ['low', 'medium', 'high', 'max']
+  supportsAdaptiveThinking: boolean;    // Whether model supports adaptive thinking
+};
+```
+
+### Usage
+
+```typescript
+const q = query({ prompt, options });
+const models = await q.supportedModels();
+const current = models.find(m => m.value === 'claude-opus-4-6');
+
+if (current?.supportsEffort) {
+  console.log(`Effort levels: ${current.supportedEffortLevels.join(', ')}`);
+}
+if (current?.supportsAdaptiveThinking) {
+  console.log('Adaptive thinking available');
+}
+```
+
+### Buildd Integration
+
+Both `worker-runner.ts` and `local-ui/workers.ts` call `supportedModels()` after query creation to:
+1. Validate configured `effort` and `thinking` options against actual model capabilities
+2. Log warnings (not errors) when configured options are unsupported
+3. Emit `worker:model_capabilities` SSE events with capability info for the dashboard
+4. Store capabilities on worker state for API access
+
+The SDK gracefully handles unsupported options (ignores them without erroring), so the capability check is informational — preventing user confusion when settings don't take effect.
+
+---
+
+## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.49 | 0.2.49 | `ModelInfo` includes `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` for capability discovery |
 | 2.1.47 | 0.2.47 | `promptSuggestion()` method; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop hooks; memory improvements (stream buffers, task history trimming, O(n²) progress fix); concurrent agent API 400 fix; deferred SessionStart hook (~500ms faster); bash permission classifier fix |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors support; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Claude Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex/Foundry env propagation fix; Task tool crash fix; `spinnerTipsOverride` setting; plugin availability fix |
@@ -1134,7 +1178,7 @@ Both `worker-runner.ts` and `local-ui/workers.ts` register a `ConfigChange` hook
 - **Sandbox excluded commands** can no longer bypass `autoAllowBashIfSandboxed` (v2.1.34) — security fix
 - **Agent teams crash** on settings change between renders fixed (v2.1.34)
 
-### Buildd Integration Status (v0.2.47)
+### Buildd Integration Status (v0.2.49)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -1149,24 +1193,24 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - In-process MCP server (worker-runner.ts) and subprocess MCP server (local-ui)
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
+- **Model capability discovery** — `supportedModels()` validates effort/thinking at startup, emits `worker:model_capabilities` events
 
 ### Pending Enhancements (Buildd tasks created)
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
-| Effort/thinking controls | `effort`, `thinking` options | P4 | Integrated (#82) |
-| Fallback model | `fallbackModel` option | P4 | Integrated (#81) |
-| 1M context beta | `betas: ['context-1m-2025-08-07']` | P4 | Integrated (conditional on Sonnet models) |
-| maxTurns | `maxTurns` option | P4 | Integrated in worker-runner.ts |
 
 ### Completed Integrations (previously pending)
 
 - **`ConfigChange` hook** — Integrated in both workers.ts and worker-runner.ts; emits `worker:config_change` SSE event; displayed in dashboard timeline with yellow `c` icon
-- **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
+- **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
+- **Model capability discovery** — `supportedModels()` validates effort/thinking/betas at worker startup
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)
 - **1M context beta** — Integrated conditionally for Sonnet models via `extendedContext` config
+- **Effort/thinking controls** — Integrated with capability validation (#82)
+- **Fallback model** — Integrated (#81)
 - **maxTurns** — Integrated in worker-runner.ts via workspace/task config
 
 ### Python SDK Evaluation (2026-02-18)
@@ -1215,7 +1259,7 @@ options: {
 | `setModel(model?)` | Switch model mid-session |
 | `setMaxThinkingTokens(n)` | Change max thinking tokens mid-session |
 | `supportedCommands()` | List available slash commands |
-| `supportedModels()` | List available models with display info |
+| `supportedModels()` | List available models with capabilities (v0.2.49+: `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) |
 | `mcpServerStatus()` | Get MCP server statuses |
 | `accountInfo()` | Get account info |
 | `rewindFiles(messageId, opts?)` | Rewind file changes (requires `enableFileCheckpointing`) |

@@ -1382,6 +1382,86 @@ export class WorkerManager {
     return undefined;
   }
 
+  /**
+   * Discover model capabilities via SDK v0.2.49+ supportedModels().
+   * Validates configured effort/thinking against actual model support and
+   * stores capability info on the worker for dashboard visibility.
+   * Runs in background (fire-and-forget) to avoid blocking the message loop.
+   */
+  private discoverModelCapabilities(
+    queryInstance: ReturnType<typeof query>,
+    worker: LocalWorker,
+    configured: {
+      effort?: string;
+      thinking?: { type: string; budgetTokens?: number };
+      extendedContext?: boolean;
+    },
+  ): void {
+    const modelId = this.config.model;
+
+    // Fire-and-forget — capability discovery should not block the worker
+    queryInstance.supportedModels().then((models: any[]) => {
+      const currentModel = models.find((m: any) => m.value === modelId);
+
+      if (!currentModel) {
+        console.warn(`[Worker ${worker.id}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
+        worker.modelCapabilities = { warnings: [`Model "${modelId}" not found in supported models list`] };
+        this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+        return;
+      }
+
+      // Extract capability fields added in SDK v0.2.49
+      const supportsEffort = currentModel.supportsEffort ?? false;
+      const supportedEffortLevels: string[] = currentModel.supportedEffortLevels ?? [];
+      const supportsAdaptiveThinking = currentModel.supportsAdaptiveThinking ?? false;
+
+      const warnings: string[] = [];
+
+      // Validate effort configuration
+      if (configured.effort && !supportsEffort) {
+        warnings.push(`Effort "${configured.effort}" configured but model "${modelId}" does not support effort — option will be ignored by SDK`);
+      } else if (configured.effort && supportsEffort && supportedEffortLevels.length > 0) {
+        if (!supportedEffortLevels.includes(configured.effort)) {
+          warnings.push(`Effort "${configured.effort}" not in supported levels [${supportedEffortLevels.join(', ')}] for model "${modelId}"`);
+        }
+      }
+
+      // Validate thinking configuration
+      if (configured.thinking) {
+        if (configured.thinking.type === 'adaptive' && !supportsAdaptiveThinking) {
+          warnings.push(`Adaptive thinking configured but model "${modelId}" does not support it — option will be ignored by SDK`);
+        }
+        if (configured.thinking.type === 'enabled' && !supportsAdaptiveThinking) {
+          warnings.push(`Extended thinking configured but model "${modelId}" does not support thinking — option will be ignored by SDK`);
+        }
+      }
+
+      // Log warnings
+      for (const warning of warnings) {
+        console.warn(`[Worker ${worker.id}] ${warning}`);
+        sessionLog(worker.id, 'warn', 'model_capability', warning, worker.taskId);
+      }
+
+      // Store capabilities on worker for API/dashboard access
+      worker.modelCapabilities = {
+        model: modelId,
+        capabilities: {
+          supportsEffort,
+          supportedEffortLevels,
+          supportsAdaptiveThinking,
+        },
+        warnings,
+      };
+
+      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+    }).catch((err: Error) => {
+      // Non-fatal — capability discovery failure should not block the worker
+      console.warn(`[Worker ${worker.id}] Model capability discovery failed: ${err.message}`);
+      worker.modelCapabilities = { warnings: [`Capability discovery failed: ${err.message}`] };
+      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
+    });
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const inputStream = new MessageStream();
@@ -1688,9 +1768,9 @@ export class WorkerManager {
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
-      const thinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
+      const configuredThinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
       const taskEffort = (task.context as any)?.effort;
-      const effort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+      const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
@@ -1722,9 +1802,9 @@ export class WorkerManager {
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
-        // Thinking/effort controls for reasoning behavior
-        ...(thinking ? { thinking } : {}),
-        ...(effort ? { effort } : {}),
+        // Thinking/effort controls — validated against model capabilities below
+        ...(configuredThinking ? { thinking: configuredThinking } : {}),
+        ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 
       // Attach Buildd MCP server so workers can list/update/create tasks
@@ -1785,6 +1865,14 @@ export class WorkerManager {
 
       // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
       queryInstance.streamInput(inputStream);
+
+      // Discover model capabilities via SDK v0.2.49+ supportedModels()
+      // Validates configured effort/thinking against actual model support
+      this.discoverModelCapabilities(queryInstance, worker, {
+        effort: configuredEffort,
+        thinking: configuredThinking,
+        extendedContext,
+      });
 
       // Stream responses
       let resultSubtype: string | undefined;

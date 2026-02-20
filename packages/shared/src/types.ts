@@ -423,6 +423,22 @@ export interface SkillMetadata {
 }
 
 // ============================================================================
+// MODEL CAPABILITIES (SDK v0.2.49+)
+// ============================================================================
+
+export interface ModelCapabilities {
+  supportsEffort: boolean;
+  supportedEffortLevels: string[];
+  supportsAdaptiveThinking: boolean;
+}
+
+export interface ModelCapabilitiesEvent {
+  model: string;
+  capabilities: ModelCapabilities | null;
+  warnings: string[];
+}
+
+// ============================================================================
 // WORKER ENVIRONMENT
 // ============================================================================
 
@@ -620,6 +636,7 @@ export type SSEEventType =
   | 'worker:config_change'
   | 'worker:rate_limit'
   | 'worker:config_change'
+  | 'worker:model_capabilities'
   | 'task:updated'
   | 'task:unblocked'
   | 'task:children_completed';
