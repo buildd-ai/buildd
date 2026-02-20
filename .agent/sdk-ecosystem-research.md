@@ -1,6 +1,6 @@
 # Claude Agent SDK Ecosystem Research
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-20
 > Purpose: Track how the community uses the Claude Agent SDK and identify features/patterns Buildd should adopt.
 
 ## Community Projects Using the SDK
@@ -59,6 +59,12 @@
 8. **Plan Mode Review UI** — Currently plans are auto-approved. Could add dashboard step for human review.
 9. **`additionalDirectories`** — Workers accessing shared monorepo packages outside CWD.
 
+### New in v0.2.49
+14. **`ConfigChange` hook** — Enterprise security auditing of config changes during worker sessions.
+15. **Model capability discovery** (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) — Runtime feature detection instead of hardcoded model assumptions.
+16. **Worktree isolation** (`isolation: "worktree"` on agent definitions) — Subagents in isolated worktrees for parallel-safe work.
+17. **Sonnet 4.6 1M context** — Sonnet 4.5 1M being removed; update 1M context beta to target Sonnet 4.6.
+
 ### Lower Priority
 10. **`forkSession`** — A/B testing agent behavior, branching workflows.
 11. **`resumeSessionAt`** — Rewind to specific conversation point.
@@ -91,38 +97,3 @@ Specify → Plan → Act → Review → Vault — structured workflow phases tha
 ### 5. Multi-Provider Fallback (from agentic-flow)
 Configure fallback chains: Anthropic → Bedrock → Vertex. SDK supports multi-provider auth natively.
 
-## Recommended Recurring Research Job
-
-### Purpose
-Automated weekly scan of the Claude Agent SDK ecosystem to surface:
-1. New SDK releases and changelog highlights
-2. Trending community repos/tools built on the SDK
-3. New patterns or integrations worth evaluating
-4. Competitor feature parity changes
-
-### Schedule Specification
-- **Cadence**: Weekly (every Monday 9 AM ET)
-- **Cron**: `0 13 * * 1` (UTC)
-- **Model**: sonnet (cost-effective for research tasks)
-- **Mode**: research (read-only, no code changes)
-- **Skills**: `sdk-ecosystem-research` skill for structured output
-
-### Research Skill Prompt
-The recurring task should use a skill that:
-1. Checks npm for `@anthropic-ai/claude-agent-sdk` version changes since last run
-2. Searches GitHub for new/trending repos using the SDK (sorted by stars/recent)
-3. Checks Anthropic blog/docs for announcements
-4. Compares findings against `.agent/sdk-ecosystem-research.md` for delta
-5. Saves new observations to workspace memory via `buildd_memory`
-6. Outputs structured JSON with: `{ newVersion, breakingChanges, trendingRepos, newPatterns, featureGaps, recommendations }`
-
-### Expected Output Schema
-```json
-{
-  "sdkVersion": { "current": "0.2.47", "previous": "0.2.45", "changelog": "..." },
-  "trendingRepos": [{ "name": "...", "stars": 0, "description": "...", "relevance": "high|medium|low" }],
-  "newPatterns": [{ "name": "...", "description": "...", "applicability": "..." }],
-  "featureGaps": [{ "feature": "...", "competitors": ["..."], "priority": "high|medium|low" }],
-  "recommendations": [{ "action": "...", "effort": "small|medium|large", "impact": "high|medium|low" }]
-}
-```
