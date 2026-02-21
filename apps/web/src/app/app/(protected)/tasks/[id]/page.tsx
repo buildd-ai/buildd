@@ -140,8 +140,8 @@ export default async function TaskDetailPage({
         {/* Auto-refresh when worker claims this task */}
         <TaskAutoRefresh taskId={task.id} workspaceId={task.workspaceId} taskStatus={task.status} />
 
-        {/* Breadcrumbs */}
-        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+        {/* Breadcrumbs — hidden on mobile (mobile header has nav) */}
+        <nav aria-label="Breadcrumb" className="hidden md:block text-sm text-text-secondary mb-4">
           <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
           <span className="mx-2">/</span>
           <span className="text-text-primary">{task.title}</span>
@@ -268,8 +268,17 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Stat Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        {/* Stat Cards — compact inline on mobile */}
+        <div className="md:hidden mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
+          <span>P{task.priority}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{task.runnerPreference}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>claimed by {task.account?.name || '-'}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{taskWorkers.length} worker{taskWorkers.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Priority</div>
             <div className="text-2xl font-semibold">{task.priority}</div>
