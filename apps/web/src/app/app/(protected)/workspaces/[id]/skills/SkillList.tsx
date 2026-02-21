@@ -27,6 +27,14 @@ const originBadge: Record<string, { bg: string; text: string }> = {
   promoted: { bg: 'bg-status-success/10', text: 'text-status-success' },
 };
 
+const PIPELINE_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
+
+const WORKFLOW_CARDS = [
+  { type: 'fan-out', label: 'Fan-Out & Merge', diagram: '[Task] \u2192 [1] [2] [N] \u2192 [Merge]', description: 'Break work into parallel tasks and merge results' },
+  { type: 'sequential', label: 'Sequential', diagram: '[1] \u2192 [2] \u2192 [3]', description: 'Chain tasks where each waits for the previous' },
+  { type: 'release', label: 'Release', diagram: '[Test] [Lint] [Type] \u2192 [Release]', description: 'Parallel validation followed by guarded release' },
+];
+
 export function SkillList({ workspaceId, initialSkills }: Props) {
   const [skills, setSkills] = useState(initialSkills);
   const [toggling, setToggling] = useState<string | null>(null);
@@ -40,13 +48,17 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
 
   const isEditable = (skill: Skill) => skill.origin !== 'scan';
 
+  // Separate pipeline skills from regular skills
+  const pipelineSkills = skills.filter(s => PIPELINE_SLUGS.includes(s.slug));
+  const regularSkills = skills.filter(s => !PIPELINE_SLUGS.includes(s.slug));
+
   const filteredSkills = searchQuery.trim()
-    ? skills.filter(s =>
+    ? regularSkills.filter(s =>
         s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         s.slug.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (s.description && s.description.toLowerCase().includes(searchQuery.toLowerCase()))
       )
-    : skills;
+    : regularSkills;
 
   async function toggleEnabled(skill: Skill) {
     setToggling(skill.id);
@@ -174,7 +186,41 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
 
   return (
     <div>
-      {skills.length > 3 && (
+      {/* Workflows section */}
+      {pipelineSkills.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-sm font-medium text-text-secondary mb-3">Workflows</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {WORKFLOW_CARDS.map(w => {
+              const installed = pipelineSkills.some(s => s.slug === `pipeline-${w.type === 'fan-out' ? 'fan-out-merge' : w.type}`);
+              return (
+                <div
+                  key={w.type}
+                  className={`border rounded-lg p-3 ${installed ? 'border-primary/30 bg-primary/5' : 'border-border-default'}`}
+                >
+                  <p className="text-sm font-medium text-text-primary">{w.label}</p>
+                  <code className="text-[11px] text-text-muted font-mono mt-1 block">{w.diagram}</code>
+                  <p className="text-xs text-text-secondary mt-1.5">{w.description}</p>
+                  {installed && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-status-success mt-2">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Installed
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-text-muted mt-2">
+            Workflows are available in the task creation form as a &quot;Workflow&quot; selector.
+          </p>
+        </div>
+      )}
+
+      {/* Skills section */}
+      {regularSkills.length > 3 && (
         <div className="mb-4">
           <input
             type="text"

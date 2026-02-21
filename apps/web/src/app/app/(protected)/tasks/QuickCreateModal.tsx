@@ -3,6 +3,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocalUiHealth } from './useLocalUiHealth';
 import { uploadImagesToR2 } from '@/lib/upload';
+import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
+
+const PIPELINE_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
 interface PastedImage {
   filename: string;
@@ -43,11 +46,18 @@ export default function QuickCreateModal({
   // Mode toggle
   const [mode, setMode] = useState<'execution' | 'planning'>('execution');
 
+  // Skills state
+  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
+  const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
+
   // Recurring schedule
   const [recurring, setRecurring] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 9 * * *');
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Filter out pipeline skills
+  const nonPipelineSkills = availableSkills.filter(s => !PIPELINE_SKILL_SLUGS.includes(s.slug));
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -58,6 +68,18 @@ export default function QuickCreateModal({
       }
     };
   }, []);
+
+  // Fetch skills for this workspace
+  useEffect(() => {
+    fetch(`/api/workspaces/${workspaceId}/skills?enabled=true`)
+      .then(res => res.json())
+      .then(data => {
+        setAvailableSkills(
+          (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description }))
+        );
+      })
+      .catch(() => setAvailableSkills([]));
+  }, [workspaceId]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -193,6 +215,12 @@ export default function QuickCreateModal({
         }
       }
 
+      // Build context with skills if any selected
+      const context: Record<string, unknown> = {};
+      if (selectedSkillSlugs.length > 0) {
+        context.skillSlugs = selectedSkillSlugs;
+      }
+
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -205,6 +233,7 @@ export default function QuickCreateModal({
           creationSource: 'dashboard',
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
+          ...(Object.keys(context).length > 0 && { context }),
         }),
       });
 
@@ -253,6 +282,7 @@ export default function QuickCreateModal({
     setDescription('');
     setShowDescription(false);
     setPastedImages([]);
+    setSelectedSkillSlugs([]);
     setError('');
     setAssignmentStatus('idle');
     setCreatedTaskId(null);
@@ -432,7 +462,7 @@ export default function QuickCreateModal({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 onPaste={handlePaste}
-                placeholder="Task title"
+                placeholder={showDescription ? "Brief title" : "What needs to be done? Be specific."}
                 className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
@@ -487,14 +517,21 @@ export default function QuickCreateModal({
               </div>
 
               {showDescription ? (
-                <textarea
+                <SkillSlashTypeahead
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
                   onPaste={handlePaste}
-                  placeholder="Description (optional) — paste images here"
+                  skills={nonPipelineSkills}
+                  selectedSlugs={selectedSkillSlugs}
+                  onSelectSkill={(slug) => {
+                    if (!selectedSkillSlugs.includes(slug)) {
+                      setSelectedSkillSlugs(prev => [...prev, slug]);
+                    }
+                  }}
+                  placeholder="Description (optional) — type / to add skills. Paste images here."
                   rows={3}
-                  className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
                   disabled={loading}
+                  className="w-full px-3 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
                 />
               ) : (
                 <button
@@ -502,8 +539,29 @@ export default function QuickCreateModal({
                   onClick={() => setShowDescription(true)}
                   className="text-xs text-text-muted hover:text-text-secondary"
                 >
-                  + Add description
+                  + Add details
                 </button>
+              )}
+
+              {/* Selected skills as removable pills */}
+              {selectedSkillSlugs.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {nonPipelineSkills
+                    .filter(s => selectedSkillSlugs.includes(s.slug))
+                    .map(skill => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => setSelectedSkillSlugs(prev => prev.filter(s => s !== skill.slug))}
+                        className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      >
+                        {skill.name}
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    ))}
+                </div>
               )}
 
               {pastedImages.length > 0 && (

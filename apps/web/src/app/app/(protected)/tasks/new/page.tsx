@@ -4,8 +4,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { uploadImagesToR2 } from '@/lib/upload';
+import { SkillPills } from '@/components/skills/SkillPills';
+import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
+import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
+
+const WORKFLOW_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
 interface Workspace {
   id: string;
@@ -44,6 +49,16 @@ export default function NewTaskPage() {
   const [requirePlan, setRequirePlan] = useState(false);
   const [taskTargetBranch, setTaskTargetBranch] = useState('');
 
+  // Title state (controlled for legibility hint)
+  const [titleValue, setTitleValue] = useState('');
+
+  // Description state (expandable)
+  const [showDescription, setShowDescription] = useState(false);
+  const [descriptionValue, setDescriptionValue] = useState('');
+
+  // Workflow state
+  const [workflowType, setWorkflowType] = useState<WorkflowType>('single');
+
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
@@ -70,6 +85,9 @@ export default function NewTaskPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [cronPreview, setCronPreview] = useState<CronPreview | null>(null);
 
+  // Filter out pipeline skills from the pill picker
+  const nonPipelineSkills = availableSkills.filter(s => !WORKFLOW_SKILL_SLUGS.includes(s.slug));
+
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -90,6 +108,7 @@ export default function NewTaskPage() {
           }]);
         };
         reader.readAsDataURL(file);
+        setShowDescription(true);
       }
     }
   }, []);
@@ -199,6 +218,13 @@ export default function NewTaskPage() {
     return () => clearTimeout(timer);
   }, [recurring, cronExpression, timezone, selectedWorkspaceId]);
 
+  // Map workflow type to pipeline skill slug
+  const workflowToSkillSlug: Record<string, string> = {
+    'fan-out': 'pipeline-fan-out-merge',
+    'sequential': 'pipeline-sequential',
+    'release': 'pipeline-release',
+  };
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setLoading(true);
@@ -206,8 +232,8 @@ export default function NewTaskPage() {
 
     const formData = new FormData(e.currentTarget);
     const workspaceId = formData.get('workspaceId') as string;
-    const title = formData.get('title') as string;
-    const description = formData.get('description') as string;
+    const title = titleValue.trim();
+    const description = descriptionValue.trim();
     const priority = parseInt(formData.get('priority') as string) || 0;
 
     try {
@@ -266,11 +292,21 @@ export default function NewTaskPage() {
           }
         }
 
-        // Build context — merge skills and target branch override
+        // Build context — merge skills, workflow, and target branch override
         const taskContext: Record<string, unknown> = {};
-        if (selectedSkillSlugs.length > 0) {
-          taskContext.skillSlugs = selectedSkillSlugs;
+
+        // Combine selected skills + workflow pipeline skill
+        const allSkillSlugs = [...selectedSkillSlugs];
+        const pipelineSlug = workflowToSkillSlug[workflowType];
+        if (pipelineSlug && !allSkillSlugs.includes(pipelineSlug)) {
+          allSkillSlugs.push(pipelineSlug);
+        }
+        if (allSkillSlugs.length > 0) {
+          taskContext.skillSlugs = allSkillSlugs;
           if (useSkillAgents) taskContext.useSkillAgents = true;
+        }
+        if (workflowType !== 'single') {
+          taskContext.workflow = workflowType;
         }
         if (taskTargetBranch) {
           taskContext.targetBranch = taskTargetBranch;
@@ -283,7 +319,7 @@ export default function NewTaskPage() {
           body: JSON.stringify({
             workspaceId,
             title,
-            description,
+            description: description || undefined,
             priority,
             ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
@@ -309,6 +345,18 @@ export default function NewTaskPage() {
       setLoading(false);
     }
   }
+
+  const handleSkillToggle = (slug: string) => {
+    setSelectedSkillSlugs(prev =>
+      prev.includes(slug) ? prev.filter(s => s !== slug) : [...prev, slug]
+    );
+  };
+
+  const handleSlashSelectSkill = (slug: string) => {
+    if (!selectedSkillSlugs.includes(slug)) {
+      setSelectedSkillSlugs(prev => [...prev, slug]);
+    }
+  };
 
   return (
     <div className="p-4 pb-8 md:p-8 md:pb-8 overflow-auto h-full">
@@ -416,6 +464,11 @@ export default function NewTaskPage() {
               })()}
             </div>
 
+            {/* Workflow selector (one-time tasks only) */}
+            {!recurring && (
+              <WorkflowSelector value={workflowType} onChange={setWorkflowType} />
+            )}
+
             {/* Schedule name (recurring only) */}
             {recurring && (
               <div>
@@ -434,6 +487,7 @@ export default function NewTaskPage() {
               </div>
             )}
 
+            {/* Title */}
             <div>
               <label htmlFor="title" className="block text-sm font-medium mb-2">
                 Task Title
@@ -443,113 +497,88 @@ export default function NewTaskPage() {
                 id="title"
                 name="title"
                 required
-                placeholder={recurring ? "Run full test suite" : "Fix login bug"}
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-              />
-            </div>
-
-            {/* Skills picker */}
-            {availableSkills.length > 0 && (
-              <div>
-                <label className="block text-sm font-medium mb-2">Skills</label>
-                <div className="border border-border-default rounded-lg overflow-hidden divide-y divide-border-default">
-                  {availableSkills.map(skill => {
-                    const selected = selectedSkillSlugs.includes(skill.slug);
-                    return (
-                      <button
-                        key={skill.id}
-                        type="button"
-                        onClick={() => setSelectedSkillSlugs(prev =>
-                          selected ? prev.filter(s => s !== skill.slug) : [...prev, skill.slug]
-                        )}
-                        className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors ${
-                          selected ? 'bg-primary/5' : 'hover:bg-surface-3'
-                        }`}
-                      >
-                        <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
-                          selected ? 'bg-primary border-primary' : 'border-border-default'
-                        }`}>
-                          {selected && (
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="20 6 9 17 4 12" />
-                            </svg>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`text-sm font-medium ${selected ? 'text-primary' : 'text-text-primary'}`}>{skill.name}</span>
-                            <code className="text-[11px] bg-surface-3 px-1.5 py-0.5 rounded text-text-muted">{skill.slug}</code>
-                            {(skill.recentRuns ?? 0) > 0 && (
-                              <span className="text-[11px] text-text-muted">{skill.recentRuns} run{skill.recentRuns === 1 ? '' : 's'} (30d)</span>
-                            )}
-                          </div>
-                          {skill.description && (
-                            <p className="text-xs text-text-muted mt-0.5 truncate">{skill.description}</p>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-text-secondary mt-1.5">
-                  Skills provide reusable instructions to the worker agent.
-                </p>
-                {selectedSkillSlugs.length > 0 && (
-                  <label className="flex items-start gap-2 mt-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useSkillAgents}
-                      onChange={(e) => setUseSkillAgents(e.target.checked)}
-                      className="mt-0.5 rounded border-border-default text-primary focus:ring-primary-ring"
-                    />
-                    <div>
-                      <span className="text-sm font-medium">Use skills as specialist agents</span>
-                      <p className="text-xs text-text-secondary mt-0.5">
-                        Skills will be available as autonomous sub-agents that the worker can delegate to.
-                      </p>
-                    </div>
-                  </label>
-                )}
-              </div>
-            )}
-
-            <div>
-              <label htmlFor="description" className="block text-sm font-medium mb-2">
-                Description
-              </label>
-              <textarea
-                id="description"
-                name="description"
-                required={!recurring}
-                rows={recurring ? 4 : 6}
-                placeholder={recurring
-                  ? "Instructions for each run. Agents receive this every time the schedule fires."
-                  : "Describe what needs to be done. Be specific about requirements, files to modify, and expected behavior. Paste images here."
+                value={titleValue}
+                onChange={(e) => setTitleValue(e.target.value)}
+                placeholder={
+                  recurring
+                    ? "Run full test suite"
+                    : showDescription
+                      ? "Brief title"
+                      : "What needs to be done? Be specific."
                 }
-                onPaste={handlePaste}
                 className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
               />
-              {pastedImages.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {pastedImages.map((img, i) => (
-                    <div key={i} className="relative group">
-                      <img
-                        src={img.data}
-                        alt={img.filename}
-                        className="max-h-24 rounded border border-border-default"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(i)}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  ))}
-                </div>
+              {/* Legibility hint when description is collapsed and title is short */}
+              {!showDescription && titleValue.length > 0 && titleValue.length < 40 && (
+                <p className="text-text-muted text-xs mt-1">
+                  Tip: be descriptive — the agent only sees this title
+                </p>
               )}
             </div>
+
+            {/* Expandable description */}
+            {showDescription ? (
+              <div>
+                <label htmlFor="description" className="block text-sm font-medium mb-2">
+                  Description
+                </label>
+                <SkillSlashTypeahead
+                  id="description"
+                  name="description"
+                  value={descriptionValue}
+                  onChange={setDescriptionValue}
+                  onPaste={handlePaste}
+                  skills={nonPipelineSkills}
+                  selectedSlugs={selectedSkillSlugs}
+                  onSelectSkill={handleSlashSelectSkill}
+                  placeholder={recurring
+                    ? "Instructions for each run. Agents receive this every time the schedule fires."
+                    : "Describe what needs to be done. Type / to add skills. Paste images here."
+                  }
+                  rows={recurring ? 4 : 6}
+                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                />
+                {pastedImages.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {pastedImages.map((img, i) => (
+                      <div key={i} className="relative group">
+                        <img
+                          src={img.data}
+                          alt={img.filename}
+                          className="max-h-24 rounded border border-border-default"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeImage(i)}
+                          className="absolute -top-2 -right-2 w-5 h-5 bg-status-error text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowDescription(true)}
+                className="text-sm text-text-muted hover:text-text-secondary transition-colors"
+              >
+                + Add details
+              </button>
+            )}
+
+            {/* Skills pill picker */}
+            {nonPipelineSkills.length > 0 && (
+              <SkillPills
+                skills={nonPipelineSkills}
+                selectedSlugs={selectedSkillSlugs}
+                onToggle={handleSkillToggle}
+                useSkillAgents={useSkillAgents}
+                onUseSkillAgentsChange={setUseSkillAgents}
+              />
+            )}
 
             {/* ── Advanced Options (Progressive Disclosure) ── */}
             <div className="border-t border-border-default pt-4">
