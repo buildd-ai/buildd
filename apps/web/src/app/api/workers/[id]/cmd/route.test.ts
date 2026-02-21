@@ -2,11 +2,21 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
+const mockGetCurrentUser = mock(() => null as any);
+const mockVerifyWorkspaceAccess = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -53,12 +63,17 @@ const mockParams = Promise.resolve({ id: 'worker-1' });
 describe('POST /api/workers/[id]/cmd', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
     mockWorkersFindFirst.mockReset();
     mockTriggerEvent.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
   });
 
-  it('returns 401 when no API key', async () => {
+  it('returns 401 when no session and no API key', async () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
 
     const req = createMockRequest({ action: 'pause' });
     const res = await POST(req, { params: mockParams });
