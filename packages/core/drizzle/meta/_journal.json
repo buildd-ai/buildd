@@ -246,6 +246,27 @@
       "when": 1771700000000,
       "tag": "0034_artifact_workspace_key",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1771676862724,
+      "tag": "0035_unusual_makkari",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1771800000000,
+      "tag": "0036_task_category",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1771900000000,
+      "tag": "0037_task_output_requirement",
+      "breakpoints": true
     }
   ]
 }

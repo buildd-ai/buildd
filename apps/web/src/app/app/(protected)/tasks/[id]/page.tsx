@@ -16,6 +16,17 @@ import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 
+const CATEGORY_COLORS: Record<string, string> = {
+  bug: 'bg-red-500/15 text-red-400',
+  feature: 'bg-blue-500/15 text-blue-400',
+  refactor: 'bg-purple-500/15 text-purple-400',
+  chore: 'bg-zinc-500/15 text-zinc-400',
+  docs: 'bg-teal-500/15 text-teal-400',
+  test: 'bg-amber-500/15 text-amber-400',
+  infra: 'bg-orange-500/15 text-orange-400',
+  design: 'bg-pink-500/15 text-pink-400',
+};
+
 export default async function TaskDetailPage({
   params,
 }: {
@@ -183,6 +194,11 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus}>
                 <StatusBadge status={displayStatus} />
               </span>
+              {task.category && (
+                <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-zinc-500/15 text-zinc-400'}`}>
+                  {task.category}
+                </span>
+              )}
             </div>
             <p className="text-[14px] text-text-secondary">
               {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}

@@ -7,8 +7,20 @@ import { uploadImagesToR2 } from '@/lib/upload';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
+import type { TaskCategoryValue } from '@buildd/shared';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
+
+const CATEGORY_OPTIONS: { value: TaskCategoryValue; label: string; color: string }[] = [
+  { value: 'bug', label: 'Bug', color: 'bg-red-500/15 text-red-400 border-red-500/30' },
+  { value: 'feature', label: 'Feature', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
+  { value: 'refactor', label: 'Refactor', color: 'bg-purple-500/15 text-purple-400 border-purple-500/30' },
+  { value: 'chore', label: 'Chore', color: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30' },
+  { value: 'docs', label: 'Docs', color: 'bg-teal-500/15 text-teal-400 border-teal-500/30' },
+  { value: 'test', label: 'Test', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
+  { value: 'infra', label: 'Infra', color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' },
+  { value: 'design', label: 'Design', color: 'bg-pink-500/15 text-pink-400 border-pink-500/30' },
+];
 
 const WORKFLOW_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
@@ -51,6 +63,9 @@ export default function NewTaskPage() {
 
   // Title state (controlled for legibility hint)
   const [titleValue, setTitleValue] = useState('');
+
+  // Category state
+  const [selectedCategory, setSelectedCategory] = useState<TaskCategoryValue | null>(null);
 
   // Description state (expandable)
   const [showDescription, setShowDescription] = useState(false);
@@ -321,6 +336,7 @@ export default function NewTaskPage() {
             title,
             description: description || undefined,
             priority,
+            ...(selectedCategory && { category: selectedCategory }),
             ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
@@ -514,6 +530,29 @@ export default function NewTaskPage() {
                   Tip: be descriptive — the agent only sees this title
                 </p>
               )}
+            </div>
+
+            {/* Category selector */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Category <span className="text-text-muted font-normal">(auto-detected if empty)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {CATEGORY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSelectedCategory(selectedCategory === opt.value ? null : opt.value)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                      selectedCategory === opt.value
+                        ? opt.color + ' border-current'
+                        : 'bg-surface-3 text-text-secondary border-transparent hover:bg-surface-4'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Expandable description */}

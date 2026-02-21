@@ -319,6 +319,10 @@ export const tasks = pgTable('tasks', {
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task dependency — tasks with blockers start as 'blocked' and auto-unblock when all blockers complete/fail
   blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
+  // Task category for visual grouping
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
+  // Output requirement — controls what deliverables are enforced on completion
+  outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion
