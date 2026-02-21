@@ -2,13 +2,22 @@
 
 import { useState, useEffect } from 'react';
 import MarkdownContent from '@/components/MarkdownContent';
+import PlanStepTracker from './PlanStepTracker';
+
+type Milestone =
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label: string; ts: number }
+  | { type: 'action'; label: string; ts: number };
 
 interface PlanReviewPanelProps {
   workerId: string;
   isAwaitingApproval: boolean;
+  milestones?: Milestone[];
+  currentAction?: string | null;
 }
 
-export default function PlanReviewPanel({ workerId, isAwaitingApproval }: PlanReviewPanelProps) {
+export default function PlanReviewPanel({ workerId, isAwaitingApproval, milestones = [], currentAction }: PlanReviewPanelProps) {
   const [plan, setPlan] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -17,6 +26,7 @@ export default function PlanReviewPanel({ workerId, isAwaitingApproval }: PlanRe
   const [showFeedback, setShowFeedback] = useState(false);
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [collapsed, setCollapsed] = useState(!isAwaitingApproval);
+  const [showRawPlan, setShowRawPlan] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -274,7 +284,33 @@ export default function PlanReviewPanel({ workerId, isAwaitingApproval }: PlanRe
 
       {/* Plan body */}
       <div className="px-6 pb-6 max-h-[60vh] overflow-y-auto">
-        <MarkdownContent content={plan} />
+        {!isAwaitingApproval && !showRawPlan ? (
+          <>
+            <PlanStepTracker
+              planMarkdown={plan}
+              milestones={milestones}
+              currentAction={currentAction}
+            />
+            <button
+              onClick={() => setShowRawPlan(true)}
+              className="text-xs text-text-muted hover:text-text-primary mt-2"
+            >
+              View full plan
+            </button>
+          </>
+        ) : (
+          <>
+            <MarkdownContent content={plan} />
+            {!isAwaitingApproval && showRawPlan && (
+              <button
+                onClick={() => setShowRawPlan(false)}
+                className="text-xs text-text-muted hover:text-text-primary mt-2"
+              >
+                View step tracker
+              </button>
+            )}
+          </>
+        )}
       </div>
 
       {/* Action result */}

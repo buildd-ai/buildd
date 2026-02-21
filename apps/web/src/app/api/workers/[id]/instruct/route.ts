@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { triggerEvent, channels, events } from '@/lib/pusher';
 
 // POST /api/workers/[id]/instruct - Send instructions to a worker (admin only)
 // Instructions are delivered on the worker's next progress update
@@ -57,7 +58,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { message, type = 'instruction' } = body;
+  const { message, type = 'instruction', priority } = body;
 
   if (!message || typeof message !== 'string') {
     return NextResponse.json(
@@ -101,11 +102,22 @@ export async function POST(
     .where(eq(workers.id, id))
     .returning();
 
+  // Urgent priority: bridge to Pusher for instant delivery via local-ui's handleCommand
+  if (priority === 'urgent') {
+    await triggerEvent(
+      channels.worker(id),
+      events.WORKER_COMMAND,
+      { action: 'message', text: message, timestamp: Date.now() }
+    );
+  }
+
   return NextResponse.json({
     ok: true,
     message: type === 'request_plan'
       ? 'Plan request queued for delivery on next worker check-in'
-      : 'Instructions queued for delivery on next worker check-in',
+      : priority === 'urgent'
+        ? 'Instructions sent instantly via Pusher'
+        : 'Instructions queued for delivery on next worker check-in',
     workerId: id,
   });
 }

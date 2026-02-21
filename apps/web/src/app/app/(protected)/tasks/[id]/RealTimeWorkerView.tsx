@@ -12,7 +12,8 @@ import TeamPanel from './TeamPanel';
 type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
   | { type: 'status'; label: string; progress?: number; ts: number }
-  | { type: 'checkpoint'; event: string; label: string; ts: number };
+  | { type: 'checkpoint'; event: string; label: string; ts: number }
+  | { type: 'action'; label: string; ts: number };
 
 interface Worker {
   id: string;
@@ -216,6 +217,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
+  const [showAbortConfirm, setShowAbortConfirm] = useState(false);
+  const [abortLoading, setAbortLoading] = useState(false);
+  const [interruptMode, setInterruptMode] = useState(false);
   const { status: directStatus, sendDirect, viewerToken, localUiUrl: resolvedLocalUiUrl } = useDirectConnect(worker.localUiUrl);
 
   // Subscribe to real-time updates
@@ -276,6 +280,43 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   }
 
+  async function handleAbort() {
+    setAbortLoading(true);
+    try {
+      const res = await fetch(`/api/workers/${worker.id}/cmd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'abort' }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to abort');
+      }
+      setShowAbortConfirm(false);
+    } catch (err) {
+      console.error('Failed to abort worker:', err);
+    } finally {
+      setAbortLoading(false);
+    }
+  }
+
+  async function handleInterruptSend(message: string) {
+    try {
+      const res = await fetch(`/api/workers/${worker.id}/instruct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, priority: 'urgent' }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to send interrupt');
+      }
+      setInterruptMode(false);
+    } catch (err) {
+      console.error('Failed to send interrupt:', err);
+    }
+  }
+
   const isActive = ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(worker.status);
 
   return (
@@ -287,6 +328,44 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={worker.status} />
+          {isActive && worker.status !== 'starting' && (
+            <>
+              <button
+                data-testid="worker-interrupt-btn"
+                onClick={() => setInterruptMode(!interruptMode)}
+                className="px-2.5 py-1 text-[11px] font-medium border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 transition-colors"
+                title="Send an urgent message to interrupt the agent"
+              >
+                Interrupt
+              </button>
+              {showAbortConfirm ? (
+                <span className="flex items-center gap-1">
+                  <button
+                    onClick={handleAbort}
+                    disabled={abortLoading}
+                    className="px-2.5 py-1 text-[11px] font-medium bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
+                  >
+                    {abortLoading ? '...' : 'Confirm'}
+                  </button>
+                  <button
+                    onClick={() => setShowAbortConfirm(false)}
+                    className="px-2 py-1 text-[11px] text-text-muted hover:text-text-primary"
+                  >
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  data-testid="worker-abort-btn"
+                  onClick={() => setShowAbortConfirm(true)}
+                  className="px-2.5 py-1 text-[11px] font-medium border border-status-error/30 text-status-error rounded hover:bg-status-error/10 transition-colors"
+                  title="Stop the worker immediately"
+                >
+                  Abort
+                </button>
+              )}
+            </>
+          )}
           {worker.localUiUrl && (
             <div className={`flex items-center gap-1.5${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:flex' : ''}`}>
               {directStatus === 'connected' && (
@@ -316,6 +395,46 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         <div className="mb-3 flex items-center gap-2">
           <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true" />
           <p className="text-sm text-text-secondary">{worker.currentAction}</p>
+        </div>
+      )}
+
+      {/* Interrupt input form */}
+      {interruptMode && (
+        <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Interrupt</span>
+            <span className="text-[10px] text-text-muted">Message delivered instantly via Pusher</span>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const form = e.target as HTMLFormElement;
+              const input = form.elements.namedItem('interruptMsg') as HTMLInputElement;
+              if (input.value.trim()) handleInterruptSend(input.value.trim());
+            }}
+            className="flex gap-2"
+          >
+            <input
+              name="interruptMsg"
+              type="text"
+              autoFocus
+              placeholder="e.g., Stop what you're doing and focus on..."
+              className="flex-1 px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-status-warning/50 focus:border-status-warning"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 text-sm bg-status-warning text-white rounded-md hover:opacity-90"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              onClick={() => setInterruptMode(false)}
+              className="px-3 py-2 text-sm text-text-muted hover:text-text-primary"
+            >
+              Cancel
+            </button>
+          </form>
         </div>
       )}
 

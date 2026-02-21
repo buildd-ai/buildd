@@ -5,7 +5,8 @@ import { useState } from 'react';
 type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
   | { type: 'status'; label: string; progress?: number; ts: number }
-  | { type: 'checkpoint'; event: string; label: string; ts: number };
+  | { type: 'checkpoint'; event: string; label: string; ts: number }
+  | { type: 'action'; label: string; ts: number };
 
 const CHECKPOINT_ORDER = [
   'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed',
@@ -93,6 +94,8 @@ export default function WorkerActivityTimeline({
                 />
               ) : milestone.type === 'checkpoint' ? (
                 <CheckpointRow milestone={milestone} formatTime={formatTime} />
+              ) : milestone.type === 'action' ? (
+                <ActionRow milestone={milestone} formatTime={formatTime} />
               ) : (
                 <StatusRow milestone={milestone} formatTime={formatTime} />
               )}
@@ -230,6 +233,28 @@ function CheckpointRow({
         {milestone.label}
       </span>
       <span className="text-xs text-text-muted flex-shrink-0">
+        {formatTime(milestone.ts)}
+      </span>
+    </div>
+  );
+}
+
+function ActionRow({
+  milestone,
+  formatTime,
+}: {
+  milestone: { type: 'action'; label: string; ts: number };
+  formatTime: (ts: number) => string;
+}) {
+  return (
+    <div className="flex items-start gap-2 py-0.5 ml-5 text-xs">
+      <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">
+        &middot;
+      </span>
+      <span className="flex-1 truncate text-text-muted">
+        {milestone.label}
+      </span>
+      <span className="text-[10px] text-text-muted/60 flex-shrink-0">
         {formatTime(milestone.ts)}
       </span>
     </div>

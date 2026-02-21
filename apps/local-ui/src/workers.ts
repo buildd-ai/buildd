@@ -2408,6 +2408,19 @@ export class WorkerManager {
             this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
           }
 
+          // Emit action milestones for notable tool calls (Edit, Write, Bash)
+          if (toolName === 'Edit' || toolName === 'Write') {
+            const filePath = input.file_path as string;
+            const shortPath = filePath ? filePath.split('/').pop() || filePath : 'file';
+            this.addMilestone(worker, { type: 'action', label: `${toolName === 'Edit' ? 'Edited' : 'Wrote'} ${shortPath}`, ts: Date.now() });
+          } else if (toolName === 'Bash') {
+            const cmd = (input.command as string) || '';
+            // Only emit for notable bash commands, skip trivial ones
+            if (cmd.includes('git commit') || cmd.includes('npm') || cmd.includes('bun') || cmd.includes('test') || cmd.includes('build')) {
+              this.addMilestone(worker, { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts: Date.now() });
+            }
+          }
+
           // Update currentAction (still useful for live display)
           if (toolName === 'Read') {
             worker.currentAction = `Reading ${input.file_path}`;
@@ -2668,9 +2681,14 @@ export class WorkerManager {
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {
     worker.milestones.push(milestone);
-    // Keep last 30 milestones
-    if (worker.milestones.length > 30) {
-      worker.milestones.shift();
+    // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
+    if (worker.milestones.length > 50) {
+      const actionIdx = worker.milestones.findIndex(m => m.type === 'action');
+      if (actionIdx >= 0) {
+        worker.milestones.splice(actionIdx, 1);
+      } else {
+        worker.milestones.shift();
+      }
     }
     this.emit({ type: 'milestone', workerId: worker.id, milestone });
 

@@ -371,6 +371,8 @@ export default async function TaskDetailPage({
               <PlanReviewPanel
                 workerId={activeWorker.id}
                 isAwaitingApproval={displayStatus === 'awaiting_plan_approval'}
+                milestones={(activeWorker.milestones as any[]) || []}
+                currentAction={activeWorker.currentAction}
               />
             )}
             <RealTimeWorkerView
