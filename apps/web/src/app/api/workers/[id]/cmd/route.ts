@@ -4,6 +4,8 @@ import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // POST /api/workers/[id]/cmd - Send command to worker via Pusher
 export async function POST(
@@ -12,24 +14,35 @@ export async function POST(
 ) {
   const { id } = await params;
 
+  // Dual auth: session OR API key
+  const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
 
-  if (!account) {
+  if (!user && !account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
+    with: { workspace: true },
   });
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  // Verify access: API key checks account ownership, session checks workspace membership
+  if (account) {
+    if (worker.accountId !== account.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  } else if (user) {
+    const access = await verifyWorkspaceAccess(user.id, worker.workspaceId);
+    if (!access) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
   }
 
   const body = await req.json();
