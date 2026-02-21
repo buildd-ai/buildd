@@ -7,6 +7,8 @@ import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { classifyTask } from '@/lib/task-category';
+import { TaskCategory } from '@buildd/shared';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -109,6 +111,10 @@ export async function POST(req: NextRequest) {
       skillSlugs: rawSkillSlugs,
       // JSON Schema for structured output
       outputSchema,
+      // Task category
+      category: rawCategory,
+      // Output requirement — what deliverables are enforced on completion
+      outputRequirement: rawOutputRequirement,
       // Task dependency — blocked tasks start as 'blocked' and auto-unblock
       blockedByTaskIds: rawBlockedByTaskIds,
     } = body;
@@ -266,6 +272,22 @@ export async function POST(req: NextRequest) {
       blockedByTaskIds.push(...rawBlockedByTaskIds);
     }
 
+    // Resolve category: use provided value, or auto-classify
+    type CategoryType = 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design';
+    const validCategories = Object.values(TaskCategory) as string[];
+    let category: CategoryType | null = null;
+    if (rawCategory && validCategories.includes(rawCategory)) {
+      category = rawCategory as CategoryType;
+    } else if (!rawCategory) {
+      category = classifyTask(title, description) as CategoryType | null;
+    }
+
+    // Validate outputRequirement if provided
+    const validOutputRequirements = ['pr_required', 'artifact_required', 'none', 'auto'];
+    const outputRequirement = rawOutputRequirement && validOutputRequirements.includes(rawOutputRequirement)
+      ? rawOutputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto'
+      : undefined;
+
     const initialStatus = blockedByTaskIds.length > 0 ? 'blocked' : 'pending';
 
     const [task] = await db
@@ -285,6 +307,8 @@ export async function POST(req: NextRequest) {
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },
+        ...(category ? { category } : {}),
+        ...(outputRequirement ? { outputRequirement } : {}),
         ...(outputSchema ? { outputSchema } : {}),
         ...(blockedByTaskIds.length > 0 ? { blockedByTaskIds } : {}),
         // Creator tracking (from service)

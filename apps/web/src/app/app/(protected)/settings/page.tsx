@@ -1,10 +1,12 @@
 import { db } from '@buildd/core/db';
 import { accounts, skills, workspaces } from '@buildd/core/db/schema';
 import { desc, inArray } from 'drizzle-orm';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
+import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
 import SkillsSection from './SkillsSection';
@@ -33,6 +35,13 @@ export default async function SettingsPage() {
   }
 
   const teamIds = userTeams.map(t => t.id);
+
+  // Resolve current team for mobile switcher
+  const cookieStore = await cookies();
+  const teamCookie = cookieStore.get('buildd-team')?.value;
+  const currentTeamId = (teamCookie && userTeams.some(t => t.id === teamCookie))
+    ? teamCookie
+    : userTeams[0]?.id || null;
 
   // Fetch accounts
   try {
@@ -78,14 +87,24 @@ export default async function SettingsPage() {
   };
 
   return (
-    <main className="min-h-screen p-4 md:p-8">
+    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-2xl mx-auto">
         <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Dashboard
         </Link>
-        <h1 className="text-2xl font-bold mb-8">Settings</h1>
+        <h1 className="text-2xl font-semibold mb-8">Settings</h1>
 
         <div className="space-y-10">
+          {/* Team Switcher (mobile only) */}
+          {userTeams.length > 1 && (
+            <section className="md:hidden">
+              <h2 className="text-lg font-semibold mb-3">Switch Team</h2>
+              <div className="bg-surface-2 border border-border-default rounded-lg p-3">
+                <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
+              </div>
+            </section>
+          )}
+
           {/* GitHub */}
           <GitHubSection />
 

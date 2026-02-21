@@ -13,7 +13,8 @@
     "./db/*": "./db/*.ts",
     "./worker-runner": "./worker-runner.ts",
     "./buildd-mcp-server": "./buildd-mcp-server.ts",
-    "./config": "./config.ts"
+    "./config": "./config.ts",
+    "./mcp-tools": "./mcp-tools.ts"
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",

@@ -135,7 +135,12 @@ export async function POST(
                 : {}),
 
             // Block config file changes during worker sessions (ConfigChange hook)
-            ...(body.blockConfigChanges === true ? { blockConfigChanges: true } : {}),
+            ...(typeof body.blockConfigChanges === 'boolean' ? { blockConfigChanges: body.blockConfigChanges } : {}),
+
+            // Background agents (SDK v0.2.49+) — subagents run as background tasks
+            ...(typeof body.useBackgroundAgents === 'boolean'
+                ? { useBackgroundAgents: body.useBackgroundAgents }
+                : {}),
 
             // Fallback model (SDK v0.2.45+)
             ...(typeof body.fallbackModel === 'string' && body.fallbackModel.trim()

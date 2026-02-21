@@ -167,6 +167,13 @@ export interface WorkspaceGitConfig {
   // during parallel work. Requires git repo context — non-git workspaces ignore this.
   useWorktreeIsolation?: boolean;
 
+  // Background agents (SDK v0.2.49+)
+  // When enabled, skill-as-subagent definitions include `background: true`
+  // so subagents always run as background tasks, useful for long-running monitoring,
+  // parallel background work, or audit/logging agents alongside the primary task.
+  // Can be overridden per-task via task.context.useBackgroundAgents.
+  useBackgroundAgents?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;
@@ -312,6 +319,10 @@ export const tasks = pgTable('tasks', {
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task dependency — tasks with blockers start as 'blocked' and auto-unblock when all blockers complete/fail
   blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
+  // Task category for visual grouping
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
+  // Output requirement — controls what deliverables are enforced on completion
+  outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Deliverable snapshot - populated on worker completion

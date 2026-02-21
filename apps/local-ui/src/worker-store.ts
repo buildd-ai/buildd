@@ -190,6 +190,66 @@ export function loadAllWorkers(): LocalWorker[] {
   return workers;
 }
 
+/** Load a single worker from disk by ID (returns null if not found or expired) */
+export function loadWorker(workerId: string): LocalWorker | null {
+  const filePath = workerPath(workerId);
+  if (!existsSync(filePath)) return null;
+
+  try {
+    const raw = readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw) as PersistedWorker;
+
+    // Skip if expired
+    if (data._savedAt && Date.now() - data._savedAt > MAX_AGE_MS) {
+      try { unlinkSync(filePath); } catch {}
+      return null;
+    }
+
+    return {
+      id: data.id as string,
+      taskId: data.taskId as string,
+      taskTitle: data.taskTitle as string,
+      taskDescription: data.taskDescription as string | undefined,
+      workspaceId: data.workspaceId as string,
+      workspaceName: data.workspaceName as string,
+      branch: data.branch as string,
+      status: data.status as LocalWorker['status'],
+      error: data.error as string | undefined,
+      completedAt: data.completedAt as number | undefined,
+      lastActivity: data.lastActivity as number,
+      sessionId: data.sessionId as string | undefined,
+      waitingFor: data.waitingFor as LocalWorker['waitingFor'],
+      planContent: data.planContent as string | undefined,
+      planStartMessageIndex: data.planStartMessageIndex as number | undefined,
+      planFilePath: data.planFilePath as string | undefined,
+      messages: (data.messages as LocalWorker['messages']) || [],
+      milestones: (data.milestones as LocalWorker['milestones']) || [],
+      toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
+      commits: (data.commits as LocalWorker['commits']) || [],
+      output: (data.output as LocalWorker['output']) || [],
+      teamState: data.teamState as LocalWorker['teamState'],
+      worktreePath: data.worktreePath as string | undefined,
+      promptSuggestions: data.promptSuggestions as string[] | undefined,
+      lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+      hasNewActivity: false,
+      currentAction: '',
+      subagentTasks: [],
+      checkpoints: [],
+      checkpointEvents: new Set<CheckpointEventType>(
+        ((data.milestones as any[]) || [])
+          .filter((m: any) => m.type === 'checkpoint')
+          .map((m: any) => m.event as CheckpointEventType)
+      ),
+      phaseText: null,
+      phaseStart: null,
+      phaseToolCount: 0,
+      phaseTools: [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Delete a worker's persisted state */
 export function deleteWorker(workerId: string): void {
   const filePath = workerPath(workerId);

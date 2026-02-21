@@ -17,8 +17,29 @@ interface Task {
   id: string;
   title: string;
   status: string;
+  category?: string | null;
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
+}
+
+const CATEGORY_COLORS: Record<string, string> = {
+  bug: 'bg-red-500/15 text-red-400',
+  feature: 'bg-blue-500/15 text-blue-400',
+  refactor: 'bg-purple-500/15 text-purple-400',
+  chore: 'bg-zinc-500/15 text-zinc-400',
+  docs: 'bg-teal-500/15 text-teal-400',
+  test: 'bg-amber-500/15 text-amber-400',
+  infra: 'bg-orange-500/15 text-orange-400',
+  design: 'bg-pink-500/15 text-pink-400',
+};
+
+function CategoryBadge({ category }: { category: string }) {
+  const colors = CATEGORY_COLORS[category] || 'bg-zinc-500/15 text-zinc-400';
+  return (
+    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${colors} shrink-0`}>
+      {category}
+    </span>
+  );
 }
 
 interface Workspace {
@@ -456,7 +477,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                 >
                                   <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
                                   <span className="flex-1 min-w-0">
-                                    <span className="truncate block">{task.title}</span>
+                                    <span className="flex items-center gap-1.5">
+                                      <span className="truncate">{task.title}</span>
+                                      {task.category && <CategoryBadge category={task.category} />}
+                                    </span>
                                     {task.waitingFor?.prompt && (
                                       <span data-testid="sidebar-task-question" className="text-xs text-status-warning truncate block">
                                         {task.waitingFor.prompt.length > 60
@@ -492,6 +516,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                         >
                                           {getStatusIndicator(task.status)}
                                           <span className="truncate flex-1">{task.title}</span>
+                                          {task.category && <CategoryBadge category={task.category} />}
                                         </Link>
                                       ))}
                                       {hiddenCompletedCount > 0 && (

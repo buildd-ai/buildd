@@ -84,7 +84,13 @@ export class WorkerRunner extends EventEmitter {
         ? Boolean(taskWorktreeIsolation)
         : Boolean(gitConfig?.useWorktreeIsolation);
 
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string }> | undefined;
+      // Resolve background agents: task-level override > workspace-level setting
+      const taskBackgroundAgents = (worker.task as any)?.context?.useBackgroundAgents;
+      const useBackgroundAgents = taskBackgroundAgents !== undefined
+        ? Boolean(taskBackgroundAgents)
+        : Boolean(gitConfig?.useBackgroundAgents);
+
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean }> | undefined;
       if (useSkillAgents && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
@@ -95,6 +101,8 @@ export class WorkerRunner extends EventEmitter {
             model: 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
+            // SDK v0.2.49+: run subagent as background task
+            ...(useBackgroundAgents ? { background: true } : {}),
           };
         }
       }
@@ -126,7 +134,7 @@ export class WorkerRunner extends EventEmitter {
 
       // Create in-process MCP server for Buildd coordination tools
       const builddMcpServer = config.builddApiKey
-        ? createBuilddMcpServer({
+        ? await createBuilddMcpServer({
             serverUrl: config.builddServerUrl,
             apiKey: config.builddApiKey,
             workerId: this.workerId,
@@ -262,6 +270,8 @@ export class WorkerRunner extends EventEmitter {
         toolUseId: event.tool_use_id,
         description: event.description,
         taskType: event.task_type,
+        // SDK v0.2.49+: indicates agent was defined with `background: true`
+        ...(event.is_background ? { isBackground: true } : {}),
       });
       return;
     }
@@ -763,6 +773,20 @@ export class WorkerRunner extends EventEmitter {
       }
       parts.push(gitContext.join('\n'));
     }
+
+    // Add output requirement context
+    const outputReq = worker.task?.outputRequirement || 'auto';
+    const outputContext: string[] = ['\n## Output Requirement'];
+    if (outputReq === 'pr_required') {
+      outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
+    } else if (outputReq === 'artifact_required') {
+      outputContext.push('This task **requires a deliverable** (PR or artifact). Create a PR for code changes, or an artifact for research/reports.');
+    } else if (outputReq === 'none') {
+      outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+    } else {
+      outputContext.push('Output: **auto** — if you make commits, create a PR or artifact. If no code changes needed, just complete with a summary.');
+    }
+    parts.push(outputContext.join('\n'));
 
     parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
     return parts.join('\n');

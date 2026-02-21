@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, sources } from '@buildd/core/db/schema';
+import { workers, tasks, sources, artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -226,6 +226,54 @@ export async function PATCH(
               console.error(`Webhook callback failed for task ${task.id}:`, err.message);
             });
           }
+        }
+      }
+    }
+  }
+
+  // Enforce output requirement based on task.outputRequirement
+  if (status === 'completed') {
+    // Fetch task to check outputRequirement
+    const task = worker.taskId
+      ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId) })
+      : null;
+    const outputReq = (task as any)?.outputRequirement ?? 'auto';
+
+    if (outputReq !== 'none') {
+      const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
+      const hasPR = !!worker.prUrl;
+
+      // pr_required: always require a PR (regardless of commits)
+      if (outputReq === 'pr_required' && !hasPR) {
+        return NextResponse.json({
+          error: 'This task requires a pull request before completing. Use create_pr to open one.',
+          hint: 'create_pr',
+        }, { status: 400 });
+      }
+
+      // artifact_required: require PR or artifact (regardless of commits)
+      if (outputReq === 'artifact_required' && !hasPR) {
+        const workerArtifacts = await db.query.artifacts.findMany({
+          where: eq(artifacts.workerId, id),
+        });
+        if (workerArtifacts.length === 0) {
+          return NextResponse.json({
+            error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
+            hint: 'create_pr or create_artifact',
+          }, { status: 400 });
+        }
+      }
+
+      // auto (default): only enforce if commits were made
+      if (outputReq === 'auto' && effectiveCommits > 0 && !hasPR) {
+        const workerArtifacts = await db.query.artifacts.findMany({
+          where: eq(artifacts.workerId, id),
+        });
+        if (workerArtifacts.length === 0) {
+          return NextResponse.json({
+            error: `Task has ${effectiveCommits} commit(s) but no PR or artifact was created. Use create_pr to open a pull request, or create_artifact to publish your output before completing.`,
+            hint: 'create_pr or create_artifact',
+          }, { status: 400 });
         }
       }
     }
