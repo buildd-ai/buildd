@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, sources } from '@buildd/core/db/schema';
+import { workers, tasks, sources, artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -227,6 +227,22 @@ export async function PATCH(
             });
           }
         }
+      }
+    }
+  }
+
+  // Enforce output requirement: if commits were made, require PR or artifact before completing
+  if (status === 'completed') {
+    const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
+    if (effectiveCommits > 0 && !worker.prUrl) {
+      const workerArtifacts = await db.query.artifacts.findMany({
+        where: eq(artifacts.workerId, id),
+      });
+      if (workerArtifacts.length === 0) {
+        return NextResponse.json({
+          error: `Task has ${effectiveCommits} commit(s) but no PR or artifact was created. Use create_pr to open a pull request, or create_artifact to publish your output before completing.`,
+          hint: 'create_pr or create_artifact',
+        }, { status: 400 });
       }
     }
   }
