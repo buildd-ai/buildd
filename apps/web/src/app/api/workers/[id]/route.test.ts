@@ -42,6 +42,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findFirst: mockWorkersFindFirst },
       tasks: { findFirst: mock(() => Promise.resolve(null)) },
       sources: { findFirst: mock(() => Promise.resolve(null)) },
+      artifacts: { findMany: mock(() => Promise.resolve([])) },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -58,6 +59,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
   sources: 'sources',
+  artifacts: 'artifacts',
 }));
 
 mock.module('@/lib/task-dependencies', () => ({
@@ -516,8 +518,8 @@ describe('PATCH /api/workers/[id]', () => {
       linesAdded: 20,
       linesRemoved: 5,
       lastCommitSha: 'abc1234',
-      prUrl: null,
-      prNumber: null,
+      prUrl: 'https://github.com/test/repo/pull/1',
+      prNumber: 1,
     });
 
     const req = createMockRequest({
