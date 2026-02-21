@@ -18,19 +18,22 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
 
-## Pending Enhancements (Buildd tasks created)
+## Pending Enhancements
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
-| Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
-| Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
-| Bump SDK pin to `>=0.2.49` | WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Task created |
-| Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
-| Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Support `background: true` on agent definitions | Always-background subagents for monitoring/long-running tasks | P3 | Task created |
+| Expose SDK `promptSuggestion()` method in local-ui | Use SDK's native `promptSuggestion()` instead of heuristic-based generation | P3 | Blocked (SDK method not yet on Query interface as of v0.2.49) |
 
 ## Completed Integrations
 
+- **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
+- **`ConfigChange` hook** — Integrated in both worker-runner.ts and local-ui/workers.ts with `blockConfigChanges` support
+- **Model capability discovery** — `supportedModels()` validates effort/thinking config; emits `worker:model_capabilities` warnings
+- **Worktree isolation for subagents** — `isolation: 'worktree'` on agent definitions via `useWorktreeIsolation` config
+- **1M context beta for Sonnet 4.6** — `extendedContext` config conditionally adds `context-1m-2025-08-07` beta
+- **Permission suggestions** — PermissionRequest hook surfaces `permission_suggestions` in local-ui
+- **Prompt suggestions** — Heuristic-based generation in local-ui (SDK native method not yet available)
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)
@@ -52,7 +55,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
-| 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; Sonnet 4.6 1M context; WASM memory fix; non-interactive perf; MCP auth caching; CWD recovery; Unicode edit fix |
+| 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; `background: true` agents; plugin `settings.json`; Sonnet 4.6 1M context; permission suggestions; WASM memory fix; non-interactive perf; MCP OAuth caching; CWD recovery; prompt cache fix; `disableAllHooks` hierarchy fix |
 | 2.1.47 | 0.2.47 | `promptSuggestion()`; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop; memory & perf improvements |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex env fix; Task tool crash fix |
@@ -71,6 +74,8 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - **WASM memory fix** — Fixed unbounded WASM memory growth during long sessions (v2.1.49)
 - **CWD recovery** — Shell commands no longer permanently fail after a command deletes its own working directory (v2.1.49)
 - **Non-interactive performance** — Improved performance in `-p` mode (v2.1.49) — benefits all Buildd workers
+- **MCP OAuth caching** — Auth failure caching and batched MCP tool token counting reduce startup time (v2.1.49)
+- **Prompt cache fix** — Fixed regression that reduced prompt cache hit rates (v2.1.49) — cost reduction
 - **Orphaned process fix** — Claude Code processes no longer persist after terminal disconnect on macOS (v2.1.46)
 - **Agent Teams env propagation** — tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45)
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
