@@ -525,15 +525,20 @@ function renderWorkerCard(w) {
 
 function renderWaitingCard(w) {
   const isPlan = w.waitingFor?.type === 'plan_approval';
+  const isPermission = w.waitingFor?.type === 'permission';
   const question = w.waitingFor?.prompt || 'Awaiting input';
   const truncatedQuestion = question.length > 120 ? question.slice(0, 120) + '...' : question;
-  const badgeLabel = isPlan ? 'plan review' : 'needs input';
+  const badgeLabel = isPlan ? 'plan review' : isPermission ? 'permission' : 'needs input';
   // Use complete class strings so Tailwind's JIT scanner can detect them
   const cardClasses = isPlan
     ? 'bg-status-info/[0.08] border-status-info/30 hover:border-status-info'
+    : isPermission
+    ? 'bg-orange-500/[0.08] border-orange-500/30 hover:border-orange-500'
     : 'bg-status-warning/[0.08] border-status-warning/30 hover:border-status-warning';
   const badgeClasses = isPlan
     ? 'text-status-info bg-status-info/15'
+    : isPermission
+    ? 'text-orange-400 bg-orange-500/15'
     : 'text-status-warning bg-status-warning/15';
   return `
     <div class="waiting-banner ${cardClasses} border rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 mb-1 active:scale-[0.98]" data-id="${w.id}">
@@ -967,6 +972,61 @@ function renderWorkerDetail(worker, opts = {}) {
           </svg>
           <span>Plan submitted — review and approve above</span>
         </div>`;
+    } else if (worker.waitingFor.type === 'permission') {
+      // Permission request UI with suggestions
+      const suggestions = worker.waitingFor.permissionSuggestions || [];
+      const toolName = worker.waitingFor.toolName || 'Unknown tool';
+      const toolInput = worker.waitingFor.toolInput || {};
+      const cmdPreview = toolName === 'Bash' && toolInput.command
+        ? toolInput.command.slice(0, 200)
+        : '';
+
+      timelineEl.innerHTML += `
+        <div class="bg-orange-500/[0.08] border border-orange-500/30 rounded-xl p-4 my-4">
+          <div class="flex items-center gap-2 text-xs text-orange-400 font-mono font-medium uppercase tracking-wide mb-2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Permission required — ${escapeHtml(toolName)}
+          </div>
+          <div class="text-sm text-text-primary leading-normal mb-2">${escapeHtml(worker.waitingFor.prompt)}</div>
+          ${cmdPreview ? `
+            <div class="bg-surface-base/50 border border-border-subtle rounded-md p-2 mb-3 font-mono text-[12px] text-text-secondary overflow-x-auto whitespace-pre-wrap break-all">${escapeHtml(cmdPreview)}</div>
+          ` : ''}
+          ${suggestions.length > 0 ? `
+            <div class="text-[11px] text-text-tertiary font-mono uppercase tracking-wide mb-1.5">Suggested permissions</div>
+            <div class="flex flex-col gap-1.5 mb-3">
+              ${suggestions.map((s, i) => `
+                <div class="flex items-center gap-2 text-[12px] text-text-secondary bg-surface-hover/50 rounded px-2.5 py-1.5">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" class="text-orange-400 shrink-0">
+                    <polyline points="9 11 12 14 22 4"/>
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                  </svg>
+                  ${escapeHtml(s.label)}
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+          <div class="flex flex-wrap gap-2">
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-green-500/10 border border-green-500/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-green-500/20 hover:border-green-500"
+              onclick="sendQuestionAnswer('Allow once')">
+              Allow once
+              <span class="text-[11px] text-text-secondary font-normal">Allow this single tool call</span>
+            </button>
+            ${suggestions.length > 0 ? `
+              <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-brand/20 hover:border-brand"
+                onclick="sendQuestionAnswer('Always allow')">
+                Always allow
+                <span class="text-[11px] text-text-secondary font-normal">Apply suggested rules for session</span>
+              </button>
+            ` : ''}
+            <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-red-500/10 border border-red-500/40 rounded-md text-text-primary text-[13px] font-medium cursor-pointer transition-all duration-150 ease-in-out hover:bg-red-500/20 hover:border-red-500"
+              onclick="sendQuestionAnswer('Deny')">
+              Deny
+              <span class="text-[11px] text-text-secondary font-normal">Block this tool call</span>
+            </button>
+          </div>
+        </div>`;
     } else {
       // Standard question UI
       const options = worker.waitingFor.options || [];
@@ -1144,6 +1204,8 @@ function renderWorkerDetail(worker, opts = {}) {
     } else if (worker.status === 'waiting') {
       placeholder = worker.waitingFor?.type === 'plan_approval'
         ? 'Approve above or type changes...'
+        : worker.waitingFor?.type === 'permission'
+        ? 'Click Allow, Always allow, or Deny above...'
         : 'Type your answer or click an option above...';
     } else if (worker.status === 'error') {
       placeholder = 'Send a message to restart the task...';

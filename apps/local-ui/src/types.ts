@@ -1,15 +1,26 @@
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
+// Permission suggestion from SDK (PermissionUpdate subset relevant to UI display)
+export interface PermissionSuggestion {
+  type: 'addRules' | 'replaceRules' | 'removeRules' | 'setMode' | 'addDirectories' | 'removeDirectories';
+  label: string;  // Human-readable label for UI display
+  raw: unknown;   // Original PermissionUpdate object to pass back to SDK
+}
+
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question' | 'plan_approval';
+  type: 'question' | 'plan_approval' | 'permission';
   prompt: string;
   options?: Array<{
     label: string;
     description?: string;
   }>;
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
+  // Permission-specific fields (when type === 'permission')
+  toolName?: string;           // The tool requesting permission
+  toolInput?: unknown;         // The tool input that triggered the request
+  permissionSuggestions?: PermissionSuggestion[];  // SDK-provided suggestions for auto-fill
 }
 
 // Meaningful checkpoint events that map to actual worker activity
