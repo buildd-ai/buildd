@@ -25,9 +25,10 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 | Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
 | Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
-| Bump SDK pin to `>=0.2.49` | WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Task created |
+| Bump SDK pin to `>=0.2.49` | WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Done (all packages at `>=0.2.49`) |
 | Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Display permission suggestions in local-ui | `permission_suggestions` on safety check ask responses | P3 | Task created |
 
 ## Completed Integrations
 
@@ -52,7 +53,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
-| 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; Sonnet 4.6 1M context; WASM memory fix; non-interactive perf; MCP auth caching; CWD recovery; Unicode edit fix |
+| 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; Sonnet 4.6 1M context; WASM memory fix; non-interactive perf; MCP auth caching; CWD recovery; Unicode edit fix; `permission_suggestions` on safety checks; `disableAllHooks` managed settings hierarchy fix; startup perf (analytics batching, MCP tool token batching); `--resume` picker XML tag fix |
 | 2.1.47 | 0.2.47 | `promptSuggestion()`; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop; memory & perf improvements |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors; orphaned process fix (macOS) |
 | 2.1.45 | 0.2.45 | Sonnet 4.6; `SDKTaskStartedMessage`; `SDKRateLimitEvent`; Agent Teams Bedrock/Vertex env fix; Task tool crash fix |
@@ -71,6 +72,9 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - **WASM memory fix** — Fixed unbounded WASM memory growth during long sessions (v2.1.49)
 - **CWD recovery** — Shell commands no longer permanently fail after a command deletes its own working directory (v2.1.49)
 - **Non-interactive performance** — Improved performance in `-p` mode (v2.1.49) — benefits all Buildd workers
+- **Permission suggestions on safety checks** — `permission_suggestions` now populated when safety checks trigger ask responses, enabling SDK consumers to display permission options (v2.1.49)
+- **`disableAllHooks` managed settings fix** — Non-managed settings can no longer disable managed hooks set by enterprise policy (v2.1.49) — security fix
+- **Startup perf: batched token counting** — MCP tool token counting batched into single API call; analytics token counting reduced (v2.1.49)
 - **Orphaned process fix** — Claude Code processes no longer persist after terminal disconnect on macOS (v2.1.46)
 - **Agent Teams env propagation** — tmux-spawned processes for Bedrock/Vertex/Foundry (v2.1.45)
 - **Task tool crash** (ReferenceError on completion) fixed (v2.1.45)
