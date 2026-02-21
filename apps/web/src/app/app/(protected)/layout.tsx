@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { AuthGuard } from '@/components/AuthGuard';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import BottomNav from '@/components/BottomNav';
+import MobilePageHeader from '@/components/MobilePageHeader';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails } from '@/lib/team-access';
 
@@ -34,15 +35,22 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
-      <div className="hidden md:block bg-primary text-white text-center text-xs py-1 font-medium">
-        Alpha &mdash; All features free for all users
+      {/* Compact desktop header: team switcher + alpha badge */}
+      <div className="hidden md:flex h-10 items-center justify-between border-b border-border-default bg-surface-2 px-8">
+        {userTeams.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
+            <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
+          </div>
+        ) : (
+          <div />
+        )}
+        <span className="px-2 py-0.5 text-[10px] font-mono text-text-muted bg-surface-3 rounded-full">
+          Alpha
+        </span>
       </div>
-      {userTeams.length > 0 && (
-        <div className="hidden md:flex relative z-50 border-b border-border-default bg-surface-2 px-4 md:px-8 py-2 items-center gap-2">
-          <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
-          <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
-        </div>
-      )}
+      {/* Mobile page header for non-tasks pages */}
+      <MobilePageHeader />
       <div className="pb-16 md:pb-0">
         {children}
       </div>

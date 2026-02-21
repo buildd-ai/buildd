@@ -20,9 +20,9 @@ export default async function ArtifactsPage() {
 
   if (wsIds.length === 0) {
     return (
-      <main className="min-h-screen p-4 md:p-8">
+      <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
         <div className="max-w-4xl mx-auto">
-          <h1 className="text-3xl font-bold mb-2">Artifacts</h1>
+          <h1 className="text-2xl font-semibold mb-2">Artifacts</h1>
           <p className="text-text-muted">No workspaces found. Create a workspace to get started.</p>
         </div>
       </main>
@@ -96,11 +96,11 @@ export default async function ArtifactsPage() {
   });
 
   return (
-    <main className="min-h-screen p-4 md:p-8">
+    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <h1 className="text-3xl font-bold">Artifacts</h1>
+            <h1 className="text-2xl font-semibold">Artifacts</h1>
             <p className="text-text-muted mt-1">
               {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.length} workspace{userWorkspaces.length !== 1 ? 's' : ''}
             </p>
