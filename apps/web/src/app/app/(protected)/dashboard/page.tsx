@@ -197,7 +197,7 @@ export default async function DashboardPage() {
   const DEFAULT_ICON = TASK_ICONS.pending;
 
   return (
-    <main className="min-h-screen p-4 md:p-8">
+    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-6xl mx-auto">
 
         {/* Header */}
