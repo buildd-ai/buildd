@@ -167,6 +167,13 @@ export interface WorkspaceGitConfig {
   // during parallel work. Requires git repo context — non-git workspaces ignore this.
   useWorktreeIsolation?: boolean;
 
+  // Background agents (SDK v0.2.49+)
+  // When enabled, skill-as-subagent definitions include `background: true`
+  // so subagents always run as background tasks, useful for long-running monitoring,
+  // parallel background work, or audit/logging agents alongside the primary task.
+  // Can be overridden per-task via task.context.useBackgroundAgents.
+  useBackgroundAgents?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;

@@ -661,3 +661,33 @@ hooks: {
 ## 31. claude.ai MCP Connectors (CLI v2.1.46)
 
 Support for using claude.ai MCP connectors within Claude Code. Workers can access MCP servers configured through the claude.ai web interface.
+
+---
+
+## 37. Background Agent Definitions (SDK v0.2.49)
+
+Agent definitions now support `background: true`, making subagents always run as background tasks. This is useful for:
+
+- Long-running monitoring agents that observe file changes or test results
+- Parallel background work that doesn't block the main agent loop
+- Audit/logging agents that run alongside the primary task
+
+```typescript
+agents: {
+  'monitor': {
+    description: 'Background monitoring agent',
+    prompt: 'Monitor for issues...',
+    tools: ['Read', 'Grep'],
+    background: true,  // Always runs as background task
+  }
+}
+```
+
+The SDK emits `is_background: true` on `task_started` system messages for background subagents.
+
+### Buildd Integration
+
+- **Config**: `useBackgroundAgents` in workspace `gitConfig` (or per-task via `task.context.useBackgroundAgents`)
+- **Resolution**: Task-level override > workspace-level setting
+- **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
+- **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
