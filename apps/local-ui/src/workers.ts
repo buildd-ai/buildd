@@ -9,7 +9,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
-import { saveWorker as storeSaveWorker, loadAllWorkers, deleteWorker as storeDeleteWorker } from './worker-store';
+import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs } from './session-logger';
 import type { WorkerEnvironment } from '@buildd/shared';
@@ -690,7 +690,8 @@ export class WorkerManager {
   }
 
   // Evict completed/failed workers from in-memory Map after 10 minutes
-  // to prevent unbounded memory growth during long-running sessions
+  // to prevent unbounded memory growth during long-running sessions.
+  // Workers remain on disk (24h TTL) so getWorkers() can still serve them.
   private evictCompletedWorkers() {
     const RETENTION_MS = 10 * 60 * 1000;
     const now = Date.now();
@@ -712,7 +713,7 @@ export class WorkerManager {
         }
         this.workers.delete(id);
         this.sessions.delete(id);
-        storeDeleteWorker(id);
+        // Note: NOT deleting from disk — workers persist for 24h for history
       }
     }
   }
@@ -735,11 +736,19 @@ export class WorkerManager {
   }
 
   getWorkers(): LocalWorker[] {
-    return Array.from(this.workers.values());
+    // Merge in-memory workers with completed workers persisted on disk (24h history)
+    const inMemory = Array.from(this.workers.values());
+    const inMemoryIds = new Set(inMemory.map(w => w.id));
+
+    const diskWorkers = loadAllWorkers()
+      .filter(w => !inMemoryIds.has(w.id) && (w.status === 'done' || w.status === 'error'));
+
+    return [...inMemory, ...diskWorkers];
   }
 
   getWorker(id: string): LocalWorker | undefined {
-    return this.workers.get(id);
+    // Check in-memory first, then fall back to disk for evicted completed workers
+    return this.workers.get(id) || storeLoadWorker(id) || undefined;
   }
 
   markRead(workerId: string) {

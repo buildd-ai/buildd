@@ -96,6 +96,28 @@ export const CreationSource = {
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
 
+export const TaskCategory = {
+  BUG: 'bug',
+  FEATURE: 'feature',
+  REFACTOR: 'refactor',
+  CHORE: 'chore',
+  DOCS: 'docs',
+  TEST: 'test',
+  INFRA: 'infra',
+  DESIGN: 'design',
+} as const;
+
+export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
+
+export const OutputRequirement = {
+  PR_REQUIRED: 'pr_required',
+  ARTIFACT_REQUIRED: 'artifact_required',
+  NONE: 'none',
+  AUTO: 'auto',
+} as const;
+
+export type OutputRequirementValue = typeof OutputRequirement[keyof typeof OutputRequirement];
+
 export const ObservationType = {
   DISCOVERY: 'discovery',
   DECISION: 'decision',
@@ -249,6 +271,8 @@ export interface Task {
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
   blockedByTaskIds?: string[];
+  category?: TaskCategoryValue | null;
+  outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
   result: TaskResult | null;
   createdAt: Date;
@@ -493,6 +517,10 @@ export interface CreateTaskInput {
   blockedByTaskIds?: string[];
   // Skill reference — server resolves slug to contentHash
   skillRef?: { slug: string };
+  // Task category
+  category?: TaskCategoryValue;
+  // Output requirement — what deliverables are enforced on completion
+  outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
 }
