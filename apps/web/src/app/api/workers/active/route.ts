@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, accounts, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
-import { eq, gt, inArray } from 'drizzle-orm';
+import { accountWorkspaces, accounts, workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
@@ -152,6 +152,25 @@ export async function GET(req: NextRequest) {
       await setCachedOpenWorkspaceIds(openWorkspaceIds);
     }
 
+    // Cross-reference with actual running workers from DB for each account
+    // This prevents showing stale capacity when workers are stuck
+    const accountIds = [...new Set(heartbeats.map(hb => hb.accountId))];
+    const actualWorkerCounts = new Map<string, number>();
+    if (accountIds.length > 0) {
+      const activeWorkerRecords = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.accountId, accountIds),
+          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input', 'awaiting_plan_approval']),
+        ),
+        columns: { accountId: true },
+      });
+      for (const w of activeWorkerRecords) {
+        if (w.accountId) {
+          actualWorkerCounts.set(w.accountId, (actualWorkerCounts.get(w.accountId) || 0) + 1);
+        }
+      }
+    }
+
     // Filter to only heartbeats that have access to user's workspaces
     const activeLocalUis = await Promise.all(
       heartbeats.map(async hb => {
@@ -168,14 +187,20 @@ export async function GET(req: NextRequest) {
         const overlapping = hbWorkspaceIds.filter(id => workspaceIds.includes(id));
         if (overlapping.length === 0) return null;
 
+        // Use the higher of heartbeat-reported count and actual DB count
+        // This catches cases where local-ui reports 0 but workers are still 'running' in DB
+        const reportedCount = hb.activeWorkerCount;
+        const dbCount = actualWorkerCounts.get(hb.accountId) || 0;
+        const effectiveActiveWorkers = Math.max(reportedCount, dbCount);
+
         return {
           localUiUrl: hb.localUiUrl,
           viewerToken: hb.viewerToken,
           accountId: hb.accountId,
           accountName: hb.account?.name || 'Unknown',
           maxConcurrent: hb.maxConcurrentWorkers,
-          activeWorkers: hb.activeWorkerCount,
-          capacity: Math.max(0, hb.maxConcurrentWorkers - hb.activeWorkerCount),
+          activeWorkers: effectiveActiveWorkers,
+          capacity: Math.max(0, hb.maxConcurrentWorkers - effectiveActiveWorkers),
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
           lastUpdated: hb.lastHeartbeatAt,
