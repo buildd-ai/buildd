@@ -430,7 +430,7 @@ export default function QuickCreateModal({
                 <button
                   type="button"
                   onClick={() => setShowDescription(true)}
-                  className="text-xs text-text-muted hover:text-text-secondary"
+                  className="px-3 py-2 text-sm text-text-muted hover:text-text-secondary hover:bg-surface-3 rounded-lg border border-dashed border-border-default w-full text-left"
                 >
                   + Add description
                 </button>

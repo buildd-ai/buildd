@@ -1,9 +1,8 @@
 node_modules/
 dist/
 .env
-.env.local*
-.env.test
-.env.vercel-doctor
+.env.*
+!.env*.example
 *.log
 .DS_Store
 .turbo
@@ -13,6 +12,5 @@ coverage/
 .claude/
 *.tsbuildinfo
 .mcp.json
-.env*.local
 .plan
 scripts/seed/.last-seed.json
