@@ -136,83 +136,6 @@ function useDirectConnect(localUiUrl: string | null) {
   return { status, sendDirect, viewerToken: viewerTokenRef.current, localUiUrl };
 }
 
-function RequestPlanButton({ workerId }: { workerId: string }) {
-  const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
-
-  async function handleRequestPlan() {
-    setLoading(true);
-    setShowConfirm(false);
-    try {
-      const res = await fetch(`/api/workers/${workerId}/instruct`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'request_plan',
-          message: 'Please pause implementation and submit a plan for review before continuing.',
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to request plan');
-      }
-      setSent(true);
-      setTimeout(() => setSent(false), 5000);
-    } catch (err) {
-      console.error('Failed to request plan:', err);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (sent) {
-    return (
-      <span className="px-3 py-2 text-xs text-status-warning font-mono">
-        Plan requested
-      </span>
-    );
-  }
-
-  if (showConfirm) {
-    return (
-      <div className="flex flex-col gap-2">
-        <div className="text-xs text-text-primary max-w-md">
-          <p className="mb-1 font-medium">Request Plan Mode?</p>
-          <p className="mb-2 text-text-secondary">The agent will pause, investigate the codebase, and write a plan in the output below. You'll then see a prompt to approve or request changes before it continues.</p>
-          <p className="text-text-muted text-[11px]">The session stays alive — no restart needed.</p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleRequestPlan}
-            disabled={loading}
-            className="px-3 py-1.5 text-xs bg-status-warning text-surface-1 rounded hover:opacity-90 disabled:opacity-50"
-          >
-            Confirm
-          </button>
-          <button
-            onClick={() => setShowConfirm(false)}
-            className="px-3 py-1.5 text-xs border border-border-default text-text-secondary rounded hover:bg-surface-3"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => setShowConfirm(true)}
-      disabled={loading}
-      className="px-3 py-2 text-xs border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 disabled:opacity-50 whitespace-nowrap"
-      title="Ask the agent to pause and propose a plan before continuing implementation"
-    >
-      {loading ? '...' : 'Request Plan'}
-    </button>
-  );
-}
-
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
@@ -590,17 +513,10 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
             history={worker.instructionHistory || []}
             pendingInstruction={worker.pendingInstructions}
           />
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <InstructWorkerForm
-                workerId={worker.id}
-                pendingInstructions={null}
-              />
-            </div>
-            {worker.status === 'running' && (
-              <RequestPlanButton workerId={worker.id} />
-            )}
-          </div>
+          <InstructWorkerForm
+            workerId={worker.id}
+            pendingInstructions={null}
+          />
         </>
       )}
     </div>
