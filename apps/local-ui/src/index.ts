@@ -13,6 +13,72 @@ const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
 const REPOS_CACHE_FILE = join(homedir(), '.buildd', 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(homedir(), '.buildd', '.last-browser-open');
+const BUILDD_DIR = join(homedir(), '.buildd');
+
+// Auto-update idle threshold: update automatically when 0 workers for this long
+const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
+
+// Read version from package.json (updated by release script + CI)
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
+
+// Non-blocking git command helper using Bun.spawn
+async function gitAsync(args: string[], cwd = BUILDD_DIR, timeout = 10_000): Promise<string> {
+  const proc = Bun.spawn(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const timeoutId = setTimeout(() => proc.kill(), timeout);
+  try {
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    clearTimeout(timeoutId);
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`git ${args[0]} failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    return output.trim();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+// Lazy-initialized git commit — populated asynchronously on startup
+let _currentCommit: string | null = null;
+async function initCurrentCommit(): Promise<void> {
+  try { _currentCommit = await gitAsync(['rev-parse', 'HEAD']); } catch { /* non-fatal */ }
+}
+
+function getCurrentCommit(): string | null { return _currentCommit; }
+
+// Compare two commit SHAs — an update is available when they differ
+function checkForUpdate(current: string | null, latest: string | null): boolean {
+  if (!current || !latest) return false;
+  return current !== latest;
+}
+
+// Get changelog between two commits (for release notes)
+async function getChangelog(fromCommit: string, toCommit: string): Promise<string[]> {
+  try {
+    const log = await gitAsync(['log', '--oneline', '--no-merges', `${fromCommit}..${toCommit}`], BUILDD_DIR, 5000);
+    return log.split('\n').filter(Boolean).slice(0, 15); // Cap at 15 entries
+  } catch { return []; }
+}
+
+// Check if the working tree has uncommitted changes
+async function isWorkingTreeClean(): Promise<boolean> {
+  try {
+    const status = await gitAsync(['status', '--porcelain'], BUILDD_DIR, 5000);
+    return status.length === 0;
+  } catch { return false; }
+}
+
+// Detect current branch
+async function getCurrentBranch(): Promise<string> {
+  try { return await gitAsync(['rev-parse', '--abbrev-ref', 'HEAD']); } catch { return 'unknown'; }
+}
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
@@ -318,23 +384,85 @@ interface UpdateState {
   latestCommit: string | null;
   updateAvailable: boolean;
   updating: boolean;
+  changelog: string[];
+  lastIdleAt: number | null; // Timestamp when workers last became idle
 }
 
 const updateState: UpdateState = {
-  currentCommit: getCurrentCommit(),
+  currentCommit: null, // Populated async on startup
   latestCommit: null,
   updateAvailable: false,
   updating: false,
+  changelog: [],
+  lastIdleAt: Date.now(),
 };
 
-function setLatestCommit(sha: string) {
+// Kick off async commit resolution (non-blocking)
+initCurrentCommit().then(() => {
+  updateState.currentCommit = getCurrentCommit();
+});
+
+// Cached models from Anthropic API (auto-refreshes every hour)
+let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
+const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const FALLBACK_MODELS = [
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+];
+
+async function fetchAnthropicModels(): Promise<{ id: string; name: string }[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return FALLBACK_MODELS;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    if (!res.ok) return FALLBACK_MODELS;
+
+    const data = await res.json() as { data?: { id: string; display_name?: string }[] };
+    const models = (data.data || [])
+      .filter((m) => m.id.startsWith('claude-') && !m.id.includes('claude-2') && !m.id.includes('claude-3'))
+      .map((m) => ({ id: m.id, name: m.display_name || m.id }));
+
+    return models.length > 0 ? models : FALLBACK_MODELS;
+  } catch {
+    return FALLBACK_MODELS;
+  }
+}
+
+async function getCachedModels(): Promise<{ id: string; name: string }[]> {
+  if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_CACHE_TTL) {
+    return modelsCache.models;
+  }
+  const models = await fetchAnthropicModels();
+  modelsCache = { models, fetchedAt: Date.now() };
+  return models;
+}
+
+async function setLatestCommit(sha: string) {
   if (updateState.latestCommit === sha) return;
   updateState.latestCommit = sha;
   const wasAvailable = updateState.updateAvailable;
   updateState.updateAvailable = checkForUpdate(updateState.currentCommit, sha);
   if (updateState.updateAvailable && !wasAvailable) {
-    console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)}`);
-    broadcast({ type: 'update_available', currentCommit: updateState.currentCommit, latestCommit: sha });
+    // Fetch changelog for release notes
+    if (updateState.currentCommit) {
+      updateState.changelog = await getChangelog(updateState.currentCommit, sha);
+    }
+    console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
+    broadcast({
+      type: 'update_available',
+      currentCommit: updateState.currentCommit,
+      latestCommit: sha,
+      changelog: updateState.changelog,
+    });
   }
 }
 
@@ -560,6 +688,157 @@ const server = Bun.serve({
       }, { headers: corsHeaders });
     }
 
+    // Version endpoint
+    if (path === '/api/version' && req.method === 'GET') {
+      return Response.json({
+        version: PKG_VERSION,
+        currentCommit: updateState.currentCommit?.slice(0, 7) || null,
+        updateAvailable: updateState.updateAvailable,
+        latestCommit: updateState.latestCommit?.slice(0, 7) || null,
+        updating: updateState.updating,
+        changelog: updateState.changelog,
+      }, { headers: corsHeaders });
+    }
+
+    // Safe auto-update: preflight checks → git pull → health check → graceful restart
+    if (path === '/api/update' && req.method === 'POST') {
+      // Auth: only allow from localhost/private IPs
+      if (!isPrivateOrLocalhost(url.hostname)) {
+        return Response.json({ error: 'Update can only be triggered from localhost' }, { status: 403, headers: corsHeaders });
+      }
+
+      if (updateState.updating) {
+        return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
+      }
+
+      // Check for active workers — don't update while tasks are running
+      const activeWorkers = workerManager
+        ? Array.from(workerManager.getWorkers()).filter(
+            (w: any) => w.status === 'working' || w.status === 'waiting' || w.status === 'stale'
+          )
+        : [];
+
+      if (activeWorkers.length > 0) {
+        return Response.json({
+          error: 'Cannot update while tasks are running',
+          activeWorkers: activeWorkers.length,
+          hint: 'Wait for active tasks to complete or stop them first',
+        }, { status: 409, headers: corsHeaders });
+      }
+
+      // Check for dirty working tree
+      const clean = await isWorkingTreeClean();
+      if (!clean) {
+        return Response.json({
+          error: 'Working tree has uncommitted changes',
+          hint: 'Commit or stash changes in ~/.buildd before updating',
+        }, { status: 409, headers: corsHeaders });
+      }
+
+      // Check branch — only update from main
+      const branch = await getCurrentBranch();
+      if (branch !== 'main') {
+        return Response.json({
+          error: `Currently on branch '${branch}', expected 'main'`,
+          hint: 'Switch to main branch before updating: git checkout main',
+        }, { status: 409, headers: corsHeaders });
+      }
+
+      updateState.updating = true;
+      const prevCommit = updateState.currentCommit;
+      broadcast({ type: 'update_started' });
+
+      try {
+        // Fetch + pull latest (async, non-blocking)
+        await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
+        await gitAsync(['pull', '--ff-only', 'origin', 'main'], BUILDD_DIR, 30_000);
+
+        // Install dependencies
+        const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+        const installExit = await installProc.exited;
+        if (installExit !== 0) {
+          throw new Error('bun install failed');
+        }
+
+        // Read new commit
+        await initCurrentCommit();
+        const newCommit = getCurrentCommit();
+
+        // Health check: spawn new server on temp port, verify it boots
+        const healthPort = PORT + 1;
+        console.log(`Health check: booting new version on port ${healthPort}...`);
+        const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts'], {
+          cwd: join(import.meta.dir, '..'),
+          env: { ...process.env, PORT: String(healthPort) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+
+        let healthOk = false;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await new Promise(r => setTimeout(r, 1000));
+          try {
+            const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
+            if (res.ok) { healthOk = true; break; }
+          } catch { /* retry */ }
+        }
+        healthProc.kill();
+
+        if (!healthOk) {
+          // Rollback: revert to previous commit
+          console.error('Health check failed — rolling back');
+          if (prevCommit) {
+            await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
+            const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+            await rollbackInstall.exited;
+            await initCurrentCommit();
+          }
+          updateState.updating = false;
+          broadcast({ type: 'update_failed', error: 'New version failed health check — rolled back' });
+          return Response.json({
+            error: 'Update rolled back — new version failed health check',
+            rolledBackTo: prevCommit?.slice(0, 7),
+          }, { status: 500, headers: corsHeaders });
+        }
+
+        console.log(`Updated ${prevCommit?.slice(0, 7)} → ${newCommit?.slice(0, 7)} (health check passed)`);
+        broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
+
+        // Graceful restart: drain SSE connections, then exit
+        setTimeout(() => {
+          console.log('Graceful restart: draining connections...');
+          // Close all SSE connections cleanly
+          for (const controller of sseClients) {
+            try { controller.close(); } catch { /* ignore */ }
+          }
+          sseClients.clear();
+          // Give connections a moment to close, then exit
+          setTimeout(() => {
+            console.log('Restarting...');
+            process.exit(0);
+          }, 500);
+        }, 1000);
+
+        return Response.json({ ok: true, newCommit: newCommit?.slice(0, 7), prevCommit: prevCommit?.slice(0, 7) }, { headers: corsHeaders });
+      } catch (err: any) {
+        // Rollback on any failure
+        if (prevCommit) {
+          try {
+            await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
+            const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+            await rollbackInstall.exited;
+            await initCurrentCommit();
+            console.error(`Update failed, rolled back to ${prevCommit.slice(0, 7)}: ${err.message}`);
+          } catch (rollbackErr: any) {
+            console.error(`Update failed AND rollback failed: ${rollbackErr.message}`);
+          }
+        }
+        updateState.updating = false;
+        broadcast({ type: 'update_failed', error: err.message });
+        return Response.json({ error: 'Update failed (rolled back)', detail: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Auth & Config endpoints (work without API key)
 
     // Check if configured
@@ -580,6 +859,10 @@ const server = Bun.serve({
         viewerToken: workerManager?.getViewerToken() || null,
         outboxCount: outbox.count(),
         maxTurns: config.maxTurns || null,
+        // Version info
+        version: PKG_VERSION,
+        currentCommit: updateState.currentCommit?.slice(0, 7) || null,
+        updateAvailable: updateState.updateAvailable,
         // LLM provider info
         llmProvider: config.llmProvider?.provider || 'anthropic',
         llmBaseUrl: config.llmProvider?.baseUrl,
@@ -654,20 +937,18 @@ const server = Bun.serve({
       return Response.json({ ok: true, builddServer: trimmed }, { headers: corsHeaders });
     }
 
+    // List available models (fetched from Anthropic API, cached 1hr)
+    if (path === '/api/config/models' && req.method === 'GET') {
+      const models = await getCachedModels();
+      return Response.json({ models }, { headers: corsHeaders });
+    }
+
     // Update model setting
     if (path === '/api/config/model' && req.method === 'POST') {
       const body = await parseBody(req);
       const { model } = body;
 
-      const validModels = [
-        'claude-opus-4-6',
-        'claude-opus-4-5-20251101',
-        'claude-sonnet-4-6',
-        'claude-sonnet-4-5-20250929',
-        'claude-haiku-4-5-20251001',
-      ];
-
-      if (!model || !validModels.includes(model)) {
+      if (typeof model !== 'string') {
         return Response.json({ error: 'Invalid model' }, { status: 400, headers: corsHeaders });
       }
 
@@ -1713,9 +1994,9 @@ const server = Bun.serve({
 const localUrl = `http://localhost:${PORT}`;
 
 console.log('');
-const commitDisplay = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : 'unknown';
+const versionStr = `v${PKG_VERSION}${updateState.currentCommit ? ` (${updateState.currentCommit.slice(0, 7)})` : ''}`;
 console.log(`╔════════════════════════════════════════════╗`);
-console.log(`║  buildd local-ui          ${commitDisplay.padEnd(16)}║`);
+console.log(`║  buildd local-ui ${versionStr.padEnd(25)}║`);
 console.log(`╚════════════════════════════════════════════╝`);
 console.log(`  URL:        ${terminalLink(localUrl)}`);
 if (config.localUiUrl && config.localUiUrl !== localUrl) {
@@ -1776,3 +2057,104 @@ function markBrowserOpened() {
     markBrowserOpened();
   }
 })();
+
+// =============================================================================
+// IDLE AUTO-UPDATE
+// =============================================================================
+// Checks every 60s. If an update is available and all workers have been idle
+// for IDLE_UPDATE_DELAY_MS, automatically triggers a safe update.
+// =============================================================================
+
+function getActiveWorkerCount(): number {
+  if (!workerManager) return 0;
+  return Array.from(workerManager.getWorkers()).filter(
+    (w: any) => w.status === 'working' || w.status === 'waiting' || w.status === 'stale'
+  ).length;
+}
+
+setInterval(async () => {
+  const activeCount = getActiveWorkerCount();
+
+  // Track idle state
+  if (activeCount > 0) {
+    updateState.lastIdleAt = null; // Reset — not idle
+  } else if (!updateState.lastIdleAt) {
+    updateState.lastIdleAt = Date.now(); // Just became idle
+  }
+
+  // Auto-update when: update available, not already updating, idle long enough
+  if (
+    updateState.updateAvailable &&
+    !updateState.updating &&
+    updateState.lastIdleAt &&
+    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS
+  ) {
+    // Preflight: clean tree, on main branch
+    const clean = await isWorkingTreeClean();
+    const branch = await getCurrentBranch();
+    if (!clean || branch !== 'main') return;
+
+    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle...`);
+    updateState.updating = true;
+    const prevCommit = updateState.currentCommit;
+    broadcast({ type: 'update_started' });
+
+    try {
+      await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
+      await gitAsync(['pull', '--ff-only', 'origin', 'main'], BUILDD_DIR, 30_000);
+      const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+      await installProc.exited;
+      await initCurrentCommit();
+
+      // Health check on temp port
+      const healthPort = PORT + 1;
+      const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts'], {
+        cwd: join(import.meta.dir, '..'),
+        env: { ...process.env, PORT: String(healthPort) },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      let healthOk = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
+          if (res.ok) { healthOk = true; break; }
+        } catch { /* retry */ }
+      }
+      healthProc.kill();
+
+      if (!healthOk && prevCommit) {
+        await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
+        const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+        await rb.exited;
+        await initCurrentCommit();
+        updateState.updating = false;
+        broadcast({ type: 'update_failed', error: 'Auto-update health check failed — rolled back' });
+        return;
+      }
+
+      const newCommit = getCurrentCommit();
+      console.log(`Auto-updated to ${newCommit?.slice(0, 7)}`);
+      broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
+
+      // Graceful restart
+      setTimeout(() => {
+        for (const c of sseClients) { try { c.close(); } catch {} }
+        sseClients.clear();
+        setTimeout(() => process.exit(0), 500);
+      }, 1000);
+    } catch (err: any) {
+      if (prevCommit) {
+        try {
+          await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
+          const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+          await rb.exited;
+          await initCurrentCommit();
+        } catch { /* best effort */ }
+      }
+      updateState.updating = false;
+      console.error('Auto-update failed:', err.message);
+      broadcast({ type: 'update_failed', error: err.message });
+    }
+  }
+}, 60_000); // Check every 60 seconds

@@ -7,6 +7,7 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
+const mockHeartbeatsFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
@@ -37,6 +38,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany },
+      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -56,6 +58,7 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
+  gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -63,6 +66,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
+  workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
 }));
 
@@ -91,9 +95,12 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: fresh heartbeat exists (runner is online)
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
   });
 
   it('returns 401 when no API key', async () => {

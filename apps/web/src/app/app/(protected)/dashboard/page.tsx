@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import DashboardStartTask from './DashboardStartTask';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -200,8 +201,8 @@ export default async function DashboardPage() {
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-6xl mx-auto">
 
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
+        {/* Header — hidden on mobile (bottom nav has Settings, email is redundant) */}
+        <div className="hidden md:flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
           <div>
             <h1 className="text-[28px] font-semibold tracking-tight text-text-primary">buildd</h1>
             <p className="text-[14px] text-text-secondary">
@@ -278,8 +279,15 @@ export default async function DashboardPage() {
           </div>
         )}
 
-        {/* Stat Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        {/* Stat Cards — compact bar on mobile */}
+        <div className="md:hidden mb-8 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium">
+          <span className="text-text-primary">{activeWorkers.length} active</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{completedRecentCount} completed (7d)</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{connectedAgents.length} connected</span>
+        </div>
+        <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
           <Link
             href="/app/workspaces"
             className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
@@ -399,16 +407,23 @@ export default async function DashboardPage() {
             <div className="flex items-center gap-2">
               <Link
                 href="/app/tasks"
-                className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+                className="px-3 py-[9px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 View All
               </Link>
+              {/* Desktop: full create form */}
               <Link
                 href="/app/tasks/new"
-                className="w-full sm:w-auto px-[18px] py-[9px] rounded-[6px] text-[13px] font-medium bg-primary text-white hover:bg-primary-hover"
+                className="hidden md:inline-flex px-[18px] py-[9px] rounded-[6px] text-[13px] font-medium bg-primary text-white hover:bg-primary-hover"
               >
                 + New
               </Link>
+              {/* Mobile: Start Task modal */}
+              <div className="md:hidden">
+                <DashboardStartTask
+                  workspaces={userWorkspaces.map(w => ({ id: w.id, name: w.name }))}
+                />
+              </div>
             </div>
           </div>
 

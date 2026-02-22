@@ -1,0 +1,26 @@
+name: Sync dev from main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Fast-forward dev to main
+        run: |
+          git fetch origin main
+          git merge --ff-only origin/main || {
+            echo "::warning::Cannot fast-forward dev to main. Manual merge required."
+            exit 0
+          }
+          git push origin dev

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
-import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
+import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
+import { eq, and, or, not, isNull, sql, inArray, lt, gt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -71,7 +71,9 @@ export async function POST(req: NextRequest) {
       await db
         .update(tasks)
         .set({
-          status: 'failed',
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
           updatedAt: new Date(),
         })
         .where(inArray(tasks.id, staleTaskIds));
@@ -79,6 +81,58 @@ export async function POST(req: NextRequest) {
       // Resolve dependencies for expired tasks
       for (const t of staleTasks) {
         await resolveCompletedTask(t.id, t.workspaceId);
+      }
+    }
+  }
+
+  // Also fail active workers when their runner's heartbeat is stale (machine went offline)
+  const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
+  const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
+
+  // Check if this account has any fresh heartbeat
+  const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
+    where: and(
+      eq(workerHeartbeats.accountId, account.id),
+      gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
+    ),
+    columns: { id: true },
+  });
+
+  // If no fresh heartbeat, fail any active workers for this account
+  if (!freshHeartbeat) {
+    const orphanedByHeartbeat = await db.query.workers.findMany({
+      where: and(
+        eq(workers.accountId, account.id),
+        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+        lt(workers.updatedAt, heartbeatCutoff),
+      ),
+      columns: { id: true, taskId: true },
+    });
+
+    if (orphanedByHeartbeat.length > 0) {
+      const orphanIds = orphanedByHeartbeat.map(w => w.id);
+      const orphanTaskIds = orphanedByHeartbeat.map(w => w.taskId).filter(Boolean) as string[];
+
+      await db
+        .update(workers)
+        .set({
+          status: 'failed',
+          error: 'Worker runner went offline (heartbeat expired)',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(inArray(workers.id, orphanIds));
+
+      if (orphanTaskIds.length > 0) {
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            claimedBy: null,
+            claimedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(inArray(tasks.id, orphanTaskIds));
       }
     }
   }
