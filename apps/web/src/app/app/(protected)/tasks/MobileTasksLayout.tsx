@@ -1,21 +1,30 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { usePathname } from 'next/navigation';
-import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import StartTaskModal from './StartTaskModal';
 
 interface Props {
   sidebar: React.ReactNode;
+  workspaces: { id: string; name: string }[];
   children: React.ReactNode;
 }
 
-export default function MobileTasksLayout({ sidebar, children }: Props) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+export default function MobileTasksLayout({ sidebar, workspaces, children }: Props) {
   const pathname = usePathname();
+  // Auto-open sidebar on mobile when on the tasks index route (no task selected)
+  const isIndexRoute = pathname === '/app/tasks';
+  const [sidebarOpen, setSidebarOpen] = useState(isIndexRoute);
+  const [modalOpen, setModalOpen] = useState(false);
+  const router = useRouter();
 
-  // Close sidebar on navigation (mobile)
+  // Close sidebar on navigation (mobile) — but re-open if navigating back to index
   useEffect(() => {
-    setSidebarOpen(false);
+    if (pathname === '/app/tasks') {
+      setSidebarOpen(true);
+    } else {
+      setSidebarOpen(false);
+    }
   }, [pathname]);
 
   // Close sidebar on escape key
@@ -44,12 +53,14 @@ export default function MobileTasksLayout({ sidebar, children }: Props) {
           </svg>
         </button>
         <span className="text-sm font-semibold truncate">Tasks</span>
-        <Link
-          href="/app/tasks/new"
-          className="ml-auto text-xs px-2.5 py-1.5 bg-primary text-white rounded hover:bg-primary-hover"
-        >
-          + New
-        </Link>
+        {workspaces.length > 0 && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="ml-auto text-xs px-2.5 py-1.5 bg-status-success text-white rounded hover:bg-status-success/90 font-medium"
+          >
+            Start Task
+          </button>
+        )}
       </div>
 
       {/* Mobile overlay */}
@@ -75,6 +86,18 @@ export default function MobileTasksLayout({ sidebar, children }: Props) {
       <main className="flex-1 overflow-auto pt-12 md:pt-0">
         {children}
       </main>
+
+      {/* Start Task Modal */}
+      {modalOpen && (
+        <StartTaskModal
+          workspaces={workspaces}
+          onClose={() => setModalOpen(false)}
+          onCreated={(taskId) => {
+            setModalOpen(false);
+            router.push(`/app/tasks/${taskId}`);
+          }}
+        />
+      )}
     </div>
   );
 }
