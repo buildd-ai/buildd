@@ -35,6 +35,7 @@ let currentAccountId = null;
 let appVersion = null;
 let appCommit = null;
 let updateAvailable = false;
+let updateChangelog = [];
 
 // Elements
 const setupEl = document.getElementById('setup');
@@ -89,6 +90,13 @@ async function checkConfig() {
       appVersion = data.version;
       appCommit = data.currentCommit || null;
       updateAvailable = data.updateAvailable || false;
+      // Fetch changelog if update available
+      if (updateAvailable) {
+        fetch('/api/version').then(r => r.json()).then(v => {
+          updateChangelog = v.changelog || [];
+          renderVersionBadge();
+        }).catch(() => {});
+      }
     }
 
     if (isConfigured || isServerless) {
@@ -334,21 +342,22 @@ function handleEvent(event) {
 
     case 'update_available':
       updateAvailable = true;
+      updateChangelog = event.changelog || [];
       renderVersionBadge();
       showUpdateBanner();
       break;
 
     case 'update_started':
-      showUpdateBanner('Updating...');
+      showUpdateBanner({ status: 'progress', message: 'Pulling latest changes...' });
       break;
 
     case 'update_complete':
-      showUpdateBanner('Update complete! Reloading...');
-      setTimeout(() => window.location.reload(), 2000);
+      showUpdateBanner({ status: 'success', message: `Updated to ${event.newCommit || 'latest'}. Reloading...` });
+      setTimeout(() => window.location.reload(), 3000);
       break;
 
     case 'update_failed':
-      showUpdateBanner(`Update failed: ${event.error}`, true);
+      showUpdateBanner({ status: 'error', message: event.error || 'Update failed' });
       break;
   }
 }
@@ -376,7 +385,8 @@ function renderVersionBadge() {
 }
 
 // Update banner (non-disruptive, top of main content)
-function showUpdateBanner(message, isError) {
+// opts: null (default update available) or { status: 'progress'|'success'|'error', message: string }
+function showUpdateBanner(opts) {
   let banner = document.getElementById('updateBanner');
   if (!banner) {
     banner = document.createElement('div');
@@ -384,36 +394,76 @@ function showUpdateBanner(message, isError) {
     const main = document.querySelector('#app main');
     if (main) main.insertBefore(banner, main.firstChild);
   }
-  if (message) {
-    banner.className = `flex items-center justify-between p-3 px-4 rounded-[10px] mb-3 text-sm font-medium ${
-      isError ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-brand/10 text-brand border border-brand/30'
-    }`;
-    banner.innerHTML = `<span>${escapeHtml(message)}</span>`;
-  } else {
-    banner.className = 'flex items-center justify-between p-3 px-4 bg-brand/10 text-brand border border-brand/30 rounded-[10px] mb-3 text-sm font-medium';
+
+  const baseClass = 'rounded-[10px] mb-3 text-sm border overflow-hidden';
+
+  if (opts && opts.status) {
+    // Status message (progress, success, error)
+    const styles = {
+      progress: 'bg-brand/10 text-brand border-brand/30',
+      success: 'bg-green-500/10 text-green-600 border-green-500/30',
+      error: 'bg-red-500/10 text-red-500 border-red-500/30',
+    };
+    const icons = {
+      progress: '<svg class="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>',
+      success: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+      error: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    };
+    banner.className = `${baseClass} ${styles[opts.status] || styles.progress}`;
     banner.innerHTML = `
-      <span>A new version is available</span>
-      <button onclick="triggerUpdate()" class="bg-brand text-white px-3 py-1 rounded-md text-xs font-medium hover:bg-brand-hover transition-colors">Update now</button>
+      <div class="flex items-center gap-2.5 p-3 px-4 font-medium">
+        ${icons[opts.status] || ''}
+        <span>${escapeHtml(opts.message)}</span>
+      </div>
+    `;
+  } else {
+    // Default: update available with changelog
+    banner.className = `${baseClass} bg-brand/10 text-brand border-brand/30`;
+    const changelogHtml = updateChangelog.length > 0
+      ? `<div id="updateChangelog" class="hidden px-4 pb-3">
+           <div class="text-xs text-text-secondary space-y-0.5 font-mono">
+             ${updateChangelog.slice(0, 8).map(c => `<div class="truncate">${escapeHtml(c)}</div>`).join('')}
+             ${updateChangelog.length > 8 ? `<div class="text-text-tertiary">+${updateChangelog.length - 8} more</div>` : ''}
+           </div>
+         </div>`
+      : '';
+    banner.innerHTML = `
+      <div class="flex items-center justify-between p-3 px-4 font-medium">
+        <div class="flex items-center gap-2">
+          <span>New version available</span>
+          ${updateChangelog.length > 0 ? `<button onclick="document.getElementById('updateChangelog').classList.toggle('hidden')" class="text-[11px] opacity-70 hover:opacity-100 underline underline-offset-2">changelog</button>` : ''}
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="dismissUpdateBanner()" class="text-text-secondary hover:text-text-primary text-xs">Dismiss</button>
+          <button onclick="triggerUpdate()" class="bg-brand text-white px-3 py-1.5 rounded-md text-xs font-medium hover:bg-brand-hover transition-colors">Update now</button>
+        </div>
+      </div>
+      ${changelogHtml}
     `;
   }
   banner.classList.remove('hidden');
 }
 
+function dismissUpdateBanner() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
 // Trigger safe auto-update
 async function triggerUpdate() {
-  const banner = document.getElementById('updateBanner');
   try {
-    showUpdateBanner('Checking for active tasks...');
+    showUpdateBanner({ status: 'progress', message: 'Running pre-update checks...' });
     const res = await fetch('/api/update', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
-      showUpdateBanner(data.error || 'Update failed', true);
-      if (data.activeWorkers) {
-        showUpdateBanner(`${data.activeWorkers} task(s) still running — update will proceed when they finish`, true);
-      }
+      const msg = data.hint
+        ? `${data.error}. ${data.hint}`
+        : data.error || 'Update failed';
+      showUpdateBanner({ status: 'error', message: msg });
     }
+    // On success, server broadcasts update_started/update_complete via SSE
   } catch (err) {
-    showUpdateBanner('Update failed: network error', true);
+    showUpdateBanner({ status: 'error', message: 'Update failed: network error' });
   }
 }
 
@@ -1207,11 +1257,19 @@ function updateSettings() {
     if (settingsContent) settingsContent.appendChild(versionSection);
   }
   const commitStr = appCommit ? ` (${appCommit})` : '';
+  const updateSection = updateAvailable
+    ? `<div class="mt-2 flex items-center justify-between">
+         <span class="text-xs text-brand font-medium">Update available</span>
+         <button onclick="triggerUpdate(); closeSettingsModal();" class="bg-brand text-white px-3 py-1 rounded-md text-xs font-medium hover:bg-brand-hover transition-colors">Update now</button>
+       </div>
+       ${updateChangelog.length > 0 ? `<div class="mt-2 text-[11px] font-mono text-text-secondary space-y-0.5 max-h-24 overflow-y-auto">${updateChangelog.slice(0, 5).map(c => `<div class="truncate">${escapeHtml(c)}</div>`).join('')}</div>` : ''}`
+    : '<div class="mt-1 text-[11px] text-text-tertiary">Auto-updates when idle</div>';
   versionSection.innerHTML = `
     <div class="flex items-center justify-between">
       <span class="text-xs text-text-tertiary font-mono">buildd v${appVersion || '?'}${commitStr}</span>
-      ${updateAvailable ? `<button onclick="triggerUpdate()" class="text-xs text-brand font-medium hover:underline">Update available</button>` : ''}
+      <span class="text-[10px] text-text-tertiary font-mono uppercase">${updateAvailable ? '' : 'Up to date'}</span>
     </div>
+    ${updateSection}
   `;
 }
 
