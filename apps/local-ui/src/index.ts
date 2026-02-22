@@ -299,6 +299,94 @@ let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(conf
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
 
+// Auto-update state
+interface UpdateState {
+  currentCommit: string | null;
+  latestCommit: string | null;
+  updateAvailable: boolean;
+  updating: boolean;
+}
+
+const updateState: UpdateState = {
+  currentCommit: getCurrentCommit(),
+  latestCommit: null,
+  updateAvailable: false,
+  updating: false,
+};
+
+// Cached models from Anthropic API (auto-refreshes every hour)
+let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
+const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const FALLBACK_MODELS = [
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+];
+
+async function fetchAnthropicModels(): Promise<{ id: string; name: string }[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return FALLBACK_MODELS;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    if (!res.ok) return FALLBACK_MODELS;
+
+    const data = await res.json() as { data?: { id: string; display_name?: string }[] };
+    const models = (data.data || [])
+      .filter((m) => m.id.startsWith('claude-') && !m.id.includes('claude-2') && !m.id.includes('claude-3'))
+      .map((m) => ({ id: m.id, name: m.display_name || m.id }));
+
+    return models.length > 0 ? models : FALLBACK_MODELS;
+  } catch {
+    return FALLBACK_MODELS;
+  }
+}
+
+async function getCachedModels(): Promise<{ id: string; name: string }[]> {
+  if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_CACHE_TTL) {
+    return modelsCache.models;
+  }
+  const models = await fetchAnthropicModels();
+  modelsCache = { models, fetchedAt: Date.now() };
+  return models;
+}
+
+function setLatestCommit(sha: string) {
+  if (updateState.latestCommit === sha) return;
+  updateState.latestCommit = sha;
+  const wasAvailable = updateState.updateAvailable;
+  updateState.updateAvailable = checkForUpdate(updateState.currentCommit, sha);
+  if (updateState.updateAvailable && !wasAvailable) {
+    console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)}`);
+    broadcast({ type: 'update_available', currentCommit: updateState.currentCommit, latestCommit: sha });
+  }
+}
+
+// Serverless mode version polling (every 30 minutes)
+let versionPollInterval: Timer | undefined;
+async function pollVersion() {
+  try {
+    const res = await fetch(`${config.builddServer}/api/version`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.latestCommit) {
+        setLatestCommit(data.latestCommit);
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
 function attachOutbox(client: BuilddClient | null) {
   if (client && !config.serverless) {
     client.setOutbox(outbox);
@@ -572,19 +660,18 @@ const server = Bun.serve({
       return Response.json({ ok: true, builddServer: trimmed }, { headers: corsHeaders });
     }
 
+    // List available models (fetched from Anthropic API, cached 1hr)
+    if (path === '/api/config/models' && req.method === 'GET') {
+      const models = await getCachedModels();
+      return Response.json({ models }, { headers: corsHeaders });
+    }
+
     // Update model setting
     if (path === '/api/config/model' && req.method === 'POST') {
       const body = await parseBody(req);
       const { model } = body;
 
-      const validModels = [
-        'claude-opus-4-6',
-        'claude-opus-4-5-20251101',
-        'claude-sonnet-4-5-20250929',
-        'claude-haiku-4-5-20251001',
-      ];
-
-      if (!model || !validModels.includes(model)) {
+      if (typeof model !== 'string') {
         return Response.json({ error: 'Invalid model' }, { status: 400, headers: corsHeaders });
       }
 
