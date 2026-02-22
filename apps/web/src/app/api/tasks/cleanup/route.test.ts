@@ -29,11 +29,14 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockHeartbeatsFindMany = mock(() => [] as any[]);
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
       tasks: { findMany: mockTasksFindMany },
+      workerHeartbeats: { findMany: mockHeartbeatsFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -53,7 +56,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
-  workerHeartbeats: { id: 'id', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workerHeartbeats: { id: 'id', accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
 }));
 
 import { POST } from './route';
@@ -73,7 +76,11 @@ describe('POST /api/tasks/cleanup', () => {
     mockTasksFindMany.mockReset();
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
+    mockHeartbeatsFindMany.mockReset();
     mockHeartbeatsDelete.mockReset();
+
+    // Default: no stale heartbeats
+    mockHeartbeatsFindMany.mockResolvedValue([]);
 
     // Default mock chains
     mockWorkersUpdate.mockReturnValue({
@@ -153,6 +160,7 @@ describe('POST /api/tasks/cleanup', () => {
     expect(data.cleaned.stalledWorkers).toBe(0);
     expect(data.cleaned.orphanedTasks).toBe(0);
     expect(data.cleaned.expiredPlans).toBe(0);
+    expect(data.cleaned.heartbeatOrphans).toBe(0);
     expect(data.cleaned.staleHeartbeats).toBe(0);
   });
 
@@ -177,5 +185,34 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.stalledWorkers).toBe(2);
+  });
+
+  it('fails workers when their heartbeat is stale (runner offline)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    // No stalled running/starting workers or expired plans
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // stalled running
+      .mockResolvedValueOnce([])  // expired plans
+      // heartbeat orphan check: workers with stale heartbeat accounts
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1' },
+        { id: 'w2', taskId: 'task-2' },
+      ]);
+
+    mockTasksFindMany.mockResolvedValue([]); // No orphaned tasks
+
+    // Stale heartbeats found
+    mockHeartbeatsFindMany.mockResolvedValue([
+      { id: 'hb-1', accountId: 'account-offline' },
+    ]);
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.cleaned.heartbeatOrphans).toBe(2);
   });
 });
