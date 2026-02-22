@@ -32,6 +32,9 @@ let currentWorkerId = null;
 let attachments = [];
 let isConfigured = false;
 let currentAccountId = null;
+let appVersion = null;
+let appCommit = null;
+let updateAvailable = false;
 
 // Elements
 const setupEl = document.getElementById('setup');
@@ -81,6 +84,12 @@ async function checkConfig() {
     config.model = data.model || config.model;
     config.maxConcurrent = data.maxConcurrent || 3;
     updateOutboxBadge(data.outboxCount || 0);
+    // Version info
+    if (data.version) {
+      appVersion = data.version;
+      appCommit = data.currentCommit || null;
+      updateAvailable = data.updateAvailable || false;
+    }
 
     if (isConfigured || isServerless) {
       showApp();
@@ -273,6 +282,13 @@ function handleEvent(event) {
       workers = event.workers || [];
       // Merge SSE config into existing config (don't overwrite fields from /api/config)
       config = { ...config, ...(event.config || {}) };
+      // Version info from server
+      if (event.version) {
+        appVersion = event.version;
+        appCommit = event.currentCommit || null;
+        updateAvailable = event.updateAvailable || false;
+        renderVersionBadge();
+      }
       // Check if configured from SSE init
       if (event.configured === false) {
         showSetup();
@@ -315,6 +331,89 @@ function handleEvent(event) {
         appendOutput(event.line);
       }
       break;
+
+    case 'update_available':
+      updateAvailable = true;
+      renderVersionBadge();
+      showUpdateBanner();
+      break;
+
+    case 'update_started':
+      showUpdateBanner('Updating...');
+      break;
+
+    case 'update_complete':
+      showUpdateBanner('Update complete! Reloading...');
+      setTimeout(() => window.location.reload(), 2000);
+      break;
+
+    case 'update_failed':
+      showUpdateBanner(`Update failed: ${event.error}`, true);
+      break;
+  }
+}
+
+// Version badge in header
+function renderVersionBadge() {
+  let badge = document.getElementById('versionBadge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'versionBadge';
+    badge.className = 'text-xs font-mono text-text-tertiary ml-1 self-end mb-0.5';
+    const headerTitle = document.querySelector('#app header .flex.items-center.gap-2\\.5');
+    if (headerTitle) headerTitle.appendChild(badge);
+  }
+  if (appVersion) {
+    badge.textContent = `v${appVersion}`;
+    badge.className = updateAvailable
+      ? 'text-xs font-mono text-brand ml-1 self-end mb-0.5 cursor-pointer'
+      : 'text-xs font-mono text-text-tertiary ml-1 self-end mb-0.5';
+    if (updateAvailable) {
+      badge.title = 'Update available — click to update';
+      badge.onclick = () => triggerUpdate();
+    }
+  }
+}
+
+// Update banner (non-disruptive, top of main content)
+function showUpdateBanner(message, isError) {
+  let banner = document.getElementById('updateBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'updateBanner';
+    const main = document.querySelector('#app main');
+    if (main) main.insertBefore(banner, main.firstChild);
+  }
+  if (message) {
+    banner.className = `flex items-center justify-between p-3 px-4 rounded-[10px] mb-3 text-sm font-medium ${
+      isError ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-brand/10 text-brand border border-brand/30'
+    }`;
+    banner.innerHTML = `<span>${escapeHtml(message)}</span>`;
+  } else {
+    banner.className = 'flex items-center justify-between p-3 px-4 bg-brand/10 text-brand border border-brand/30 rounded-[10px] mb-3 text-sm font-medium';
+    banner.innerHTML = `
+      <span>A new version is available</span>
+      <button onclick="triggerUpdate()" class="bg-brand text-white px-3 py-1 rounded-md text-xs font-medium hover:bg-brand-hover transition-colors">Update now</button>
+    `;
+  }
+  banner.classList.remove('hidden');
+}
+
+// Trigger safe auto-update
+async function triggerUpdate() {
+  const banner = document.getElementById('updateBanner');
+  try {
+    showUpdateBanner('Checking for active tasks...');
+    const res = await fetch('/api/update', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showUpdateBanner(data.error || 'Update failed', true);
+      if (data.activeWorkers) {
+        showUpdateBanner(`${data.activeWorkers} task(s) still running — update will proceed when they finish`, true);
+      }
+    }
+  } catch (err) {
+    showUpdateBanner('Update failed: network error', true);
   }
 }
 
@@ -1097,6 +1196,23 @@ function updateSettings() {
   if (openBrowserCheckbox) {
     openBrowserCheckbox.checked = config.openBrowser !== false;
   }
+
+  // Version info at bottom of settings
+  let versionSection = document.getElementById('settingsVersion');
+  if (!versionSection) {
+    versionSection = document.createElement('div');
+    versionSection.id = 'settingsVersion';
+    versionSection.className = 'mt-auto pt-4 border-t border-border-default';
+    const settingsContent = document.querySelector('#settingsModal .flex-1.overflow-y-auto');
+    if (settingsContent) settingsContent.appendChild(versionSection);
+  }
+  const commitStr = appCommit ? ` (${appCommit})` : '';
+  versionSection.innerHTML = `
+    <div class="flex items-center justify-between">
+      <span class="text-xs text-text-tertiary font-mono">buildd v${appVersion || '?'}${commitStr}</span>
+      ${updateAvailable ? `<button onclick="triggerUpdate()" class="text-xs text-brand font-medium hover:underline">Update available</button>` : ''}
+    </div>
+  `;
 }
 
 // Handle server URL change

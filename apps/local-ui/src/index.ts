@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { execSync } from 'child_process';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
@@ -12,6 +13,29 @@ const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
 const REPOS_CACHE_FILE = join(homedir(), '.buildd', 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(homedir(), '.buildd', '.last-browser-open');
+const BUILDD_DIR = join(homedir(), '.buildd');
+
+// Read version from package.json (updated by CI/CD on releases)
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
+
+// Get the current git commit SHA of the local-ui installation
+function getCurrentCommit(): string | null {
+  try {
+    return execSync('git rev-parse HEAD', { cwd: BUILDD_DIR, timeout: 5000 })
+      .toString().trim() || null;
+  } catch { return null; }
+}
+
+// Compare two commit SHAs — an update is available when they differ
+function checkForUpdate(current: string | null, latest: string | null): boolean {
+  if (!current || !latest) return false;
+  return current !== latest;
+}
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
@@ -567,6 +591,66 @@ const server = Bun.serve({
       }, { headers: corsHeaders });
     }
 
+    // Version endpoint
+    if (path === '/api/version' && req.method === 'GET') {
+      return Response.json({
+        version: PKG_VERSION,
+        currentCommit: updateState.currentCommit?.slice(0, 7) || null,
+        updateAvailable: updateState.updateAvailable,
+        latestCommit: updateState.latestCommit?.slice(0, 7) || null,
+        updating: updateState.updating,
+      }, { headers: corsHeaders });
+    }
+
+    // Safe auto-update: git pull + restart, waits for active tasks to finish
+    if (path === '/api/update' && req.method === 'POST') {
+      if (updateState.updating) {
+        return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
+      }
+
+      // Check for active workers — don't update while tasks are running
+      const activeWorkers = workerManager
+        ? Array.from(workerManager.getWorkers()).filter(
+            (w: any) => w.status === 'working' || w.status === 'waiting' || w.status === 'stale'
+          )
+        : [];
+
+      if (activeWorkers.length > 0) {
+        return Response.json({
+          error: 'Cannot update while tasks are running',
+          activeWorkers: activeWorkers.length,
+          hint: 'Wait for active tasks to complete or stop them first',
+        }, { status: 409, headers: corsHeaders });
+      }
+
+      updateState.updating = true;
+      broadcast({ type: 'update_started' });
+
+      try {
+        // Pull latest from origin
+        execSync('git pull --ff-only origin main', { cwd: BUILDD_DIR, timeout: 30_000 });
+        // Install dependencies
+        execSync('bun install', { cwd: BUILDD_DIR, timeout: 60_000 });
+
+        const newCommit = getCurrentCommit();
+        console.log(`Updated to ${newCommit?.slice(0, 7)}`);
+        broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
+
+        // Schedule restart after response is sent
+        setTimeout(() => {
+          console.log('Restarting after update...');
+          process.exit(0); // Process manager (systemd, pm2, etc.) will restart
+        }, 1000);
+
+        return Response.json({ ok: true, newCommit: newCommit?.slice(0, 7) }, { headers: corsHeaders });
+      } catch (err: any) {
+        updateState.updating = false;
+        console.error('Update failed:', err.message);
+        broadcast({ type: 'update_failed', error: err.message });
+        return Response.json({ error: 'Update failed', detail: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Auth & Config endpoints (work without API key)
 
     // Check if configured
@@ -586,6 +670,10 @@ const server = Bun.serve({
         accountId: currentAccountId,
         viewerToken: workerManager?.getViewerToken() || null,
         outboxCount: outbox.count(),
+        // Version info
+        version: PKG_VERSION,
+        currentCommit: updateState.currentCommit?.slice(0, 7) || null,
+        updateAvailable: updateState.updateAvailable,
         // LLM provider info
         llmProvider: config.llmProvider?.provider || 'anthropic',
         llmBaseUrl: config.llmProvider?.baseUrl,
@@ -883,6 +971,9 @@ const server = Bun.serve({
             type: 'init',
             configured: !!config.apiKey,
             workers: workerManager?.getWorkers() || [],
+            version: PKG_VERSION,
+            currentCommit: updateState.currentCommit?.slice(0, 7) || null,
+            updateAvailable: updateState.updateAvailable,
             config: {
               projectsRoot: config.projectsRoot,
               builddServer: config.builddServer,
@@ -1567,8 +1658,9 @@ const server = Bun.serve({
 const localUrl = `http://localhost:${PORT}`;
 
 console.log('');
+const versionStr = `v${PKG_VERSION}${updateState.currentCommit ? ` (${updateState.currentCommit.slice(0, 7)})` : ''}`;
 console.log(`╔════════════════════════════════════════════╗`);
-console.log(`║  buildd local-ui                           ║`);
+console.log(`║  buildd local-ui ${versionStr.padEnd(25)}║`);
 console.log(`╚════════════════════════════════════════════╝`);
 console.log(`  URL:        ${terminalLink(localUrl)}`);
 if (config.localUiUrl && config.localUiUrl !== localUrl) {
