@@ -82,6 +82,7 @@ export async function POST(req: NextRequest) {
       where: and(
         eq(workers.accountId, account.id),
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+        lt(workers.updatedAt, heartbeatCutoff),
       ),
       columns: { id: true, taskId: true },
     });
