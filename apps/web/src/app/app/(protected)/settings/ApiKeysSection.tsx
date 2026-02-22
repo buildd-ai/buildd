@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import DeleteAccountButton from '../accounts/DeleteAccountButton';
+import CopyBlock from '@/components/CopyBlock';
 
 interface Account {
   id: string;
@@ -86,27 +87,31 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
         </div>
       )}
 
-      <div className="mt-4 space-y-4">
-        <div className="p-4 bg-surface-2 rounded-lg">
-          <h3 className="font-medium mb-2 text-sm">Claude Code MCP Setup</h3>
-          <p className="text-xs text-text-secondary mb-2">
-            Connect Claude Code directly to buildd with one command:
-          </p>
-          <pre className="bg-surface-4 text-text-primary p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd.dev"}}'`}
-          </pre>
-        </div>
-
-        <div className="p-4 bg-surface-2 rounded-lg">
-          <h3 className="font-medium mb-2 text-sm">REST API</h3>
-          <pre className="bg-surface-4 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://buildd.dev/api/workers/claim \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"maxTasks": 1}'`}
-          </pre>
-        </div>
-      </div>
+      <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} />
     </section>
+  );
+}
+
+// ── MCP Setup Section ────────────────────────────────────────────────────────
+
+function McpSetupSection({ apiKey }: { apiKey: string | null }) {
+  const key = apiKey ? `${apiKey}...` : 'YOUR_API_KEY';
+
+  return (
+    <div className="mt-4 space-y-3">
+      <h3 className="font-medium text-sm">Connect to buildd</h3>
+
+      <div className="p-4 bg-surface-2 rounded-lg space-y-3">
+        <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
+        <CopyBlock text={`claude mcp add --transport http buildd https://buildd.dev/api/mcp -- --header "Authorization: Bearer ${key}"`} />
+      </div>
+
+      <details className="p-4 bg-surface-2 rounded-lg">
+        <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer">REST API</summary>
+        <div className="mt-3">
+          <CopyBlock text={`curl -X POST https://buildd.dev/api/workers/claim \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"maxTasks": 1}'`} />
+        </div>
+      </details>
+    </div>
   );
 }
