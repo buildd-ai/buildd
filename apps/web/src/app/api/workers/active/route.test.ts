@@ -7,6 +7,7 @@ const mockAccountsFindMany = mock(() => [] as any[]);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
+const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
 const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
@@ -37,6 +38,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       workspaces: { findMany: mockWorkspacesFindMany },
       workerHeartbeats: { findMany: mockHeartbeatsFindMany },
+      workers: { findMany: mockWorkersFindMany },
     },
   },
 }));
@@ -44,12 +46,14 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id', teamId: 'teamId' },
   accountWorkspaces: { accountId: 'accountId' },
+  workers: { accountId: 'accountId', status: 'status' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt' },
 }));
@@ -71,6 +75,7 @@ describe('GET /api/workers/active', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockHeartbeatsFindMany.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGetCachedOpenWorkspaceIds.mockReset();
     mockSetCachedOpenWorkspaceIds.mockReset();
     mockGetUserWorkspaceIds.mockReset();
@@ -82,6 +87,8 @@ describe('GET /api/workers/active', () => {
     // Default mocks for team access
     mockGetUserWorkspaceIds.mockResolvedValue([]);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    // Default: no active workers in DB
+    mockWorkersFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no auth', async () => {
@@ -180,6 +187,49 @@ describe('GET /api/workers/active', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.activeLocalUis).toHaveLength(0);
+  });
+
+  it('adjusts capacity using actual DB worker count when higher than heartbeat', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'My Workspace' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockAccountsFindMany.mockResolvedValue([]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { workspaceId: 'ws-1' },
+    ]);
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 0, // Heartbeat says 0 active
+        workspaceIds: ['ws-1'],
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    // DB shows 2 active workers (worker runner went offline without reporting)
+    mockWorkersFindMany.mockResolvedValue([
+      { accountId: 'account-1' },
+      { accountId: 'account-1' },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeLocalUis).toHaveLength(1);
+    // Should use DB count (2) instead of heartbeat count (0)
+    expect(data.activeLocalUis[0].activeWorkers).toBe(2);
+    expect(data.activeLocalUis[0].capacity).toBe(1); // 3 - 2 = 1
   });
 
   it('supports API key auth', async () => {
