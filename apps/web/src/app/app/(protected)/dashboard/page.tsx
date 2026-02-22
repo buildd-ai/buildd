@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import DashboardStartTask from './DashboardStartTask';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -406,16 +407,23 @@ export default async function DashboardPage() {
             <div className="flex items-center gap-2">
               <Link
                 href="/app/tasks"
-                className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+                className="px-3 py-[9px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 View All
               </Link>
+              {/* Desktop: full create form */}
               <Link
                 href="/app/tasks/new"
-                className="w-full sm:w-auto px-[18px] py-[9px] rounded-[6px] text-[13px] font-medium bg-primary text-white hover:bg-primary-hover"
+                className="hidden md:inline-flex px-[18px] py-[9px] rounded-[6px] text-[13px] font-medium bg-primary text-white hover:bg-primary-hover"
               >
                 + New
               </Link>
+              {/* Mobile: Start Task modal */}
+              <div className="md:hidden">
+                <DashboardStartTask
+                  workspaces={userWorkspaces.map(w => ({ id: w.id, name: w.name }))}
+                />
+              </div>
             </div>
           </div>
 

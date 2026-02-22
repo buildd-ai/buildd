@@ -1,7 +1,6 @@
 node_modules/
 dist/
-.env*
-!.env.example
+.env.*
 !.env*.example
 *.log
 .DS_Store

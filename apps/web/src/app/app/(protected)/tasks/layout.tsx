@@ -104,7 +104,10 @@ export default async function TasksLayout({
   }
 
   return (
-    <MobileTasksLayout sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} />}>
+    <MobileTasksLayout
+      sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} />}
+      workspaces={workspacesWithTasks.map(w => ({ id: w.id, name: w.name }))}
+    >
       {children}
     </MobileTasksLayout>
   );
