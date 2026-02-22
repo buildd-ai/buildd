@@ -32,6 +32,10 @@ let currentWorkerId = null;
 let attachments = [];
 let isConfigured = false;
 let currentAccountId = null;
+let appVersion = null;
+let appCommit = null;
+let updateAvailable = false;
+let updateChangelog = [];
 
 // Elements
 const setupEl = document.getElementById('setup');
@@ -85,6 +89,19 @@ async function checkConfig() {
     config.maxConcurrent = data.maxConcurrent || 3;
     config.maxTurns = data.maxTurns || null;
     updateOutboxBadge(data.outboxCount || 0);
+    // Version info
+    if (data.version) {
+      appVersion = data.version;
+      appCommit = data.currentCommit || null;
+      updateAvailable = data.updateAvailable || false;
+      // Fetch changelog if update available
+      if (updateAvailable) {
+        fetch('/api/version').then(r => r.json()).then(v => {
+          updateChangelog = v.changelog || [];
+          renderVersionBadge();
+        }).catch(() => {});
+      }
+    }
 
     if (isConfigured || isServerless) {
       showApp();
@@ -357,6 +374,13 @@ function handleEvent(event) {
       workers = event.workers || [];
       // Merge SSE config into existing config (don't overwrite fields from /api/config)
       config = { ...config, ...(event.config || {}) };
+      // Version info from server
+      if (event.version) {
+        appVersion = event.version;
+        appCommit = event.currentCommit || null;
+        updateAvailable = event.updateAvailable || false;
+        renderVersionBadge();
+      }
       // Check if configured from SSE init
       if (event.configured === false) {
         showSetup();
@@ -1536,6 +1560,31 @@ function updateSettings() {
   if (openBrowserCheckbox) {
     openBrowserCheckbox.checked = config.openBrowser !== false;
   }
+
+  // Version info at bottom of settings
+  let versionSection = document.getElementById('settingsVersion');
+  if (!versionSection) {
+    versionSection = document.createElement('div');
+    versionSection.id = 'settingsVersion';
+    versionSection.className = 'mt-auto pt-4 border-t border-border-default';
+    const settingsContent = document.querySelector('#settingsModal .flex-1.overflow-y-auto');
+    if (settingsContent) settingsContent.appendChild(versionSection);
+  }
+  const commitStr = appCommit ? ` (${appCommit})` : '';
+  const updateSection = updateAvailable
+    ? `<div class="mt-2 flex items-center justify-between">
+         <span class="text-xs text-brand font-medium">Update available</span>
+         <button onclick="triggerUpdate(); closeSettingsModal();" class="bg-brand text-white px-3 py-1 rounded-md text-xs font-medium hover:bg-brand-hover transition-colors">Update now</button>
+       </div>
+       ${updateChangelog.length > 0 ? `<div class="mt-2 text-[11px] font-mono text-text-secondary space-y-0.5 max-h-24 overflow-y-auto">${updateChangelog.slice(0, 5).map(c => `<div class="truncate">${escapeHtml(c)}</div>`).join('')}</div>` : ''}`
+    : '<div class="mt-1 text-[11px] text-text-tertiary">Auto-updates when idle</div>';
+  versionSection.innerHTML = `
+    <div class="flex items-center justify-between">
+      <span class="text-xs text-text-tertiary font-mono">buildd v${appVersion || '?'}${commitStr}</span>
+      <span class="text-[10px] text-text-tertiary font-mono uppercase">${updateAvailable ? '' : 'Up to date'}</span>
+    </div>
+    ${updateSection}
+  `;
 }
 
 // Handle server URL change

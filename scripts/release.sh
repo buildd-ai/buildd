@@ -112,8 +112,28 @@ case "$BUMP" in
 esac
 
 NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+SEMVER="${MAJOR}.${MINOR}.${PATCH}"
 
 echo "Current: ${LATEST_TAG} → New: ${NEW_VERSION} (${BUMP} bump)"
+
+# Bump version in all package.json files on dev
+echo "Bumping package.json versions to ${SEMVER}..."
+BUMPED_FILES=""
+for PKG in apps/local-ui/package.json apps/mcp-server/package.json apps/web/package.json apps/agent/package.json packages/core/package.json packages/shared/package.json; do
+  if [ -f "$PKG" ]; then
+    jq --arg v "$SEMVER" '.version = $v' "$PKG" > tmp.json && mv tmp.json "$PKG"
+    BUMPED_FILES="${BUMPED_FILES} ${PKG}"
+    echo "  ✅ ${PKG} → ${SEMVER}"
+  fi
+done
+
+# Commit version bump to dev (if anything changed)
+if [ -n "$BUMPED_FILES" ] && ! git diff --quiet $BUMPED_FILES 2>/dev/null; then
+  git add $BUMPED_FILES
+  git commit -m "chore: bump version to ${NEW_VERSION}"
+  git push origin dev
+  echo "Committed version bump to dev"
+fi
 
 # Build PR body with commit summary
 BODY=$(cat <<EOF
