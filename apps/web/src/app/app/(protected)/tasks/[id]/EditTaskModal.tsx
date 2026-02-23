@@ -9,6 +9,8 @@ interface Props {
     title: string;
     description: string | null;
     priority: number;
+    project?: string | null;
+    workspaceId?: string;
   };
   onClose: () => void;
 }
@@ -42,6 +44,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
           title: title.trim(),
           description: description.trim() || null,
           priority,
+          project: task.project ?? null,
         }),
       });
 
