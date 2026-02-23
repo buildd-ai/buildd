@@ -104,6 +104,16 @@ export class BuilddClient {
     }, [409]);
   }
 
+  async redeemSecret(ref: string, workerId: string): Promise<string | null> {
+    try {
+      const data = await this.fetch(`/api/workers/secret/${ref}?workerId=${workerId}`);
+      return data.value || null;
+    } catch (err) {
+      console.warn(`Failed to redeem secret ref: ${err}`);
+      return null;
+    }
+  }
+
   async createTask(task: {
     workspaceId: string;
     title: string;
@@ -373,6 +383,17 @@ export class BuilddClient {
     return this.fetch(`/api/workspaces/${workspaceId}/skills/install/result`, {
       method: 'POST',
       body: JSON.stringify(result),
+    });
+  }
+
+  async matchRepos(repos: Array<{ path: string; remoteUrl: string | null; owner: string | null; repo: string | null; provider: string | null }>): Promise<{
+    matched: Array<{ path: string; remoteUrl: string | null; owner: string | null; repo: string | null; workspaceId: string; workspaceName: string }>;
+    unmatchedInOrg: Array<{ path: string; remoteUrl: string | null; owner: string | null; repo: string | null; inOrg: boolean }>;
+    unmatchedExternal: Array<{ path: string; remoteUrl: string | null; owner: string | null; repo: string | null; inOrg: boolean }>;
+  }> {
+    return this.fetch('/api/workspaces/match-repos', {
+      method: 'POST',
+      body: JSON.stringify({ repos }),
     });
   }
 }

@@ -62,6 +62,7 @@ export async function PATCH(
         }
         if (body.files !== undefined) updateFields.files = body.files;
         if (body.concepts !== undefined) updateFields.concepts = body.concepts;
+        if (body.project !== undefined) updateFields.project = body.project;
 
         if (Object.keys(updateFields).length === 0) {
             return NextResponse.json({ error: 'At least one field must be provided' }, { status: 400 });

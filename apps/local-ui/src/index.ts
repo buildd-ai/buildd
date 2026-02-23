@@ -271,6 +271,20 @@ function saveReposCache(repos: CachedRepo[]) {
   }
 }
 
+// Extract owner from normalized URL (e.g. "owner/repo" -> "owner")
+function getOwnerFromUrl(normalizedUrl: string | null): string | null {
+  if (!normalizedUrl) return null;
+  const parts = normalizedUrl.split('/');
+  return parts.length >= 2 ? parts[0] : null;
+}
+
+// Extract repo name from normalized URL (e.g. "owner/repo" -> "repo")
+function getRepoNameFromUrl(normalizedUrl: string | null): string | null {
+  if (!normalizedUrl) return null;
+  const parts = normalizedUrl.split('/');
+  return parts.length >= 2 ? parts[1] : null;
+}
+
 let reposLoadedFromCache = false;
 
 function getRepos(forceRescan = false): CachedRepo[] {
@@ -1708,6 +1722,48 @@ const server = Bun.serve({
         return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Discovered repos with server matching
+    if (path === '/api/discovered-repos' && req.method === 'GET') {
+      const repos = getRepos(); // Use cached
+      if (!buildd) {
+        // No server connection - return all local repos as unmatched
+        return Response.json({
+          matched: [],
+          unmatchedInOrg: [],
+          unmatchedExternal: repos.map(r => ({
+            path: r.path,
+            remoteUrl: r.remoteUrl,
+            owner: getOwnerFromUrl(r.normalizedUrl),
+            repo: getRepoNameFromUrl(r.normalizedUrl),
+            provider: null,
+            inOrg: false,
+          })),
+        }, { headers: corsHeaders });
+      }
+
+      try {
+        const repoDescriptors = repos
+          .filter(r => r.remoteUrl)
+          .map(r => ({
+            path: r.path,
+            remoteUrl: r.remoteUrl,
+            owner: getOwnerFromUrl(r.normalizedUrl),
+            repo: getRepoNameFromUrl(r.normalizedUrl),
+            provider: null,
+          }));
+        const result = await buildd.matchRepos(repoDescriptors);
+        return Response.json(result, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to match repos:', err.message);
+        return Response.json({
+          matched: [],
+          unmatchedInOrg: [],
+          unmatchedExternal: [],
+          error: err.message,
+        }, { headers: corsHeaders });
       }
     }
 

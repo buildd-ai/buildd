@@ -64,11 +64,21 @@ export default async function WorkersPage() {
           </h2>
 
           {activeWorkers.length === 0 ? (
-            <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
-              <p className="text-text-secondary">No active workers</p>
-              <p className="text-sm text-text-muted mt-2">
-                Workers appear here when agents claim tasks
-              </p>
+            <div className="border border-dashed border-border-default rounded-[10px] p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-[8px] bg-surface-3 flex items-center justify-center flex-shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-[13px] font-medium text-text-primary">No active workers</p>
+                  <p className="text-[12px] text-text-muted mt-0.5">
+                    Workers appear here when connected agents claim and start executing tasks. Create a task to get started.
+                  </p>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="border border-border-default rounded-lg divide-y divide-border-default">

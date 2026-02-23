@@ -17,14 +17,14 @@ import MarkdownContent from '@/components/MarkdownContent';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 
 const CATEGORY_COLORS: Record<string, string> = {
-  bug: 'bg-red-500/15 text-red-400',
-  feature: 'bg-blue-500/15 text-blue-400',
-  refactor: 'bg-purple-500/15 text-purple-400',
-  chore: 'bg-zinc-500/15 text-zinc-400',
-  docs: 'bg-teal-500/15 text-teal-400',
-  test: 'bg-amber-500/15 text-amber-400',
-  infra: 'bg-orange-500/15 text-orange-400',
-  design: 'bg-pink-500/15 text-pink-400',
+  bug: 'bg-cat-bug/15 text-cat-bug',
+  feature: 'bg-cat-feature/15 text-cat-feature',
+  refactor: 'bg-cat-refactor/15 text-cat-refactor',
+  chore: 'bg-cat-chore/15 text-cat-chore',
+  docs: 'bg-cat-docs/15 text-cat-docs',
+  test: 'bg-cat-test/15 text-cat-test',
+  infra: 'bg-cat-infra/15 text-cat-infra',
+  design: 'bg-cat-design/15 text-cat-design',
 };
 
 export default async function TaskDetailPage({
@@ -195,8 +195,13 @@ export default async function TaskDetailPage({
                 <StatusBadge status={displayStatus} />
               </span>
               {task.category && (
-                <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-zinc-500/15 text-zinc-400'}`}>
+                <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
                   {task.category}
+                </span>
+              )}
+              {task.project && (
+                <span className="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">
+                  {task.project}
                 </span>
               )}
             </div>
@@ -212,6 +217,8 @@ export default async function TaskDetailPage({
                 title: task.title,
                 description: task.description,
                 priority: task.priority,
+                project: task.project,
+                workspaceId: task.workspaceId,
               }}
             />
             {canReassign && <ReassignButton taskId={task.id} />}
@@ -600,9 +607,9 @@ export default async function TaskDetailPage({
                           <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
                         )}
                       </div>
-                      {/* Per-model usage breakdown */}
+                      {/* Per-model usage breakdown — hidden on mobile for density */}
                       {(worker.resultMeta as any)?.modelUsage && Object.keys((worker.resultMeta as any).modelUsage).length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-text-muted">
+                        <div className="hidden md:flex mt-1.5 flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-text-muted">
                           {Object.entries((worker.resultMeta as any).modelUsage as Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; costUSD: number }>).map(([model, usage]) => (
                             <span key={model} className="inline-flex items-center gap-1">
                               <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>

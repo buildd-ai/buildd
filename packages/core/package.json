@@ -14,7 +14,8 @@
     "./worker-runner": "./worker-runner.ts",
     "./buildd-mcp-server": "./buildd-mcp-server.ts",
     "./config": "./config.ts",
-    "./mcp-tools": "./mcp-tools.ts"
+    "./mcp-tools": "./mcp-tools.ts",
+    "./secrets": "./secrets/index.ts"
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",

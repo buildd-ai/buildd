@@ -835,10 +835,19 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
+
+    // Redeem server-managed secret if provided and no local credentials
+    let serverApiKey: string | undefined;
+    if (claimedWorker.secretRef && !this.hasCredentials) {
+      serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
+      if (serverApiKey) {
+        console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+      }
+    }
 
     // Create local worker
     const worker: LocalWorker = {
@@ -866,6 +875,11 @@ export class WorkerManager {
       phaseToolCount: 0,
       phaseTools: [],
     };
+
+    // Attach server-managed API key if redeemed
+    if (serverApiKey) {
+      worker.serverApiKey = serverApiKey;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -1807,6 +1821,12 @@ export class WorkerManager {
           cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
           cleanEnv.ANTHROPIC_API_KEY = '';
         }
+      }
+
+      // Inject server-managed API key (redeemed from secretRef during claim)
+      if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
+        cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
+        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)

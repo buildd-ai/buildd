@@ -213,12 +213,20 @@ export interface WebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+export interface WorkspaceProject {
+  name: string;
+  path?: string;
+  description?: string;
+  color?: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
   repo: string | null;
   localPath: string | null;
   memory: Record<string, unknown>;
+  projects?: WorkspaceProject[];
   webhookConfig?: WebhookConfig | null;
   createdAt: Date;
   updatedAt: Date;
@@ -271,6 +279,7 @@ export interface Task {
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
   blockedByTaskIds?: string[];
+  project?: string | null;
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
@@ -353,6 +362,7 @@ export interface Observation {
   workspaceId: string;
   workerId: string | null;
   taskId: string | null;
+  project: string | null;
   type: ObservationTypeValue;
   title: string;
   content: string;
@@ -517,6 +527,8 @@ export interface CreateTaskInput {
   blockedByTaskIds?: string[];
   // Skill reference — server resolves slug to contentHash
   skillRef?: { slug: string };
+  // Project scoping
+  project?: string;
   // Task category
   category?: TaskCategoryValue;
   // Output requirement — what deliverables are enforced on completion
@@ -578,6 +590,8 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
+    /** Single-use secret reference for server-managed credentials (redeem via GET /api/workers/secret/:ref) */
+    secretRef?: string;
   }>;
 }
 
@@ -589,6 +603,7 @@ export interface CreateObservationInput {
   concepts?: string[];
   workerId?: string;
   taskId?: string;
+  project?: string;
 }
 
 export interface CreateScheduleInput {

@@ -9,6 +9,8 @@ import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import DashboardStartTask from './DashboardStartTask';
+import DiscoveredRepos from './DiscoveredRepos';
+import OnboardingChecklist from './OnboardingChecklist';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -318,6 +320,15 @@ export default async function DashboardPage() {
           </div>
         </div>
 
+        {/* Onboarding Checklist */}
+        <OnboardingChecklist
+          hasGithub={githubOrgs.length > 0}
+          hasWorkspaces={userWorkspaces.length > 0}
+          hasCompletedTask={completedRecentCount > 0}
+          hasConnectedAgent={connectedAgents.length > 0}
+          githubConfigured={githubConfigured}
+        />
+
         {/* Active Workers */}
         {activeWorkers.length > 0 && (
           <div className="mb-8">
@@ -429,11 +440,26 @@ export default async function DashboardPage() {
           </div>
 
           {recentTasks.length === 0 ? (
-            <div className="border border-dashed border-border-default rounded-[10px] p-6 text-center">
-              <p className="text-text-secondary mb-2">No active tasks</p>
-              <Link href="/app/tasks/new" className="text-sm text-primary-400 hover:underline">
-                Create your first task
-              </Link>
+            <div className="border border-dashed border-border-default rounded-[10px] p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-[8px] bg-surface-3 flex items-center justify-center flex-shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="12" y1="18" x2="12" y2="12" />
+                    <line x1="9" y1="15" x2="15" y2="15" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-[13px] font-medium text-text-primary">No tasks yet</p>
+                  <p className="text-[12px] text-text-muted mt-0.5 mb-2">
+                    Tasks describe work for agents to execute. Create one and a connected agent will pick it up.
+                  </p>
+                  <Link href="/app/tasks/new" className="text-[12px] text-primary hover:underline">
+                    Create your first task
+                  </Link>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="border border-border-default rounded-[10px] overflow-hidden">
@@ -449,7 +475,14 @@ export default async function DashboardPage() {
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium text-text-primary truncate">{task.title}</div>
+                      <div className="text-[13px] font-medium text-text-primary truncate flex items-center gap-1.5">
+                        {task.title}
+                        {task.project && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-primary/10 text-primary shrink-0">
+                            {task.project}
+                          </span>
+                        )}
+                      </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
                         {task.workspace?.name}
                         {task.workspace?.team?.name && ` \u00B7 ${task.workspace.team.name}`}
@@ -537,11 +570,11 @@ export default async function DashboardPage() {
         )}
 
         {/* Connected Agents */}
-        {connectedAgents.length > 0 && (
-          <div className="mb-8">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
-              Connected Agents
-            </div>
+        <div className="mb-8">
+          <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+            Connected Agents
+          </div>
+          {connectedAgents.length > 0 ? (
             <div className="border border-border-default rounded-[10px] overflow-hidden">
               {connectedAgents.map((agent) => (
                 <div
@@ -582,7 +615,43 @@ export default async function DashboardPage() {
                 </div>
               ))}
             </div>
-          </div>
+          ) : (
+            <div className="border border-dashed border-border-default rounded-[10px] p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-[8px] bg-surface-3 flex items-center justify-center flex-shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium text-text-primary mb-1">No agents connected</p>
+                  <p className="text-[12px] text-text-muted mb-3">
+                    Install the CLI to connect your local machine. Claude Code will automatically get access to buildd via MCP.
+                  </p>
+                  <div className="space-y-1.5">
+                    <div className="px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary">
+                      curl https://buildd.dev/install.sh | bash
+                    </div>
+                    <div className="px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary">
+                      buildd login
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Discovered Repos (client-side, fetches from connected agents) */}
+        {connectedAgents.length > 0 && (
+          <DiscoveredRepos
+            agents={connectedAgents.map(a => ({
+              localUiUrl: a.localUiUrl,
+              accountName: a.accountName,
+            }))}
+          />
         )}
 
         {/* Empty Workers State */}
@@ -591,13 +660,23 @@ export default async function DashboardPage() {
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Active Workers
             </div>
-            <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
-              <p className="text-text-secondary">No active workers</p>
-              <p className="text-sm text-text-muted mt-2">
-                {connectedAgents.length > 0
-                  ? 'Agents are connected and ready \u2014 create a task to get started'
-                  : 'Start a local-ui instance to connect agents'}
-              </p>
+            <div className="border border-dashed border-border-default rounded-[10px] p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-[8px] bg-surface-3 flex items-center justify-center flex-shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-[13px] font-medium text-text-primary">No active workers</p>
+                  <p className="text-[12px] text-text-muted mt-0.5">
+                    {connectedAgents.length > 0
+                      ? 'Agents are connected and ready. Create a task and an agent will pick it up automatically.'
+                      : 'Workers appear here when connected agents claim and start executing tasks.'}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}

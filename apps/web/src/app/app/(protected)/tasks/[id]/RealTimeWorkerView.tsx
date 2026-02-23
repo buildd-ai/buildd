@@ -143,6 +143,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
   const [interruptMode, setInterruptMode] = useState(false);
+  const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const { status: directStatus, sendDirect, viewerToken, localUiUrl: resolvedLocalUiUrl } = useDirectConnect(worker.localUiUrl);
 
   // Subscribe to real-time updates
@@ -447,63 +448,87 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         )}
       </div>
 
-      {/* Git stats */}
-      {((worker.commitCount ?? 0) > 0 || (worker.filesChanged ?? 0) > 0) && (
-        <div className="flex items-center gap-4 mt-2 font-mono text-xs">
-          {(worker.commitCount ?? 0) > 0 && (
-            <span className="text-text-muted">
-              {worker.commitCount} commit{worker.commitCount !== 1 ? 's' : ''}
-            </span>
-          )}
-          {(worker.filesChanged ?? 0) > 0 && (
-            <span className="text-text-muted">
-              {worker.filesChanged} file{worker.filesChanged !== 1 ? 's' : ''}
-            </span>
-          )}
-          {((worker.linesAdded ?? 0) > 0 || (worker.linesRemoved ?? 0) > 0) && (
-            <span>
-              <span className="text-status-success">+{worker.linesAdded ?? 0}</span>
-              {' / '}
-              <span className="text-status-error">-{worker.linesRemoved ?? 0}</span>
-            </span>
-          )}
-          {worker.lastCommitSha && (
-            <span className="text-text-muted">
-              {worker.lastCommitSha.slice(0, 7)}
-            </span>
-          )}
-        </div>
-      )}
+      {/* Git stats & model usage — always visible on desktop, collapsible on mobile */}
+      {(((worker.commitCount ?? 0) > 0 || (worker.filesChanged ?? 0) > 0) ||
+        (worker.resultMeta?.modelUsage && Object.keys(worker.resultMeta.modelUsage).length > 0)) && (
+        <>
+          {/* Mobile: collapsible toggle */}
+          <button
+            onClick={() => setShowMetricsDetail(!showMetricsDetail)}
+            className="md:hidden flex items-center gap-1.5 mt-3 text-xs text-text-muted hover:text-text-secondary transition-colors"
+          >
+            <svg
+              className={`w-3 h-3 transition-transform ${showMetricsDetail ? 'rotate-90' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            Details
+          </button>
 
-      {/* Per-model usage breakdown */}
-      {worker.resultMeta?.modelUsage && Object.keys(worker.resultMeta.modelUsage).length > 0 && (
-        <div className="mt-3 p-3 bg-surface-3 rounded-[8px] border border-border-default/50">
-          <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">Model Usage</div>
-          <div className="space-y-1.5">
-            {Object.entries(worker.resultMeta.modelUsage).map(([model, usage]) => (
-              <div key={model} className="flex items-center justify-between font-mono text-[11px]">
-                <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
-                <div className="flex items-center gap-3 text-text-muted">
-                  <span>{((usage.inputTokens + usage.cacheReadInputTokens) / 1000).toFixed(0)}k in</span>
-                  <span>{(usage.outputTokens / 1000).toFixed(0)}k out</span>
-                  {usage.cacheReadInputTokens > 0 && (
-                    <span className="text-status-success">{(usage.cacheReadInputTokens / 1000).toFixed(0)}k cached</span>
-                  )}
-                  {usage.costUSD > 0 && <span>${usage.costUSD.toFixed(4)}</span>}
-                </div>
+          <div className={`${showMetricsDetail ? '' : 'hidden'} md:block`}>
+            {/* Git stats */}
+            {((worker.commitCount ?? 0) > 0 || (worker.filesChanged ?? 0) > 0) && (
+              <div className="flex items-center gap-4 mt-2 font-mono text-xs">
+                {(worker.commitCount ?? 0) > 0 && (
+                  <span className="text-text-muted">
+                    {worker.commitCount} commit{worker.commitCount !== 1 ? 's' : ''}
+                  </span>
+                )}
+                {(worker.filesChanged ?? 0) > 0 && (
+                  <span className="text-text-muted">
+                    {worker.filesChanged} file{worker.filesChanged !== 1 ? 's' : ''}
+                  </span>
+                )}
+                {((worker.linesAdded ?? 0) > 0 || (worker.linesRemoved ?? 0) > 0) && (
+                  <span>
+                    <span className="text-status-success">+{worker.linesAdded ?? 0}</span>
+                    {' / '}
+                    <span className="text-status-error">-{worker.linesRemoved ?? 0}</span>
+                  </span>
+                )}
+                {worker.lastCommitSha && (
+                  <span className="text-text-muted">
+                    {worker.lastCommitSha.slice(0, 7)}
+                  </span>
+                )}
               </div>
-            ))}
+            )}
+
+            {/* Per-model usage breakdown */}
+            {worker.resultMeta?.modelUsage && Object.keys(worker.resultMeta.modelUsage).length > 0 && (
+              <div className="mt-3 p-3 bg-surface-3 rounded-[8px] border border-border-default/50">
+                <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">Model Usage</div>
+                <div className="space-y-1.5">
+                  {Object.entries(worker.resultMeta.modelUsage).map(([model, usage]) => (
+                    <div key={model} className="flex items-center justify-between font-mono text-[11px]">
+                      <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                      <div className="flex items-center gap-3 text-text-muted">
+                        <span>{((usage.inputTokens + usage.cacheReadInputTokens) / 1000).toFixed(0)}k in</span>
+                        <span>{(usage.outputTokens / 1000).toFixed(0)}k out</span>
+                        {usage.cacheReadInputTokens > 0 && (
+                          <span className="text-status-success">{(usage.cacheReadInputTokens / 1000).toFixed(0)}k cached</span>
+                        )}
+                        {usage.costUSD > 0 && <span>${usage.costUSD.toFixed(4)}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {(worker.resultMeta.durationMs > 0 || worker.resultMeta.durationApiMs > 0) && (
+                  <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[10px] text-text-muted">
+                    {worker.resultMeta.durationMs > 0 && <span>Total: {(worker.resultMeta.durationMs / 1000).toFixed(0)}s</span>}
+                    {worker.resultMeta.durationApiMs > 0 && <span>API: {(worker.resultMeta.durationApiMs / 1000).toFixed(0)}s</span>}
+                    {worker.resultMeta.stopReason && worker.resultMeta.stopReason !== 'end_turn' && (
+                      <span className="text-status-warning">Stop: {worker.resultMeta.stopReason}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          {(worker.resultMeta.durationMs > 0 || worker.resultMeta.durationApiMs > 0) && (
-            <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[10px] text-text-muted">
-              {worker.resultMeta.durationMs > 0 && <span>Total: {(worker.resultMeta.durationMs / 1000).toFixed(0)}s</span>}
-              {worker.resultMeta.durationApiMs > 0 && <span>API: {(worker.resultMeta.durationApiMs / 1000).toFixed(0)}s</span>}
-              {worker.resultMeta.stopReason && worker.resultMeta.stopReason !== 'end_turn' && (
-                <span className="text-status-warning">Stop: {worker.resultMeta.stopReason}</span>
-              )}
-            </div>
-          )}
-        </div>
+        </>
       )}
 
       {/* Instruction history and input */}

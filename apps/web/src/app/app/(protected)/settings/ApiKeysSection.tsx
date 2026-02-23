@@ -1,6 +1,12 @@
+'use client';
+
+import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import DeleteAccountButton from '../accounts/DeleteAccountButton';
 import CopyBlock from '@/components/CopyBlock';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import ApiKeyModal from '@/components/ApiKeyModal';
 
 interface Account {
   id: string;
@@ -23,6 +29,38 @@ const typeColors: Record<string, string> = {
 };
 
 export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
+  const router = useRouter();
+  const [regenerateTarget, setRegenerateTarget] = useState<Account | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [newKey, setNewKey] = useState<{ accountName: string; apiKey: string } | null>(null);
+
+  async function handleRegenerate() {
+    if (!regenerateTarget) return;
+    setRegenerating(true);
+    setRegenerateError(null);
+
+    try {
+      const res = await fetch(`/api/accounts/${regenerateTarget.id}/regenerate-key`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to regenerate key');
+      }
+
+      const data = await res.json();
+      setRegenerateTarget(null);
+      setNewKey({ accountName: regenerateTarget.name, apiKey: data.apiKey });
+      router.refresh();
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : 'Failed to regenerate key');
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
   return (
     <section>
       <div className="flex justify-between items-center mb-4">
@@ -80,7 +118,18 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
                   {account.authType === 'api' && ` Cost: $${account.totalCost}`}
                   {account.authType === 'oauth' && ` Sessions: ${account.activeSessions}/${account.maxConcurrentSessions || '\u221E'}`}
                 </span>
-                <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      setRegenerateError(null);
+                      setRegenerateTarget(account);
+                    }}
+                    className="text-text-secondary hover:text-text-primary text-sm"
+                  >
+                    Regenerate
+                  </button>
+                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                </div>
               </div>
             </div>
           ))}
@@ -88,6 +137,31 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
       )}
 
       <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} />
+
+      {/* Regenerate confirmation dialog */}
+      <ConfirmDialog
+        open={!!regenerateTarget}
+        title="Regenerate API Key?"
+        message={regenerateError || `This will invalidate the current key for "${regenerateTarget?.name}". Any workers using the old key will stop working immediately.`}
+        confirmLabel="Regenerate"
+        variant="warning"
+        loading={regenerating}
+        onConfirm={handleRegenerate}
+        onCancel={() => {
+          setRegenerateTarget(null);
+          setRegenerateError(null);
+        }}
+      />
+
+      {/* New key display modal */}
+      {newKey && (
+        <ApiKeyModal
+          open={!!newKey}
+          accountName={newKey.accountName}
+          apiKey={newKey.apiKey}
+          onClose={() => setNewKey(null)}
+        />
+      )}
     </section>
   );
 }

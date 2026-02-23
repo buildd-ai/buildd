@@ -698,6 +698,96 @@ describe('POST /api/tasks', () => {
     );
   });
 
+  it('creates task with project field set', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      project: '@mono/web',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'ws-1', title: 'Test Task', project: '@mono/web' },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.project).toBe('@mono/web');
+  });
+
+  it('creates task without project (remains null)', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'ws-1', title: 'Test Task' },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.project).toBeUndefined();
+  });
+
+  it('passes project field through to db.insert values', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      project: '@mono/web',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', project: '@mono/web' },
+    });
+    await POST(request);
+
+    expect(capturedValues.project).toBe('@mono/web');
+  });
+
   it('does not dispatch to webhook when assignToLocalUiUrl is set', async () => {
     const createdTask = {
       id: 'task-123',
