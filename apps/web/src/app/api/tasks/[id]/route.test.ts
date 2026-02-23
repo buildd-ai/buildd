@@ -471,6 +471,102 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(capturedSetData.priority).toBeUndefined();
   });
 
+  it('updates task project field', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      project: null,
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const updatedTask = { ...mockTask, project: '@mono/web' };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { project: '@mono/web' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.project).toBe('@mono/web');
+  });
+
+  it('can clear project to null', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      project: '@mono/web',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const updatedTask = { ...mockTask, project: null };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    let capturedSetData: any = null;
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { project: null },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.project).toBeNull();
+    expect(capturedSetData.project).toBeNull();
+  });
+
+  it('omitting project does not change existing value', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Original Title',
+      project: '@mono/web',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    let capturedSetData: any = null;
+    const mockReturning = mock(() => [mockTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { title: 'New Title' },
+    });
+    await callHandler(PATCH, request, 'task-123');
+
+    expect(capturedSetData.title).toBe('New Title');
+    expect(capturedSetData.project).toBeUndefined();
+  });
+
   it('allows API key auth to update task', async () => {
     const mockTask = {
       id: 'task-123',

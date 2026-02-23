@@ -54,6 +54,7 @@ export async function GET(
         const url = new URL(req.url);
         const query = url.searchParams.get('query');
         const type = url.searchParams.get('type');
+        const project = url.searchParams.get('project');
         const filesParam = url.searchParams.get('files');
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '10'), 50);
         const offset = parseInt(url.searchParams.get('offset') || '0');
@@ -63,6 +64,11 @@ export async function GET(
         // Type filter
         if (type && VALID_TYPES.includes(type as any)) {
             conditions.push(eq(observations.type, type as typeof VALID_TYPES[number]));
+        }
+
+        // Project filter
+        if (project) {
+            conditions.push(eq(observations.project, project));
         }
 
         // Text search on title and content

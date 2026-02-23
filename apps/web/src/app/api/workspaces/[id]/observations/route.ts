@@ -53,6 +53,7 @@ export async function GET(
         const url = new URL(req.url);
         const type = url.searchParams.get('type');
         const search = url.searchParams.get('search');
+        const project = url.searchParams.get('project');
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
         const offset = parseInt(url.searchParams.get('offset') || '0');
 
@@ -60,6 +61,10 @@ export async function GET(
 
         if (type && VALID_TYPES.includes(type as any)) {
             conditions.push(eq(observations.type, type as typeof VALID_TYPES[number]));
+        }
+
+        if (project) {
+            conditions.push(eq(observations.project, project));
         }
 
         if (search) {
@@ -134,6 +139,7 @@ export async function POST(
             concepts: body.concepts || [],
             workerId: body.workerId || null,
             taskId: body.taskId || null,
+            project: body.project || null,
         }).returning();
 
         return NextResponse.json({ observation }, { status: 201 });
