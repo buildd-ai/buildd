@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
+import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 
 interface Props {
   workspaceId: string;
@@ -170,22 +172,12 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
           {/* Timezone */}
           <div>
             <label className="block text-sm font-medium mb-1">Timezone</label>
-            <select
+            <Select
               value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="UTC">UTC</option>
-              <option value="America/New_York">Eastern (America/New_York)</option>
-              <option value="America/Chicago">Central (America/Chicago)</option>
-              <option value="America/Denver">Mountain (America/Denver)</option>
-              <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
-              <option value="Europe/London">London (Europe/London)</option>
-              <option value="Europe/Berlin">Berlin (Europe/Berlin)</option>
-              <option value="Asia/Tokyo">Tokyo (Asia/Tokyo)</option>
-              <option value="Asia/Shanghai">Shanghai (Asia/Shanghai)</option>
-              <option value="Australia/Sydney">Sydney (Australia/Sydney)</option>
-            </select>
+              onChange={setTimezone}
+              options={TIMEZONE_OPTIONS}
+              searchable
+            />
           </div>
         </div>
       </div>
@@ -221,14 +213,14 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">Mode</label>
-              <select
+              <Select
                 value={mode}
-                onChange={(e) => setMode(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-              >
-                <option value="execution">Execution</option>
-                <option value="planning">Planning</option>
-              </select>
+                onChange={setMode}
+                options={[
+                  { value: 'execution', label: 'Execution' },
+                  { value: 'planning', label: 'Planning' },
+                ]}
+              />
             </div>
 
             <div>

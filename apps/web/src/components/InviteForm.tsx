@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Select } from '@/components/ui/Select';
 
 export default function InviteForm({ teamId }: { teamId: string }) {
   const [email, setEmail] = useState('');
@@ -67,15 +68,16 @@ export default function InviteForm({ teamId }: { teamId: string }) {
           <label htmlFor="invite-role" className="block text-sm font-medium text-text-secondary mb-1">
             Role
           </label>
-          <select
+          <Select
             id="invite-role"
             value={role}
-            onChange={(e) => setRole(e.target.value as 'member' | 'admin')}
-            className="px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary focus:ring-2 focus:ring-primary-ring focus:border-primary"
-          >
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
-          </select>
+            onChange={(v) => setRole(v as 'member' | 'admin')}
+            options={[
+              { value: 'member', label: 'Member' },
+              { value: 'admin', label: 'Admin' },
+            ]}
+            size="sm"
+          />
         </div>
         <button
           type="submit"

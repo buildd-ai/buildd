@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 
 interface Team {
   id: string;
@@ -18,6 +19,9 @@ export default function NewAccountPage() {
   const [createdAccount, setCreatedAccount] = useState<{ name: string; apiKey: string } | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [accountType, setAccountType] = useState('user');
+  const [authType, setAuthType] = useState('oauth');
+  const [tokenLevel, setTokenLevel] = useState('worker');
 
   useEffect(() => {
     async function loadTeams() {
@@ -49,9 +53,9 @@ export default function NewAccountPage() {
     const formData = new FormData(e.currentTarget);
     const data: Record<string, unknown> = {
       name: formData.get('name') as string,
-      type: formData.get('type') as string,
-      authType: formData.get('authType') as string,
-      level: formData.get('level') as string,
+      type: accountType,
+      authType,
+      level: tokenLevel,
       maxConcurrentWorkers: parseInt(formData.get('maxConcurrentWorkers') as string) || 3,
     };
     if (selectedTeamId) {
@@ -139,18 +143,15 @@ export default function NewAccountPage() {
               <label htmlFor="team" className="block text-sm font-medium mb-2">
                 Team
               </label>
-              <select
+              <Select
                 id="team"
                 value={selectedTeamId}
-                onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-              >
-                {teams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}{team.slug.startsWith('personal-') ? ' (Personal)' : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedTeamId}
+                options={teams.map((team) => ({
+                  value: team.id,
+                  label: team.name + (team.slug.startsWith('personal-') ? ' (Personal)' : ''),
+                }))}
+              />
               <p className="text-xs text-text-secondary mt-1">
                 Which team owns this account
               </p>
@@ -175,16 +176,16 @@ export default function NewAccountPage() {
             <label htmlFor="type" className="block text-sm font-medium mb-2">
               Account Type
             </label>
-            <select
+            <Select
               id="type"
-              name="type"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="user">User - Personal laptop/workstation</option>
-              <option value="service">Service - Always-on server/VM</option>
-              <option value="action">Action - GitHub Actions runner</option>
-            </select>
+              value={accountType}
+              onChange={setAccountType}
+              options={[
+                { value: 'user', label: 'User - Personal laptop/workstation' },
+                { value: 'service', label: 'Service - Always-on server/VM' },
+                { value: 'action', label: 'Action - GitHub Actions runner' },
+              ]}
+            />
             <p className="text-xs text-text-secondary mt-1">
               Affects task routing with runnerPreference
             </p>
@@ -194,30 +195,30 @@ export default function NewAccountPage() {
             <label htmlFor="authType" className="block text-sm font-medium mb-2">
               Auth Type
             </label>
-            <select
+            <Select
               id="authType"
-              name="authType"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="oauth">OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)</option>
-              <option value="api">API - Uses ANTHROPIC_API_KEY (pay-per-token)</option>
-            </select>
+              value={authType}
+              onChange={setAuthType}
+              options={[
+                { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
+                { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
+              ]}
+            />
           </div>
 
           <div>
             <label htmlFor="level" className="block text-sm font-medium mb-2">
               Token Level
             </label>
-            <select
+            <Select
               id="level"
-              name="level"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="worker">Worker - Can claim and execute tasks</option>
-              <option value="admin">Admin - Can also reassign and manage tasks</option>
-            </select>
+              value={tokenLevel}
+              onChange={setTokenLevel}
+              options={[
+                { value: 'worker', label: 'Worker - Can claim and execute tasks' },
+                { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
+              ]}
+            />
             <p className="text-xs text-text-secondary mt-1">
               Admin tokens can reassign stuck tasks via MCP
             </p>

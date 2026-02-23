@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { uploadImagesToR2 } from '@/lib/upload';
+import { Select } from '@/components/ui/Select';
+import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
@@ -435,22 +437,18 @@ export default function NewTaskPage() {
               <label htmlFor="workspaceId" className="block text-sm font-medium mb-2">
                 Workspace
               </label>
-              <select
+              <Select
                 id="workspaceId"
                 name="workspaceId"
-                required
                 disabled={loadingWorkspaces}
                 value={selectedWorkspaceId}
-                onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-              >
-                <option value="">Select a workspace</option>
-                {workspaces.map((ws) => (
-                  <option key={ws.id} value={ws.id}>
-                    {ws.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedWorkspaceId}
+                placeholder="Select a workspace"
+                options={workspaces.map((ws) => ({
+                  value: ws.id,
+                  label: ws.name,
+                }))}
+              />
               {selectedWorkspaceId && (() => {
                 const ws = workspaces.find(w => w.id === selectedWorkspaceId);
                 if (!ws) return null;
@@ -859,23 +857,13 @@ export default function NewTaskPage() {
                   <label htmlFor="timezone" className="block text-sm font-medium mb-2">
                     Timezone
                   </label>
-                  <select
+                  <Select
                     id="timezone"
                     value={timezone}
-                    onChange={(e) => setTimezone(e.target.value)}
-                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-                  >
-                    <option value="UTC">UTC</option>
-                    <option value="America/New_York">Eastern (America/New_York)</option>
-                    <option value="America/Chicago">Central (America/Chicago)</option>
-                    <option value="America/Denver">Mountain (America/Denver)</option>
-                    <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
-                    <option value="Europe/London">London (Europe/London)</option>
-                    <option value="Europe/Berlin">Berlin (Europe/Berlin)</option>
-                    <option value="Asia/Tokyo">Tokyo (Asia/Tokyo)</option>
-                    <option value="Asia/Shanghai">Shanghai (Asia/Shanghai)</option>
-                    <option value="Australia/Sydney">Sydney (Australia/Sydney)</option>
-                  </select>
+                    onChange={setTimezone}
+                    options={TIMEZONE_OPTIONS}
+                    searchable
+                  />
                 </div>
               </div>
             )}

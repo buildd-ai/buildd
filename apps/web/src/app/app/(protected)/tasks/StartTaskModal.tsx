@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { uploadImagesToR2 } from '@/lib/upload';
+import { Select } from '@/components/ui/Select';
 
 interface PastedImage {
   filename: string;
@@ -170,15 +171,13 @@ export default function StartTaskModal({
             <div className="flex items-center justify-between">
               <div className="text-sm text-text-secondary">
                 {workspaces.length > 1 ? (
-                  <select
+                  <Select
                     value={workspaceId}
-                    onChange={(e) => setWorkspaceId(e.target.value)}
-                    className="bg-transparent text-text-primary font-medium border-none focus:ring-0 p-0 pr-6 -ml-1 cursor-pointer"
-                  >
-                    {workspaces.map(ws => (
-                      <option key={ws.id} value={ws.id}>{ws.name}</option>
-                    ))}
-                  </select>
+                    onChange={setWorkspaceId}
+                    options={workspaces.map(ws => ({ value: ws.id, label: ws.name }))}
+                    className="w-48"
+                    size="sm"
+                  />
                 ) : (
                   <>New task in <span className="font-medium text-text-primary">{selectedWorkspace?.name}</span></>
                 )}
