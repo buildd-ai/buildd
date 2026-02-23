@@ -3023,7 +3023,6 @@ export class WorkerManager {
         this.sessions.delete(workerId);
       }
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
-      sessionLog(workerId, 'info', 'resume_requested', `Follow-up on ${worker.status} worker`, worker.taskId);
 
       // Update worker status (clear any previous error)
       worker.status = 'working';
