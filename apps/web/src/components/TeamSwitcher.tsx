@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
+import { useClickOutside } from '@/hooks/useClickOutside';
 
 interface Team {
   id: string;
@@ -14,15 +15,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
 
   const currentTeam = teams.find(t => t.id === currentTeamId) || teams[0];
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  useClickOutside(ref, useCallback(() => setOpen(false), []));
 
   function switchTeam(teamId: string) {
     document.cookie = `buildd-team=${teamId};path=/;max-age=${60 * 60 * 24 * 365}`;

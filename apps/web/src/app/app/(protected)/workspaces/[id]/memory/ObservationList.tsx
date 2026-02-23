@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import { Select } from '@/components/ui/Select';
 import CreateObservationForm from './CreateObservationForm';
 
 interface Observation {
@@ -348,15 +349,11 @@ export default function ObservationList({
 
       {/* Filters and view toggle */}
       <div className="flex gap-4 mb-6 flex-wrap">
-        <select
+        <Select
           value={typeFilter}
-          onChange={(e) => handleTypeChange(e.target.value)}
-          className="px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
-        >
-          {TYPES.map(t => (
-            <option key={t} value={t}>{t === 'all' ? 'All types' : t}</option>
-          ))}
-        </select>
+          onChange={handleTypeChange}
+          options={TYPES.map(t => ({ value: t, label: t === 'all' ? 'All types' : t }))}
+        />
         <input
           type="text"
           placeholder="Search observations..."

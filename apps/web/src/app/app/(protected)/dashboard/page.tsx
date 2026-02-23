@@ -108,13 +108,14 @@ export default async function DashboardPage() {
 
         recentTasks = [...activeTasks.slice(0, maxDisplay), ...completedTasks];
 
-        // Get enabled skills for dashboard
-        dashboardSkills = await db.query.workspaceSkills.findMany({
+        // Get enabled skills for dashboard (exclude workflow/pipeline skills)
+        const PIPELINE_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
+        dashboardSkills = (await db.query.workspaceSkills.findMany({
           where: and(inArray(workspaceSkills.workspaceId, workspaceIds), eq(workspaceSkills.enabled, true)),
           orderBy: asc(workspaceSkills.name),
-          limit: 6,
+          limit: 10,
           with: { workspace: { columns: { id: true, name: true } } },
-        });
+        })).filter((s: any) => !PIPELINE_SLUGS.includes(s.slug)).slice(0, 6);
 
         // Get active workers (from user's workspaces)
         activeWorkers = await db.query.workers.findMany({

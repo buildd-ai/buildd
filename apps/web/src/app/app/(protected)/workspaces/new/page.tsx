@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 import RepoPicker from './RepoPicker';
 
 interface Installation {
@@ -361,17 +362,14 @@ export default function NewWorkspacePage() {
               <label className="block text-sm font-medium mb-2">
                 Team
               </label>
-              <select
+              <Select
                 value={selectedTeamId}
-                onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1"
-              >
-                {userTeams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}{team.slug.startsWith('personal-') ? ' (Personal)' : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedTeamId}
+                options={userTeams.map((team) => ({
+                  value: team.id,
+                  label: team.name + (team.slug.startsWith('personal-') ? ' (Personal)' : ''),
+                }))}
+              />
               <p className="text-xs text-text-muted mt-1">
                 Which team owns this workspace
               </p>

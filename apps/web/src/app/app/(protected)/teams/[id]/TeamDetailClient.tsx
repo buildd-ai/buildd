@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 interface TeamMember {
   userId: string;
@@ -259,15 +260,16 @@ export default function TeamDetailClient({
               </div>
               <div className="flex items-center gap-3">
                 {canManage && currentUserRole === 'owner' && member.userId !== currentUserId ? (
-                  <select
+                  <Select
                     value={member.role}
-                    onChange={(e) => handleRoleChange(member.userId, e.target.value)}
-                    className="text-xs px-2 py-1 border border-border-default rounded bg-surface-1"
-                  >
-                    <option value="owner">owner</option>
-                    <option value="admin">admin</option>
-                    <option value="member">member</option>
-                  </select>
+                    onChange={(v) => handleRoleChange(member.userId, v)}
+                    options={[
+                      { value: 'owner', label: 'owner' },
+                      { value: 'admin', label: 'admin' },
+                      { value: 'member', label: 'member' },
+                    ]}
+                    size="sm"
+                  />
                 ) : (
                   <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[member.role]}`}>
                     {member.role}
