@@ -5,10 +5,23 @@ import { useState } from 'react';
 interface ConnectRunnerSectionProps {
   workspaceId: string;
   workspaceName: string;
+  runners: {
+    action: string[];
+    service: string[];
+    user: string[];
+  };
 }
 
-export function ConnectRunnerSection({ workspaceId, workspaceName }: ConnectRunnerSectionProps) {
-  const [showSetup, setShowSetup] = useState<'action' | 'service' | 'user' | null>(null);
+type RunnerType = 'action' | 'service' | 'user';
+
+const runnerMeta: Record<RunnerType, { label: string; description: string; emptyText: string }> = {
+  action: { label: 'GitHub Actions', description: 'CI/CD runner for automated tasks', emptyText: 'No runners connected' },
+  service: { label: 'Service Workers', description: 'Always-on VM or server', emptyText: 'No runners connected' },
+  user: { label: 'User Workers', description: 'Your laptop via Claude Code', emptyText: 'No runners connected' },
+};
+
+export function ConnectRunnerSection({ workspaceId, workspaceName, runners }: ConnectRunnerSectionProps) {
+  const [expanded, setExpanded] = useState<RunnerType | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCreated, setTaskCreated] = useState(false);
 
@@ -46,38 +59,50 @@ The workflow should:
     }
   }
 
+  function toggle(type: RunnerType) {
+    setExpanded(expanded === type ? null : type);
+  }
+
   return (
     <div className="mb-8">
-      <h2 className="text-xl font-semibold mb-4">Connect a Runner</h2>
-
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        <button
-          onClick={() => setShowSetup(showSetup === 'action' ? null : 'action')}
-          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'action' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
-        >
-          <div className="font-medium">GitHub Actions</div>
-          <div className="text-xs text-text-muted mt-1">CI/CD runner for automated tasks</div>
-        </button>
-
-        <button
-          onClick={() => setShowSetup(showSetup === 'service' ? null : 'service')}
-          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'service' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
-        >
-          <div className="font-medium">Service Worker</div>
-          <div className="text-xs text-text-muted mt-1">Always-on VM or server</div>
-        </button>
-
-        <button
-          onClick={() => setShowSetup(showSetup === 'user' ? null : 'user')}
-          className={`p-4 border rounded-lg text-left hover:border-primary transition-colors ${showSetup === 'user' ? 'border-primary bg-primary/5' : 'border-border-default'}`}
-        >
-          <div className="font-medium">User Worker</div>
-          <div className="text-xs text-text-muted mt-1">Your laptop via Claude Code</div>
-        </button>
+      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+        Runners
       </div>
 
-      {showSetup === 'action' && (
-        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
+      <div className="grid grid-cols-3 gap-4 mb-4">
+        {(Object.keys(runnerMeta) as RunnerType[]).map((type) => {
+          const meta = runnerMeta[type];
+          const names = runners[type];
+          const isExpanded = expanded === type;
+
+          return (
+            <button
+              key={type}
+              onClick={() => toggle(type)}
+              className={`bg-surface-2 border rounded-[10px] p-4 text-left transition-colors cursor-pointer ${
+                isExpanded ? 'border-primary bg-primary/5' : 'border-border-default hover:border-text-muted'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium text-sm">{meta.label}</span>
+                {names.length > 0 && (
+                  <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-status-success/10 text-status-success">
+                    {names.length}
+                  </span>
+                )}
+              </div>
+              {names.length > 0 ? (
+                <div className="text-xs text-text-muted truncate">{names.join(', ')}</div>
+              ) : (
+                <div className="text-xs text-text-muted">{meta.emptyText}</div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {expanded === 'action' && (
+        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up GitHub Actions Runner</h3>
 
           <div className="space-y-4">
@@ -184,7 +209,7 @@ jobs:
                 <button
                   onClick={createSetupTask}
                   disabled={creatingTask}
-                  className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover disabled:opacity-50 text-sm"
+                  className="px-4 py-2 bg-primary text-white rounded-[10px] hover:bg-primary-hover disabled:opacity-50 text-sm"
                 >
                   {creatingTask ? 'Creating...' : 'Create setup task for an agent to help'}
                 </button>
@@ -194,8 +219,8 @@ jobs:
         </div>
       )}
 
-      {showSetup === 'service' && (
-        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
+      {expanded === 'service' && (
+        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up Service Worker</h3>
 
           <div className="space-y-4">
@@ -248,8 +273,8 @@ WantedBy=multi-user.target`}
         </div>
       )}
 
-      {showSetup === 'user' && (
-        <div className="border border-primary/30 rounded-lg p-4 bg-primary/5">
+      {expanded === 'user' && (
+        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up User Worker (Claude Code)</h3>
 
           <div className="space-y-4">

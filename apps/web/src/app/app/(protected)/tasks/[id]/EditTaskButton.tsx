@@ -9,6 +9,8 @@ interface Props {
     title: string;
     description: string | null;
     priority: number;
+    project?: string | null;
+    workspaceId?: string;
   };
 }
 

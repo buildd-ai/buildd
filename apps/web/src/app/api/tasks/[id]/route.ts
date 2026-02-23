@@ -104,7 +104,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, addBlockedByTaskIds, removeBlockedByTaskIds } = body;
+    const { title, description, priority, project, addBlockedByTaskIds, removeBlockedByTaskIds } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -113,6 +113,7 @@ export async function PATCH(
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
     if (priority !== undefined) updateData.priority = priority;
+    if (project !== undefined) updateData.project = project;
 
     const [updated] = await db
       .update(tasks)

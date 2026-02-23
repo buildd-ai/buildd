@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
+import ApiKeyModal from '@/components/ApiKeyModal';
 
 interface Team {
   id: string;
@@ -11,6 +13,13 @@ interface Team {
   role: string;
 }
 
+const DEFAULTS = {
+  type: 'user',
+  authType: 'api',
+  level: 'worker',
+  maxConcurrentWorkers: 5,
+};
+
 export default function NewAccountPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -18,6 +27,17 @@ export default function NewAccountPage() {
   const [createdAccount, setCreatedAccount] = useState<{ name: string; apiKey: string } | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [accountType, setAccountType] = useState(DEFAULTS.type);
+  const [authType, setAuthType] = useState(DEFAULTS.authType);
+  const [tokenLevel, setTokenLevel] = useState(DEFAULTS.level);
+  const [maxConcurrent, setMaxConcurrent] = useState(DEFAULTS.maxConcurrentWorkers.toString());
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const hasNonDefaults =
+    accountType !== DEFAULTS.type ||
+    authType !== DEFAULTS.authType ||
+    tokenLevel !== DEFAULTS.level ||
+    parseInt(maxConcurrent) !== DEFAULTS.maxConcurrentWorkers;
 
   useEffect(() => {
     async function loadTeams() {
@@ -26,7 +46,6 @@ export default function NewAccountPage() {
         if (res.ok) {
           const data = await res.json();
           setTeams(data.teams || []);
-          // Default to personal team
           const personal = (data.teams || []).find((t: Team) => t.slug.startsWith('personal-'));
           if (personal) {
             setSelectedTeamId(personal.id);
@@ -49,10 +68,10 @@ export default function NewAccountPage() {
     const formData = new FormData(e.currentTarget);
     const data: Record<string, unknown> = {
       name: formData.get('name') as string,
-      type: formData.get('type') as string,
-      authType: formData.get('authType') as string,
-      level: formData.get('level') as string,
-      maxConcurrentWorkers: parseInt(formData.get('maxConcurrentWorkers') as string) || 3,
+      type: accountType,
+      authType,
+      level: tokenLevel,
+      maxConcurrentWorkers: parseInt(maxConcurrent) || DEFAULTS.maxConcurrentWorkers,
     };
     if (selectedTeamId) {
       data.teamId = selectedTeamId;
@@ -79,57 +98,17 @@ export default function NewAccountPage() {
     }
   }
 
-  if (createdAccount) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-xl mx-auto">
-          <h1 className="text-3xl font-bold mb-8">Account Created</h1>
-
-          <div className="bg-status-success/10 border border-status-success/30 rounded-lg p-4 mb-6">
-            <p className="text-status-success font-medium">
-              Save this API key - it won't be shown again!
-            </p>
-          </div>
-
-          <div className="border border-border-default rounded-lg p-4 mb-6">
-            <div className="text-sm text-text-secondary mb-1">Account</div>
-            <div className="font-medium mb-4">{createdAccount.name}</div>
-
-            <div className="text-sm text-text-secondary mb-1">API Key</div>
-            <div className="bg-surface-3 rounded p-3 font-mono text-sm break-all">
-              <code>{createdAccount.apiKey}</code>
-            </div>
-          </div>
-
-          <div className="bg-surface-2 rounded-lg p-4 mb-6">
-            <h3 className="font-medium mb-2">Environment Variable</h3>
-            <pre className="bg-surface-4 text-text-primary p-3 rounded text-xs overflow-x-auto">
-              BUILDD_API_KEY={createdAccount.apiKey}
-            </pre>
-          </div>
-
-          <Link
-            href="/app/settings"
-            className="block text-center px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
-          >
-            Back to Settings
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-xl mx-auto">
         <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
-        <h1 className="text-3xl font-bold mb-8">New Account</h1>
+        <h1 className="text-2xl font-semibold mb-8">New Account</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
+            <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error text-sm">
               {error}
             </div>
           )}
@@ -139,18 +118,15 @@ export default function NewAccountPage() {
               <label htmlFor="team" className="block text-sm font-medium mb-2">
                 Team
               </label>
-              <select
+              <Select
                 id="team"
                 value={selectedTeamId}
-                onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-              >
-                {teams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}{team.slug.startsWith('personal-') ? ' (Personal)' : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedTeamId}
+                options={teams.map((team) => ({
+                  value: team.id,
+                  label: team.name + (team.slug.startsWith('personal-') ? ' (Personal)' : ''),
+                }))}
+              />
               <p className="text-xs text-text-secondary mt-1">
                 Which team owns this account
               </p>
@@ -171,71 +147,99 @@ export default function NewAccountPage() {
             />
           </div>
 
+          {/* Advanced Options */}
           <div>
-            <label htmlFor="type" className="block text-sm font-medium mb-2">
-              Account Type
-            </label>
-            <select
-              id="type"
-              name="type"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
-              <option value="user">User - Personal laptop/workstation</option>
-              <option value="service">Service - Always-on server/VM</option>
-              <option value="action">Action - GitHub Actions runner</option>
-            </select>
-            <p className="text-xs text-text-secondary mt-1">
-              Affects task routing with runnerPreference
-            </p>
-          </div>
+              <svg
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${showAdvanced ? 'rotate-90' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              Advanced Options
+              {hasNonDefaults && (
+                <span className="w-2 h-2 rounded-full bg-status-info" />
+              )}
+            </button>
 
-          <div>
-            <label htmlFor="authType" className="block text-sm font-medium mb-2">
-              Auth Type
-            </label>
-            <select
-              id="authType"
-              name="authType"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="oauth">OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)</option>
-              <option value="api">API - Uses ANTHROPIC_API_KEY (pay-per-token)</option>
-            </select>
-          </div>
+            {showAdvanced && (
+              <div className="mt-4 space-y-5 pl-5 border-l-2 border-border-default">
+                <div>
+                  <label htmlFor="type" className="block text-sm font-medium mb-2">
+                    Account Type
+                  </label>
+                  <Select
+                    id="type"
+                    value={accountType}
+                    onChange={setAccountType}
+                    options={[
+                      { value: 'user', label: 'User - Personal laptop/workstation' },
+                      { value: 'service', label: 'Service - Always-on server/VM' },
+                      { value: 'action', label: 'Action - GitHub Actions runner' },
+                    ]}
+                  />
+                  <p className="text-xs text-text-secondary mt-1">
+                    Affects task routing with runnerPreference
+                  </p>
+                </div>
 
-          <div>
-            <label htmlFor="level" className="block text-sm font-medium mb-2">
-              Token Level
-            </label>
-            <select
-              id="level"
-              name="level"
-              required
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              <option value="worker">Worker - Can claim and execute tasks</option>
-              <option value="admin">Admin - Can also reassign and manage tasks</option>
-            </select>
-            <p className="text-xs text-text-secondary mt-1">
-              Admin tokens can reassign stuck tasks via MCP
-            </p>
-          </div>
+                <div>
+                  <label htmlFor="authType" className="block text-sm font-medium mb-2">
+                    Auth Type
+                  </label>
+                  <Select
+                    id="authType"
+                    value={authType}
+                    onChange={setAuthType}
+                    options={[
+                      { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
+                      { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
+                    ]}
+                  />
+                </div>
 
-          <div>
-            <label htmlFor="maxConcurrentWorkers" className="block text-sm font-medium mb-2">
-              Max Concurrent Workers
-            </label>
-            <input
-              type="number"
-              id="maxConcurrentWorkers"
-              name="maxConcurrentWorkers"
-              min="1"
-              max="10"
-              defaultValue="3"
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-            />
+                <div>
+                  <label htmlFor="level" className="block text-sm font-medium mb-2">
+                    Token Level
+                  </label>
+                  <Select
+                    id="level"
+                    value={tokenLevel}
+                    onChange={setTokenLevel}
+                    options={[
+                      { value: 'worker', label: 'Worker - Can claim and execute tasks' },
+                      { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
+                    ]}
+                  />
+                  <p className="text-xs text-text-secondary mt-1">
+                    Admin tokens can reassign stuck tasks via MCP
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="maxConcurrentWorkers" className="block text-sm font-medium mb-2">
+                    Max Concurrent Workers
+                  </label>
+                  <input
+                    type="number"
+                    id="maxConcurrentWorkers"
+                    name="maxConcurrentWorkers"
+                    min="1"
+                    max="10"
+                    value={maxConcurrent}
+                    onChange={(e) => setMaxConcurrent(e.target.value)}
+                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex gap-4">
@@ -244,17 +248,30 @@ export default function NewAccountPage() {
               disabled={loading}
               className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
-              {loading ? 'Creating...' : 'Create Account'}
+              {loading ? 'Creating...' : 'Create API Key'}
             </button>
             <Link
               href="/app/settings"
-              className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
+              className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3 text-center"
             >
               Cancel
             </Link>
           </div>
         </form>
       </div>
+
+      {/* API Key modal */}
+      {createdAccount && (
+        <ApiKeyModal
+          open={!!createdAccount}
+          accountName={createdAccount.name}
+          apiKey={createdAccount.apiKey}
+          onClose={() => {
+            setCreatedAccount(null);
+            router.push('/app/settings');
+          }}
+        />
+      )}
     </main>
   );
 }

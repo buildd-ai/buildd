@@ -18,23 +18,24 @@ interface Task {
   title: string;
   status: string;
   category?: string | null;
+  project?: string | null;
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
-  bug: 'bg-red-500/15 text-red-400',
-  feature: 'bg-blue-500/15 text-blue-400',
-  refactor: 'bg-purple-500/15 text-purple-400',
-  chore: 'bg-zinc-500/15 text-zinc-400',
-  docs: 'bg-teal-500/15 text-teal-400',
-  test: 'bg-amber-500/15 text-amber-400',
-  infra: 'bg-orange-500/15 text-orange-400',
-  design: 'bg-pink-500/15 text-pink-400',
+  bug: 'bg-cat-bug/15 text-cat-bug',
+  feature: 'bg-cat-feature/15 text-cat-feature',
+  refactor: 'bg-cat-refactor/15 text-cat-refactor',
+  chore: 'bg-cat-chore/15 text-cat-chore',
+  docs: 'bg-cat-docs/15 text-cat-docs',
+  test: 'bg-cat-test/15 text-cat-test',
+  infra: 'bg-cat-infra/15 text-cat-infra',
+  design: 'bg-cat-design/15 text-cat-design',
 };
 
 function CategoryBadge({ category }: { category: string }) {
-  const colors = CATEGORY_COLORS[category] || 'bg-zinc-500/15 text-zinc-400';
+  const colors = CATEGORY_COLORS[category] || 'bg-cat-chore/15 text-cat-chore';
   return (
     <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${colors} shrink-0`}>
       {category}
@@ -105,6 +106,7 @@ interface TaskCreated {
     title: string;
     status: string;
     workspaceId: string;
+    project?: string | null;
     updatedAt: Date | string;
   };
 }
@@ -120,6 +122,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   const [showHiddenSection, setShowHiddenSection] = useState(false);
   const [quickCreateWorkspaceId, setQuickCreateWorkspaceId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [projectRegistry, setProjectRegistry] = useState<Record<string, { name: string; color?: string }[]>>({});
 
   // Update workspaces when props change (e.g., after navigation)
   useEffect(() => {
@@ -168,6 +172,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             id: task.id,
             title: task.title,
             status: task.status,
+            project: task.project,
             updatedAt: new Date(task.updatedAt),
           },
           ...ws.tasks,
@@ -245,6 +250,19 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceIdsKey, handleWorkerUpdate, handleTaskCreated, handleTaskClaimed, handleTaskAssigned, handleTaskUnblocked]);
 
+  // Fetch project registries for all workspaces
+  useEffect(() => {
+    for (const ws of workspaces) {
+      fetch(`/api/workspaces/${ws.id}/projects`)
+        .then(res => res.json())
+        .then(data => {
+          setProjectRegistry(prev => ({ ...prev, [ws.id]: data.projects || [] }));
+        })
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceIdsKey]);
+
   // Load collapsed state from localStorage
   useEffect(() => {
     try {
@@ -315,14 +333,28 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     }
   };
 
-  // Filter tasks by search query
+  // Collect all distinct projects across all tasks for the filter
+  const allProjects = new Map<string, string | undefined>();
+  for (const ws of workspaces) {
+    const registry = projectRegistry[ws.id] || [];
+    for (const t of ws.tasks) {
+      if (t.project) {
+        const reg = registry.find(p => p.name === t.project);
+        allProjects.set(t.project, reg?.color);
+      }
+    }
+  }
+
+  // Filter tasks by search query and project
   const searchLower = searchQuery.toLowerCase();
-  const filteredWorkspaces = searchQuery
-    ? workspaces.map(ws => ({
-        ...ws,
-        tasks: ws.tasks.filter(t => t.title.toLowerCase().includes(searchLower)),
-      })).filter(ws => ws.tasks.length > 0)
-    : workspaces;
+  const filteredWorkspaces = workspaces.map(ws => ({
+    ...ws,
+    tasks: ws.tasks.filter(t => {
+      if (searchQuery && !t.title.toLowerCase().includes(searchLower)) return false;
+      if (projectFilter && t.project !== projectFilter) return false;
+      return true;
+    }),
+  })).filter(ws => ws.tasks.length > 0 || (!searchQuery && !projectFilter));
 
   // Sort workspaces: those with active tasks first, then sort tasks within each workspace
   const allSortedWorkspaces = [...filteredWorkspaces].map(ws => ({
@@ -377,6 +409,41 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             className="w-full px-2.5 py-1.5 text-sm border border-border-default rounded bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary placeholder-text-muted"
           />
         </div>
+
+        {/* Project filter */}
+        {allProjects.size > 0 && (
+          <div className="px-3 pb-2 flex flex-wrap gap-1">
+            <button
+              onClick={() => setProjectFilter(null)}
+              className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors ${
+                !projectFilter
+                  ? 'bg-primary/15 text-primary'
+                  : 'bg-surface-3 text-text-muted hover:text-text-secondary'
+              }`}
+            >
+              All
+            </button>
+            {Array.from(allProjects.entries()).map(([name, color]) => (
+              <button
+                key={name}
+                onClick={() => setProjectFilter(projectFilter === name ? null : name)}
+                className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors flex items-center gap-1 ${
+                  projectFilter === name
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-surface-3 text-text-muted hover:text-text-secondary'
+                }`}
+              >
+                {color && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: color }}
+                  />
+                )}
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Workspace list */}
         <nav className="flex-1 overflow-y-auto p-2">
@@ -480,6 +547,15 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                     <span className="flex items-center gap-1.5">
                                       <span className="truncate">{task.title}</span>
                                       {task.category && <CategoryBadge category={task.category} />}
+                                      {task.project && (
+                                        <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0 flex items-center gap-0.5">
+                                          {(() => {
+                                            const reg = (projectRegistry[ws.id] || []).find(p => p.name === task.project);
+                                            return reg?.color ? <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: reg.color }} /> : null;
+                                          })()}
+                                          {task.project}
+                                        </span>
+                                      )}
                                     </span>
                                     {task.waitingFor?.prompt && (
                                       <span data-testid="sidebar-task-question" className="text-xs text-status-warning truncate block">
@@ -517,6 +593,11 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                           {getStatusIndicator(task.status)}
                                           <span className="truncate flex-1">{task.title}</span>
                                           {task.category && <CategoryBadge category={task.category} />}
+                                          {task.project && (
+                                            <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0">
+                                              {task.project}
+                                            </span>
+                                          )}
                                         </Link>
                                       ))}
                                       {hiddenCompletedCount > 0 && (

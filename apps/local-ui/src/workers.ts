@@ -711,6 +711,7 @@ export class WorkerManager {
             console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
           });
         }
+        sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
         this.workers.delete(id);
         this.sessions.delete(id);
         // Note: NOT deleting from disk — workers persist for 24h for history
@@ -834,10 +835,19 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
+
+    // Redeem server-managed secret if provided and no local credentials
+    let serverApiKey: string | undefined;
+    if (claimedWorker.secretRef && !this.hasCredentials) {
+      serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
+      if (serverApiKey) {
+        console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+      }
+    }
 
     // Create local worker
     const worker: LocalWorker = {
@@ -865,6 +875,11 @@ export class WorkerManager {
       phaseToolCount: 0,
       phaseTools: [],
     };
+
+    // Attach server-managed API key if redeemed
+    if (serverApiKey) {
+      worker.serverApiKey = serverApiKey;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -1806,6 +1821,12 @@ export class WorkerManager {
           cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
           cleanEnv.ANTHROPIC_API_KEY = '';
         }
+      }
+
+      // Inject server-managed API key (redeemed from secretRef during claim)
+      if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
+        cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
+        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
@@ -3042,45 +3063,9 @@ export class WorkerManager {
         ? worker.worktreePath
         : workspacePath;
 
-      // Layer 1: Try resuming the SDK session (preserves full context from disk)
-      if (worker.sessionId) {
-        console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up (cwd: ${sessionCwd})`);
-
-        // For resume, the prompt is just the follow-up message — the SDK loads full history
-        const task = {
-          id: worker.taskId,
-          title: worker.taskTitle,
-          description: message,
-          workspaceId: worker.workspaceId,
-          workspace: { name: worker.workspaceName },
-          status: 'assigned',
-          priority: 1,
-        };
-
-        this.startSession(worker, sessionCwd, task as any, worker.sessionId).catch(err => {
-          console.error(`[Worker ${worker.id}] Resume failed, falling back to reconstruction:`, err);
-
-          // Fallback: restart with text-reconstructed context
-          this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err2 => {
-            console.error(`[Worker ${worker.id}] Fallback session error:`, err2);
-            if (worker.status === 'working') {
-              worker.status = 'error';
-              worker.error = err2 instanceof Error ? err2.message : 'Follow-up session failed';
-              worker.currentAction = 'Follow-up failed';
-              worker.hasNewActivity = true;
-              worker.completedAt = Date.now();
-              this.emit({ type: 'worker_update', worker });
-            }
-          });
-        });
-
-        return true;
-      }
-
-      // Layer 3 fallback: No sessionId available, use text reconstruction
-      console.log(`[Worker ${worker.id}] No sessionId — using reconstructed context`);
-      this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err => {
-        console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
+      // Resume session with automatic fallback: SDK resume → reconstructed context
+      this.resumeSession(worker, sessionCwd, message).catch(err => {
+        console.error(`[Worker ${worker.id}] Resume failed:`, err);
         if (worker.status === 'working') {
           worker.status = 'error';
           worker.error = err instanceof Error ? err.message : 'Follow-up session failed';
@@ -3299,8 +3284,61 @@ export class WorkerManager {
     }
   }
 
-  // Layer 3 fallback: Restart session with text-reconstructed context
-  // Used when resume fails (corrupted session, disk cleanup) or no sessionId available
+  /**
+   * Resume a completed worker session with automatic fallback.
+   *
+   * Layer 1: SDK resume via sessionId (full context preserved on disk)
+   * Layer 2: Reconstructed context (text summary of previous session)
+   *
+   * Each layer is logged via sessionLog for production diagnostics.
+   */
+  private async resumeSession(worker: LocalWorker, sessionCwd: string, message: string) {
+    sessionLog(worker.id, 'info', 'resume_requested', `Follow-up on ${worker.status} worker`, worker.taskId);
+
+    // Layer 1: Try SDK resume with sessionId (preserves full conversation history)
+    if (worker.sessionId) {
+      sessionLog(worker.id, 'info', 'resume_layer1_attempt', `SDK resume with sessionId ${worker.sessionId}`, worker.taskId);
+      console.log(`[Worker ${worker.id}] Layer 1: Resuming session ${worker.sessionId} (cwd: ${sessionCwd})`);
+
+      const task = {
+        id: worker.taskId,
+        title: worker.taskTitle,
+        description: message,
+        workspaceId: worker.workspaceId,
+        workspace: { name: worker.workspaceName },
+        status: 'assigned',
+        priority: 1,
+      };
+
+      try {
+        await this.startSession(worker, sessionCwd, task as any, worker.sessionId);
+        return; // Layer 1 succeeded
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        sessionLog(worker.id, 'warn', 'resume_layer1_failed', errMsg, worker.taskId);
+        console.error(`[Worker ${worker.id}] Layer 1 failed, falling back to reconstruction:`, err);
+        // Fall through to Layer 2
+      }
+    } else {
+      sessionLog(worker.id, 'info', 'resume_layer1_skipped', 'No sessionId available', worker.taskId);
+      console.log(`[Worker ${worker.id}] No sessionId — skipping Layer 1`);
+    }
+
+    // Layer 2: Reconstructed context (text summary of previous session)
+    sessionLog(worker.id, 'info', 'resume_layer2_attempt', 'Reconstructed context fallback', worker.taskId);
+    console.log(`[Worker ${worker.id}] Layer 2: Reconstructed context`);
+
+    try {
+      await this.restartWithReconstructedContext(worker, sessionCwd, message);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      sessionLog(worker.id, 'error', 'resume_layer2_failed', errMsg, worker.taskId);
+      throw err; // Let the caller handle the final error
+    }
+  }
+
+  // Restart session with text-reconstructed context
+  // Used when SDK resume fails (corrupted session, disk cleanup) or no sessionId available
   private async restartWithReconstructedContext(worker: LocalWorker, workspacePath: string, message: string) {
     const contextParts: string[] = [];
 

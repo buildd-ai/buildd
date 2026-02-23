@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 
 interface GitConfig {
     defaultBranch: string;
@@ -31,6 +32,7 @@ interface GitConfig {
     debugFile?: string;
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
+    autoMergePR?: boolean;
 }
 
 interface Props {
@@ -58,6 +60,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [requiresPR, setRequiresPR] = useState(initialConfig?.requiresPR || false);
     const [targetBranch, setTargetBranch] = useState(initialConfig?.targetBranch || '');
     const [autoCreatePR, setAutoCreatePR] = useState(initialConfig?.autoCreatePR || false);
+    const [autoMergePR, setAutoMergePR] = useState(initialConfig?.autoMergePR || false);
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
@@ -99,6 +102,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     requiresPR,
                     targetBranch: targetBranch || undefined,
                     autoCreatePR,
+                    autoMergePR,
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
@@ -166,17 +170,17 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
 
                     <div>
                         <label className="block text-sm font-medium mb-1">Branching Strategy</label>
-                        <select
+                        <Select
                             value={branchingStrategy}
-                            onChange={(e) => setBranchingStrategy(e.target.value as GitConfig['branchingStrategy'])}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                        >
-                            <option value="none">None (use CLAUDE.md / project conventions)</option>
-                            <option value="trunk">Trunk-based (commit directly to default branch)</option>
-                            <option value="feature">Feature branches</option>
-                            <option value="gitflow">GitFlow (develop + feature branches)</option>
-                            <option value="custom">Custom</option>
-                        </select>
+                            onChange={(v) => setBranchingStrategy(v as GitConfig['branchingStrategy'])}
+                            options={[
+                                { value: 'none', label: 'None (use CLAUDE.md / project conventions)' },
+                                { value: 'trunk', label: 'Trunk-based (commit directly to default branch)' },
+                                { value: 'feature', label: 'Feature branches' },
+                                { value: 'gitflow', label: 'GitFlow (develop + feature branches)' },
+                                { value: 'custom', label: 'Custom' },
+                            ]}
+                        />
                     </div>
 
                     <div>
@@ -212,15 +216,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
 
                 <div>
                     <label className="block text-sm font-medium mb-1">Commit Style</label>
-                    <select
+                    <Select
                         value={commitStyle}
-                        onChange={(e) => setCommitStyle(e.target.value as GitConfig['commitStyle'])}
-                        className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                    >
-                        <option value="freeform">Freeform</option>
-                        <option value="conventional">Conventional Commits (feat:, fix:, etc.)</option>
-                        <option value="custom">Custom</option>
-                    </select>
+                        onChange={(v) => setCommitStyle(v as GitConfig['commitStyle'])}
+                        options={[
+                            { value: 'freeform', label: 'Freeform' },
+                            { value: 'conventional', label: 'Conventional Commits (feat:, fix:, etc.)' },
+                            { value: 'custom', label: 'Custom' },
+                        ]}
+                    />
                 </div>
             </div>
 
@@ -276,6 +280,22 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             </label>
                         </div>
                     )}
+
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="autoMergePR"
+                            checked={autoMergePR}
+                            onChange={(e) => setAutoMergePR(e.target.checked)}
+                            className="rounded"
+                        />
+                        <label htmlFor="autoMergePR" className="text-sm">
+                            Auto-merge PRs when CI passes
+                        </label>
+                    </div>
+                    <p className="text-xs text-text-muted -mt-2">
+                        Enable GitHub auto-merge (squash) on agent PRs. Requires branch protection rules with required status checks enabled on the repo.
+                    </p>
                 </div>
             </div>
 
@@ -517,16 +537,16 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                 <div className="space-y-4">
                     <div>
                         <label className="block text-sm font-medium mb-1">Thinking Mode</label>
-                        <select
+                        <Select
                             value={thinkingType}
-                            onChange={(e) => setThinkingType(e.target.value as typeof thinkingType)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                        >
-                            <option value="none">Default (no override)</option>
-                            <option value="adaptive">Adaptive (model decides when to think)</option>
-                            <option value="enabled">Enabled (fixed budget)</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
+                            onChange={(v) => setThinkingType(v as typeof thinkingType)}
+                            options={[
+                                { value: 'none', label: 'Default (no override)' },
+                                { value: 'adaptive', label: 'Adaptive (model decides when to think)' },
+                                { value: 'enabled', label: 'Enabled (fixed budget)' },
+                                { value: 'disabled', label: 'Disabled' },
+                            ]}
+                        />
                         <p className="text-xs text-text-muted mt-1">
                             Controls extended thinking / chain-of-thought reasoning. Can be overridden per-task via task context.
                         </p>
@@ -554,17 +574,17 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
 
                     <div>
                         <label className="block text-sm font-medium mb-1">Effort Level</label>
-                        <select
+                        <Select
                             value={effort}
-                            onChange={(e) => setEffort(e.target.value as typeof effort)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-                        >
-                            <option value="none">Default (no override)</option>
-                            <option value="low">Low (faster, cheaper — simple tasks)</option>
-                            <option value="medium">Medium (balanced)</option>
-                            <option value="high">High (thorough)</option>
-                            <option value="max">Max (most thorough — complex architecture)</option>
-                        </select>
+                            onChange={(v) => setEffort(v as typeof effort)}
+                            options={[
+                                { value: 'none', label: 'Default (no override)' },
+                                { value: 'low', label: 'Low (faster, cheaper — simple tasks)' },
+                                { value: 'medium', label: 'Medium (balanced)' },
+                                { value: 'high', label: 'High (thorough)' },
+                                { value: 'max', label: 'Max (most thorough — complex architecture)' },
+                            ]}
+                        />
                         <p className="text-xs text-text-muted mt-1">
                             Controls how much effort the model puts into responses. Can be overridden per-task via task context.
                         </p>

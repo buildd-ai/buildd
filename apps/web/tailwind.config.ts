@@ -45,6 +45,16 @@ const config: Config = {
           error: 'var(--status-error)',
           info: 'var(--status-info)',
         },
+        cat: {
+          bug: 'var(--cat-bug)',
+          feature: 'var(--cat-feature)',
+          refactor: 'var(--cat-refactor)',
+          chore: 'var(--cat-chore)',
+          docs: 'var(--cat-docs)',
+          test: 'var(--cat-test)',
+          infra: 'var(--cat-infra)',
+          design: 'var(--cat-design)',
+        },
       },
       borderRadius: {
         sm: '6px',
@@ -56,6 +66,7 @@ const config: Config = {
         'pulse-border': 'pulse-border 2s ease-in-out infinite',
         'card-enter': 'card-enter 300ms ease-out',
         'slide-up': 'slide-up 300ms ease-out',
+        'dropdown-in': 'dropdown-in 100ms ease-out',
       },
       keyframes: {
         'pulse-border': {
@@ -69,6 +80,10 @@ const config: Config = {
         'slide-up': {
           '0%': { transform: 'translateY(100%)' },
           '100%': { transform: 'translateY(0)' },
+        },
+        'dropdown-in': {
+          '0%': { opacity: '0', transform: 'scale(0.97)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
         },
       },
     },

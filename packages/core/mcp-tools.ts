@@ -56,8 +56,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_progress: '{ workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }',
     complete_task: '{ workerId (required), summary?, error?, structuredOutput? } — if error present, marks task as failed',
     create_pr: '{ workerId (required), title (required), head (required), body?, base?, draft? }',
-    update_task: '{ taskId (required), title?, description?, priority?, addBlockedByTaskIds?, removeBlockedByTaskIds? }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), blockedByTaskIds?, outputSchema? }',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, addBlockedByTaskIds?, removeBlockedByTaskIds? }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), blockedByTaskIds?, outputSchema?, project? (monorepo project name for scoping) }',
     create_artifact: '{ workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata?, key? }',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -68,6 +68,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     review_workspace: '{ hoursBack? (default 24, max 168), workspaceId? }',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
+    detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
 
   const lines = actions
@@ -78,9 +79,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
 
 export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    search: '{ query?, type?, files? (array), concepts? (array), limit? }',
-    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), concepts? (array) }',
-    update: '{ id (required), title?, content?, type?, files? (array), concepts? (array) }',
+    search: '{ query?, type?, files? (array), concepts? (array), project? (monorepo project name), limit? }',
+    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), concepts? (array), project? (monorepo project name) }',
+    update: '{ id (required), title?, content?, type?, files? (array), concepts? (array), project? }',
     delete: '{ id (required) }',
   };
 
@@ -172,7 +173,17 @@ export async function handleBuilddAction(
         // Memory fetch is non-fatal
       }
 
-      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${memorySection}\n\nUse the worker ID to report progress and completion.`);
+      // Open PRs section: inform agent about concurrent work
+      let openPRsSection = '';
+      const firstWorkerPRs = workers[0]?.openPRs;
+      if (firstWorkerPRs && firstWorkerPRs.length > 0) {
+        const prLines = firstWorkerPRs.map((pr: any) =>
+          `- PR #${pr.prNumber} (branch: ${pr.branch}): "${pr.taskTitle || 'Unknown task'}" — ${pr.prUrl}`
+        );
+        openPRsSection = `\n\n## Open PRs in this workspace\nThese PRs are from other agents working in the same repo. Avoid modifying the same files if possible, or rebase on top of their branches.\n${prLines.join('\n')}`;
+      }
+
+      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${openPRsSection}${memorySection}\n\nUse the worker ID to report progress and completion.`);
     }
 
     case 'update_progress': {
@@ -299,6 +310,7 @@ export async function handleBuilddAction(
       if (params.title !== undefined) updateFields.title = params.title;
       if (params.description !== undefined) updateFields.description = params.description;
       if (params.priority !== undefined) updateFields.priority = params.priority;
+      if (params.project !== undefined) updateFields.project = params.project;
       if (params.addBlockedByTaskIds && Array.isArray(params.addBlockedByTaskIds)) {
         updateFields.addBlockedByTaskIds = params.addBlockedByTaskIds;
       }
@@ -307,7 +319,7 @@ export async function handleBuilddAction(
       }
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority, addBlockedByTaskIds, removeBlockedByTaskIds) must be provided');
+        throw new Error('At least one field (title, description, priority, project, addBlockedByTaskIds, removeBlockedByTaskIds) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
@@ -340,6 +352,7 @@ export async function handleBuilddAction(
       if (params.blockedByTaskIds && Array.isArray(params.blockedByTaskIds)) {
         taskBody.blockedByTaskIds = params.blockedByTaskIds;
       }
+      if (params.project) taskBody.project = params.project;
 
       const task = await api('/api/tasks', {
         method: 'POST',
@@ -711,6 +724,7 @@ export async function handleMemoryAction(
       if (params.concepts && Array.isArray(params.concepts) && params.concepts.length > 0) {
         searchParams.set('concepts', (params.concepts as string[]).join(','));
       }
+      if (params.project) searchParams.set('project', params.project as string);
       searchParams.set('limit', String(Math.min((params.limit as number) || 10, 50)));
 
       const data = await api(`/api/workspaces/${wsId}/observations/search?${searchParams}`);
@@ -761,6 +775,7 @@ export async function handleMemoryAction(
       };
       if (params.files && Array.isArray(params.files)) body.files = params.files;
       if (params.concepts && Array.isArray(params.concepts)) body.concepts = params.concepts;
+      if (params.project) body.project = params.project;
       if (ctx.workerId) body.workerId = ctx.workerId;
 
       const data = await api(`/api/workspaces/${wsId}/observations`, {
@@ -781,9 +796,10 @@ export async function handleMemoryAction(
       if (params.type !== undefined) updateBody.type = params.type;
       if (params.files !== undefined) updateBody.files = params.files;
       if (params.concepts !== undefined) updateBody.concepts = params.concepts;
+      if (params.project !== undefined) updateBody.project = params.project;
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (title, content, type, files, concepts) must be provided');
+        throw new Error('At least one field (title, content, type, files, concepts, project) must be provided');
       }
 
       const data = await api(`/api/workspaces/${wsId}/observations/${params.id}`, {

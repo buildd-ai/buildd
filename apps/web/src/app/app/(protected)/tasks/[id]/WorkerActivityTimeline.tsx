@@ -71,7 +71,7 @@ export default function WorkerActivityTimeline({
           {CHECKPOINT_ORDER.map(event => (
             <div
               key={event}
-              className={`h-2 flex-1 rounded-sm ${checkpointEvents.has(event) ? 'bg-primary' : 'bg-surface-secondary'}`}
+              className={`h-2 flex-1 rounded-sm ${checkpointEvents.has(event) ? 'bg-primary' : 'bg-surface-3'}`}
               title={CHECKPOINT_SHORT_LABELS[event] || event}
             />
           ))}
@@ -191,12 +191,12 @@ function StatusRow({
   return (
     <div className="flex items-start gap-2 py-1 text-sm">
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
-        isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-yellow-500' : 'text-text-muted'
+        isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-status-warning' : 'text-text-muted'
       }`}>
         {icon}
       </span>
       <span className={`flex-1 truncate ${
-        isError ? 'text-status-error' : isConfigChange ? 'text-yellow-600 dark:text-yellow-400' : 'text-text-secondary'
+        isError ? 'text-status-error' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
       }`}>
         {milestone.label}
         {typeof milestone.progress === 'number' && (

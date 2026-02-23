@@ -174,6 +174,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task via task.context.useBackgroundAgents.
   useBackgroundAgents?: boolean;
 
+  // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
+  // When enabled, PRs created by workers will have auto-merge enabled with squash method
+  autoMergePR?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;
@@ -259,6 +263,7 @@ export const workspaces = pgTable('workspaces', {
   repo: text('repo'),
   localPath: text('local_path'),
   memory: jsonb('memory').default({}).$type<Record<string, unknown>>(),
+  projects: jsonb('projects').default([]).$type<Array<{ name: string; path?: string; description?: string; color?: string }>>(),
   // GitHub integration
   githubRepoId: uuid('github_repo_id'),  // Will add FK after githubRepos is defined
   githubInstallationId: uuid('github_installation_id'),
@@ -321,6 +326,7 @@ export const tasks = pgTable('tasks', {
   blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
+  project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
@@ -338,6 +344,7 @@ export const tasks = pgTable('tasks', {
   sourceExternalIdx: uniqueIndex('tasks_source_external_idx').on(t.sourceId, t.externalId),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
+  projectIdx: index('tasks_project_idx').on(t.project),
 }));
 
 export const workers = pgTable('workers', {
@@ -424,12 +431,14 @@ export const observations = pgTable('observations', {
   content: text('content').notNull(),
   files: jsonb('files').default([]).$type<string[]>(),
   concepts: jsonb('concepts').default([]).$type<string[]>(),
+  project: text('project'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceIdx: index('observations_workspace_idx').on(t.workspaceId),
   typeIdx: index('observations_type_idx').on(t.type),
   workerIdx: index('observations_worker_idx').on(t.workerId),
   taskIdx: index('observations_task_idx').on(t.taskId),
+  projectIdx: index('observations_project_idx').on(t.project),
 }));
 
 // Worker heartbeats - tracks local-ui instance availability independent of worker records
@@ -575,6 +584,37 @@ export const teamInvitations = pgTable('team_invitations', {
   emailIdx: index('team_invitations_email_idx').on(t.email),
 }));
 
+// Encrypted secrets store (server-managed credentials for shared workers)
+export const secrets = pgTable('secrets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom'>(),
+  label: text('label'),
+  encryptedValue: text('encrypted_value').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('secrets_team_idx').on(t.teamId),
+  accountPurposeIdx: uniqueIndex('secrets_account_purpose_idx').on(t.accountId, t.purpose),
+}));
+
+// Single-use secret references for worker credential delivery
+export const secretRefs = pgTable('secret_refs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ref: text('ref').notNull().unique(),
+  secretId: uuid('secret_id').references(() => secrets.id, { onDelete: 'cascade' }).notNull(),
+  scopedToWorkerId: text('scoped_to_worker_id').notNull(),
+  redeemed: boolean('redeemed').default(false).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  refIdx: uniqueIndex('secret_refs_ref_idx').on(t.ref),
+  secretIdx: index('secret_refs_secret_idx').on(t.secretId),
+  expiresIdx: index('secret_refs_expires_idx').on(t.expiresAt),
+}));
+
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -715,4 +755,15 @@ export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => 
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
   user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
+}));
+
+export const secretsRelations = relations(secrets, ({ one, many }) => ({
+  team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
+  account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
+  workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
+  refs: many(secretRefs),
+}));
+
+export const secretRefsRelations = relations(secretRefs, ({ one }) => ({
+  secret: one(secrets, { fields: [secretRefs.secretId], references: [secrets.id] }),
 }));

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 import RepoPicker from './RepoPicker';
 
 interface Installation {
@@ -361,17 +362,14 @@ export default function NewWorkspacePage() {
               <label className="block text-sm font-medium mb-2">
                 Team
               </label>
-              <select
+              <Select
                 value={selectedTeamId}
-                onChange={(e) => setSelectedTeamId(e.target.value)}
-                className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1"
-              >
-                {userTeams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}{team.slug.startsWith('personal-') ? ' (Personal)' : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedTeamId}
+                options={userTeams.map((team) => ({
+                  value: team.id,
+                  label: team.name + (team.slug.startsWith('personal-') ? ' (Personal)' : ''),
+                }))}
+              />
               <p className="text-xs text-text-muted mt-1">
                 Which team owns this workspace
               </p>
@@ -505,30 +503,46 @@ export default function NewWorkspacePage() {
             <label className="block text-sm font-medium mb-2">
               Token Access
             </label>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
+            <div className="space-y-2">
+              <label
+                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                  accessMode === 'open'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border-default hover:border-primary/50'
+                }`}
+              >
                 <input
                   type="radio"
                   name="accessMode"
                   value="open"
                   checked={accessMode === 'open'}
                   onChange={() => setAccessMode('open')}
-                  className="w-4 h-4"
+                  className="w-4 h-4 mt-0.5"
                 />
-                <span className="text-sm">Open</span>
-                <span className="text-xs text-text-muted">Any token can claim tasks</span>
+                <div>
+                  <span className="text-sm font-medium">Open</span>
+                  <p className="text-xs text-text-muted mt-0.5">Any account in this team can claim tasks</p>
+                </div>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label
+                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                  accessMode === 'restricted'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border-default hover:border-primary/50'
+                }`}
+              >
                 <input
                   type="radio"
                   name="accessMode"
                   value="restricted"
                   checked={accessMode === 'restricted'}
                   onChange={() => setAccessMode('restricted')}
-                  className="w-4 h-4"
+                  className="w-4 h-4 mt-0.5"
                 />
-                <span className="text-sm">Restricted</span>
-                <span className="text-xs text-text-muted">Only linked tokens</span>
+                <div>
+                  <span className="text-sm font-medium">Restricted</span>
+                  <p className="text-xs text-text-muted mt-0.5">Only accounts you explicitly link can claim tasks</p>
+                </div>
               </label>
             </div>
           </div>

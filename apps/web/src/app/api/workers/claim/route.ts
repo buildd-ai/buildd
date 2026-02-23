@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, sql, inArray, lt, gt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { getSecretsProvider } from '@buildd/core/secrets';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -337,6 +338,58 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Attach open PR context from other workers in the same workspace
+  if (claimedWorkers.length > 0) {
+    const claimedWorkerIds = claimedWorkers.map(cw => cw.id);
+    // Group claimed workers by workspace
+    const workspaceIds = [...new Set(claimedWorkers.map(cw => {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      return task?.workspaceId;
+    }).filter(Boolean))] as string[];
+
+    if (workspaceIds.length > 0) {
+      const openPRWorkers = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.workspaceId, workspaceIds),
+          not(isNull(workers.prUrl)),
+          inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
+          not(inArray(workers.id, claimedWorkerIds)),
+        ),
+        columns: { id: true, branch: true, prUrl: true, prNumber: true, taskId: true, workspaceId: true },
+        orderBy: (workers, { desc }) => [desc(workers.createdAt)],
+        limit: 10,
+      });
+
+      if (openPRWorkers.length > 0) {
+        // Fetch task titles for PR context
+        const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
+        const prTasks = prTaskIds.length > 0
+          ? await db.query.tasks.findMany({
+              where: inArray(tasks.id, prTaskIds),
+              columns: { id: true, title: true },
+            })
+          : [];
+        const taskTitleMap = new Map(prTasks.map(t => [t.id, t.title]));
+
+        const openPRs = openPRWorkers.map(w => ({
+          branch: w.branch,
+          prUrl: w.prUrl,
+          prNumber: w.prNumber,
+          taskTitle: w.taskId ? taskTitleMap.get(w.taskId) || null : null,
+          workspaceId: w.workspaceId,
+        }));
+
+        for (const cw of claimedWorkers) {
+          const task = filteredTasks.find(t => t.id === cw.taskId);
+          const wsOpenPRs = openPRs.filter(pr => pr.workspaceId === task?.workspaceId);
+          if (wsOpenPRs.length > 0) {
+            (cw as any).openPRs = wsOpenPRs;
+          }
+        }
+      }
+    }
+  }
+
   // Broadcast claim events so dashboard updates in real-time
   for (const cw of claimedWorkers) {
     const claimedTask = filteredTasks.find(t => t.id === cw.taskId);
@@ -462,6 +515,40 @@ export async function POST(req: NextRequest) {
 
     if (siblings.length > 0) {
       (cw as any).childResults = siblings;
+    }
+  }
+
+  // Attach secretRef for server-managed credentials (if account has an anthropic_api_key secret)
+  if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
+    try {
+      const accountSecret = await db.query.secrets.findFirst({
+        where: and(
+          eq(secrets.accountId, account.id),
+          eq(secrets.purpose, 'anthropic_api_key'),
+        ),
+        columns: { id: true },
+      });
+
+      if (accountSecret) {
+        const provider = getSecretsProvider();
+        for (const cw of claimedWorkers) {
+          const ref = await provider.createRef(accountSecret.id, cw.id, 300);
+          (cw as any).secretRef = ref;
+        }
+      }
+    } catch (err) {
+      // Non-fatal: worker can still use local credentials
+      console.warn('Failed to create secret refs:', err);
+    }
+  }
+
+  // Piggyback: clean up expired secret refs
+  if (process.env.ENCRYPTION_KEY) {
+    try {
+      const provider = getSecretsProvider();
+      await provider.cleanupExpiredRefs();
+    } catch {
+      // Non-fatal cleanup
     }
   }
 
