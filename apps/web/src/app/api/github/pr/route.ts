@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { githubApi } from '@/lib/github';
+import { githubApi, enableAutoMerge } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 
 // POST /api/github/pr - Create a pull request
@@ -135,6 +135,15 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(workers.id, workerId));
 
+    // Auto-merge: if workspace has autoMergePR enabled, enable GitHub auto-merge
+    let autoMergeEnabled = false;
+    if (workspace.gitConfig?.autoMergePR && prData.node_id) {
+      autoMergeEnabled = await enableAutoMerge(
+        repo.installation.installationId,
+        prData.node_id,
+      );
+    }
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -143,6 +152,7 @@ export async function POST(req: NextRequest) {
         state: prData.state,
         title: prData.title,
       },
+      ...(autoMergeEnabled ? { autoMergeEnabled: true } : {}),
     });
   } catch (error) {
     console.error('Create PR error:', error);

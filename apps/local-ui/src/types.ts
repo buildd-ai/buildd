@@ -265,6 +265,9 @@ export interface WorkspaceGitConfig {
   // Worktree isolation for subagents (SDK v0.2.49+)
   // When enabled, skill-as-subagent definitions include `isolation: 'worktree'`
   useWorktreeIsolation?: boolean;
+
+  // Auto-merge PRs via GitHub's auto-merge feature
+  autoMergePR?: boolean;
 }
 
 // SSE event types

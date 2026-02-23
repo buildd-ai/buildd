@@ -200,6 +200,67 @@ function arrayBufferToHex(buffer: ArrayBuffer): string {
     .join('');
 }
 
+// GitHub GraphQL API client for a specific installation
+export async function githubGraphQL(
+  installationId: number,
+  query: string,
+  variables: Record<string, unknown> = {}
+) {
+  const token = await getInstallationToken(installationId);
+
+  const response = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`GitHub GraphQL error: ${response.status} ${error}`);
+  }
+
+  const data = await response.json();
+  if (data.errors?.length) {
+    throw new Error(`GitHub GraphQL error: ${data.errors[0].message}`);
+  }
+
+  return data;
+}
+
+// Enable auto-merge on a PR (requires branch protection rules + auto-merge enabled on repo)
+export async function enableAutoMerge(
+  installationId: number,
+  pullRequestNodeId: string,
+  mergeMethod: 'SQUASH' | 'MERGE' | 'REBASE' = 'SQUASH'
+): Promise<boolean> {
+  try {
+    await githubGraphQL(installationId, `
+      mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+        enablePullRequestAutoMerge(input: {
+          pullRequestId: $pullRequestId
+          mergeMethod: $mergeMethod
+        }) {
+          pullRequest {
+            autoMergeRequest {
+              enabledAt
+            }
+          }
+        }
+      }
+    `, {
+      pullRequestId: pullRequestNodeId,
+      mergeMethod,
+    });
+    return true;
+  } catch (error) {
+    console.warn('Failed to enable auto-merge (repo may not have it enabled):', error);
+    return false;
+  }
+}
+
 // Types for webhook events
 export interface GitHubInstallationEvent {
   action: 'created' | 'deleted' | 'suspend' | 'unsuspend' | 'new_permissions_accepted';

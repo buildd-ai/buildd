@@ -32,6 +32,7 @@ interface GitConfig {
     debugFile?: string;
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
+    autoMergePR?: boolean;
 }
 
 interface Props {
@@ -59,6 +60,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [requiresPR, setRequiresPR] = useState(initialConfig?.requiresPR || false);
     const [targetBranch, setTargetBranch] = useState(initialConfig?.targetBranch || '');
     const [autoCreatePR, setAutoCreatePR] = useState(initialConfig?.autoCreatePR || false);
+    const [autoMergePR, setAutoMergePR] = useState(initialConfig?.autoMergePR || false);
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
@@ -100,6 +102,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     requiresPR,
                     targetBranch: targetBranch || undefined,
                     autoCreatePR,
+                    autoMergePR,
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
@@ -277,6 +280,22 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             </label>
                         </div>
                     )}
+
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="autoMergePR"
+                            checked={autoMergePR}
+                            onChange={(e) => setAutoMergePR(e.target.checked)}
+                            className="rounded"
+                        />
+                        <label htmlFor="autoMergePR" className="text-sm">
+                            Auto-merge PRs when CI passes
+                        </label>
+                    </div>
+                    <p className="text-xs text-text-muted -mt-2">
+                        Enable GitHub auto-merge (squash) on agent PRs. Requires branch protection rules with required status checks enabled on the repo.
+                    </p>
                 </div>
             </div>
 

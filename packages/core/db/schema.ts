@@ -174,6 +174,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task via task.context.useBackgroundAgents.
   useBackgroundAgents?: boolean;
 
+  // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
+  // When enabled, PRs created by workers will have auto-merge enabled with squash method
+  autoMergePR?: boolean;
+
   // Organizer agent configuration — reviews completed tasks and course-corrects
   organizer?: {
     enabled?: boolean;
