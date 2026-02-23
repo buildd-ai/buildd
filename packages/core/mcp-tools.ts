@@ -173,7 +173,17 @@ export async function handleBuilddAction(
         // Memory fetch is non-fatal
       }
 
-      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${memorySection}\n\nUse the worker ID to report progress and completion.`);
+      // Open PRs section: inform agent about concurrent work
+      let openPRsSection = '';
+      const firstWorkerPRs = workers[0]?.openPRs;
+      if (firstWorkerPRs && firstWorkerPRs.length > 0) {
+        const prLines = firstWorkerPRs.map((pr: any) =>
+          `- PR #${pr.prNumber} (branch: ${pr.branch}): "${pr.taskTitle || 'Unknown task'}" — ${pr.prUrl}`
+        );
+        openPRsSection = `\n\n## Open PRs in this workspace\nThese PRs are from other agents working in the same repo. Avoid modifying the same files if possible, or rebase on top of their branches.\n${prLines.join('\n')}`;
+      }
+
+      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${openPRsSection}${memorySection}\n\nUse the worker ID to report progress and completion.`);
     }
 
     case 'update_progress': {

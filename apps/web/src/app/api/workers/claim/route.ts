@@ -338,6 +338,58 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Attach open PR context from other workers in the same workspace
+  if (claimedWorkers.length > 0) {
+    const claimedWorkerIds = claimedWorkers.map(cw => cw.id);
+    // Group claimed workers by workspace
+    const workspaceIds = [...new Set(claimedWorkers.map(cw => {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      return task?.workspaceId;
+    }).filter(Boolean))] as string[];
+
+    if (workspaceIds.length > 0) {
+      const openPRWorkers = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.workspaceId, workspaceIds),
+          not(isNull(workers.prUrl)),
+          inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
+          not(inArray(workers.id, claimedWorkerIds)),
+        ),
+        columns: { id: true, branch: true, prUrl: true, prNumber: true, taskId: true, workspaceId: true },
+        orderBy: (workers, { desc }) => [desc(workers.createdAt)],
+        limit: 10,
+      });
+
+      if (openPRWorkers.length > 0) {
+        // Fetch task titles for PR context
+        const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
+        const prTasks = prTaskIds.length > 0
+          ? await db.query.tasks.findMany({
+              where: inArray(tasks.id, prTaskIds),
+              columns: { id: true, title: true },
+            })
+          : [];
+        const taskTitleMap = new Map(prTasks.map(t => [t.id, t.title]));
+
+        const openPRs = openPRWorkers.map(w => ({
+          branch: w.branch,
+          prUrl: w.prUrl,
+          prNumber: w.prNumber,
+          taskTitle: w.taskId ? taskTitleMap.get(w.taskId) || null : null,
+          workspaceId: w.workspaceId,
+        }));
+
+        for (const cw of claimedWorkers) {
+          const task = filteredTasks.find(t => t.id === cw.taskId);
+          const wsOpenPRs = openPRs.filter(pr => pr.workspaceId === task?.workspaceId);
+          if (wsOpenPRs.length > 0) {
+            (cw as any).openPRs = wsOpenPRs;
+          }
+        }
+      }
+    }
+  }
+
   // Broadcast claim events so dashboard updates in real-time
   for (const cw of claimedWorkers) {
     const claimedTask = filteredTasks.find(t => t.id === cw.taskId);
