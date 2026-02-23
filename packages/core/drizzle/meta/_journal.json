@@ -267,6 +267,20 @@
       "when": 1771900000000,
       "tag": "0037_task_output_requirement",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1772000000000,
+      "tag": "0038_project_scoping",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1772100000000,
+      "tag": "0039_secrets_provider",
+      "breakpoints": true
     }
   ]
 }

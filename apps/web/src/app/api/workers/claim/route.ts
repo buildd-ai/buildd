@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, sql, inArray, lt, gt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { getSecretsProvider } from '@buildd/core/secrets';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -462,6 +463,40 @@ export async function POST(req: NextRequest) {
 
     if (siblings.length > 0) {
       (cw as any).childResults = siblings;
+    }
+  }
+
+  // Attach secretRef for server-managed credentials (if account has an anthropic_api_key secret)
+  if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
+    try {
+      const accountSecret = await db.query.secrets.findFirst({
+        where: and(
+          eq(secrets.accountId, account.id),
+          eq(secrets.purpose, 'anthropic_api_key'),
+        ),
+        columns: { id: true },
+      });
+
+      if (accountSecret) {
+        const provider = getSecretsProvider();
+        for (const cw of claimedWorkers) {
+          const ref = await provider.createRef(accountSecret.id, cw.id, 300);
+          (cw as any).secretRef = ref;
+        }
+      }
+    } catch (err) {
+      // Non-fatal: worker can still use local credentials
+      console.warn('Failed to create secret refs:', err);
+    }
+  }
+
+  // Piggyback: clean up expired secret refs
+  if (process.env.ENCRYPTION_KEY) {
+    try {
+      const provider = getSecretsProvider();
+      await provider.cleanupExpiredRefs();
+    } catch {
+      // Non-fatal cleanup
     }
   }
 

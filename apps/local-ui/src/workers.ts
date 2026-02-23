@@ -711,6 +711,7 @@ export class WorkerManager {
             console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
           });
         }
+        sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
         this.workers.delete(id);
         this.sessions.delete(id);
         // Note: NOT deleting from disk — workers persist for 24h for history
@@ -834,10 +835,19 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
+
+    // Redeem server-managed secret if provided and no local credentials
+    let serverApiKey: string | undefined;
+    if (claimedWorker.secretRef && !this.hasCredentials) {
+      serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
+      if (serverApiKey) {
+        console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+      }
+    }
 
     // Create local worker
     const worker: LocalWorker = {
@@ -865,6 +875,11 @@ export class WorkerManager {
       phaseToolCount: 0,
       phaseTools: [],
     };
+
+    // Attach server-managed API key if redeemed
+    if (serverApiKey) {
+      worker.serverApiKey = serverApiKey;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -1806,6 +1821,12 @@ export class WorkerManager {
           cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
           cleanEnv.ANTHROPIC_API_KEY = '';
         }
+      }
+
+      // Inject server-managed API key (redeemed from secretRef during claim)
+      if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
+        cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
+        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
@@ -3002,6 +3023,7 @@ export class WorkerManager {
         this.sessions.delete(workerId);
       }
       console.log(`Restarting session for worker ${workerId} with follow-up message`);
+      sessionLog(workerId, 'info', 'resume_requested', `Follow-up on ${worker.status} worker`, worker.taskId);
 
       // Update worker status (clear any previous error)
       worker.status = 'working';
@@ -3045,6 +3067,7 @@ export class WorkerManager {
       // Layer 1: Try resuming the SDK session (preserves full context from disk)
       if (worker.sessionId) {
         console.log(`[Worker ${worker.id}] Resuming session ${worker.sessionId} with follow-up (cwd: ${sessionCwd})`);
+        sessionLog(workerId, 'info', 'resume_layer1_attempt', `SDK resume with sessionId ${worker.sessionId}`, worker.taskId);
 
         // For resume, the prompt is just the follow-up message — the SDK loads full history
         const task = {
@@ -3059,10 +3082,13 @@ export class WorkerManager {
 
         this.startSession(worker, sessionCwd, task as any, worker.sessionId).catch(err => {
           console.error(`[Worker ${worker.id}] Resume failed, falling back to reconstruction:`, err);
+          sessionLog(workerId, 'warn', 'resume_layer1_failed', err instanceof Error ? err.message : String(err), worker.taskId);
 
           // Fallback: restart with text-reconstructed context
+          sessionLog(workerId, 'info', 'resume_layer2_attempt', 'Reconstructed context fallback', worker.taskId);
           this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err2 => {
             console.error(`[Worker ${worker.id}] Fallback session error:`, err2);
+            sessionLog(workerId, 'error', 'resume_layer2_failed', err2 instanceof Error ? err2.message : String(err2), worker.taskId);
             if (worker.status === 'working') {
               worker.status = 'error';
               worker.error = err2 instanceof Error ? err2.message : 'Follow-up session failed';
@@ -3079,8 +3105,10 @@ export class WorkerManager {
 
       // Layer 3 fallback: No sessionId available, use text reconstruction
       console.log(`[Worker ${worker.id}] No sessionId — using reconstructed context`);
+      sessionLog(workerId, 'info', 'resume_layer3_attempt', 'No sessionId — text reconstruction', worker.taskId);
       this.restartWithReconstructedContext(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Follow-up session error:`, err);
+        sessionLog(workerId, 'error', 'resume_layer3_failed', err instanceof Error ? err.message : String(err), worker.taskId);
         if (worker.status === 'working') {
           worker.status = 'error';
           worker.error = err instanceof Error ? err.message : 'Follow-up session failed';
