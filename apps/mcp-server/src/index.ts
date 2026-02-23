@@ -24,6 +24,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
+import { detectProjects } from "./detect-projects.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -87,7 +88,14 @@ async function getWorkspaceId(): Promise<string | null> {
   const repoFullName = getRepoFullNameFromGit();
   if (repoFullName) {
     cachedWorkspaceId = await getWorkspaceIdFromRepo(repoFullName);
-    return cachedWorkspaceId;
+    if (!cachedWorkspaceId) {
+      console.error(
+        `[buildd] Could not find a workspace matching "${repoFullName}". ` +
+        `Create one at ${SERVER_URL}/app/workspaces/new or set BUILDD_WORKSPACE_ID.`
+      );
+      cachedWorkspaceId = "";
+    }
+    return cachedWorkspaceId || null;
   }
 
   cachedWorkspaceId = "";
@@ -315,8 +323,8 @@ Each task has an \`outputRequirement\` that controls what you must produce befor
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const level = await getAccountLevel();
   const filteredActions = level === 'admin'
-    ? [...allActionsList]
-    : [...workerActions];
+    ? [...allActionsList, 'detect_projects']
+    : [...workerActions, 'detect_projects'];
 
   const tools = [
     {
@@ -385,6 +393,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Stdio-specific: resolve filePath/repo for register_skill
       if (action === 'register_skill') {
         await handleRegisterSkill(params);
+      }
+
+      // Stdio-specific: detect monorepo projects from filesystem
+      if (action === 'detect_projects') {
+        const projects = detectProjects(params.rootDir as string | undefined);
+        if (projects.length === 0) {
+          return {
+            content: [{ type: 'text' as const, text: 'No projects detected. Ensure the directory has a package.json with a workspaces field.' }],
+          };
+        }
+        const summary = projects.map(p => `- **${p.name}**: ${p.path}`).join('\n');
+        return {
+          content: [{ type: 'text' as const, text: `Detected ${projects.length} project(s):\n\n${summary}` }],
+        };
       }
 
       // Stdio-specific: add env exports to claim_task response

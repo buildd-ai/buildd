@@ -9,6 +9,7 @@ import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import DashboardStartTask from './DashboardStartTask';
+import DiscoveredRepos from './DiscoveredRepos';
 import OnboardingChecklist from './OnboardingChecklist';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
@@ -642,6 +643,16 @@ export default async function DashboardPage() {
             </div>
           )}
         </div>
+
+        {/* Discovered Repos (client-side, fetches from connected agents) */}
+        {connectedAgents.length > 0 && (
+          <DiscoveredRepos
+            agents={connectedAgents.map(a => ({
+              localUiUrl: a.localUiUrl,
+              accountName: a.accountName,
+            }))}
+          />
+        )}
 
         {/* Empty Workers State */}
         {activeWorkers.length === 0 && (
