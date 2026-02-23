@@ -117,6 +117,8 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Task dependency — blocked tasks start as 'blocked' and auto-unblock
       blockedByTaskIds: rawBlockedByTaskIds,
+      // Project scoping
+      project,
     } = body;
 
     if (!workspaceId || !title) {
@@ -307,6 +309,7 @@ export async function POST(req: NextRequest) {
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },
+        ...(project ? { project } : {}),
         ...(category ? { category } : {}),
         ...(outputRequirement ? { outputRequirement } : {}),
         ...(outputSchema ? { outputSchema } : {}),

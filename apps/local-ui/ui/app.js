@@ -23,6 +23,42 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
   }
 });
 
+// Overflow menu (mobile)
+function toggleOverflow() {
+  const menu = document.getElementById('overflowMenu');
+  if (!menu) return;
+  overflowOpen = !overflowOpen;
+  menu.classList.toggle('hidden', !overflowOpen);
+}
+
+function closeOverflow() {
+  const menu = document.getElementById('overflowMenu');
+  if (menu) menu.classList.add('hidden');
+  overflowOpen = false;
+}
+
+function openSettingsFromOverflow() {
+  closeOverflow();
+  openSettingsModal();
+}
+
+// Close overflow on outside click
+document.addEventListener('click', (e) => {
+  if (!overflowOpen) return;
+  const container = document.getElementById('overflowMenuContainer');
+  if (container && !container.contains(e.target)) {
+    closeOverflow();
+  }
+});
+
+// Keyboard avoidance for modals
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    const keyboardHeight = window.innerHeight - window.visualViewport.height;
+    document.documentElement.style.setProperty('--keyboard-height', keyboardHeight + 'px');
+  });
+}
+
 // State
 let workers = [];
 let tasks = [];
@@ -40,16 +76,13 @@ let updateChangelog = [];
 // Elements
 const setupEl = document.getElementById('setup');
 const appEl = document.getElementById('app');
-const workersEl = document.getElementById('workers');
-const completedEl = document.getElementById('completed');
-const completedSectionEl = document.getElementById('completedSection');
 const tasksEl = document.getElementById('tasks');
 const workerModal = document.getElementById('workerModal');
 const taskModal = document.getElementById('taskModal');
 const settingsModal = document.getElementById('settingsModal');
 
-// State for collapsed completed section
-let completedCollapsed = true;
+// Overflow menu state
+let overflowOpen = false;
 
 // Track whether new activity arrived while user scrolled up
 let hasNewActivityWhileScrolledUp = false;
@@ -476,16 +509,19 @@ function renderWorkers() {
   const emptyHero = document.getElementById('emptyHero');
   const contentSections = document.getElementById('contentSections');
   const statsBar = document.getElementById('statsBar');
+  const mobileStats = document.getElementById('mobileStats');
 
   if (!hasActivity && completed.length === 0) {
     emptyHero.classList.remove('hidden');
     contentSections.classList.add('hidden');
     if (statsBar) statsBar.classList.add('hidden');
+    if (mobileStats) mobileStats.classList.add('hidden');
     return;
   } else {
     emptyHero.classList.add('hidden');
     contentSections.classList.remove('hidden');
     if (statsBar) statsBar.classList.remove('hidden');
+    if (mobileStats) mobileStats.classList.remove('hidden');
   }
 
   // Render waiting workers (needs attention - top priority)
@@ -502,30 +538,44 @@ function renderWorkers() {
     waitingEl.innerHTML = '';
   }
 
-  // Render active workers
-  const activeSection = document.getElementById('activeSection');
-  if (active.length > 0) {
-    activeSection.classList.remove('hidden');
-    workersEl.innerHTML = active.map(w => renderWorkerCard(w)).join('');
-    workersEl.querySelectorAll('.worker-card').forEach(card => {
+  // Render unified recent feed (active first, then completed)
+  const recentSection = document.getElementById('recentSection');
+  const recentFeed = document.getElementById('recentFeed');
+  const sortedCompleted = [...completed].sort((a, b) => {
+    const aTime = a.completedAt || a.lastActivity || 0;
+    const bTime = b.completedAt || b.lastActivity || 0;
+    return bTime - aTime;
+  }).slice(0, 10);
+
+  if (active.length > 0 || sortedCompleted.length > 0) {
+    recentSection.classList.remove('hidden');
+    const activeHtml = active.map(w => renderWorkerCard(w)).join('');
+    const completedHtml = sortedCompleted.map(w => renderRecentCompletedCard(w)).join('');
+    recentFeed.innerHTML = activeHtml + completedHtml;
+    recentFeed.querySelectorAll('.worker-card, .recent-completed-card').forEach(card => {
       card.onclick = () => openWorkerModal(card.dataset.id);
     });
   } else {
-    activeSection.classList.add('hidden');
-    workersEl.innerHTML = '';
+    recentSection.classList.add('hidden');
+    recentFeed.innerHTML = '';
   }
-
-  // Render completed section
-  renderCompletedSection(completed);
 }
 
 function updateStats(activeCount, pendingCount, completedCount) {
+  // Desktop stats
   const statActive = document.getElementById('statActive');
   const statPending = document.getElementById('statPending');
   const statCompleted = document.getElementById('statCompleted');
   if (statActive) statActive.textContent = activeCount;
   if (statPending) statPending.textContent = pendingCount;
   if (statCompleted) statCompleted.textContent = completedCount;
+  // Mobile stats
+  const mobileStatActive = document.getElementById('mobileStatActive');
+  const mobileStatPending = document.getElementById('mobileStatPending');
+  const mobileStatCompleted = document.getElementById('mobileStatCompleted');
+  if (mobileStatActive) mobileStatActive.textContent = activeCount;
+  if (mobileStatPending) mobileStatPending.textContent = pendingCount;
+  if (mobileStatCompleted) mobileStatCompleted.textContent = completedCount;
 }
 
 function renderWorkerCard(w) {
@@ -576,59 +626,23 @@ function renderWaitingCard(w) {
   `;
 }
 
-function renderCompletedSection(completed) {
-  if (completed.length === 0) {
-    completedSectionEl.classList.add('hidden');
-    completedEl.innerHTML = '';
-    return;
-  }
-
-  completedSectionEl.classList.remove('hidden');
-  // Sort by completedAt descending (most recent first), fallback to lastActivity
-  const sorted = [...completed].sort((a, b) => {
-    const aTime = a.completedAt || a.lastActivity || 0;
-    const bTime = b.completedAt || b.lastActivity || 0;
-    return bTime - aTime;
-  });
-  const recent = sorted.slice(0, 10); // Show last 10
-
-  completedEl.innerHTML = `
-    <div class="section-header-collapsible flex items-center justify-between py-2 cursor-pointer select-none hover:opacity-80 ${completedCollapsed ? 'collapsed' : ''}" onclick="toggleCompleted()">
-      <span class="text-[10px] font-mono font-medium text-text-tertiary uppercase tracking-[2.5px]">Completed (${completed.length})</span>
-      <svg class="chevron text-text-secondary transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-        <polyline points="6 9 12 15 18 9"/>
-      </svg>
-    </div>
-    <div class="flex flex-col gap-2 mt-2 ${completedCollapsed ? 'hidden' : ''}">
-      ${recent.map(w => renderCompletedCard(w)).join('')}
-    </div>
-  `;
-
-  // Add click handlers
-  completedEl.querySelectorAll('.worker-card').forEach(card => {
-    card.onclick = () => openWorkerModal(card.dataset.id);
-  });
-}
-
-function renderCompletedCard(w) {
+function renderRecentCompletedCard(w) {
   const timeAgo = formatRelativeTime(w.completedAt || w.lastActivity);
   const progress = renderMilestoneBoxes(w.milestones);
+  const isError = w.status === 'error';
+  const statusIcon = isError
+    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-status-error"><path d="M18 6L6 18M6 6l12 12"/></svg>`
+    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-status-success"><polyline points="20 6 9 17 4 12"/></svg>`;
   return `
-    <div class="worker-card bg-surface rounded-xl p-3 cursor-pointer transition-all duration-200 relative opacity-70 hover:opacity-100" data-id="${w.id}">
+    <div class="recent-completed-card bg-surface rounded-xl p-4 cursor-pointer transition-all duration-200 relative" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-1">
-        <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${w.status}"></div>
+        <div class="mt-[2px] shrink-0">${statusIcon}</div>
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
-        <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
+        <div class="text-xs text-text-secondary whitespace-nowrap">${timeAgo || ''}</div>
       </div>
-      <div class="text-[13px] text-text-secondary">${escapeHtml(w.workspaceName)} &bull; ${progress.completed}/${progress.total} checkpoints${timeAgo ? ` &bull; ${timeAgo}` : ''}</div>
+      <div class="text-[13px] text-text-secondary pl-7">${escapeHtml(w.workspaceName)} &bull; ${progress.completed}/${progress.total} checkpoints</div>
     </div>
   `;
-}
-
-function toggleCompleted() {
-  completedCollapsed = !completedCollapsed;
-  const completed = workers.filter(w => ['done', 'error'].includes(w.status));
-  renderCompletedSection(completed);
 }
 
 function toggleDescription(btn) {
@@ -713,14 +727,17 @@ function renderTasks() {
   const emptyHero = document.getElementById('emptyHero');
   const contentSections = document.getElementById('contentSections');
   const statsBar = document.getElementById('statsBar');
+  const mobileStats = document.getElementById('mobileStats');
   if (!hasActivity && completed.length === 0) {
     emptyHero.classList.remove('hidden');
     contentSections.classList.add('hidden');
     if (statsBar) statsBar.classList.add('hidden');
+    if (mobileStats) mobileStats.classList.add('hidden');
   } else {
     emptyHero.classList.add('hidden');
     contentSections.classList.remove('hidden');
     if (statsBar) statsBar.classList.remove('hidden');
+    if (mobileStats) mobileStats.classList.remove('hidden');
   }
 
   // Show/hide pending section
