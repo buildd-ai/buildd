@@ -14,14 +14,14 @@ import type { TaskCategoryValue } from '@buildd/shared';
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
 const CATEGORY_OPTIONS: { value: TaskCategoryValue; label: string; color: string }[] = [
-  { value: 'bug', label: 'Bug', color: 'bg-red-500/15 text-red-400 border-red-500/30' },
-  { value: 'feature', label: 'Feature', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
-  { value: 'refactor', label: 'Refactor', color: 'bg-purple-500/15 text-purple-400 border-purple-500/30' },
-  { value: 'chore', label: 'Chore', color: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30' },
-  { value: 'docs', label: 'Docs', color: 'bg-teal-500/15 text-teal-400 border-teal-500/30' },
-  { value: 'test', label: 'Test', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
-  { value: 'infra', label: 'Infra', color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' },
-  { value: 'design', label: 'Design', color: 'bg-pink-500/15 text-pink-400 border-pink-500/30' },
+  { value: 'bug', label: 'Bug', color: 'bg-cat-bug/15 text-cat-bug border-cat-bug/30' },
+  { value: 'feature', label: 'Feature', color: 'bg-cat-feature/15 text-cat-feature border-cat-feature/30' },
+  { value: 'refactor', label: 'Refactor', color: 'bg-cat-refactor/15 text-cat-refactor border-cat-refactor/30' },
+  { value: 'chore', label: 'Chore', color: 'bg-cat-chore/15 text-cat-chore border-cat-chore/30' },
+  { value: 'docs', label: 'Docs', color: 'bg-cat-docs/15 text-cat-docs border-cat-docs/30' },
+  { value: 'test', label: 'Test', color: 'bg-cat-test/15 text-cat-test border-cat-test/30' },
+  { value: 'infra', label: 'Infra', color: 'bg-cat-infra/15 text-cat-infra border-cat-infra/30' },
+  { value: 'design', label: 'Design', color: 'bg-cat-design/15 text-cat-design border-cat-design/30' },
 ];
 
 const WORKFLOW_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
@@ -68,6 +68,11 @@ export default function NewTaskPage() {
 
   // Category state
   const [selectedCategory, setSelectedCategory] = useState<TaskCategoryValue | null>(null);
+
+  // Project state
+  const [project, setProject] = useState('');
+  const [projectSuggestions, setProjectSuggestions] = useState<{ name: string; color?: string }[]>([]);
+  const [showProjectSuggestions, setShowProjectSuggestions] = useState(false);
 
   // Description state (expandable)
   const [showDescription, setShowDescription] = useState(false);
@@ -165,6 +170,19 @@ export default function NewTaskPage() {
       .catch(() => setWorkspaces([]))
       .finally(() => setLoadingWorkspaces(false));
   }, []);
+
+  // Fetch projects when workspace changes
+  useEffect(() => {
+    if (!selectedWorkspaceId) {
+      setProjectSuggestions([]);
+      setProject('');
+      return;
+    }
+    fetch(`/api/workspaces/${selectedWorkspaceId}/projects`)
+      .then(res => res.json())
+      .then(data => setProjectSuggestions(data.projects || []))
+      .catch(() => setProjectSuggestions([]));
+  }, [selectedWorkspaceId]);
 
   // Fetch enabled skills when workspace changes
   useEffect(() => {
@@ -339,6 +357,7 @@ export default function NewTaskPage() {
             description: description || undefined,
             priority,
             ...(selectedCategory && { category: selectedCategory }),
+            ...(project.trim() && { project: project.trim() }),
             ...(requirePlan && { mode: 'planning' }),
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
@@ -550,6 +569,54 @@ export default function NewTaskPage() {
                     {opt.label}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Project typeahead */}
+            <div>
+              <label htmlFor="project" className="block text-sm font-medium mb-2">
+                Project <span className="text-text-muted font-normal">(optional)</span>
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  id="project"
+                  value={project}
+                  onChange={(e) => {
+                    setProject(e.target.value);
+                    setShowProjectSuggestions(true);
+                  }}
+                  onFocus={() => setShowProjectSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowProjectSuggestions(false), 150)}
+                  placeholder="e.g. frontend, api, infra"
+                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                />
+                {showProjectSuggestions && projectSuggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full bg-surface-2 border border-border-default rounded-md shadow-lg max-h-40 overflow-y-auto">
+                    {projectSuggestions
+                      .filter(p => !project || p.name.toLowerCase().includes(project.toLowerCase()))
+                      .map(p => (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setProject(p.name);
+                            setShowProjectSuggestions(false);
+                          }}
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center gap-2"
+                        >
+                          {p.color && (
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: p.color }}
+                            />
+                          )}
+                          {p.name}
+                        </button>
+                      ))}
+                  </div>
+                )}
               </div>
             </div>
 

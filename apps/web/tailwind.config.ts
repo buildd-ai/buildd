@@ -45,6 +45,16 @@ const config: Config = {
           error: 'var(--status-error)',
           info: 'var(--status-info)',
         },
+        cat: {
+          bug: 'var(--cat-bug)',
+          feature: 'var(--cat-feature)',
+          refactor: 'var(--cat-refactor)',
+          chore: 'var(--cat-chore)',
+          docs: 'var(--cat-docs)',
+          test: 'var(--cat-test)',
+          infra: 'var(--cat-infra)',
+          design: 'var(--cat-design)',
+        },
       },
       borderRadius: {
         sm: '6px',

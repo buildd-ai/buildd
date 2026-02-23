@@ -130,7 +130,7 @@ function StepRow({
             <span className="relative inline-flex rounded-full h-3 w-3 bg-primary" />
           </span>
         ) : (
-          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-surface-secondary mt-[1px]" />
+          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-surface-3 mt-[1px]" />
         )}
       </span>
 
