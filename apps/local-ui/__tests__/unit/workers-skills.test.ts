@@ -14,11 +14,6 @@ function extractSkillSlugs(context: any): string[] {
     }
   }
 
-  const skillRef = context?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
-  if (skillRef && !skillSlugs.includes(skillRef.slug)) {
-    skillSlugs.push(skillRef.slug);
-  }
-
   return skillSlugs;
 }
 
@@ -84,31 +79,15 @@ describe('extractSkillSlugs', () => {
     expect(extractSkillSlugs(context)).toEqual(['deploy', 'test', 'review']);
   });
 
-  test('context.skillRef includes ref slug', () => {
-    const context = {
-      skillRef: { skillId: '123', slug: 'review', contentHash: 'xyz789' }
-    };
-    expect(extractSkillSlugs(context)).toEqual(['review']);
-  });
-
-  test('skillRef slug already in skillSlugs does not duplicate', () => {
-    const context = {
-      skillSlugs: ['review', 'deploy'],
-      skillRef: { skillId: '123', slug: 'review', contentHash: 'xyz789' }
-    };
-    expect(extractSkillSlugs(context)).toEqual(['review', 'deploy']);
-  });
-
-  test('all three sources combined are merged and deduplicated', () => {
+  test('skillSlugs and skillBundles combined are merged and deduplicated', () => {
     const context = {
       skillSlugs: ['deploy'],
       skillBundles: [
         { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' },
         { slug: 'test', name: 'Test', content: '', contentHash: 'def456' }
       ] as SkillBundle[],
-      skillRef: { skillId: '123', slug: 'review', contentHash: 'xyz789' }
     };
-    expect(extractSkillSlugs(context)).toEqual(['deploy', 'test', 'review']);
+    expect(extractSkillSlugs(context)).toEqual(['deploy', 'test']);
   });
 
   test('multiple skillBundles all included', () => {

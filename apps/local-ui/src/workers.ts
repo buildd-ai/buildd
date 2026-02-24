@@ -183,7 +183,7 @@ export class WorkerManager {
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
     this.buildd = new BuilddClient(config);
-    this.resolver = resolver || createWorkspaceResolver(config.projectsRoot);
+    this.resolver = resolver || createWorkspaceResolver(config.projectRoots);
     this.acceptRemoteTasks = config.acceptRemoteTasks !== false;
 
     // Check for stale workers every 30s
@@ -1775,12 +1775,6 @@ export class WorkerManager {
             this.addMilestone(worker, { type: 'status', label: `Skill sync failed: ${bundle.slug}`, ts: Date.now() });
           }
         }
-      }
-
-      // Also handle skillRef (single skill reference from task context)
-      const skillRef = (task.context as any)?.skillRef as { skillId: string; slug: string; contentHash: string } | undefined;
-      if (skillRef && !skillSlugs.includes(skillRef.slug)) {
-        skillSlugs.push(skillRef.slug);
       }
 
       // Add task description

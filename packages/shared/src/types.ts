@@ -525,8 +525,6 @@ export interface CreateTaskInput {
   creationSource?: CreationSourceValue;
   // Task dependency — blocked tasks start as 'blocked' and auto-unblock when all blockers complete
   blockedByTaskIds?: string[];
-  // Skill reference — server resolves slug to contentHash
-  skillRef?: { slug: string };
   // Project scoping
   project?: string;
   // Task category

@@ -535,7 +535,7 @@ export const skills = pgTable('skills', {
   name: text('name').notNull(),
   description: text('description'),
   contentHash: text('content_hash').notNull(), // SHA-256 hex of SKILL.md
-  content: text('content'), // Full SKILL.md content (nullable for backward compat with hash-only records)
+  content: text('content').notNull(), // Full SKILL.md content
   source: text('source'), // e.g. 'npm:uxtools/ui-audit' or 'github:owner/repo/path'
   sourceVersion: text('source_version'), // npm version or git ref
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

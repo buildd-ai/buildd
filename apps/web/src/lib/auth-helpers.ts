@@ -7,7 +7,6 @@ import { authenticateApiKey } from '@/lib/api-auth';
 
 export type CurrentUser = {
   id: string;
-  googleId: string | null;
   email: string;
   name: string | null;
   image: string | null;
@@ -28,7 +27,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       if (realUser) {
         return {
           id: realUser.id,
-          googleId: realUser.googleId,
+
           email: realUser.email,
           name: realUser.name,
           image: realUser.image,
@@ -40,7 +39,6 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     // Fallback to mock user
     return {
       id: 'dev-user-id',
-      googleId: 'dev-google-id',
       email: 'dev@localhost',
       name: 'Dev User',
       image: null,
@@ -58,7 +56,6 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
   return {
     id: user.id,
-    googleId: user.googleId,
     email: user.email,
     name: user.name,
     image: user.image,
@@ -94,7 +91,6 @@ export async function getUserFromRequest(req: NextRequest): Promise<CurrentUser 
   const u = ownerMembership.user;
   return {
     id: u.id,
-    googleId: u.googleId,
     email: u.email,
     name: u.name,
     image: u.image,
