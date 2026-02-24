@@ -37,7 +37,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 const mockUpdateWorker = mock(async () => ({}));
-const mockClaimTask = mock(async () => []);
+const mockClaimTask = mock(async () => ({ workers: [] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
 const mockSearchObservations = mock(async () => []);
@@ -145,11 +145,11 @@ async function createWorkerSession(manager: InstanceType<typeof WorkerManager>, 
     { type: 'result', subtype: 'success', session_id: `sess-${workerId}` },
   ];
 
-  mockClaimTask.mockImplementation(async () => [{
+  mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
     task: makeTask(),
-  }]);
+  }] }));
 
   await manager.claimAndStart(makeTask());
   await new Promise(r => setTimeout(r, 150));
