@@ -12,6 +12,7 @@ import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import { archiveSession } from './history-store';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
@@ -2248,6 +2249,11 @@ export class WorkerManager {
         }
 
         this.sessions.delete(worker.id);
+      }
+
+      // Archive to SQLite history (non-fatal)
+      if (worker.status === 'done' || worker.status === 'error') {
+        try { archiveSession(worker); } catch {}
       }
     }
   }
