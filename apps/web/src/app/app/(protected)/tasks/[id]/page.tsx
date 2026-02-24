@@ -221,7 +221,7 @@ export default async function TaskDetailPage({
                 workspaceId: task.workspaceId,
               }}
             />
-            {canReassign && <ReassignButton taskId={task.id} />}
+            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}
             {task.externalUrl && (
               <a
                 href={task.externalUrl}

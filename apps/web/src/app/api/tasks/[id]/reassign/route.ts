@@ -141,8 +141,20 @@ export async function POST(
           status: task.status,
         }, { status: 403 });
       }
+    } else if (task.status === 'failed') {
+      // For failed tasks: reset to pending (no active workers to fail)
+      await db.update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          result: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
     } else {
-      // For completed/failed tasks, don't allow reassign
+      // For completed/running tasks, don't allow reassign
       return NextResponse.json({
         reassigned: false,
         reason: `Cannot reassign task with status: ${task.status}`,
