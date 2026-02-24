@@ -394,12 +394,15 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.status).toBe('completed');
   });
 
-  it('returns reassigned:false for failed task', async () => {
+  it('retries failed task by resetting to pending', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'Test Task',
       status: 'failed',
       workspaceId: 'ws-1',
+      description: 'A task that failed',
+      mode: 'code',
+      priority: 1,
       workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
@@ -411,8 +414,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.reassigned).toBe(false);
-    expect(data.status).toBe('failed');
+    expect(data.reassigned).toBe(true);
+    expect(data.taskId).toBe('task-123');
   });
 
   it('works with API key auth', async () => {
