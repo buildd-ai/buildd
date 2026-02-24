@@ -11,6 +11,7 @@ const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Pro
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
+const mockHeartbeatsSelect = mock(() => Promise.resolve([{ count: 0, totalCapacity: 0, totalActive: 0 }]));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -75,6 +76,11 @@ mock.module('@buildd/core/db', () => ({
       currentUpdateTable = 'workers';
       return mockWorkersUpdate();
     },
+    select: (_fields: any) => ({
+      from: (_table: any) => ({
+        where: mockHeartbeatsSelect,
+      }),
+    }),
   },
 }));
 
@@ -83,6 +89,8 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 // Mock schema
@@ -90,6 +98,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', taskId: 'taskId', status: 'status' },
+  workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt', maxConcurrentWorkers: 'maxConcurrentWorkers', activeWorkerCount: 'activeWorkerCount' },
 }));
 
 // Import handler AFTER mocks
@@ -130,6 +139,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
     mockTriggerEvent.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    mockHeartbeatsSelect.mockReset();
+    mockHeartbeatsSelect.mockResolvedValue([{ count: 0, totalCapacity: 0, totalActive: 0 }]);
 
     // Default: grant access (workspace owner)
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
