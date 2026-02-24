@@ -11,7 +11,7 @@ import { syncSkillToLocal } from './skills.js';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
-import { sessionLog, cleanupOldLogs, readSessionLogs } from './session-logger';
+import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 type EventHandler = (event: any) => void;
@@ -772,8 +772,16 @@ export class WorkerManager {
     if (slots <= 0) return [];
 
     try {
-      const claimed = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
-      if (claimed.length === 0) return [];
+      const { workers: claimed, diagnostics } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
+      if (claimed.length === 0) {
+        // Skip logging no_pending_tasks during polling — that's the normal idle state
+        if (diagnostics && diagnostics.reason !== 'no_pending_tasks') {
+          claimLog({ event: 'claim_empty', slotsRequested: slots, workersClaimed: 0, diagnosticReason: diagnostics.reason });
+        }
+        return [];
+      }
+
+      claimLog({ event: 'claim_success', slotsRequested: slots, workersClaimed: claimed.length });
 
       const started: LocalWorker[] = [];
       for (const claimedWorker of claimed) {
@@ -820,11 +828,15 @@ export class WorkerManager {
     }
 
     // Claim from buildd (pass taskId for targeted claiming)
-    const claimed = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
+    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
     if (claimed.length === 0) {
-      console.log('No tasks claimed');
+      const reason = diagnostics?.reason || 'unknown';
+      claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
+      console.log(`No tasks claimed (reason: ${reason})`);
       return null;
     }
+
+    claimLog({ event: 'claim_success', slotsRequested: 1, workersClaimed: 1, taskId: task.id });
 
     const claimedWorker = claimed[0];
 

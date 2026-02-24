@@ -49,7 +49,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 // Mock BuilddClient — track all API calls
 const mockUpdateWorker = mock(async () => ({}));
-const mockClaimTask = mock(async () => [{ id: 'w-1', branch: 'buildd/test', task: null }]);
+const mockClaimTask = mock(async () => ({ workers: [{ id: 'w-1', branch: 'buildd/test', task: null }] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
 const mockSearchObservations = mock(async () => []);
@@ -188,7 +188,7 @@ function clearAllMocks() {
   mockUpdateWorker.mockReset();
   mockUpdateWorker.mockImplementation(async () => ({}));
   mockClaimTask.mockReset();
-  mockClaimTask.mockImplementation(async () => [{ id: 'w-1', branch: 'buildd/test', task: null }]);
+  mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-1', branch: 'buildd/test', task: null }] }));
   mockGetWorkspaceConfig.mockReset();
   mockGetWorkspaceConfig.mockImplementation(async () => ({ configStatus: 'unconfigured' }));
   mockGetCompactObservations.mockReset();
@@ -250,11 +250,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-loop' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-loop-abort',
         branch: 'buildd/loop-abort',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -281,11 +281,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-user-abort' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-user-abort',
         branch: 'buildd/user-abort',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -306,11 +306,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-custom-abort' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-custom-abort',
         branch: 'buildd/custom-abort',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -329,11 +329,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-abort-sync' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-abort-sync',
         branch: 'buildd/abort-sync',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -360,11 +360,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-cleanup' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-session-cleanup',
         branch: 'buildd/cleanup',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -384,11 +384,11 @@ describe('Error Handling', () => {
       // Simulate SDK throwing an abort error during iteration
       mockQueryError = new Error('Query aborted');
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-sdk-abort',
         branch: 'buildd/sdk-abort',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -413,11 +413,11 @@ describe('Error Handling', () => {
         },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-budget',
         branch: 'buildd/budget-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -445,11 +445,11 @@ describe('Error Handling', () => {
         throw new Error('API error: 500 - Internal server error');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-config-fail',
         branch: 'buildd/config-fail',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -468,11 +468,11 @@ describe('Error Handling', () => {
         throw new Error('Connection refused');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-start-report',
         branch: 'buildd/start-report',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -490,11 +490,11 @@ describe('Error Handling', () => {
         throw new Error('Network timeout');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-start-time',
         branch: 'buildd/start-time',
         task: makeTask(),
-      }]);
+      }] }));
 
       const before = Date.now();
       manager = new WorkerManager(makeConfig());
@@ -516,11 +516,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-auth' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-auth-fail',
         branch: 'buildd/auth-fail',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -556,11 +556,11 @@ describe('Error Handling', () => {
         return {};
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-sync-fail',
         branch: 'buildd/sync-fail',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
 
@@ -604,11 +604,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-500' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-500',
         branch: 'buildd/500-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -634,7 +634,7 @@ describe('Error Handling', () => {
     });
 
     test('claim returns empty array returns null', async () => {
-      mockClaimTask.mockImplementation(async () => []);
+      mockClaimTask.mockImplementation(async () => ({ workers: [] }));
 
       manager = new WorkerManager(makeConfig());
       const result = await manager.claimAndStart(makeTask());
@@ -660,11 +660,11 @@ describe('Error Handling', () => {
         },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-unknown-err',
         branch: 'buildd/unknown-err',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       const events = collectEvents(manager);
@@ -697,11 +697,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-bad-instr' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-bad-instr',
         branch: 'buildd/bad-instr',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
 
@@ -727,11 +727,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-bad-config' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-bad-config',
         branch: 'buildd/bad-config',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -761,11 +761,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-obs-fail' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-obs-fail',
         branch: 'buildd/obs-fail',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -791,11 +791,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-fk' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-fk-violation',
         branch: 'buildd/fk-violation',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -824,11 +824,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-batch-fail' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-batch-fail',
         branch: 'buildd/batch-fail',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -859,11 +859,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-stale-recover' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-stale-recover',
         branch: 'buildd/stale-recover',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       const events = collectEvents(manager);
@@ -889,11 +889,11 @@ describe('Error Handling', () => {
         throw new Error('Server down');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-persist-error',
         branch: 'buildd/persist-error',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -909,11 +909,11 @@ describe('Error Handling', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-evict' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-evict',
         branch: 'buildd/evict',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -943,11 +943,11 @@ describe('Error Handling', () => {
       let callCount = 0;
       mockClaimTask.mockImplementation(async () => {
         callCount++;
-        return [{
+        return { workers: [{
           id: `w-cap-${callCount}`,
           branch: `buildd/cap-${callCount}`,
           task: makeTask(),
-        }];
+        }] };
       });
 
       manager = new WorkerManager(makeConfig({ maxConcurrent: 1 }));
@@ -994,11 +994,11 @@ describe('Error Handling', () => {
         throw new Error('Something descriptive went wrong');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-err-msg',
         branch: 'buildd/err-msg',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -1013,11 +1013,11 @@ describe('Error Handling', () => {
         throw 'string error'; // eslint-disable-line no-throw-literal
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-str-err',
         branch: 'buildd/str-err',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -1033,11 +1033,11 @@ describe('Error Handling', () => {
       // Create a scenario where SDK throws with "aborted" in message
       mockQueryError = new Error('Query was aborted by user');
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-abort-msg',
         branch: 'buildd/abort-msg',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -1124,11 +1124,11 @@ describe('Error Handling', () => {
         },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-meta',
         branch: 'buildd/meta-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -1152,11 +1152,11 @@ describe('Error Handling', () => {
         },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-budget-ms',
         branch: 'buildd/budget-ms',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -1180,11 +1180,11 @@ describe('Error Handling', () => {
         throw new Error('Temporary failure');
       });
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-retry',
         branch: 'buildd/retry-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());

@@ -51,6 +51,30 @@ export function readSessionLogs(workerId: string, maxLines = 50): SessionLogEntr
   }
 }
 
+import type { ClaimDiagnosticReason } from '@buildd/shared';
+
+export interface ClaimLogEntry {
+  ts: number;
+  event: 'claim_attempt' | 'claim_success' | 'claim_empty';
+  slotsRequested: number;
+  workersClaimed: number;
+  diagnosticReason?: ClaimDiagnosticReason;
+  taskId?: string;
+}
+
+const CLAIMS_LOG = join(LOGS_DIR, 'claims.log');
+
+/** Append a structured claim log entry */
+export function claimLog(entry: Omit<ClaimLogEntry, 'ts'>): void {
+  try {
+    ensureDir();
+    const full: ClaimLogEntry = { ts: Date.now(), ...entry };
+    appendFileSync(CLAIMS_LOG, JSON.stringify(full) + '\n');
+  } catch {
+    // Logging should never crash the app
+  }
+}
+
 /** Clean up log files older than 48 hours */
 export function cleanupOldLogs(): void {
   if (!existsSync(LOGS_DIR)) return;

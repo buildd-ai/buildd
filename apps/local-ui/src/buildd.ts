@@ -1,6 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
-import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult, WorkerEnvironment } from '@buildd/shared';
+import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 
 export class BuilddClient {
   private config: LocalUIConfig;
@@ -60,12 +60,12 @@ export class BuilddClient {
     return data.tasks || [];
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string) {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',
       body: JSON.stringify({ maxTasks, workspaceId, taskId, runner: runner || 'local-ui' }),
     });
-    return data.workers || [];
+    return { workers: data.workers || [], diagnostics: data.diagnostics };
   }
 
   async updateWorker(workerId: string, update: {
@@ -300,6 +300,9 @@ export class BuilddClient {
     reason?: string;
     canTakeover?: boolean;
     isStale?: boolean;
+    onlineRunners?: number;
+    availableCapacity?: number;
+    warning?: string;
   }> {
     const url = force ? `/api/tasks/${taskId}/reassign?force=true` : `/api/tasks/${taskId}/reassign`;
     return this.fetch(url, { method: 'POST' }, [403]);
