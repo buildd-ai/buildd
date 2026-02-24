@@ -3,6 +3,8 @@ name: Sync dev from main
 on:
   push:
     branches: [main]
+  delete:
+    branches: [dev]
 
 permissions:
   contents: write
@@ -13,14 +15,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           fetch-depth: 0
 
-      - name: Fast-forward dev to main
+      - name: Ensure dev exists and matches main
         run: |
-          git fetch origin main
-          git merge --ff-only origin/main || {
-            echo "::warning::Cannot fast-forward dev to main. Manual merge required."
-            exit 0
-          }
-          git push origin dev
+          if git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
+            echo "dev exists, fast-forwarding to main..."
+            git fetch origin dev
+            git checkout dev
+            git merge --ff-only origin/main || {
+              echo "::warning::Cannot fast-forward dev to main. Manual merge required."
+              exit 0
+            }
+            git push origin dev
+          else
+            echo "dev branch missing, recreating from main..."
+            git checkout -b dev
+            git push origin dev
+          fi
