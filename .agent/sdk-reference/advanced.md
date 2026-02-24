@@ -82,7 +82,7 @@ type SDKMessage =
   | SDKCompactBoundaryMessage;   // Conversation compaction boundary
 ```
 
-Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKTaskProgressEvent` (v0.2.51+), `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
 
 ### Available Tools Reference
 
