@@ -1,7 +1,7 @@
 /**
  * Self-contained auto-update module for local-ui.
  *
- * Local-ui is installed via git sparse checkout to ~/.buildd/ tracking origin/dev.
+ * Local-ui is installed via git sparse checkout to ~/.buildd/ tracking origin/main.
  * This module provides helpers to detect when a newer version is available and
  * to apply the update (git fetch + reset + bun install).
  */
@@ -39,14 +39,14 @@ export interface UpdateResult {
 }
 
 /**
- * Applies the update: git fetch + reset --hard origin/dev + bun install.
+ * Applies the update: git fetch + reset --hard origin/main + bun install.
  * Returns a result object. The caller should `process.exit(75)` on success
  * so the launcher script restarts the process.
  */
 export function applyUpdate(): UpdateResult {
   const previousCommit = getCurrentCommit();
   try {
-    execSync('git fetch origin dev && git reset --hard origin/dev', {
+    execSync('git fetch origin main && git reset --hard origin/main', {
       cwd: INSTALL_DIR,
       encoding: 'utf-8',
       timeout: 30_000,
