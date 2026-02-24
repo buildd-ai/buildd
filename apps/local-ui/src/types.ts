@@ -322,8 +322,7 @@ export interface ProviderConfig {
 
 // Config
 export interface LocalUIConfig {
-  projectsRoot: string;  // Primary root (backwards compat)
-  projectRoots?: string[];  // All roots to search
+  projectRoots: string[];  // All roots to search
   builddServer: string;
   apiKey: string;
   maxConcurrent: number;

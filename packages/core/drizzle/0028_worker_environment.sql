@@ -1,1 +1,0 @@
-ALTER TABLE "worker_heartbeats" ADD COLUMN "environment" jsonb;

@@ -357,7 +357,6 @@ function buildProviderConfig(): ProviderConfig | undefined {
 
 // Build runtime config
 const config: LocalUIConfig = {
-  projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
@@ -1188,7 +1187,7 @@ const server = Bun.serve({
         configured: !!config.apiKey,
         workers: workerManager?.getWorkers() || [],
         config: {
-          projectsRoot: config.projectsRoot,
+          projectRoots: config.projectRoots,
           builddServer: config.builddServer,
           maxConcurrent: config.maxConcurrent,
           model: config.model,
@@ -1713,7 +1712,7 @@ const server = Bun.serve({
         return Response.json({ error: 'repoUrl required' }, { status: 400, headers: corsHeaders });
       }
 
-      const clonePath = targetPath || `${config.projectRoots?.[0] || config.projectsRoot}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
+      const clonePath = targetPath || `${config.projectRoots[0]}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
 
       try {
         const { execSync } = require('child_process');
@@ -1809,7 +1808,7 @@ const server = Bun.serve({
     // Scan local skills from a project path
     if (path === '/api/skills/scan' && req.method === 'POST') {
       const body = await parseBody(req);
-      const localPath = body.localPath || config.projectsRoot;
+      const localPath = body.localPath || config.projectRoots[0];
 
       if (!localPath || !existsSync(localPath)) {
         return Response.json({ error: 'Invalid or missing localPath' }, { status: 400, headers: corsHeaders });
@@ -1998,7 +1997,7 @@ const server = Bun.serve({
         ...resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo }),
       }));
       return Response.json({
-        projectsRoot: config.projectsRoot,
+        projectRoots: config.projectRoots,
         localDirectories: resolver.listLocalDirectories(),
         pathOverrides: resolver.getPathOverrides(),
         workspaces: results,

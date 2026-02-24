@@ -105,9 +105,7 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
       // Direct assignment to a specific local-ui instance
       assignToLocalUiUrl,
-      // Skill reference
-      skillRef,
-      // Skill slugs (new: array of skill slugs)
+      // Skill slugs
       skillSlugs: rawSkillSlugs,
       // JSON Schema for structured output
       outputSchema,
@@ -150,14 +148,9 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
 
-    // Normalize skill slugs: merge old skillRef.slug into skillSlugs for unified handling
     const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
-    if (skillRef?.slug && !skillSlugs.includes(skillRef.slug)) {
-      skillSlugs.push(skillRef.slug);
-    }
 
     // Resolve skill references if any slugs provided
-    let resolvedSkillRef: { skillId: string; slug: string; contentHash: string } | undefined;
     const resolvedSkillRefs: Array<{ skillId: string; slug: string; contentHash: string }> = [];
 
     if (skillSlugs.length > 0) {
@@ -206,32 +199,17 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Keep backward compat: set resolvedSkillRef to the first one (or the skillRef.slug match)
-      if (skillRef?.slug) {
-        resolvedSkillRef = resolvedSkillRefs.find(r => r.slug === skillRef.slug);
-      }
     }
 
-    // Process attachments - accept both R2 references and legacy inline base64
-    const processedAttachments: Array<
-      { filename: string; mimeType: string; storageKey: string } |
-      { filename: string; mimeType: string; data: string }
-    > = [];
+    // Process attachments - R2 storage references only
+    const processedAttachments: Array<{ filename: string; mimeType: string; storageKey: string }> = [];
     if (attachments && Array.isArray(attachments)) {
       for (const att of attachments) {
         if (att.storageKey && att.mimeType && att.filename) {
-          // R2 reference (new format)
           processedAttachments.push({
             filename: att.filename,
             mimeType: att.mimeType,
             storageKey: att.storageKey,
-          });
-        } else if (att.data && att.mimeType && att.filename) {
-          // Inline base64 data URL (legacy format)
-          processedAttachments.push({
-            filename: att.filename,
-            mimeType: att.mimeType,
-            data: att.data,
           });
         }
       }
@@ -305,7 +283,6 @@ export async function POST(req: NextRequest) {
         requiredCapabilities: requiredCapabilities || [],
         context: {
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
-          ...(resolvedSkillRef ? { skillRef: resolvedSkillRef } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
         },

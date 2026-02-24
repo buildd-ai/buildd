@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "instruction_history" jsonb DEFAULT '[]'::jsonb;

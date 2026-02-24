@@ -426,7 +426,7 @@ export async function POST(req: NextRequest) {
               const url = await generateDownloadUrl(att.storageKey);
               return { filename: att.filename, mimeType: att.mimeType, url };
             }
-            return att; // legacy base64 passes through
+            return att;
           })
         );
       }
@@ -484,14 +484,12 @@ export async function POST(req: NextRequest) {
       });
 
       for (const ts of teamSkills) {
-        if (ts.content) {
-          bundles.push({
-            slug: ts.slug,
-            name: ts.name,
-            description: ts.description || undefined,
-            content: ts.content,
-          });
-        }
+        bundles.push({
+          slug: ts.slug,
+          name: ts.name,
+          description: ts.description || undefined,
+          content: ts.content,
+        });
       }
     }
 
