@@ -8,6 +8,7 @@ import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
 import { scanSkills } from './skills';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
+import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -390,6 +391,9 @@ let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(conf
 
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
+
+// Initialize history store (SQLite-backed session history)
+try { initHistory(); } catch (err) { console.error('History store init failed:', err); }
 
 // Auto-update state
 interface UpdateState {
@@ -1969,6 +1973,55 @@ const server = Bun.serve({
       }
     }
 
+    // =============================================================================
+    // HISTORY API
+    // =============================================================================
+
+    if (path === '/api/history/stats' && req.method === 'GET') {
+      try {
+        const stats = getHistoryStats();
+        return Response.json(stats, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (path.startsWith('/api/history/') && req.method === 'GET') {
+      const workerId = path.slice('/api/history/'.length);
+      if (workerId && workerId !== 'stats') {
+        try {
+          const session = getSession(workerId);
+          if (!session) {
+            return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+          }
+          const archived = getArchivedData(workerId);
+          return Response.json({ ...session, archived }, { headers: corsHeaders });
+        } catch (err: any) {
+          return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+        }
+      }
+    }
+
+    if (path === '/api/history' && req.method === 'GET') {
+      try {
+        const params = url.searchParams;
+        const result = searchSessions({
+          q: params.get('q') || undefined,
+          workspace: params.get('workspace') || undefined,
+          status: params.get('status') || undefined,
+          from: params.get('from') ? parseInt(params.get('from')!) : undefined,
+          to: params.get('to') ? parseInt(params.get('to')!) : undefined,
+          sort: (params.get('sort') as any) || undefined,
+          dir: (params.get('dir') as any) || undefined,
+          page: params.get('page') ? parseInt(params.get('page')!) : undefined,
+          limit: params.get('limit') ? parseInt(params.get('limit')!) : undefined,
+        });
+        return Response.json(result, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Debug endpoints for workspace resolution testing
     if (path === '/api/debug/directories' && req.method === 'GET') {
       return Response.json({
@@ -2026,6 +2079,11 @@ const server = Bun.serve({
     }
     if (path === '/icon.png') {
       return serveStatic('icon.png', req);
+    }
+
+    // ES modules: /modules/**/*.js
+    if (path.startsWith('/modules/') && path.endsWith('.js')) {
+      return serveStatic(path.slice(1), req);
     }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)

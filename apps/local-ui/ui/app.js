@@ -276,6 +276,17 @@ let sseConnected = false;
 
 function showConnectionStatus(connected) {
   sseConnected = connected;
+  // Update connection dot
+  const dot = document.getElementById('connectionDot');
+  if (dot) {
+    if (connected) {
+      dot.className = 'w-2 h-2 rounded-full bg-status-success';
+      dot.title = 'Connected';
+    } else {
+      dot.className = 'w-2 h-2 rounded-full bg-status-warning animate-pulse';
+      dot.title = 'Reconnecting...';
+    }
+  }
   let banner = document.getElementById('connectionBanner');
   if (connected) {
     if (banner) banner.remove();
