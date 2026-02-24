@@ -2,14 +2,14 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.49)
+## Buildd Integration Status (v0.2.52)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 13 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange)
+- All 13 core hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -22,11 +22,15 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.52`** | Memory leak fixes (agent teams, LSP, file history, CircularBuffer, shell commands), security fixes, headless startup perf | **P1** | Task created |
+| **Pass account identity env vars** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` — eliminates telemetry race condition | **P1** | Task created |
+| Integrate WorktreeCreate/WorktreeRemove hooks | Custom setup/teardown for worktree-isolated subagents | P2 | Task created |
+| Evaluate `claude remote-control` for worker architecture | New subcommand serving local environments for external builds | P2 | Task created |
+| Add `CLAUDE_CODE_DISABLE_1M_CONTEXT` support | Allow workspace config to disable 1M context | P3 | Task created |
+| Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
+| Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
-| Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
-| Bump SDK pin to `>=0.2.49` | WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Done (all packages at `>=0.2.49`) |
-| Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
 | Display permission suggestions in local-ui | `permission_suggestions` on safety check ask responses | P3 | Task created |
 
@@ -51,10 +55,13 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.52 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.52 | 0.2.52 | VS Code Windows crash fix only |
+| 2.1.51 | 0.2.51 | `claude remote-control` subcommand; account identity env vars (`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`); tool result disk threshold lowered to 50K; HTTP hooks through sandbox proxy; security fixes (hook trust check, env var interpolation); BashTool login shell optimization; plugin npm registry/version pinning; human-readable /model picker |
+| 2.1.50 | 0.2.50 | `WorktreeCreate`/`WorktreeRemove` hook events; `isolation: worktree` in agent definitions; `claude agents` CLI; `CLAUDE_CODE_DISABLE_1M_CONTEXT` env var; Opus 4.6 fast mode 1M context; headless startup perf; 9 memory leak fixes (agent teams, LSP, file history, CircularBuffer, shell commands, TaskOutput, completed tasks, caches, large tool results); session data loss fix on SSH disconnect; `startupTimeout` for LSP; `CLAUDE_CODE_SIMPLE` enhancements |
 | 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; Sonnet 4.6 1M context; WASM memory fix; non-interactive perf; MCP auth caching; CWD recovery; Unicode edit fix; `permission_suggestions` on safety checks; `disableAllHooks` managed settings hierarchy fix; startup perf (analytics batching, MCP tool token batching); `--resume` picker XML tag fix |
 | 2.1.47 | 0.2.47 | `promptSuggestion()`; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop; memory & perf improvements |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors; orphaned process fix (macOS) |
@@ -71,6 +78,12 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **9 memory leak fixes** — Agent teams GC, LSP diagnostics, file history caps, CircularBuffer, shell commands, TaskOutput, completed task state, internal caches, large tool results (v2.1.50)
+- **Session data loss on SSH disconnect** — Session data flushed before hooks/analytics in graceful shutdown (v2.1.50)
+- **Headless startup perf** — Deferred WASM/UI imports for `-p` mode (v2.1.50)
+- **Tool result disk threshold** — Lowered from 100K to 50K chars, reducing context usage (v2.1.51)
+- **BashTool login shell skip** — Skips `-l` flag when shell snapshot available (v2.1.51)
+- **Account telemetry race condition** — New env vars eliminate missing account metadata in early events (v2.1.51)
 - **WASM memory fix** — Fixed unbounded WASM memory growth during long sessions (v2.1.49)
 - **CWD recovery** — Shell commands no longer permanently fail after a command deletes its own working directory (v2.1.49)
 - **Non-interactive performance** — Improved performance in `-p` mode (v2.1.49) — benefits all Buildd workers
