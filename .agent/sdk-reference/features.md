@@ -691,3 +691,45 @@ The SDK emits `is_background: true` on `task_started` system messages for backgr
 - **Resolution**: Task-level override > workspace-level setting
 - **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
 - **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
+
+---
+
+## 38. WorktreeCreate / WorktreeRemove Hooks (CLI v2.1.50)
+
+Two new hook events for worktree lifecycle management. See [new-in-v0250-55.md](new-in-v0250-55.md#38-worktreecreate--worktreeremove-hook-events-v2150) for details.
+
+---
+
+## 39. Declarative Agent Worktree Isolation (CLI v2.1.50)
+
+`isolation: "worktree"` on agent definitions. See [new-in-v0250-55.md](new-in-v0250-55.md#39-declarative-isolation-worktree-in-agent-definitions-v2150) for details.
+
+---
+
+## 40. Account Identity Env Vars (CLI v2.1.51)
+
+`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`. See [new-in-v0250-55.md](new-in-v0250-55.md#40-account-identity-environment-variables-v2151) for details.
+
+---
+
+## 41. `claude remote-control` (CLI v2.1.51)
+
+New subcommand for external builds to control running sessions. See [new-in-v0250-55.md](new-in-v0250-55.md#41-claude-remote-control-subcommand-v2151) for details.
+
+---
+
+## 42. `CLAUDE_CODE_DISABLE_1M_CONTEXT` (CLI v2.1.50)
+
+Env var to disable 1M context window. See [new-in-v0250-55.md](new-in-v0250-55.md#42-claude_code_disable_1m_context-environment-variable-v2150) for details.
+
+---
+
+## 43. Memory Leak Fixes (CLI v2.1.50)
+
+Nine critical memory leak fixes for long-running sessions. See [new-in-v0250-55.md](new-in-v0250-55.md#47-memory-leak-fixes-v2150) for details.
+
+---
+
+## 44. HTTP Hooks Security (CLI v2.1.51)
+
+`allowedEnvVars` and sandbox routing for HTTP hooks. See [new-in-v0250-55.md](new-in-v0250-55.md#46-http-hooks-security-improvements-v2151) for details.
