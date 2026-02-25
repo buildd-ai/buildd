@@ -691,3 +691,21 @@ The SDK emits `is_background: true` on `task_started` system messages for backgr
 - **Resolution**: Task-level override > workspace-level setting
 - **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
 - **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
+
+---
+
+## 38. `task_progress` Events (SDK v0.2.51)
+
+See [new-in-v0256.md](new-in-v0256.md#38-task_progress-events-sdk-v0251) for details.
+
+---
+
+## 39. `listSessions()` (SDK v0.2.53)
+
+See [new-in-v0256.md](new-in-v0256.md#39-listsessions-sdk-v0253) for details.
+
+---
+
+## 40. Account Metadata Environment Variables (CLI v2.1.51)
+
+See [new-in-v0256.md](new-in-v0256.md#40-account-metadata-environment-variables-cli-v2151) for details.

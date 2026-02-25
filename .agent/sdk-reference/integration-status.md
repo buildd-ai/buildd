@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.49)
+## Buildd Integration Status (v0.2.56)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,18 +22,22 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.56`** | Memory leak fixes, `task_progress`, `listSessions()`, headless perf | **P1** | **New — task created** |
+| **Surface `task_progress` events in dashboard** | Real-time subagent progress with usage metrics, tool counts, duration | **P1** | **New — task created** |
+| **Pass account metadata env vars to workers** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New — task created** |
+| **Integrate `listSessions()` for session browsing** | Discover past sessions with light metadata | **P2** | **New — task created** |
+| **Add `WorktreeCreate`/`WorktreeRemove` hook handling** | Hook into worktree lifecycle for cleanup/notification | **P3** | **New — task created** |
 | Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
 | Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
-| Bump SDK pin to `>=0.2.49` | WASM memory fix, CWD recovery, non-interactive perf, MCP auth caching | P2 | Done (all packages at `>=0.2.49`) |
 | Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
 | Display permission suggestions in local-ui | `permission_suggestions` on safety check ask responses | P3 | Task created |
 
 ## Completed Integrations
 
+- **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49` (bump to `>=0.2.56` pending)
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in local-ui
-
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
 - **`tool_use_id` on task notifications** — Integrated (#90)
@@ -51,10 +55,16 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.49 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.56 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.56 | 0.2.56 | VS Code fix |
+| 2.1.55 | 0.2.55 | BashTool Windows EINVAL fix |
+| 2.1.53 | 0.2.53 | **`listSessions()`**; WASM crash fix (Linux x64, Windows x64); worktree launch fix; bulk agent kill aggregate notification; graceful shutdown stale session fix |
+| 2.1.52 | 0.2.52 | VS Code Windows crash fix |
+| 2.1.51 | 0.2.51 | **`task_progress` events**; **`claude remote-control`**; **account metadata env vars** (`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`); BashTool no-login-shell default; custom npm registries for plugins; tool result 50K threshold; managed settings (plist/Registry); SDK Bun compile crash fix; SDK UUID memory leak fix; SDK `session.close()` fix |
+| 2.1.50 | 0.2.50 | **`WorktreeCreate`/`WorktreeRemove` hooks**; **declarative `isolation: worktree`** in agent definitions; **`claude agents` CLI**; Opus 4.6 fast mode 1M context; `CLAUDE_CODE_DISABLE_1M_CONTEXT`; `startupTimeout` for LSP; headless startup perf; 8 memory leak fixes (agent teams, completed tasks, LSP diagnostics, file history, CircularBuffer, ChildProcess, TaskOutput, AppState) |
 | 2.1.49 | 0.2.49 | `ConfigChange` hook; model capability discovery; worktree isolation; Sonnet 4.6 1M context; WASM memory fix; non-interactive perf; MCP auth caching; CWD recovery; Unicode edit fix; `permission_suggestions` on safety checks; `disableAllHooks` managed settings hierarchy fix; startup perf (analytics batching, MCP tool token batching); `--resume` picker XML tag fix |
 | 2.1.47 | 0.2.47 | `promptSuggestion()`; `tool_use_id` on task notifications; `last_assistant_message` on Stop/SubagentStop; memory & perf improvements |
 | 2.1.46 | 0.2.46 | claude.ai MCP connectors; orphaned process fix (macOS) |
@@ -71,6 +81,13 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **8 memory leak fixes** — Agent teams, completed tasks, LSP diagnostics, file history, CircularBuffer, ChildProcess/AbortController, TaskOutput, AppState (v2.1.50) — critical for long-running workers
+- **SDK UUID tracking memory leak** — Message UUID tracking never evicted old entries, causing unbounded memory growth (v0.2.51) — critical for long-running SDK sessions
+- **Headless startup perf** — Deferred Yoga WASM and UI imports for `-p` mode (v2.1.50) — benefits all Buildd workers
+- **BashTool no-login-shell** — Skips `-l` flag by default when shell snapshot available (v2.1.51) — faster command execution
+- **Tool result 50K threshold** — Lowered from 100K to 50K for disk persistence (v2.1.51) — better context management
+- **SDK Bun compile fix** — Fixed ReferenceError when SDK used inside compiled Bun binaries (v0.2.51) — relevant for local-ui
+- **SDK `session.close()` fix** — No longer kills subprocess before persisting session data (v0.2.51) — fixes `resumeSession()`
 - **WASM memory fix** — Fixed unbounded WASM memory growth during long sessions (v2.1.49)
 - **CWD recovery** — Shell commands no longer permanently fail after a command deletes its own working directory (v2.1.49)
 - **Non-interactive performance** — Improved performance in `-p` mode (v2.1.49) — benefits all Buildd workers

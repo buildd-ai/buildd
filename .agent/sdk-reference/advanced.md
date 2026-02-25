@@ -47,6 +47,12 @@ options: {
 | `promptSuggestion()` | Request prompt suggestions (v0.2.47+) |
 | `close()` | Terminate the query |
 
+### Standalone Functions (not on Query instance)
+
+| Function | Description |
+|----------|-------------|
+| `listSessions()` | Discover and list past sessions with light metadata (v0.2.53+) |
+
 ### SDKResultMessage
 
 ```typescript
@@ -82,7 +88,7 @@ type SDKMessage =
   | SDKCompactBoundaryMessage;   // Conversation compaction boundary
 ```
 
-Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKTaskProgressEvent` (v0.2.51+), `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
 
 ### Available Tools Reference
 
