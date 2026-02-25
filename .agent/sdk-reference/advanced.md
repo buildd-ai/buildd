@@ -45,6 +45,7 @@ options: {
 | `streamInput(stream)` | Stream user messages |
 | `stopTask(taskId)` | Stop a background task |
 | `promptSuggestion()` | Request prompt suggestions (v0.2.47+) |
+| `listSessions()` | List past sessions with light metadata (v0.2.53+) |
 | `close()` | Terminate the query |
 
 ### SDKResultMessage

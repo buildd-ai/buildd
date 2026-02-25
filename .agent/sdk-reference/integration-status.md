@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.52)
+## Buildd Integration Status (v0.2.58)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,11 +22,12 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.52`** | Memory leak fixes, Bun binary fix, task_progress events | **P1** | **New** |
+| **Bump SDK pin to `>=0.2.58`** | `listSessions()`, stability fixes, Remote Control expansion | **P1** | **New** |
+| **Use `listSessions()` for session management** | List/browse past worker sessions, enable session debugging | **P2** | **New** |
+| **Re-evaluate Remote Control for hybrid execution** | Expanded to more users in v2.1.58 — viable for local execution + cloud coordination | **P2** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
 | **Handle `WorktreeCreate`/`WorktreeRemove` hooks** | Custom setup/cleanup for subagent worktrees | **P3** | **New** |
-| **Evaluate `remote-control` for hybrid execution** | `claude remote-control` — local execution, remote coordination | **P3** | **New** |
 | **Reduce tool result disk threshold** | Results > 50K persisted to disk (was 100K) — improves conversation longevity | **P3** | **Auto (CLI-side)** |
 | Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
@@ -57,10 +58,14 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.52 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.58 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.58 | 0.2.58 | Remote Control expanded to more users |
+| 2.1.56 | 0.2.56 | VS Code: another "openLast" crash fix |
+| 2.1.55 | 0.2.55 | BashTool EINVAL fix on Windows |
+| 2.1.53 | 0.2.53 | **`listSessions()`** — discover/list past sessions with light metadata; UI flicker fix; bulk agent kill sends single aggregate notification; graceful shutdown no longer leaves stale sessions with Remote Control; `--worktree` first-launch fix; WASM crash fix (Linux x64 & Windows x64); multiple Windows crash fixes (panic, process spawning, ARM64 timeout) |
 | 2.1.52 | 0.2.52 | VS Code Windows crash fix |
 | 2.1.51 | 0.2.51 | `claude remote-control` subcommand; `task_progress` events for background agents; Bun binary fix; unbounded memory growth fix (UUID tracking); `session.close()` persistence fix; account identity env vars (`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`); tool result disk threshold 50K; plugin npm registry support; BashTool login shell skip; managed settings via plist/Registry |
 | 2.1.50 | 0.2.50 | `WorktreeCreate`/`WorktreeRemove` hooks; `isolation: "worktree"` stable; `claude agents` CLI command; `CLAUDE_CODE_DISABLE_1M_CONTEXT` env var; Opus 4.6 1M context; `CLAUDE_CODE_SIMPLE` full strip-down; headless startup perf; LSP `startupTimeout`; 10+ memory leak fixes (teammate tasks, AppState, LSP, file history, CircularBuffer, TaskOutput, shell execution); symlink session resume fix; Linux glibc < 2.30 fix |
@@ -80,6 +85,10 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Graceful shutdown stale session fix** — Remote Control graceful shutdown no longer leaves stale sessions (v2.1.53). Parallelized teardown network calls.
+- **Worktree first-launch fix** — `--worktree` flag no longer sometimes ignored on first launch (v2.1.53). Improves reliability of subagent worktree isolation.
+- **Bulk agent kill improvement** — ctrl+f now sends single aggregate notification instead of one per agent, and properly clears command queue (v2.1.53). Relevant for local-ui abort handling.
+- **WASM/platform stability** — Fixed WASM interpreter crash on Linux x64 & Windows x64, multiple Windows crashes (v2.1.53, v2.1.55)
 - **10+ memory leak fixes** — Teammate tasks, AppState, LSP diagnostics, file history, CircularBuffer, TaskOutput, shell execution, UUID tracking — all fixed (v2.1.50–v2.1.51). Critical for long-running local-ui workers.
 - **Bun binary compatibility** — Fixed SDK crash (`ReferenceError`) in `bun build --compile` binaries (v0.2.51)
 - **`session.close()` persistence** — Fixed subprocess being killed before persisting session data, which broke `resumeSession()` (v0.2.51)

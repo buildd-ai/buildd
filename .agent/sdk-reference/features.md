@@ -666,6 +666,28 @@ Support for using claude.ai MCP connectors within Claude Code. Workers can acces
 
 ---
 
+## 38. `listSessions()` — Session Discovery (SDK v0.2.53)
+
+```typescript
+const queryInstance = query({ prompt, options });
+const sessions = await queryInstance.listSessions();
+// Returns light metadata about past sessions (session IDs, timestamps, etc.)
+```
+
+Useful for:
+- **Session management UIs** — Browse/search past worker sessions in dashboards
+- **Session debugging** — Find and inspect sessions by time range or metadata
+- **Stale session cleanup** — Identify orphaned sessions for garbage collection
+- **Session resume** — Let users pick a session to resume via `resume` option
+
+---
+
+## 39. Remote Control Expansion (CLI v2.1.58)
+
+`claude remote-control` now available to more users. Enables a hybrid execution model where Claude Code runs locally but can be coordinated remotely. Previously evaluated as P3; now more viable for production use given wider availability and the v2.1.53 fix for stale sessions during graceful shutdown.
+
+---
+
 ## 37. Background Agent Definitions (SDK v0.2.49)
 
 Agent definitions now support `background: true`, making subagents always run as background tasks. This is useful for:
