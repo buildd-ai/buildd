@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "result_meta" jsonb;

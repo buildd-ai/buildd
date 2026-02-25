@@ -21,6 +21,9 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { db } from "@buildd/core/db";
+import { workspaces } from "@buildd/core/db/schema";
+import { eq } from "drizzle-orm";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -82,13 +85,14 @@ async function getAccountLevel(api: ApiFn): Promise<'worker' | 'admin'> {
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin') {
+function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspaceId?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : [...workerActions];
 
   const ctx: ActionContext = {
-    getWorkspaceId: async () => null,
+    workspaceId: workspaceId || undefined,
+    getWorkspaceId: async () => workspaceId || null,
     getLevel: async () => accountLevel,
   };
 
@@ -187,7 +191,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin') {
       } else if (name === "buildd_memory") {
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
-        return await handleMemoryAction(api, action, params, {});
+        return await handleMemoryAction(api, action, params, { workspaceId, getWorkspaceId: async () => workspaceId || null });
       } else {
         throw new Error(`Unknown tool: ${name}`);
       }
@@ -285,10 +289,23 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
+  // Resolve workspace from ?repo= query param
+  const url = new URL(req.url);
+  const repoParam = url.searchParams.get("repo");
+  let workspaceId: string | undefined;
+
+  if (repoParam) {
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.repo, repoParam),
+      columns: { id: true },
+    });
+    workspaceId = workspace?.id;
+  }
+
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'worker' | 'admin' || 'worker';
-  const server = createMcpServer(api, accountLevel);
+  const server = createMcpServer(api, accountLevel, workspaceId);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

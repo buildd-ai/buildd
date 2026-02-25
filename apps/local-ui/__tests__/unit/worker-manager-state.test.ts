@@ -40,7 +40,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 // Mock BuilddClient
 const mockUpdateWorker = mock(async () => ({}));
-const mockClaimTask = mock(async () => [{ id: 'w-1', branch: 'buildd/test', task: null }]);
+const mockClaimTask = mock(async () => ({ workers: [{ id: 'w-1', branch: 'buildd/test', task: null }] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
 const mockSearchObservations = mock(async () => []);
@@ -198,11 +198,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-1' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-plan-1',
         branch: 'buildd/plan-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       const events = collectEvents(manager);
@@ -244,11 +244,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-1' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-plan-sync',
         branch: 'buildd/sync-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -292,11 +292,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-q1' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-ask-1',
         branch: 'buildd/ask-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       const events = collectEvents(manager);
@@ -334,11 +334,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-q2' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-ask-sync',
         branch: 'buildd/ask-sync',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -362,11 +362,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-done' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-done-1',
         branch: 'buildd/done-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -389,11 +389,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-done2' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-done-2',
         branch: 'buildd/done-test-2',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -417,11 +417,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-track-123' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-sess-track',
         branch: 'buildd/sess-track',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -457,11 +457,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-phase' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-phase',
         branch: 'buildd/phase-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
@@ -486,11 +486,11 @@ describe('WorkerManager — state transitions', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-stale' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-stale',
         branch: 'buildd/stale-test',
         task: makeTask(),
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());

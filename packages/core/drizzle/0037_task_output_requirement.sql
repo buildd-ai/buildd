@@ -1,1 +1,0 @@
-ALTER TABLE "tasks" ADD COLUMN "output_requirement" text DEFAULT 'auto';

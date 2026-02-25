@@ -11,6 +11,7 @@ const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Pro
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
+const mockHeartbeatsSelect = mock(() => Promise.resolve([{ count: 0, totalCapacity: 0, totalActive: 0 }]));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -75,6 +76,11 @@ mock.module('@buildd/core/db', () => ({
       currentUpdateTable = 'workers';
       return mockWorkersUpdate();
     },
+    select: (_fields: any) => ({
+      from: (_table: any) => ({
+        where: mockHeartbeatsSelect,
+      }),
+    }),
   },
 }));
 
@@ -83,6 +89,8 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 // Mock schema
@@ -90,6 +98,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', taskId: 'taskId', status: 'status' },
+  workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt', maxConcurrentWorkers: 'maxConcurrentWorkers', activeWorkerCount: 'activeWorkerCount' },
 }));
 
 // Import handler AFTER mocks
@@ -130,6 +139,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
     mockTriggerEvent.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    mockHeartbeatsSelect.mockReset();
+    mockHeartbeatsSelect.mockResolvedValue([{ count: 0, totalCapacity: 0, totalActive: 0 }]);
 
     // Default: grant access (workspace owner)
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -383,12 +394,15 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.status).toBe('completed');
   });
 
-  it('returns reassigned:false for failed task', async () => {
+  it('retries failed task by resetting to pending', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'Test Task',
       status: 'failed',
       workspaceId: 'ws-1',
+      description: 'A task that failed',
+      mode: 'code',
+      priority: 1,
       workspace: { id: 'ws-1', teamId: 'team-1' },
     };
 
@@ -400,8 +414,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.reassigned).toBe(false);
-    expect(data.status).toBe('failed');
+    expect(data.reassigned).toBe(true);
+    expect(data.taskId).toBe('task-123');
   });
 
   it('works with API key auth', async () => {

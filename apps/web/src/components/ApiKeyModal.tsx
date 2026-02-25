@@ -2,20 +2,30 @@
 
 import { useState } from 'react';
 
+type Tab = 'key' | 'mcp';
+
 interface ApiKeyModalProps {
   open: boolean;
   accountName: string;
   apiKey: string;
+  repos?: string[];
   onClose: () => void;
 }
 
-export default function ApiKeyModal({ open, accountName, apiKey, onClose }: ApiKeyModalProps) {
+export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onClose }: ApiKeyModalProps) {
   const [copied, setCopied] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [tab, setTab] = useState<Tab>('key');
 
   if (!open) return null;
 
   const envFormat = `BUILDD_API_KEY=${apiKey}`;
+
+  function mcpCommand(repo?: string) {
+    const base = 'https://buildd.dev/api/mcp';
+    const url = repo ? `${base}?repo=${repo}` : base;
+    return `claude mcp add --transport http buildd "${url}" -- --header "Authorization: Bearer ${apiKey}"`;
+  }
 
   async function handleCopy(text: string) {
     await navigator.clipboard.writeText(text);
@@ -26,6 +36,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, onClose }: ApiK
   function handleClose() {
     setAcknowledged(false);
     setCopied(false);
+    setTab('key');
     onClose();
   }
 
@@ -50,37 +61,138 @@ export default function ApiKeyModal({ open, accountName, apiKey, onClose }: ApiK
             </p>
           </div>
 
-          {/* API Key display */}
-          <div>
-            <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">API Key</div>
-            <div className="relative group bg-surface-4 rounded-lg p-4">
-              <code className="text-base font-mono text-text-primary break-all leading-relaxed" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                {apiKey}
-              </code>
-              <button
-                onClick={() => handleCopy(apiKey)}
-                className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
-              >
-                {copied ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
+          {/* Tabs */}
+          <div className="flex gap-1 bg-surface-4 rounded-lg p-1">
+            <button
+              onClick={() => setTab('key')}
+              className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                tab === 'key'
+                  ? 'bg-surface-2 text-text-primary font-medium shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              API Key
+            </button>
+            <button
+              onClick={() => setTab('mcp')}
+              className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                tab === 'mcp'
+                  ? 'bg-surface-2 text-text-primary font-medium shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              MCP Setup
+            </button>
           </div>
 
-          {/* Env var format */}
-          <div>
-            <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">Environment Variable</div>
-            <div className="relative group bg-surface-4 rounded-lg p-4">
-              <code className="text-sm font-mono text-text-primary break-all" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                {envFormat}
-              </code>
-              <button
-                onClick={() => handleCopy(envFormat)}
-                className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
-              >
-                Copy
-              </button>
+          {tab === 'key' && (
+            <>
+              {/* API Key display */}
+              <div>
+                <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">API Key</div>
+                <div className="relative group bg-surface-4 rounded-lg p-4">
+                  <code className="text-base font-mono text-text-primary break-all leading-relaxed" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {apiKey}
+                  </code>
+                  <button
+                    onClick={() => handleCopy(apiKey)}
+                    className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
+                  >
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Env var format */}
+              <div>
+                <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">Environment Variable</div>
+                <div className="relative group bg-surface-4 rounded-lg p-4">
+                  <code className="text-sm font-mono text-text-primary break-all" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {envFormat}
+                  </code>
+                  <button
+                    onClick={() => handleCopy(envFormat)}
+                    className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {tab === 'mcp' && (
+            <div className="space-y-4">
+              <p className="text-xs text-text-secondary">
+                Run in your project directory to connect Claude Code to buildd:
+              </p>
+
+              {repos.length > 0 ? (
+                repos.map(repo => (
+                  <div key={repo}>
+                    <div className="text-xs text-text-secondary mb-2">{repo}</div>
+                    <div className="relative group bg-surface-4 rounded-lg p-4">
+                      <code className="text-sm font-mono text-text-primary break-all leading-relaxed block pr-14" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                        {mcpCommand(repo)}
+                      </code>
+                      <button
+                        onClick={() => handleCopy(mcpCommand(repo))}
+                        className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
+                      >
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="relative group bg-surface-4 rounded-lg p-4">
+                  <code className="text-sm font-mono text-text-primary break-all leading-relaxed block pr-14" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {mcpCommand()}
+                  </code>
+                  <button
+                    onClick={() => handleCopy(mcpCommand())}
+                    className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
+                  >
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              )}
+
+              {/* .mcp.json alternative */}
+              <details className="group">
+                <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer hover:text-text-primary">
+                  Or add to .mcp.json manually
+                </summary>
+                <div className="mt-3 relative group/block bg-surface-4 rounded-lg p-4">
+                  <code className="text-xs font-mono text-text-primary break-all whitespace-pre-wrap block pr-14" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {JSON.stringify({
+                      mcpServers: {
+                        buildd: {
+                          type: 'http',
+                          url: `https://buildd.dev/api/mcp${repos[0] ? `?repo=${repos[0]}` : ''}`,
+                          headers: { Authorization: `Bearer ${apiKey}` },
+                        },
+                      },
+                    }, null, 2)}
+                  </code>
+                  <button
+                    onClick={() => handleCopy(JSON.stringify({
+                      mcpServers: {
+                        buildd: {
+                          type: 'http',
+                          url: `https://buildd.dev/api/mcp${repos[0] ? `?repo=${repos[0]}` : ''}`,
+                          headers: { Authorization: `Bearer ${apiKey}` },
+                        },
+                      },
+                    }, null, 2))}
+                    className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors opacity-0 group-hover/block:opacity-100"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </details>
             </div>
-          </div>
+          )}
 
           {/* Acknowledgment checkbox */}
           <label className="flex items-center gap-2 cursor-pointer select-none">

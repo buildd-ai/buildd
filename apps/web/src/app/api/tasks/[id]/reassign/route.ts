@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { tasks, workers, workerHeartbeats } from '@buildd/core/db/schema';
+import { eq, and, inArray, gt, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -141,8 +141,20 @@ export async function POST(
           status: task.status,
         }, { status: 403 });
       }
+    } else if (task.status === 'failed') {
+      // For failed tasks: reset to pending (no active workers to fail)
+      await db.update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          result: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
     } else {
-      // For completed/failed tasks, don't allow reassign
+      // For completed/running tasks, don't allow reassign
       return NextResponse.json({
         reassigned: false,
         reason: `Cannot reassign task with status: ${task.status}`,
@@ -170,11 +182,33 @@ export async function POST(
       { task: taskPayload, targetLocalUiUrl: null }
     );
 
-    return NextResponse.json({
+    // Check for online workers to give feedback on pickup likelihood
+    const heartbeatCutoff = new Date(Date.now() - 10 * 60 * 1000);
+    const onlineHeartbeats = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        totalCapacity: sql<number>`coalesce(sum(${workerHeartbeats.maxConcurrentWorkers}), 0)::int`,
+        totalActive: sql<number>`coalesce(sum(${workerHeartbeats.activeWorkerCount}), 0)::int`,
+      })
+      .from(workerHeartbeats)
+      .where(gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff));
+
+    const { count: onlineRunners, totalCapacity, totalActive } = onlineHeartbeats[0] || { count: 0, totalCapacity: 0, totalActive: 0 };
+    const availableCapacity = totalCapacity - totalActive;
+
+    const response: Record<string, unknown> = {
       reassigned: true,
       taskId: task.id,
       wasAssigned: task.status === 'assigned',
-    });
+      onlineRunners,
+      availableCapacity,
+    };
+
+    if (onlineRunners === 0) {
+      response.warning = 'No workers are currently online to pick up this task';
+    }
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error('Reassign task error:', error);
     return NextResponse.json({ error: 'Failed to reassign task' }, { status: 500 });

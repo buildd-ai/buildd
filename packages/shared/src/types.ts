@@ -525,8 +525,6 @@ export interface CreateTaskInput {
   creationSource?: CreationSourceValue;
   // Task dependency — blocked tasks start as 'blocked' and auto-unblock when all blockers complete
   blockedByTaskIds?: string[];
-  // Skill reference — server resolves slug to contentHash
-  skillRef?: { slug: string };
   // Project scoping
   project?: string;
   // Task category
@@ -582,6 +580,22 @@ export interface ClaimTasksInput {
   environment?: WorkerEnvironment;
 }
 
+export type ClaimDiagnosticReason =
+  | 'no_slots'
+  | 'no_workspaces'
+  | 'no_pending_tasks'
+  | 'capability_mismatch'
+  | 'race_lost';
+
+export interface ClaimDiagnostics {
+  reason: ClaimDiagnosticReason;
+  pendingTasks?: number;
+  matchedTasks?: number;
+  activeWorkers?: number;
+  maxConcurrent?: number;
+  availableSlots?: number;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -593,6 +607,7 @@ export interface ClaimTasksResponse {
     /** Single-use secret reference for server-managed credentials (redeem via GET /api/workers/secret/:ref) */
     secretRef?: string;
   }>;
+  diagnostics?: ClaimDiagnostics;
 }
 
 export interface CreateObservationInput {

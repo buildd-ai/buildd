@@ -33,12 +33,20 @@ packages/shared/
 package.json
 SPARSE
 
-  # Fetch and apply updates
-  git fetch origin dev
-  git checkout -- bun.lock 2>/dev/null || true  # Discard local lockfile changes
-  git read-tree -mu HEAD  # Re-apply sparse checkout to get new paths
-  git reset --hard origin/dev
-else
+  # Fetch and apply updates (nuke and re-clone if fetch fails — handles corrupted sparse checkouts)
+  if git fetch origin main; then
+    git checkout -- bun.lock 2>/dev/null || true  # Discard local lockfile changes
+    git read-tree -mu HEAD  # Re-apply sparse checkout to get new paths
+    git reset --hard origin/main
+  else
+    echo -e "${YELLOW}Fetch failed — re-cloning from scratch...${NC}"
+    cd "$HOME"
+    rm -rf "$INSTALL_DIR"
+    # Fall through to fresh clone below
+  fi
+fi
+
+if [ ! -d "$INSTALL_DIR/.git" ]; then
   echo "Cloning buildd (local-ui only)..."
 
   # Clean install dir if it exists but isn't a git repo
@@ -60,8 +68,8 @@ package.json
 SPARSE
 
   # Fetch and checkout
-  git fetch --depth 1 origin dev
-  git checkout dev
+  git fetch --depth 1 origin main
+  git checkout main
 fi
 
 # Rewrite root package.json to only reference the sparse-checkout workspaces

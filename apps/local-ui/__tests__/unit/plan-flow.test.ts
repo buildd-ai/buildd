@@ -42,7 +42,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 const mockUpdateWorker = mock(async () => ({}));
-const mockClaimTask = mock(async () => []);
+const mockClaimTask = mock(async () => ({ workers: [] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
 const mockSearchObservations = mock(async () => []);
@@ -242,7 +242,7 @@ function clearAllMocks() {
   mockUpdateWorker.mockReset();
   mockUpdateWorker.mockImplementation(async () => ({}));
   mockClaimTask.mockReset();
-  mockClaimTask.mockImplementation(async () => []);
+  mockClaimTask.mockImplementation(async () => ({ workers: [] }));
   mockGetWorkspaceConfig.mockReset();
   mockGetWorkspaceConfig.mockImplementation(async () => ({ configStatus: 'unconfigured' }));
   mockGetCompactObservations.mockReset();
@@ -312,11 +312,11 @@ describe('Plan Flow', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-plan-1' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-exit-plan',
         branch: 'buildd/exit-plan',
         task: { ...makeTask(), mode: 'planning' },
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart({ ...makeTask(), mode: 'planning' });
@@ -378,11 +378,11 @@ describe('Plan Flow', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-idx' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-idx',
         branch: 'buildd/idx',
         task: { ...makeTask(), mode: 'planning' },
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart({ ...makeTask(), mode: 'planning' });
@@ -430,11 +430,11 @@ describe('Plan Flow', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-opts' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-opts',
         branch: 'buildd/opts',
         task: { ...makeTask(), mode: 'planning' },
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart({ ...makeTask(), mode: 'planning' });
@@ -484,11 +484,11 @@ describe('Plan Flow', () => {
         { type: 'result', subtype: 'success', session_id: 'sess-file' },
       ];
 
-      mockClaimTask.mockImplementation(async () => [{
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
         id: 'w-file',
         branch: 'buildd/file',
         task: { ...makeTask(), mode: 'planning' },
-      }]);
+      }] }));
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart({ ...makeTask(), mode: 'planning' });

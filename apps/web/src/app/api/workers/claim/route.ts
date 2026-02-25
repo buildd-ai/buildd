@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, skills, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, sql, inArray, lt, gt } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, SkillBundle } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -188,7 +188,14 @@ export async function POST(req: NextRequest) {
   const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
 
   if (availableSlots === 0) {
-    return NextResponse.json({ workers: [] });
+    return NextResponse.json({
+      workers: [],
+      diagnostics: {
+        reason: 'no_slots',
+        activeWorkers: activeWorkers.length,
+        maxConcurrent: account.maxConcurrentWorkers,
+      } satisfies ClaimDiagnostics,
+    });
   }
 
   // Get workspaces this account can claim from
@@ -218,7 +225,10 @@ export async function POST(req: NextRequest) {
 
   const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
   if (workspaceIds.length === 0) {
-    return NextResponse.json({ workers: [] });
+    return NextResponse.json({
+      workers: [],
+      diagnostics: { reason: 'no_workspaces' } satisfies ClaimDiagnostics,
+    });
   }
 
   // Find claimable tasks
@@ -247,6 +257,16 @@ export async function POST(req: NextRequest) {
     with: { workspace: true },
   });
 
+  if (claimableTasks.length === 0) {
+    return NextResponse.json({
+      workers: [],
+      diagnostics: {
+        reason: 'no_pending_tasks',
+        availableSlots,
+      } satisfies ClaimDiagnostics,
+    });
+  }
+
   // Filter by capabilities
   const filteredTasks = claimableTasks.filter((task) => {
     if (capabilities.length === 0) return true;
@@ -254,6 +274,17 @@ export async function POST(req: NextRequest) {
     if (reqCaps.length === 0) return true;
     return reqCaps.every((cap) => capabilities.includes(cap));
   });
+
+  if (filteredTasks.length === 0) {
+    return NextResponse.json({
+      workers: [],
+      diagnostics: {
+        reason: 'capability_mismatch',
+        pendingTasks: claimableTasks.length,
+        matchedTasks: 0,
+      } satisfies ClaimDiagnostics,
+    });
+  }
 
   // Claim tasks and create workers with optimistic locking to prevent double-assignment.
   // Note: neon-http driver does not support interactive transactions (where intermediate
@@ -335,6 +366,17 @@ export async function POST(req: NextRequest) {
       taskId: task.id,
       branch,
       task: task as any,
+    });
+  }
+
+  if (claimedWorkers.length === 0) {
+    return NextResponse.json({
+      workers: [],
+      diagnostics: {
+        reason: 'race_lost',
+        pendingTasks: claimableTasks.length,
+        matchedTasks: filteredTasks.length,
+      } satisfies ClaimDiagnostics,
     });
   }
 
@@ -426,7 +468,7 @@ export async function POST(req: NextRequest) {
               const url = await generateDownloadUrl(att.storageKey);
               return { filename: att.filename, mimeType: att.mimeType, url };
             }
-            return att; // legacy base64 passes through
+            return att;
           })
         );
       }
@@ -484,14 +526,12 @@ export async function POST(req: NextRequest) {
       });
 
       for (const ts of teamSkills) {
-        if (ts.content) {
-          bundles.push({
-            slug: ts.slug,
-            name: ts.name,
-            description: ts.description || undefined,
-            content: ts.content,
-          });
-        }
+        bundles.push({
+          slug: ts.slug,
+          name: ts.name,
+          description: ts.description || undefined,
+          content: ts.content,
+        });
       }
     }
 

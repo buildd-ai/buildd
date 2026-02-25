@@ -24,7 +24,7 @@ export default async function SettingsPage() {
   let userTeams: UserTeam[] = [];
   let teamsError = false;
   let teamSkills: any[] = [];
-  let userWorkspaces: { id: string; name: string }[] = [];
+  let userWorkspaces: { id: string; name: string; repo: string | null }[] = [];
 
   // Fetch teams - uses React cache() so shared with layout
   try {
@@ -72,8 +72,7 @@ export default async function SettingsPage() {
     if (wsIds.length > 0) {
       userWorkspaces = await db.query.workspaces.findMany({
         where: inArray(workspaces.id, wsIds),
-        columns: { id: true, name: true },
-        limit: 1,
+        columns: { id: true, name: true, repo: true },
       });
     }
   } catch (error) {
@@ -111,7 +110,7 @@ export default async function SettingsPage() {
           <hr className="border-border-default" />
 
           {/* API Keys */}
-          <ApiKeysSection accounts={allAccounts} />
+          <ApiKeysSection accounts={allAccounts} workspaces={userWorkspaces} />
 
           <hr className="border-border-default" />
 

@@ -197,7 +197,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (13 events)
+### Official HookEvent Type (15 events)
 
 ```typescript
 type HookEvent =
@@ -213,7 +213,9 @@ type HookEvent =
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
   | 'PermissionRequest'   // Permission dialog
-  | 'ConfigChange';       // Configuration file changes (v0.2.49+)
+  | 'ConfigChange'        // Configuration file changes (v0.2.49+)
+  | 'WorktreeCreate'      // After git worktree created (v2.1.50+)
+  | 'WorktreeRemove';     // Before git worktree removed (v2.1.50+)
 ```
 
 ### Agent Teams Hooks (experimental)

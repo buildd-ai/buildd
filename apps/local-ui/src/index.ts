@@ -8,6 +8,7 @@ import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
 import { scanSkills } from './skills';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
+import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
@@ -357,7 +358,6 @@ function buildProviderConfig(): ProviderConfig | undefined {
 
 // Build runtime config
 const config: LocalUIConfig = {
-  projectsRoot: projectRoots[0], // Primary for backwards compat
   projectRoots, // All roots
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
@@ -391,6 +391,9 @@ let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(conf
 
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
+
+// Initialize history store (SQLite-backed session history)
+try { initHistory(); } catch (err) { console.error('History store init failed:', err); }
 
 // Auto-update state
 interface UpdateState {
@@ -1188,7 +1191,7 @@ const server = Bun.serve({
         configured: !!config.apiKey,
         workers: workerManager?.getWorkers() || [],
         config: {
-          projectsRoot: config.projectsRoot,
+          projectRoots: config.projectRoots,
           builddServer: config.builddServer,
           maxConcurrent: config.maxConcurrent,
           model: config.model,
@@ -1713,7 +1716,7 @@ const server = Bun.serve({
         return Response.json({ error: 'repoUrl required' }, { status: 400, headers: corsHeaders });
       }
 
-      const clonePath = targetPath || `${config.projectRoots?.[0] || config.projectsRoot}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
+      const clonePath = targetPath || `${config.projectRoots[0]}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
 
       try {
         const { execSync } = require('child_process');
@@ -1809,7 +1812,7 @@ const server = Bun.serve({
     // Scan local skills from a project path
     if (path === '/api/skills/scan' && req.method === 'POST') {
       const body = await parseBody(req);
-      const localPath = body.localPath || config.projectsRoot;
+      const localPath = body.localPath || config.projectRoots[0];
 
       if (!localPath || !existsSync(localPath)) {
         return Response.json({ error: 'Invalid or missing localPath' }, { status: 400, headers: corsHeaders });
@@ -1970,6 +1973,55 @@ const server = Bun.serve({
       }
     }
 
+    // =============================================================================
+    // HISTORY API
+    // =============================================================================
+
+    if (path === '/api/history/stats' && req.method === 'GET') {
+      try {
+        const stats = getHistoryStats();
+        return Response.json(stats, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (path.startsWith('/api/history/') && req.method === 'GET') {
+      const workerId = path.slice('/api/history/'.length);
+      if (workerId && workerId !== 'stats') {
+        try {
+          const session = getSession(workerId);
+          if (!session) {
+            return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+          }
+          const archived = getArchivedData(workerId);
+          return Response.json({ ...session, archived }, { headers: corsHeaders });
+        } catch (err: any) {
+          return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+        }
+      }
+    }
+
+    if (path === '/api/history' && req.method === 'GET') {
+      try {
+        const params = url.searchParams;
+        const result = searchSessions({
+          q: params.get('q') || undefined,
+          workspace: params.get('workspace') || undefined,
+          status: params.get('status') || undefined,
+          from: params.get('from') ? parseInt(params.get('from')!) : undefined,
+          to: params.get('to') ? parseInt(params.get('to')!) : undefined,
+          sort: (params.get('sort') as any) || undefined,
+          dir: (params.get('dir') as any) || undefined,
+          page: params.get('page') ? parseInt(params.get('page')!) : undefined,
+          limit: params.get('limit') ? parseInt(params.get('limit')!) : undefined,
+        });
+        return Response.json(result, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Debug endpoints for workspace resolution testing
     if (path === '/api/debug/directories' && req.method === 'GET') {
       return Response.json({
@@ -1998,7 +2050,7 @@ const server = Bun.serve({
         ...resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo }),
       }));
       return Response.json({
-        projectsRoot: config.projectsRoot,
+        projectRoots: config.projectRoots,
         localDirectories: resolver.listLocalDirectories(),
         pathOverrides: resolver.getPathOverrides(),
         workspaces: results,
@@ -2027,6 +2079,11 @@ const server = Bun.serve({
     }
     if (path === '/icon.png') {
       return serveStatic('icon.png', req);
+    }
+
+    // ES modules: /modules/**/*.js
+    if (path.startsWith('/modules/') && path.endsWith('.js')) {
+      return serveStatic(path.slice(1), req);
     }
 
     // SPA routing: /worker/:id routes to index.html (client handles routing)
@@ -2071,6 +2128,78 @@ if (!config.apiKey && !config.serverless) {
   console.log('');
   console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
 }
+
+// Auto-install HTTP MCP for onboarded repos (non-blocking)
+async function autoInstallMcp() {
+  if (!buildd || !config.apiKey) return;
+
+  const reposWithRemotes = repos.filter(r => r.normalizedUrl);
+  if (reposWithRemotes.length === 0) return;
+
+  const repoDescriptors = reposWithRemotes.map(r => ({
+    path: r.path,
+    remoteUrl: r.remoteUrl,
+    owner: getOwnerFromUrl(r.normalizedUrl),
+    repo: getRepoNameFromUrl(r.normalizedUrl),
+    provider: null,
+  }));
+
+  try {
+    const result = await buildd.matchRepos(repoDescriptors);
+    const matched = result.matched || [];
+    if (matched.length === 0) return;
+
+    const serverUrl = config.builddServer || 'https://buildd.dev';
+
+    for (const match of matched) {
+      if (!match.path || !match.owner || !match.repo) continue;
+
+      const mcpJsonPath = join(match.path, '.mcp.json');
+      const repoSlug = `${match.owner}/${match.repo}`;
+
+      const desiredUrl = `${serverUrl}/api/mcp?repo=${repoSlug}`;
+
+      // Check if already configured
+      try {
+        if (existsSync(mcpJsonPath)) {
+          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+          const currentUrl = existing?.mcpServers?.buildd?.url;
+          if (currentUrl === desiredUrl) continue; // Already correct
+          // Merge: update buildd entry, keep others
+          existing.mcpServers = existing.mcpServers || {};
+          existing.mcpServers.buildd = {
+            type: 'http',
+            url: desiredUrl,
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+          };
+          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2) + '\n');
+          console.log(`  Updated MCP config: ${mcpJsonPath}`);
+          continue;
+        }
+      } catch {
+        // File exists but invalid JSON — overwrite
+      }
+
+      // Create new .mcp.json
+      const mcpConfig = {
+        mcpServers: {
+          buildd: {
+            type: 'http',
+            url: desiredUrl,
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+          },
+        },
+      };
+      writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2) + '\n');
+      console.log(`  Installed MCP config: ${mcpJsonPath}`);
+    }
+  } catch (err: any) {
+    // Non-fatal — don't block startup
+    console.error('  MCP auto-install failed:', err.message);
+  }
+}
+
+autoInstallMcp();
 
 // Handle browser auto-open preference (debounce to avoid re-opening on crash-restart)
 function shouldOpenBrowser(): boolean {

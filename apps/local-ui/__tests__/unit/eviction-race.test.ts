@@ -43,7 +43,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 const mockUpdateWorker = mock(async () => ({}));
-const mockClaimTask = mock(async () => []);
+const mockClaimTask = mock(async () => ({ workers: [] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
 const mockSearchObservations = mock(async () => []);

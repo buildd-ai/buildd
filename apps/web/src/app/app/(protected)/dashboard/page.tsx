@@ -11,6 +11,7 @@ import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import DashboardStartTask from './DashboardStartTask';
 import DiscoveredRepos from './DiscoveredRepos';
 import OnboardingChecklist from './OnboardingChecklist';
+import RetryTaskButton from './RetryTaskButton';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -489,6 +490,7 @@ export default async function DashboardPage() {
                       </div>
                     </div>
                     <StatusBadge status={task.status} />
+                    {task.status === 'failed' && <RetryTaskButton taskId={task.id} />}
                     <span className="hidden sm:block font-mono text-[11px] text-text-muted whitespace-nowrap">
                       {timeAgo(task.updatedAt)}
                     </span>

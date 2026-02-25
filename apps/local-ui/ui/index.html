@@ -88,6 +88,7 @@
       <div class="flex items-center gap-2.5 font-semibold text-lg">
         <img src="./icon.png" alt="buildd" class="w-8 h-8 rounded-md">
         <span>buildd</span>
+        <span id="connectionDot" class="w-2 h-2 rounded-full bg-text-tertiary" title="Disconnected"></span>
       </div>
       <div class="flex gap-2">
         <button class="hidden relative w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="outboxBtn" title="Pending sync" aria-label="Pending sync" onclick="handleOutboxFlush()">
@@ -109,6 +110,12 @@
             <path d="M21 3v5h-5"/>
           </svg>
         </button>
+        <button class="w-10 h-10 border-none bg-surface rounded-md text-text-primary flex items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="historyBtn" title="History" aria-label="History" onclick="window._historyModule?.showHistory()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+        </button>
         <!-- Desktop-only buttons -->
         <button class="hidden md:flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
           <svg class="w-5 h-5 dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -122,12 +129,12 @@
             <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
           </svg>
         </button>
-        <button class="hidden md:flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="skillsBtn" title="Skills" aria-label="Skills" onclick="openSkillsModal()">
+        <button class="flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="skillsBtn" title="Skills" aria-label="Skills" onclick="openSkillsModal()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
           </svg>
         </button>
-        <button class="hidden md:flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings" aria-label="Settings">
+        <button class="flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="settingsBtn" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
             <circle cx="12" cy="12" r="3"/>
@@ -141,6 +148,10 @@
             </svg>
           </button>
           <div id="overflowMenu" class="hidden absolute right-0 top-full mt-1 bg-surface border border-border-default rounded-xl shadow-[0_8px_32px_rgb(var(--color-overlay)/var(--shadow-strength))] py-1.5 min-w-[180px] z-[101]">
+            <button class="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-surface-hover transition-colors" onclick="window._historyModule?.showHistory(); closeOverflow()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              History
+            </button>
             <button class="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-surface-hover transition-colors" onclick="toggleTheme(); closeOverflow()">
               <svg class="w-4 h-4 dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
               <svg class="w-4 h-4 hidden dark:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -196,12 +207,20 @@
         </div>
         <h2 class="text-[22px] font-semibold text-text-primary mb-2">Ready to build</h2>
         <p class="text-[15px] text-text-secondary mb-7 max-w-[280px] leading-relaxed">Create a task and an AI agent will start working on it</p>
-        <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-7 text-[15px] rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]" id="heroCreateBtn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-            <path d="M12 5v14M5 12h14"/>
-          </svg>
-          New Task
-        </button>
+        <div class="flex flex-col sm:flex-row items-center gap-3">
+          <button class="btn bg-brand text-white shadow-[0_4px_14px_rgb(var(--color-brand)/0.25)] py-3.5 px-7 text-[15px] rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-brand-hover active:bg-brand-hover active:scale-[0.98]" id="heroCreateBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            New Task
+          </button>
+          <button class="btn bg-transparent border border-border-default text-text-secondary py-3 px-6 text-[15px] rounded-md font-medium cursor-pointer transition-all duration-200 flex items-center gap-2 hover:bg-surface hover:text-text-primary" onclick="window._historyModule?.showHistory()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            View History
+          </button>
+        </div>
       </div>
 
       <!-- Content sections (hidden when empty hero is shown) -->
@@ -547,5 +566,8 @@
   </div>
 
   <script src="./app.js"></script>
+  <script src="./modules/render/worker-detail-tabs.js"></script>
+  <script src="./modules/render/history.js"></script>
+  <script src="./modules/render/ux-polish.js"></script>
 </body>
 </html>
