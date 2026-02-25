@@ -1516,7 +1516,7 @@ function closeSettingsModal() {
 }
 
 function updateSettings() {
-  document.getElementById('settingsRoot').value = config.projectsRoot || '';
+  document.getElementById('settingsRoot').value = config.projectRoots?.join(', ') || '';
   const serverInput = document.getElementById('settingsServer');
   serverInput.value = config.builddServer || '';
 
