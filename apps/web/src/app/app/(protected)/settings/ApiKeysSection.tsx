@@ -28,7 +28,13 @@ const typeColors: Record<string, string> = {
   action: 'bg-status-warning/10 text-status-warning',
 };
 
-export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
+interface Workspace {
+  id: string;
+  name: string;
+  repo: string | null;
+}
+
+export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
   const [regenerateTarget, setRegenerateTarget] = useState<Account | null>(null);
   const [regenerating, setRegenerating] = useState(false);
@@ -136,7 +142,7 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
         </div>
       )}
 
-      <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} />
+      <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} workspaces={workspaces} />
 
       {/* Regenerate confirmation dialog */}
       <ConfirmDialog
@@ -159,6 +165,7 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
           open={!!newKey}
           accountName={newKey.accountName}
           apiKey={newKey.apiKey}
+          repos={workspaces.filter(w => w.repo).map(w => w.repo!)}
           onClose={() => setNewKey(null)}
         />
       )}
@@ -168,17 +175,39 @@ export default function ApiKeysSection({ accounts }: { accounts: Account[] }) {
 
 // ── MCP Setup Section ────────────────────────────────────────────────────────
 
-function McpSetupSection({ apiKey }: { apiKey: string | null }) {
+function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; workspaces?: Workspace[] }) {
   const key = apiKey ? `${apiKey}...` : 'YOUR_API_KEY';
+  const reposWithWorkspaces = workspaces.filter(w => w.repo);
+
+  function mcpUrl(repo?: string) {
+    const base = 'https://buildd.dev/api/mcp';
+    return repo ? `${base}?repo=${repo}` : base;
+  }
+
+  function mcpCommand(repo?: string) {
+    return `claude mcp add --transport http buildd "${mcpUrl(repo)}" -- --header "Authorization: Bearer ${key}"`;
+  }
 
   return (
     <div className="mt-4 space-y-3">
       <h3 className="font-medium text-sm">Connect to buildd</h3>
 
-      <div className="p-4 bg-surface-2 rounded-lg space-y-3">
-        <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
-        <CopyBlock text={`claude mcp add --transport http buildd https://buildd.dev/api/mcp -- --header "Authorization: Bearer ${key}"`} />
-      </div>
+      {reposWithWorkspaces.length > 0 ? (
+        reposWithWorkspaces.map(w => (
+          <div key={w.id} className="p-4 bg-surface-2 rounded-lg space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
+              <span className="text-xs text-text-secondary">· {w.repo}</span>
+            </div>
+            <CopyBlock text={mcpCommand(w.repo!)} />
+          </div>
+        ))
+      ) : (
+        <div className="p-4 bg-surface-2 rounded-lg space-y-3">
+          <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
+          <CopyBlock text={mcpCommand()} />
+        </div>
+      )}
 
       <details className="p-4 bg-surface-2 rounded-lg">
         <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer">REST API</summary>

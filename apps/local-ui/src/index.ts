@@ -2129,6 +2129,78 @@ if (!config.apiKey && !config.serverless) {
   console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
 }
 
+// Auto-install HTTP MCP for onboarded repos (non-blocking)
+async function autoInstallMcp() {
+  if (!buildd || !config.apiKey) return;
+
+  const reposWithRemotes = repos.filter(r => r.normalizedUrl);
+  if (reposWithRemotes.length === 0) return;
+
+  const repoDescriptors = reposWithRemotes.map(r => ({
+    path: r.path,
+    remoteUrl: r.remoteUrl,
+    owner: getOwnerFromUrl(r.normalizedUrl),
+    repo: getRepoNameFromUrl(r.normalizedUrl),
+    provider: null,
+  }));
+
+  try {
+    const result = await buildd.matchRepos(repoDescriptors);
+    const matched = result.matched || [];
+    if (matched.length === 0) return;
+
+    const serverUrl = config.builddServer || 'https://buildd.dev';
+
+    for (const match of matched) {
+      if (!match.path || !match.owner || !match.repo) continue;
+
+      const mcpJsonPath = join(match.path, '.mcp.json');
+      const repoSlug = `${match.owner}/${match.repo}`;
+
+      const desiredUrl = `${serverUrl}/api/mcp?repo=${repoSlug}`;
+
+      // Check if already configured
+      try {
+        if (existsSync(mcpJsonPath)) {
+          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+          const currentUrl = existing?.mcpServers?.buildd?.url;
+          if (currentUrl === desiredUrl) continue; // Already correct
+          // Merge: update buildd entry, keep others
+          existing.mcpServers = existing.mcpServers || {};
+          existing.mcpServers.buildd = {
+            type: 'http',
+            url: desiredUrl,
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+          };
+          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2) + '\n');
+          console.log(`  Updated MCP config: ${mcpJsonPath}`);
+          continue;
+        }
+      } catch {
+        // File exists but invalid JSON — overwrite
+      }
+
+      // Create new .mcp.json
+      const mcpConfig = {
+        mcpServers: {
+          buildd: {
+            type: 'http',
+            url: desiredUrl,
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+          },
+        },
+      };
+      writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2) + '\n');
+      console.log(`  Installed MCP config: ${mcpJsonPath}`);
+    }
+  } catch (err: any) {
+    // Non-fatal — don't block startup
+    console.error('  MCP auto-install failed:', err.message);
+  }
+}
+
+autoInstallMcp();
+
 // Handle browser auto-open preference (debounce to avoid re-opening on crash-restart)
 function shouldOpenBrowser(): boolean {
   try {
