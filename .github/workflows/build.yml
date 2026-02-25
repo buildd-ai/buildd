@@ -99,6 +99,7 @@ jobs:
               screen -dmS buildd-test bash -c "
                 export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
                 export PORT=8767
+                export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER='"${BUILDD_TEST_SERVER}"'
                 buildd >> /tmp/buildd-test.log 2>&1
               "
