@@ -693,3 +693,60 @@ The SDK emits `is_background: true` on `task_started` system messages for backgr
 - **Resolution**: Task-level override > workspace-level setting
 - **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
 - **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
+
+---
+
+## 38. `listSessions()` — Session Discovery (SDK v0.2.53)
+
+Top-level function for discovering past sessions with light metadata. Filter by project directory or list across all projects.
+
+```typescript
+import { listSessions } from "@anthropic-ai/claude-agent-sdk";
+
+type ListSessionsOptions = {
+  dir?: string;   // Project directory to filter by (includes git worktrees)
+  limit?: number; // Max sessions to return
+};
+
+type SDKSessionInfo = {
+  sessionId: string;            // UUID
+  summary: string;              // Display title (custom > auto-summary > first prompt)
+  lastModified: number;         // Epoch ms
+  fileSize: number;             // Transcript file size in bytes
+  customTitle?: string;         // User-set via /rename
+  firstPrompt?: string;         // First meaningful user prompt
+  gitBranch?: string;           // Git branch at session end
+  cwd?: string;                 // Working directory
+};
+
+// List sessions for a specific project
+const sessions = await listSessions({ dir: "/path/to/project" });
+
+// List all sessions across all projects, limited to 10
+const recent = await listSessions({ limit: 10 });
+```
+
+---
+
+## 39. `getSessionMessages()` — Session History (SDK v0.2.59)
+
+Read a session's conversation history from its transcript file, with pagination support.
+
+```typescript
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+
+const messages = await getSessionMessages(sessionId, {
+  limit: 50,    // Max messages to return
+  offset: 0,    // Skip first N messages
+});
+// Returns SDKMessage[] — same types as query() stream output
+```
+
+Pair with `listSessions()` for full session browsing: discover sessions, then load their messages.
+
+### Buildd Use Cases
+
+- **Session history in dashboard** — Display worker conversation history in task detail view
+- **Post-hoc cost analysis** — Analyze completed sessions for token usage patterns
+- **Debug/replay** — Inspect failed worker sessions without parsing raw JSONL transcripts
+- **Session search** — Find sessions by content for cross-task knowledge retrieval

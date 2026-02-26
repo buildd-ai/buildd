@@ -1,14 +1,14 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-**Version documented**: 0.2.52 (CLI parity: v2.1.52, Feb 24 2026)
+**Version documented**: 0.2.59 (CLI parity: v2.1.59, Feb 26 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.52` | Current |
-| `apps/agent` | `>=0.2.52` | Current |
-| `apps/local-ui` | `>=0.2.52` | Current |
+| `packages/core` | `>=0.2.49` | Pin in package.json |
+| `apps/agent` | `>=0.2.49` | Pin in package.json |
+| `apps/local-ui` | `^0.2.50` | Pin in package.json |
 
 ---
 
@@ -19,7 +19,7 @@ Load only what you need:
 | File | Contents |
 |------|----------|
 | [sdk-reference/api.md](sdk-reference/api.md) | API overview, `query()` vs V2 Session, Local-UI implementation, core integration pattern |
-| [sdk-reference/features.md](sdk-reference/features.md) | All SDK features: Sandbox, 1M context, Plugins, Structured Outputs, Budget, Hooks (all 15 events incl. WorktreeCreate/Remove), MCP, Agent Teams, Memory, Checkpointing, Background Agents, task_progress events, remote-control, account env vars |
+| [sdk-reference/features.md](sdk-reference/features.md) | All SDK features: Sandbox, 1M context, Plugins, Structured Outputs, Budget, Hooks (all 15 events incl. WorktreeCreate/Remove), MCP, Agent Teams, Memory, Checkpointing, Background Agents, task_progress events, remote-control, account env vars, `listSessions()`, `getSessionMessages()` |
 | [sdk-reference/integration-status.md](sdk-reference/integration-status.md) | What Buildd uses today, pending tasks, completed integrations, full CLI changelog |
 | [sdk-reference/advanced.md](sdk-reference/advanced.md) | Full options table, all query methods, SDKMessage types, observability hooks, MCP setup, multi-turn/`streamInput`, known issues |
 

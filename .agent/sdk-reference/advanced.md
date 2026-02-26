@@ -47,6 +47,13 @@ options: {
 | `promptSuggestion()` | Request prompt suggestions (v0.2.47+) |
 | `close()` | Terminate the query |
 
+### Top-Level Session Functions (not on Query instance)
+
+| Function | Description |
+|----------|-------------|
+| `listSessions(options?)` | Discover past sessions with metadata. Filter by `dir` or `limit`. Returns `SDKSessionInfo[]` (v0.2.53+) |
+| `getSessionMessages(sessionId, options?)` | Read session conversation history. Supports `limit`/`offset` pagination. Returns `SDKMessage[]` (v0.2.59+) |
+
 ### SDKResultMessage
 
 ```typescript
@@ -83,6 +90,8 @@ type SDKMessage =
 ```
 
 Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKTaskProgressEvent` (v0.2.51+), `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+
+These same `SDKMessage` types are returned by `getSessionMessages()` (v0.2.59+) when reading session transcripts.
 
 ### Available Tools Reference
 

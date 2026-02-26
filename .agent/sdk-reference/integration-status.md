@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.52)
+## Buildd Integration Status (v0.2.59)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,6 +22,8 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse worker conversation history in task detail view | **P2** | **New (v0.2.59)** |
+| **Session-based debugging** | Use `getSessionMessages()` to inspect failed worker sessions without raw JSONL parsing | **P2** | **New (v0.2.59)** |
 | **Bump SDK pin to `>=0.2.52`** | Memory leak fixes, Bun binary fix, task_progress events | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -57,10 +59,15 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.52 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.59 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.59 | 0.2.59 | `getSessionMessages()` for reading session history with pagination; Auto-memory (`/memory`); `/copy` command for code blocks; improved "always allow" prefix suggestions for compound bash commands; multi-agent memory optimization (completed subagent task state released); MCP OAuth token refresh race condition fix (multi-instance); config file corruption fix (multi-instance) |
+| 2.1.58 | 0.2.58 | Remote Control expanded to more users |
+| 2.1.56 | 0.2.56 | VS Code crash fix |
+| 2.1.55 | 0.2.55 | BashTool Windows EINVAL fix |
+| 2.1.53 | 0.2.53 | `listSessions()` for session discovery; UI flicker fix; bulk agent kill sends single aggregate notification; graceful shutdown stale session fix (Remote Control); `--worktree` first-launch fix; multiple crash fixes (Windows, WASM, ARM64) |
 | 2.1.52 | 0.2.52 | VS Code Windows crash fix |
 | 2.1.51 | 0.2.51 | `claude remote-control` subcommand; `task_progress` events for background agents; Bun binary fix; unbounded memory growth fix (UUID tracking); `session.close()` persistence fix; account identity env vars (`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`); tool result disk threshold 50K; plugin npm registry support; BashTool login shell skip; managed settings via plist/Registry |
 | 2.1.50 | 0.2.50 | `WorktreeCreate`/`WorktreeRemove` hooks; `isolation: "worktree"` stable; `claude agents` CLI command; `CLAUDE_CODE_DISABLE_1M_CONTEXT` env var; Opus 4.6 1M context; `CLAUDE_CODE_SIMPLE` full strip-down; headless startup perf; LSP `startupTimeout`; 10+ memory leak fixes (teammate tasks, AppState, LSP, file history, CircularBuffer, TaskOutput, shell execution); symlink session resume fix; Linux glibc < 2.30 fix |
@@ -80,6 +87,10 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Multi-agent memory optimization** — Completed subagent task state now released, reducing memory usage in multi-agent sessions (v2.1.59). Critical for workers using agent teams.
+- **MCP OAuth token refresh race condition** — Fixed when running multiple Claude Code instances simultaneously (v2.1.59). Important for concurrent local-ui workers.
+- **Config file corruption** — Fixed authentication wipe when multiple instances ran simultaneously (v2.1.59). Important for local-ui with concurrent workers.
+- **Bulk agent kill** — `ctrl+f` now sends single aggregate notification instead of one per agent, and properly clears the command queue (v2.1.53).
 - **10+ memory leak fixes** — Teammate tasks, AppState, LSP diagnostics, file history, CircularBuffer, TaskOutput, shell execution, UUID tracking — all fixed (v2.1.50–v2.1.51). Critical for long-running local-ui workers.
 - **Bun binary compatibility** — Fixed SDK crash (`ReferenceError`) in `bun build --compile` binaries (v0.2.51)
 - **`session.close()` persistence** — Fixed subprocess being killed before persisting session data, which broke `resumeSession()` (v0.2.51)
