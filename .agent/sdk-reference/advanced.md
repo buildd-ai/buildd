@@ -14,6 +14,9 @@
 | `permissionPromptToolName` | `string` | MCP tool name for permission prompts |
 | `strictMcpConfig` | `boolean` | Enforce strict MCP validation |
 | `tools` | `string[] \| { type: 'preset'; preset: 'claude_code' }` | Tool configuration (distinct from `allowedTools`) |
+| `persistSession` | `boolean` | Default `true`. Set `false` to skip disk persistence (cannot resume later) |
+| `spawnClaudeCodeProcess` | `(opts: SpawnOptions) => SpawnedProcess` | Custom process spawn for VMs/containers/remote |
+| `forkSession` | `boolean` | When resuming, fork to new session ID (original preserved) |
 
 ### Thinking / Effort Controls
 
@@ -83,6 +86,13 @@ type SDKMessage =
 ```
 
 Additional streaming types: `SDKStatusMessage`, `SDKHookStartedMessage`, `SDKHookProgressMessage`, `SDKHookResponseMessage`, `SDKToolProgressMessage`, `SDKAuthStatusMessage`, `SDKTaskNotificationMessage`, `SDKTaskStartedMessage`, `SDKTaskProgressEvent` (v0.2.51+), `SDKRateLimitEvent`, `SDKFilesPersistedEvent`, `SDKToolUseSummaryMessage`
+
+### Top-Level Session Functions (v0.2.53+)
+
+| Function | Description |
+|----------|-------------|
+| `listSessions(options?)` | Discover past sessions; filter by `dir`, limit with `limit`. Returns `SDKSessionInfo[]` |
+| `getSessionMessages(sessionId, options?)` | Read session conversation history with `limit`/`offset` pagination (v0.2.59+) |
 
 ### Available Tools Reference
 
