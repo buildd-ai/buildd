@@ -767,3 +767,23 @@ export const secretsRelations = relations(secrets, ({ one, many }) => ({
 export const secretRefsRelations = relations(secretRefs, ({ one }) => ({
   secret: one(secrets, { fields: [secretRefs.secretId], references: [secrets.id] }),
 }));
+
+// Advisory file reservations — prevents concurrent workers from editing the same files
+export const fileReservations = pgTable('file_reservations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  filePath: text('file_path').notNull(),
+  acquiredAt: timestamp('acquired_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  // Only one active reservation per file per workspace (enforced at app level with expiry check)
+  workspaceFileIdx: uniqueIndex('file_reservations_workspace_file_idx').on(t.workspaceId, t.filePath),
+  workerIdx: index('file_reservations_worker_idx').on(t.workerId),
+  expiresIdx: index('file_reservations_expires_idx').on(t.expiresAt),
+}));
+
+export const fileReservationsRelations = relations(fileReservations, ({ one }) => ({
+  workspace: one(workspaces, { fields: [fileReservations.workspaceId], references: [workspaces.id] }),
+  worker: one(workers, { fields: [fileReservations.workerId], references: [workers.id] }),
+}));
