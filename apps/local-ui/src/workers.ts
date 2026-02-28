@@ -233,11 +233,17 @@ export class WorkerManager {
       });
       console.log('Pusher connected for command relay');
 
-      // On reconnect, send immediate heartbeat to catch any tasks missed during disconnect
+      // On reconnect, send immediate heartbeat and claim any tasks missed during disconnect
       this.pusher.connection.bind('state_change', (states: { previous: string; current: string }) => {
         if (states.current === 'connected' && states.previous !== 'initialized') {
           console.log(`Pusher reconnected (was ${states.previous}), sending immediate heartbeat`);
           this.sendHeartbeat();
+          // Claim any tasks that were created while Pusher was disconnected
+          if (this.acceptRemoteTasks) {
+            this.claimPendingTasks().catch(err => {
+              console.error('Failed to claim tasks on Pusher reconnect:', err);
+            });
+          }
         }
       });
 
@@ -656,25 +662,13 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
       // Emit version info for auto-update checks
       if (latestCommit) {
         this.emit({ type: 'version_info', latestCommit });
-      }
-      // If server reports pending tasks and we have capacity, try to claim them
-      if (pendingTaskCount && pendingTaskCount > 0 && this.acceptRemoteTasks) {
-        const activeWorkers = Array.from(this.workers.values()).filter(
-          w => w.status === 'working' || w.status === 'stale'
-        );
-        if (activeWorkers.length < this.config.maxConcurrent) {
-          console.log(`Heartbeat: ${pendingTaskCount} pending task(s) available, attempting claim...`);
-          this.claimPendingTasks().catch(err => {
-            console.error('Failed to claim tasks from heartbeat:', err);
-          });
-        }
       }
     } catch {
       // Non-fatal - heartbeat is best-effort

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, tasks, workspaces, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
+import { workerHeartbeats } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
@@ -79,45 +79,6 @@ export async function POST(req: NextRequest) {
         },
       });
 
-    // If worker has capacity, check for pending tasks to hint at
-    let pendingTaskCount = 0;
-    if (activeWorkerCount < account.maxConcurrentWorkers) {
-      try {
-        // Resolve accessible workspaces (same pattern as claim route)
-        const openWorkspaces = await db.query.workspaces.findMany({
-          where: eq(workspaces.accessMode, 'open'),
-          columns: { id: true },
-        });
-        const restrictedPermissions = await db.query.accountWorkspaces.findMany({
-          where: and(
-            eq(accountWorkspaces.accountId, account.id),
-            eq(accountWorkspaces.canClaim, true),
-          ),
-          with: { workspace: { columns: { id: true, accessMode: true } } },
-        });
-        const openIds = openWorkspaces.map(ws => ws.id);
-        const restrictedIds = restrictedPermissions
-          .filter(p => p.workspace?.accessMode === 'restricted')
-          .map(p => p.workspaceId);
-        const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
-
-        if (workspaceIds.length > 0) {
-          const [result] = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(tasks)
-            .where(
-              and(
-                eq(tasks.status, 'pending'),
-                inArray(tasks.workspaceId, workspaceIds),
-              )
-            );
-          pendingTaskCount = result?.count ?? 0;
-        }
-      } catch {
-        // Non-fatal — just skip the count
-      }
-    }
-
     // Include latest commit SHA for auto-update checks (best-effort)
     let latestCommit: string | undefined;
     try {
@@ -127,7 +88,7 @@ export async function POST(req: NextRequest) {
       // Non-fatal — version check is optional
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount, latestCommit });
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });
