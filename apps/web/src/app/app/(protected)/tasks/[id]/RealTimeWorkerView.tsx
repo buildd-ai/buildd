@@ -7,6 +7,7 @@ import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
 import TeamPanel from './TeamPanel';
+import SessionHistoryPanel from './SessionHistoryPanel';
 
 
 type Milestone =
@@ -136,6 +137,14 @@ function useDirectConnect(localUiUrl: string | null) {
   return { status, sendDirect, viewerToken: viewerTokenRef.current, localUiUrl };
 }
 
+interface TaskProgressEntry {
+  taskId: string;
+  agentName: string | null;
+  toolCount: number;
+  durationMs: number;
+  cumulativeUsage: { inputTokens: number; outputTokens: number; costUsd: number } | null;
+}
+
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
@@ -144,6 +153,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [abortLoading, setAbortLoading] = useState(false);
   const [interruptMode, setInterruptMode] = useState(false);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
+  const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   const { status: directStatus, sendDirect, viewerToken, localUiUrl: resolvedLocalUiUrl } = useDirectConnect(worker.localUiUrl);
 
   // Subscribe to real-time updates
@@ -153,9 +163,14 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     const channel = subscribeToChannel(channelName);
 
     if (channel) {
-      const handleUpdate = (data: { worker: Worker }) => {
+      const handleUpdate = (data: { worker: Worker; taskProgress?: TaskProgressEntry[] }) => {
         console.log('[RealTimeWorkerView] Received update:', data.worker?.status);
         setWorker(data.worker);
+        if (data.taskProgress) {
+          setTaskProgress(data.taskProgress);
+        } else {
+          setTaskProgress([]);
+        }
       };
 
       channel.bind('worker:progress', handleUpdate);
@@ -322,6 +337,30 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
+      {/* Subagent progress indicator */}
+      {taskProgress.length > 0 && isActive && (
+        <div className="mb-3 p-2.5 bg-surface-3 rounded-md border border-border-default/50">
+          <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Background Agents</div>
+          <div className="space-y-1">
+            {taskProgress.map((tp) => (
+              <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-status-running animate-pulse" />
+                  <span className="text-text-secondary">{tp.agentName || tp.taskId.slice(0, 8)}</span>
+                </div>
+                <div className="flex items-center gap-3 text-text-muted">
+                  <span>{tp.toolCount} tool{tp.toolCount !== 1 ? 's' : ''}</span>
+                  <span>{Math.round(tp.durationMs / 1000)}s</span>
+                  {tp.cumulativeUsage?.costUsd != null && tp.cumulativeUsage.costUsd > 0 && (
+                    <span>${tp.cumulativeUsage.costUsd.toFixed(4)}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Interrupt input form */}
       {interruptMode && (
         <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3">
@@ -415,6 +454,15 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       {/* Team Panel (P2P — fetches directly from local-ui) */}
       {directStatus === 'connected' && resolvedLocalUiUrl && (
         <TeamPanel
+          localUiUrl={resolvedLocalUiUrl}
+          viewerToken={viewerToken}
+          workerId={worker.id}
+        />
+      )}
+
+      {/* Session History (P2P — fetches directly from local-ui) */}
+      {directStatus === 'connected' && resolvedLocalUiUrl && (
+        <SessionHistoryPanel
           localUiUrl={resolvedLocalUiUrl}
           viewerToken={viewerToken}
           workerId={worker.id}

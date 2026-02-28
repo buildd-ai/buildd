@@ -276,6 +276,20 @@ export class WorkerRunner extends EventEmitter {
       return;
     }
 
+    // SDK v0.2.51+: Subagent task progress — cumulative metrics for background subagents
+    if (msg.type === 'system' && (msg as any).subtype === 'task_progress') {
+      const event = msg as any;
+      this.emitEvent('worker:task_progress', {
+        taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        agentName: event.agent_name ?? null,
+        toolCount: event.tool_count ?? 0,
+        durationMs: event.duration_ms ?? 0,
+        cumulativeUsage: event.cumulative_usage ?? null,
+      });
+      return;
+    }
+
     // SDK v0.2.47: Subagent task notification — emitted on task completion/status updates
     // tool_use_id added in v0.2.47 for start→completion correlation
     if (msg.type === 'system' && (msg as any).subtype === 'task_notification') {

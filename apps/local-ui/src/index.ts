@@ -1492,6 +1492,48 @@ const server = Bun.serve({
       return Response.json({ team: worker.teamState || null }, { headers: corsHeaders });
     }
 
+    // Sessions endpoint — list past sessions or get session messages via SDK
+    if (path.startsWith('/api/workers/') && path.endsWith('/sessions') && req.method === 'GET') {
+      if (!workerManager) {
+        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
+      }
+      const workerId = path.split('/')[3];
+      const worker = workerManager.getWorker(workerId);
+      if (!worker) {
+        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
+      }
+
+      const sessionId = url.searchParams.get('sessionId');
+
+      try {
+        // Dynamic import — listSessions/getSessionMessages added in SDK v0.2.53/v0.2.59
+        const sdk = await import('@anthropic-ai/claude-agent-sdk');
+
+        if (sessionId) {
+          // Get messages for a specific session
+          if (typeof sdk.getSessionMessages !== 'function') {
+            return Response.json({ error: 'getSessionMessages not available in this SDK version' }, { status: 501, headers: corsHeaders });
+          }
+          const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+          const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+          const messages = await sdk.getSessionMessages(sessionId, { limit, offset });
+          return Response.json({ messages }, { headers: corsHeaders });
+        } else {
+          // List sessions scoped to worker's CWD
+          if (typeof sdk.listSessions !== 'function') {
+            return Response.json({ error: 'listSessions not available in this SDK version' }, { status: 501, headers: corsHeaders });
+          }
+          const session = workerManager.getSession(workerId);
+          const cwd = session?.cwd || session?.repoPath || undefined;
+          const sessions = await sdk.listSessions({ cwd });
+          return Response.json({ sessions }, { headers: corsHeaders });
+        }
+      } catch (err: any) {
+        console.error(`[Sessions] Error fetching sessions for worker ${workerId}:`, err.message);
+        return Response.json({ error: err.message || 'Failed to fetch sessions' }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Trace endpoint — returns tool calls and messages for a worker
     if (path.startsWith('/api/workers/') && path.endsWith('/trace') && req.method === 'GET') {
       if (!workerManager) {

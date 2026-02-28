@@ -102,6 +102,13 @@ export interface SubagentTask {
   completedAt?: number;
   message?: string;
   isBackground?: boolean;  // SDK v0.2.49+: true when agent definition has `background: true`
+  // SDK v0.2.51+: cumulative progress metrics for background subagents
+  progress?: {
+    toolCount: number;
+    durationMs: number;
+    agentName: string | null;
+    cumulativeUsage: { inputTokens: number; outputTokens: number; costUsd: number } | null;
+  };
 }
 
 // Team state for a worker
