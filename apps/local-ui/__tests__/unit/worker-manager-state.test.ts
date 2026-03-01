@@ -1,6 +1,6 @@
 /**
  * WorkerManager state machine tests — verifies status transitions + emitted events
- * when the SDK sends messages (ExitPlanMode, AskUserQuestion, result, error).
+ * when the SDK sends messages (AskUserQuestion, result, error).
  *
  * Strategy: Call handleMessage() indirectly via a mock SDK query that yields
  * controlled message sequences. We mock all external deps before importing WorkerManager.

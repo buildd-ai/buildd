@@ -2037,7 +2037,7 @@ export class WorkerManager {
         return;
       }
 
-      // If the worker is waiting for user input (e.g. ExitPlanMode set status to 'waiting'),
+      // If the worker is waiting for user input (e.g. AskUserQuestion set status to 'waiting'),
       // don't overwrite that state with 'done'. The session ended naturally but the worker
       // needs human input before it can proceed.
       if (worker.status === 'waiting') {

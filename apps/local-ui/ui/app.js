@@ -2626,26 +2626,6 @@ async function retryWorker() {
   }
 }
 
-async function retryWithPlan() {
-  if (!currentWorkerId) return;
-  try {
-    const res = await fetch('./api/retry', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: currentWorkerId, withPlan: true })
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || 'Failed to retry with plan', 'error');
-      return;
-    }
-    showToast('Re-executing plan...', 'success');
-  } catch (err) {
-    console.error('Failed to retry with plan:', err);
-    showToast('Failed to retry with plan', 'error');
-  }
-}
-
 async function markDone() {
   if (!currentWorkerId) return;
   try {

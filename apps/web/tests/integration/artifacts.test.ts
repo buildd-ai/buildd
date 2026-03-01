@@ -6,7 +6,6 @@
  *   2. Listing artifacts via GET /api/workers/[id]/artifacts
  *   3. Enforcement: completing a worker with commits but no PR or artifact → 400
  *   4. Completing a worker with an artifact succeeds
- *   5. Plan artifact (task_plan type) satisfies the artifact requirement
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)

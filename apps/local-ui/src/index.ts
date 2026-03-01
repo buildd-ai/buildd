@@ -1309,11 +1309,7 @@ const server = Bun.serve({
 
     if (path === '/api/retry' && req.method === 'POST') {
       const body = await parseBody(req);
-      if (body.withPlan) {
-        await workerManager!.retryWithPlan(body.workerId);
-      } else {
-        await workerManager!.retry(body.workerId);
-      }
+      await workerManager!.retry(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 

@@ -127,13 +127,6 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Check for planning mode label
-        const planLabel = config.planLabel || 'plan';
-        const hasPlanLabel = data.issue.labels.some(
-          l => l.toLowerCase() === planLabel.toLowerCase()
-        );
-        const mode = hasPlanLabel ? 'planning' : 'execution';
-
         const [newTask] = await db
           .insert(tasks)
           .values({
@@ -143,7 +136,6 @@ export async function POST(req: NextRequest) {
             externalId,
             externalUrl: data.issue.url,
             status: 'pending',
-            mode,
             context: {
               webhook: {
                 issueId: data.issue.id,

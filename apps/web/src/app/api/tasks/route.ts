@@ -95,7 +95,6 @@ export async function POST(req: NextRequest) {
       title,
       description,
       priority,
-      mode,  // 'execution' (default) or 'planning'
       runnerPreference,
       requiredCapabilities,
       attachments,
@@ -220,7 +219,7 @@ export async function POST(req: NextRequest) {
         description: description || null,
         priority: priority || 0,
         status: 'pending',
-        mode: mode || 'execution',  // Default to execution mode
+        mode: 'execution',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {

@@ -316,28 +316,7 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls.length).toBe(0);
   });
 
-  // ── 9. Handles issues opened with buildd:plan label ────────────────────
-  it('handles issues opened with buildd:plan label - creates planning mode task', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
-
-    const payload = {
-      action: 'opened',
-      issue: makeIssue({ labels: [{ name: 'buildd' }, { name: 'buildd:plan' }] }),
-      repository: { id: 100, full_name: 'test-org/test-repo' },
-      installation: { id: 5000 },
-    };
-
-    const req = createWebhookRequest('issues', payload);
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    expect(insertCalls.length).toBe(1);
-    expect(insertCalls[0].values.mode).toBe('planning');
-  });
-
-  // ── 10. Handles issues closed ───────────────────────────────────────────
+  // ── 9. Handles issues closed ───────────────────────────────────────────
   it('handles issues closed - updates task to completed', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })

@@ -118,7 +118,6 @@ export class BuilddClient {
     workspaceId: string;
     title: string;
     description: string;
-    mode?: 'execution' | 'planning';
     attachments?: Array<{ data: string; mimeType: string; filename: string }>;
   }) {
     return this.fetch('/api/tasks', {
