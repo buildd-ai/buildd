@@ -56,8 +56,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_progress: '{ workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }',
     complete_task: '{ workerId (required), summary?, error?, structuredOutput? } — if error present, marks task as failed',
     create_pr: '{ workerId (required), title (required), head (required), body?, base?, draft? }',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, addBlockedByTaskIds?, removeBlockedByTaskIds? }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), blockedByTaskIds?, outputSchema?, project? (monorepo project name for scoping) }',
+    update_task: '{ taskId (required), title?, description?, priority?, project? }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping) }',
     create_artifact: '{ workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata?, key? }',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -311,15 +311,9 @@ export async function handleBuilddAction(
       if (params.description !== undefined) updateFields.description = params.description;
       if (params.priority !== undefined) updateFields.priority = params.priority;
       if (params.project !== undefined) updateFields.project = params.project;
-      if (params.addBlockedByTaskIds && Array.isArray(params.addBlockedByTaskIds)) {
-        updateFields.addBlockedByTaskIds = params.addBlockedByTaskIds;
-      }
-      if (params.removeBlockedByTaskIds && Array.isArray(params.removeBlockedByTaskIds)) {
-        updateFields.removeBlockedByTaskIds = params.removeBlockedByTaskIds;
-      }
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority, project, addBlockedByTaskIds, removeBlockedByTaskIds) must be provided');
+        throw new Error('At least one field (title, description, priority, project) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
@@ -349,9 +343,6 @@ export async function handleBuilddAction(
       if (params.outputSchema && typeof params.outputSchema === 'object') {
         taskBody.outputSchema = params.outputSchema;
       }
-      if (params.blockedByTaskIds && Array.isArray(params.blockedByTaskIds)) {
-        taskBody.blockedByTaskIds = params.blockedByTaskIds;
-      }
       if (params.project) taskBody.project = params.project;
 
       const task = await api('/api/tasks', {
@@ -359,8 +350,7 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
-      const statusLabel = task.status === 'blocked' ? 'blocked' : 'pending';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nPriority: ${task.priority}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${task.status === 'blocked' ? `\nBlocked by: ${(params.blockedByTaskIds as string[]).join(', ')}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {

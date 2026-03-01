@@ -11,7 +11,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
-import PlanReviewPanel from './PlanReviewPanel';
+
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
@@ -101,7 +101,7 @@ export default async function TaskDetailPage({
     ? await db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
     : [];
   const deliverableArtifacts = taskArtifacts.filter(
-    a => a.type !== 'task_plan' && a.type !== 'impl_plan'
+    a => a.type !== 'impl_plan'
   );
 
   // Get the active worker (if any)

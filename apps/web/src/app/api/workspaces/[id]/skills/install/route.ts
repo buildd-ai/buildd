@@ -102,8 +102,7 @@ export async function POST(
             columns: { gitConfig: true },
         });
 
-        const workspaceAllowlist = (workspace?.gitConfig as any)?.skillInstallerAllowlist
-            ?? [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
+        const workspaceAllowlist = [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
 
         const validation = validateInstallerCommand(installerCommand, {
             workspaceAllowlist,

@@ -114,7 +114,6 @@ interface SavedConfig {
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
   // Remote skill installation
-  skillInstallerAllowlist?: string[]; // Override workspace allowlist locally
   rejectRemoteInstallers?: boolean; // Block all remote installer commands
   maxTurns?: number; // Max turns per worker session (default: no limit)
 }

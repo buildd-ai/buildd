@@ -341,7 +341,6 @@ export interface LocalUIConfig {
   // Bypass permission prompts for bash commands (dangerous commands still blocked)
   bypassPermissions?: boolean;
   // Remote skill installation
-  skillInstallerAllowlist?: string[];
   rejectRemoteInstallers?: boolean;
   // Maximum budget in USD per worker session (local fallback; workspace gitConfig.maxBudgetUsd takes priority)
   maxBudgetUsd?: number;
