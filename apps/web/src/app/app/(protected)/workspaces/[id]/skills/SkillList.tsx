@@ -10,7 +10,7 @@ interface Skill {
   content: string;
   source: string | null;
   enabled: boolean;
-  origin: 'scan' | 'manual' | 'promoted';
+  origin: 'scan' | 'manual';
   createdAt: string;
   recentRuns?: number;
   totalRuns?: number;
@@ -24,7 +24,6 @@ interface Props {
 const originBadge: Record<string, { bg: string; text: string }> = {
   scan: { bg: 'bg-status-warning/10', text: 'text-status-warning' },
   manual: { bg: 'bg-primary/10', text: 'text-primary' },
-  promoted: { bg: 'bg-status-success/10', text: 'text-status-success' },
 };
 
 const PIPELINE_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
@@ -39,7 +38,6 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   const [skills, setSkills] = useState(initialSkills);
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [promoting, setPromoting] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ name: '', description: '', content: '', source: '' });
@@ -79,26 +77,6 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
       // Silent failure
     } finally {
       setToggling(null);
-    }
-  }
-
-  async function promoteSkill(skill: Skill) {
-    setPromoting(skill.id);
-    try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}/promote`, {
-        method: 'POST',
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setSkills((prev) =>
-          prev.map((s) => (s.id === skill.id ? { ...s, origin: 'promoted' as const, skillId: data.skill?.id } : s))
-        );
-      }
-    } catch {
-      // Silent failure
-    } finally {
-      setPromoting(null);
     }
   }
 
@@ -315,20 +293,6 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                       skill.enabled ? 'translate-x-4' : ''
                     }`} />
                   </button>
-
-                  {/* Promote to team */}
-                  {skill.origin !== 'promoted' && (
-                    <button
-                      onClick={() => promoteSkill(skill)}
-                      disabled={promoting === skill.id}
-                      className="p-1.5 text-text-muted hover:text-status-success"
-                      title="Promote to team skill"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 19V5M5 12l7-7 7 7" />
-                      </svg>
-                    </button>
-                  )}
 
                   {/* Delete */}
                   <button

@@ -113,8 +113,6 @@ interface SavedConfig {
   llmProvider?: LLMProvider; // 'anthropic' or 'openrouter'
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
-  // Remote skill installation
-  rejectRemoteInstallers?: boolean; // Block all remote installer commands
   maxTurns?: number; // Max turns per worker session (default: no limit)
 }
 
@@ -137,8 +135,6 @@ function loadSavedConfig(): SavedConfig {
         llmProvider: data.llmProvider,
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
-        skillInstallerAllowlist: data.skillInstallerAllowlist,
-        rejectRemoteInstallers: data.rejectRemoteInstallers,
         maxTurns: data.maxTurns,
       };
     }
@@ -375,9 +371,6 @@ const config: LocalUIConfig = {
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
   // Bypass permission prompts (default: false)
   bypassPermissions: savedConfig.bypassPermissions || false,
-  // Remote skill installation
-  skillInstallerAllowlist: savedConfig.skillInstallerAllowlist,
-  rejectRemoteInstallers: savedConfig.rejectRemoteInstallers,
   // Max turns per worker session
   maxTurns: savedConfig.maxTurns,
 };

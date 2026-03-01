@@ -74,7 +74,7 @@ export class WorkerRunner extends EventEmitter {
           : `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
       }
 
-      // Build plugins and sandbox config from workspace config
+      // Build sandbox config from workspace config
       const gitConfig = (worker.workspace as any)?.gitConfig;
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
@@ -106,8 +106,6 @@ export class WorkerRunner extends EventEmitter {
           };
         }
       }
-      const pluginPaths: string[] = gitConfig?.pluginPaths || [];
-      const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Extract outputSchema from task for structured output support
@@ -164,7 +162,6 @@ export class WorkerRunner extends EventEmitter {
           systemPrompt,
           ...(allowedTools.length > 0 ? { allowedTools } : {}),
           ...(agents ? { agents } : {}),
-          ...(plugins.length > 0 ? { plugins } : {}),
           ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
           // SDK debug logging from workspace config
           ...(gitConfig?.debug ? { debug: true } : {}),

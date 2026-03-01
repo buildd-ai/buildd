@@ -161,7 +161,6 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
-  private workspaceAllowlistCache = new Map<string, string[] | undefined>();
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
@@ -347,13 +346,6 @@ export class WorkerManager {
             this.handleSkillInstall(data, ws.id);
           });
           this.workspaceChannels.set(channelName, channel);
-          // Cache workspace allowlist
-          try {
-            const wsConfig = await this.buildd.getWorkspaceConfig(ws.id);
-            this.workspaceAllowlistCache.set(ws.id, (wsConfig.gitConfig as any)?.skillInstallerAllowlist);
-          } catch {
-            // Non-fatal — will use default allowlist
-          }
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
@@ -370,7 +362,6 @@ export class WorkerManager {
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
-    this.workspaceAllowlistCache.clear();
   }
 
   // Handle incoming task assignment
@@ -434,8 +425,6 @@ export class WorkerManager {
     // Command execution path
     if (payload.installerCommand) {
       const validation = validateInstallerCommand(payload.installerCommand, {
-        workspaceAllowlist: this.workspaceAllowlistCache.get(workspaceId),
-        localAllowlist: this.config.skillInstallerAllowlist,
         rejectAll: this.config.rejectRemoteInstallers,
       });
       if (!validation.allowed) {
@@ -1906,9 +1895,7 @@ export class WorkerManager {
         }
       }
 
-      // Build plugins and sandbox config from workspace config
-      const pluginPaths: string[] = gitConfig?.pluginPaths || [];
-      const plugins = pluginPaths.map((p: string) => ({ type: 'local' as const, path: p }));
+      // Build sandbox config from workspace config
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Resolve max budget for SDK-level cost control
@@ -1952,7 +1939,6 @@ export class WorkerManager {
         ...(maxTurns ? { maxTurns } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(agents ? { agents } : {}),
-        ...(plugins.length > 0 ? { plugins } : {}),
         ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
         // SDK debug logging from workspace config
         ...(gitConfig?.debug ? { debug: true } : {}),

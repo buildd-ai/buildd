@@ -28,7 +28,7 @@ export type ToolResult = {
 export const workerActions = [
   'list_tasks', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
-  'list_artifacts', 'update_artifact', 'review_workspace',
+  'list_artifacts', 'update_artifact',
   'emit_event', 'query_events',
 ] as const;
 
@@ -65,7 +65,6 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     list_schedules: '{ workspaceId? } [admin]',
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
-    review_workspace: '{ hoursBack? (default 24, max 168), workspaceId? }',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
@@ -555,87 +554,6 @@ export async function handleBuilddAction(
 
       const updatedArt = updated.artifact;
       return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
-    }
-
-    case 'review_workspace': {
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const hoursBack = Math.min(Math.max((params.hoursBack as number) || 24, 1), 168);
-      const data = await api(`/api/workspaces/${wsId}/tasks/review?hoursBack=${hoursBack}`);
-
-      const tasksToReview = data.tasks || [];
-      if (tasksToReview.length === 0) {
-        return text(`No completed or failed tasks in the last ${hoursBack} hours. Nothing to review.`);
-      }
-
-      const findings: string[] = [];
-      const taskSummaries: string[] = [];
-
-      for (const task of tasksToReview) {
-        const issues: string[] = [];
-        const result = task.result || {};
-        const worker = task.worker;
-
-        if (task.status === 'failed') {
-          const hasSubTasks = (task.subTaskCount || 0) > 0;
-          if (!hasSubTasks) {
-            issues.push('FAILED without follow-up task created');
-          }
-        }
-
-        if (task.status === 'completed' && task.mode === 'execution') {
-          if (!result.prUrl && !result.prNumber) {
-            if (result.commits && result.commits > 0) {
-              issues.push(`Has ${result.commits} commit(s) but NO PR created`);
-            } else if (!result.commits || result.commits === 0) {
-              issues.push('Completed with NO commits and NO PR — may not have pushed work');
-            }
-          }
-        }
-
-        if (task.status === 'completed' && task.mode === 'planning') {
-          if (!result.summary && !result.structuredOutput) {
-            issues.push('Planning task completed without a plan summary or structured output');
-          }
-        }
-
-        if (worker?.resultMeta?.permissionDenials?.length > 0) {
-          issues.push(`Worker had ${worker.resultMeta.permissionDenials.length} permission denial(s)`);
-        }
-
-        const statusIcon = task.status === 'completed' ? 'OK' : 'FAIL';
-        const prInfo = result.prUrl ? ` | PR: ${result.prUrl}` : '';
-        const commitInfo = result.commits ? ` | ${result.commits} commits` : '';
-
-        let taskLine = `- [${statusIcon}] **${task.title}** (${task.id.slice(0, 8)})${commitInfo}${prInfo}`;
-        if (issues.length > 0) {
-          taskLine += `\n  ⚠ Issues: ${issues.join('; ')}`;
-        }
-        taskSummaries.push(taskLine);
-
-        if (issues.length > 0) {
-          findings.push(
-            `Task "${task.title}" (${task.id}):\n` +
-            issues.map(i => `  - ${i}`).join('\n')
-          );
-        }
-      }
-
-      const completed = tasksToReview.filter((t: any) => t.status === 'completed').length;
-      const failed = tasksToReview.filter((t: any) => t.status === 'failed').length;
-      const header = `## Workspace Review (last ${hoursBack}h)\n\n**${tasksToReview.length} tasks** reviewed: ${completed} completed, ${failed} failed\n`;
-
-      const tasksSection = `### Tasks\n${taskSummaries.join('\n')}\n`;
-
-      let findingsSection = '';
-      if (findings.length > 0) {
-        findingsSection = `\n### Findings (${findings.length} issue${findings.length === 1 ? '' : 's'})\n${findings.join('\n\n')}\n\n### Recommended Actions\nFor each finding above, consider creating a follow-up task using \`action=create_task\` to:\n- Create PRs for unpushed work\n- Retry or investigate failed tasks\n- Document plans that were completed without summaries`;
-      } else {
-        findingsSection = '\n### Findings\nAll tasks followed protocols correctly. No issues found.';
-      }
-
-      return text(`${header}\n${tasksSection}${findingsSection}`);
     }
 
     // ── Observability (Phase 5) ────────────────────────────────────────────

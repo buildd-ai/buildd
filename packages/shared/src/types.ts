@@ -70,16 +70,6 @@ export const ArtifactType = {
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
 
-export const SourceType = {
-  MANUAL: 'manual',
-  GITHUB: 'github',
-  JIRA: 'jira',
-  LINEAR: 'linear',
-  WEBHOOK: 'webhook',
-} as const;
-
-export type SourceTypeValue = typeof SourceType[keyof typeof SourceType];
-
 export const CreationSource = {
   DASHBOARD: 'dashboard',
   API: 'api',
@@ -228,15 +218,6 @@ export interface Workspace {
   updatedAt: Date;
   taskCount?: number;
   activeWorkerCount?: number;
-}
-
-export interface Source {
-  id: string;
-  workspaceId: string;
-  type: SourceTypeValue;
-  name: string;
-  config: Record<string, unknown>;
-  createdAt: Date;
 }
 
 export interface TaskResult {
@@ -724,8 +705,6 @@ export interface SkillInstallResult {
 export function validateInstallerCommand(
   command: string,
   config: {
-    workspaceAllowlist?: string[];
-    localAllowlist?: string[];
     rejectAll?: boolean;
   }
 ): { allowed: boolean; reason?: string } {
@@ -737,7 +716,7 @@ export function validateInstallerCommand(
       return { allowed: false, reason: 'Blocked by dangerous pattern' };
     }
   }
-  const allowlist = config.localAllowlist ?? config.workspaceAllowlist ?? [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
+  const allowlist = [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
   const trimmed = command.trim();
   if (!allowlist.some(prefix => trimmed.startsWith(prefix))) {
     return { allowed: false, reason: `No matching allowlist prefix. Allowed: ${allowlist.join(', ')}` };

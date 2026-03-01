@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { accounts, skills, workspaces } from '@buildd/core/db/schema';
+import { accounts, workspaces } from '@buildd/core/db/schema';
 import { desc, inArray } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -23,7 +23,6 @@ export default async function SettingsPage() {
   let allAccounts: any[] = [];
   let userTeams: UserTeam[] = [];
   let teamsError = false;
-  let teamSkills: any[] = [];
   let userWorkspaces: { id: string; name: string; repo: string | null }[] = [];
 
   // Fetch teams - uses React cache() so shared with layout
@@ -58,16 +57,8 @@ export default async function SettingsPage() {
     console.error('Settings: accounts query error:', error);
   }
 
-  // Fetch team-level skills
+  // Fetch workspaces for skill management link
   try {
-    if (teamIds.length > 0) {
-      teamSkills = await db.query.skills.findMany({
-        where: inArray(skills.teamId, teamIds),
-        orderBy: (s, { asc }) => [asc(s.slug)],
-      });
-    }
-
-    // Fetch workspaces for skill management link
     const wsIds = await getUserWorkspaceIds(user.id);
     if (wsIds.length > 0) {
       userWorkspaces = await db.query.workspaces.findMany({
@@ -76,7 +67,7 @@ export default async function SettingsPage() {
       });
     }
   } catch (error) {
-    console.error('Settings: skills query error:', error);
+    console.error('Settings: workspaces query error:', error);
   }
 
   const roleColors: Record<string, string> = {
@@ -184,7 +175,7 @@ export default async function SettingsPage() {
           <hr className="border-border-default" />
 
           {/* Skills */}
-          <SkillsSection skills={teamSkills} workspaces={userWorkspaces} />
+          <SkillsSection workspaces={userWorkspaces} />
         </div>
       </div>
     </main>

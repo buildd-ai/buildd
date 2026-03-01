@@ -507,7 +507,7 @@ export const workspaceSkills = pgTable('workspace_skills', {
   contentHash: text('content_hash').notNull(), // SHA-256 for verification
   source: text('source'), // 'local_scan', 'manual', 'github:owner/repo', etc.
   enabled: boolean('enabled').default(true).notNull(),
-  origin: text('origin').default('manual').notNull().$type<'scan' | 'manual' | 'promoted'>(),
+  origin: text('origin').default('manual').notNull().$type<'scan' | 'manual'>(),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

@@ -27,11 +27,9 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-  const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
   let stalledWorkers = 0;
   let orphanedTasks = 0;
-  let expiredPlans = 0;
 
   // 1. Workers stuck in running/starting with no update for > 1 hour
   const stalledRunning = await db.query.workers.findMany({
@@ -66,7 +64,7 @@ export async function POST(req: NextRequest) {
     const activeWorkers = await db.query.workers.findMany({
       where: and(
         eq(workers.taskId, task.id),
-        inArray(workers.status, ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'])
+        inArray(workers.status, ['running', 'starting', 'waiting_input'])
       ),
     });
 
@@ -82,27 +80,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3. Workers in awaiting_plan_approval for > 24 hours
-  const expiredPlanWorkers = await db.query.workers.findMany({
-    where: and(
-      eq(workers.status, 'awaiting_plan_approval'),
-      lt(workers.updatedAt, twentyFourHoursAgo)
-    ),
-  });
-
-  for (const worker of expiredPlanWorkers) {
-    await db
-      .update(workers)
-      .set({
-        status: 'failed',
-        error: 'Plan approval timed out - no response for over 24 hours',
-        updatedAt: now,
-      })
-      .where(eq(workers.id, worker.id));
-    expiredPlans++;
-  }
-
-  // 4. Mark workers as failed when their local-UI heartbeat is stale
+  // 3. Mark workers as failed when their local-UI heartbeat is stale
   // This catches workers that appear active but their runner machine is offline
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
   let heartbeatOrphans = 0;
@@ -119,7 +97,7 @@ export async function POST(req: NextRequest) {
     const orphanedWorkers = await db.query.workers.findMany({
       where: and(
         inArray(workers.accountId, staleAccountIds),
-        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input', 'awaiting_plan_approval']),
+        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
       ),
       columns: { id: true, taskId: true },
     });
@@ -165,7 +143,6 @@ export async function POST(req: NextRequest) {
     cleaned: {
       stalledWorkers,
       orphanedTasks,
-      expiredPlans,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },
