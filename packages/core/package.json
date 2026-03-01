@@ -15,7 +15,8 @@
     "./buildd-mcp-server": "./buildd-mcp-server.ts",
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
-    "./secrets": "./secrets/index.ts"
+    "./secrets": "./secrets/index.ts",
+    "./file-reservations": "./file-reservations.ts"
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workerHeartbeats, workspaces, workspaceSkills, secrets } from '@buildd/core/db/schema';
-import { eq, and, or, not, isNull, sql, inArray, lt, gt } from 'drizzle-orm';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets } from '@buildd/core/db/schema';
+import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
-import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
 export async function POST(req: NextRequest) {
@@ -35,108 +35,8 @@ export async function POST(req: NextRequest) {
     ];
   }
 
-  // Auto-expire stale workers (no update in 15+ minutes)
-  const STALE_THRESHOLD_MS = 15 * 60 * 1000;
-  const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
-
-  const staleWorkers = await db.query.workers.findMany({
-    where: and(
-      eq(workers.accountId, account.id),
-      inArray(workers.status, ['running', 'starting', 'waiting_input']),
-      lt(workers.updatedAt, staleThreshold)
-    ),
-    columns: { id: true, taskId: true },
-  });
-
-  if (staleWorkers.length > 0) {
-    const staleWorkerIds = staleWorkers.map(w => w.id);
-    const staleTaskIds = staleWorkers.map(w => w.taskId).filter(Boolean) as string[];
-
-    await db
-      .update(workers)
-      .set({
-        status: 'failed',
-        error: 'Stale worker expired (no update for 15+ minutes)',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(inArray(workers.id, staleWorkerIds));
-
-    if (staleTaskIds.length > 0) {
-      // Fetch workspace IDs before updating, for dependency resolution
-      const staleTasks = await db.query.tasks.findMany({
-        where: inArray(tasks.id, staleTaskIds),
-        columns: { id: true, workspaceId: true },
-      });
-
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          claimedBy: null,
-          claimedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(inArray(tasks.id, staleTaskIds));
-
-      // Resolve dependencies for expired tasks
-      for (const t of staleTasks) {
-        await resolveCompletedTask(t.id, t.workspaceId);
-      }
-    }
-  }
-
-  // Also fail active workers when their runner's heartbeat is stale (machine went offline)
-  const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
-  const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
-
-  // Check if this account has any fresh heartbeat
-  const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: and(
-      eq(workerHeartbeats.accountId, account.id),
-      gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
-    ),
-    columns: { id: true },
-  });
-
-  // If no fresh heartbeat, fail any active workers for this account
-  if (!freshHeartbeat) {
-    const orphanedByHeartbeat = await db.query.workers.findMany({
-      where: and(
-        eq(workers.accountId, account.id),
-        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
-        lt(workers.updatedAt, heartbeatCutoff),
-      ),
-      columns: { id: true, taskId: true },
-    });
-
-    if (orphanedByHeartbeat.length > 0) {
-      const orphanIds = orphanedByHeartbeat.map(w => w.id);
-      const orphanTaskIds = orphanedByHeartbeat.map(w => w.taskId).filter(Boolean) as string[];
-
-      await db
-        .update(workers)
-        .set({
-          status: 'failed',
-          error: 'Worker runner went offline (heartbeat expired)',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(inArray(workers.id, orphanIds));
-
-      if (orphanTaskIds.length > 0) {
-        await db
-          .update(tasks)
-          .set({
-            status: 'pending',
-            claimedBy: null,
-            claimedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(inArray(tasks.id, orphanTaskIds));
-      }
-    }
-  }
+  // Clean up stale workers before checking capacity
+  await cleanupStaleWorkers(account.id);
 
   // Check current active workers (after expiring stale ones)
   const activeWorkers = await db.query.workers.findMany({

@@ -1,6 +1,6 @@
 {
-  "id": "63229d4a-f485-450e-a7fc-fdba638b44aa",
-  "prevId": "cf25b432-f5d1-472b-8fcb-34633ab68dfd",
+  "id": "21cccb7c-c56b-43e3-a339-f3ef6fcd4ff3",
+  "prevId": "63229d4a-f485-450e-a7fc-fdba638b44aa",
   "version": "5",
   "dialect": "pg",
   "tables": {
@@ -1255,186 +1255,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {}
     },
-    "skills": {
-      "name": "skills",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "slug": {
-          "name": "slug",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content": {
-          "name": "content",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_version": {
-          "name": "source_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "skills_team_slug_idx": {
-          "name": "skills_team_slug_idx",
-          "columns": [
-            "team_id",
-            "slug"
-          ],
-          "isUnique": true
-        },
-        "skills_team_idx": {
-          "name": "skills_team_idx",
-          "columns": [
-            "team_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "skills_team_id_teams_id_fk": {
-          "name": "skills_team_id_teams_id_fk",
-          "tableFrom": "skills",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
-    },
-    "sources": {
-      "name": "sources",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "type": {
-          "name": "type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "config": {
-          "name": "config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "sources_workspace_idx": {
-          "name": "sources_workspace_idx",
-          "columns": [
-            "workspace_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "sources_workspace_id_workspaces_id_fk": {
-          "name": "sources_workspace_id_workspaces_id_fk",
-          "tableFrom": "sources",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
-    },
     "task_schedules": {
       "name": "task_schedules",
       "schema": "",
@@ -1641,12 +1461,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_id": {
-          "name": "source_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "external_id": {
           "name": "external_id",
           "type": "text",
@@ -1756,13 +1570,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "blocked_by_task_ids": {
-          "name": "blocked_by_task_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'[]'::jsonb"
-        },
         "category": {
           "name": "category",
           "type": "text",
@@ -1845,14 +1652,6 @@
           ],
           "isUnique": false
         },
-        "tasks_source_external_idx": {
-          "name": "tasks_source_external_idx",
-          "columns": [
-            "source_id",
-            "external_id"
-          ],
-          "isUnique": true
-        },
         "tasks_created_by_account_idx": {
           "name": "tasks_created_by_account_idx",
           "columns": [
@@ -1887,19 +1686,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tasks_source_id_sources_id_fk": {
-          "name": "tasks_source_id_sources_id_fk",
-          "tableFrom": "tasks",
-          "tableTo": "sources",
-          "columnsFrom": [
-            "source_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "tasks_claimed_by_accounts_id_fk": {
@@ -2729,12 +2515,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "skill_id": {
-          "name": "skill_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "slug": {
           "name": "slug",
           "type": "text",
@@ -2822,13 +2602,6 @@
             "workspace_id"
           ],
           "isUnique": false
-        },
-        "workspace_skills_skill_idx": {
-          "name": "workspace_skills_skill_idx",
-          "columns": [
-            "skill_id"
-          ],
-          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -2843,19 +2616,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "workspace_skills_skill_id_skills_id_fk": {
-          "name": "workspace_skills_skill_id_skills_id_fk",
-          "tableFrom": "workspace_skills",
-          "tableTo": "skills",
-          "columnsFrom": [
-            "skill_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

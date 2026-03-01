@@ -4,6 +4,7 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { cleanupStaleWorkers } from '@/lib/stale-workers';
 
 // POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
 // Admin auth only (session or admin-level API key)
@@ -80,7 +81,21 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3. Mark workers as failed when their local-UI heartbeat is stale
+  // 3. Per-account stale worker cleanup (15-min threshold + heartbeat check)
+  const activeAccountIds = await db.query.workers.findMany({
+    where: inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+    columns: { accountId: true },
+  });
+  const uniqueAccountIds = [...new Set(activeAccountIds.map(w => w.accountId).filter(Boolean))] as string[];
+  for (const accountId of uniqueAccountIds) {
+    try {
+      await cleanupStaleWorkers(accountId);
+    } catch {
+      // Non-fatal — continue with other accounts
+    }
+  }
+
+  // 4. Mark workers as failed when their local-UI heartbeat is stale
   // This catches workers that appear active but their runner machine is offline
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
   let heartbeatOrphans = 0;
@@ -133,7 +148,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 5. Delete stale heartbeats (no ping for > 10 minutes)
+  // 6. Delete stale heartbeats (no ping for > 10 minutes)
   const deletedHeartbeats = await db
     .delete(workerHeartbeats)
     .where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo))
