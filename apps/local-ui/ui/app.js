@@ -1104,16 +1104,6 @@ function renderWorkerDetail(worker, opts = {}) {
         </div>`
       : '';
 
-    // Plan-specific context with retry button
-    const hasSavedPlan = !!worker.planContent;
-    const hadPlan = hasSavedPlan || recentMilestones.some(m => m.label.includes('Plan'));
-    const planHint = hadPlan
-      ? `<div class="flex items-center gap-2 mt-2">
-          <div class="text-xs text-status-info">This was a planning task.</div>
-          ${hasSavedPlan ? `<button class="text-[12px] font-medium text-brand bg-brand/10 border border-brand/30 rounded-md py-1 px-2.5 cursor-pointer transition-all hover:bg-brand/20" onclick="retryWithPlan()">Retry with plan</button>` : ''}
-        </div>`
-      : '';
-
     const logsId = 'logs-' + worker.id.slice(0, 8);
 
     timelineEl.innerHTML += `
@@ -1129,7 +1119,6 @@ function renderWorkerDetail(worker, opts = {}) {
         <div class="text-sm text-text-primary leading-normal mb-1">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
         ${metaHtml}
         ${milestonesHtml}
-        ${planHint}
         <div class="flex items-center gap-2 mt-3">
           <div class="text-xs text-text-secondary">Send a message below to restart with new instructions</div>
           <button class="text-[11px] text-text-tertiary underline cursor-pointer bg-transparent border-none p-0 hover:text-text-secondary" onclick="toggleSessionLogs('${worker.id}', '${logsId}')">View logs</button>
@@ -2794,7 +2783,6 @@ async function createAndStartTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
-  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2809,7 +2797,6 @@ async function createAndStartTask() {
     workspaceId,
     title,
     description,
-    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
@@ -2936,7 +2923,6 @@ function clearTaskForm() {
   document.getElementById('taskTitle').value = '';
   document.getElementById('taskDescription').value = '';
   document.getElementById('taskWorkspace').value = '';
-  document.getElementById('taskRequirePlan').checked = false;
   selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();

@@ -702,8 +702,7 @@ export class WorkerManager {
       if (worker.status === 'waiting') continue;
 
       if (worker.status === 'working') {
-        // Use 15-min timeout when planning is active (agents spend more time investigating)
-        const timeout = worker.planStartMessageIndex != null ? 900_000 : 300_000;
+        const timeout = 300_000; // 5 minutes
         if (now - worker.lastActivity > timeout) {
           worker.status = 'stale';
           this.emit({ type: 'worker_update', worker });
@@ -2817,76 +2816,6 @@ export class WorkerManager {
         worker.status = 'error';
         worker.error = err instanceof Error ? err.message : 'Retry session failed';
         worker.currentAction = 'Retry failed';
-        worker.hasNewActivity = true;
-        worker.completedAt = Date.now();
-        this.emit({ type: 'worker_update', worker });
-      }
-    });
-  }
-
-  async retryWithPlan(workerId: string) {
-    const worker = this.workers.get(workerId);
-    if (!worker || !worker.planContent) return;
-
-    sessionLog(worker.id, 'info', 'retry_with_plan', `planLength=${worker.planContent.length}`, worker.taskId);
-
-    // Abort current session if any
-    const session = this.sessions.get(workerId);
-    if (session) {
-      session.abortController.abort();
-      session.inputStream.end();
-      this.sessions.delete(workerId);
-    }
-
-    // Reset worker state
-    worker.status = 'working';
-    worker.error = undefined;
-    worker.currentAction = 'Re-executing plan...';
-    worker.hasNewActivity = true;
-    worker.lastActivity = Date.now();
-    worker.completedAt = undefined;
-    this.addMilestone(worker, { type: 'status', label: 'Retrying with saved plan', ts: Date.now() });
-    this.emit({ type: 'worker_update', worker });
-    storeSaveWorker(worker);
-
-    await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Re-executing plan...' });
-
-    const workspacePath = this.resolver.resolve({
-      id: worker.workspaceId,
-      name: worker.workspaceName,
-      repo: undefined,
-    });
-
-    if (!workspacePath) {
-      worker.status = 'error';
-      worker.error = 'Cannot resolve workspace path';
-      worker.currentAction = 'Workspace not found';
-      worker.hasNewActivity = true;
-      worker.completedAt = Date.now();
-      this.emit({ type: 'worker_update', worker });
-      await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
-      return;
-    }
-
-    const task: BuilddTask = {
-      id: worker.taskId,
-      title: worker.taskTitle,
-      description: `Execute this plan:\n\n${worker.planContent}`,
-      workspaceId: worker.workspaceId,
-      workspace: { name: worker.workspaceName },
-      status: 'assigned',
-      priority: 1,
-      mode: 'execution',
-    };
-
-    this.startSession(worker, workspacePath, task).catch(err => {
-      const errMsg = err instanceof Error ? err.message : 'Plan retry failed';
-      console.error(`[Worker ${worker.id}] Plan retry failed:`, err);
-      sessionLog(worker.id, 'error', 'plan_retry_failed', errMsg, worker.taskId);
-      if (worker.status === 'working') {
-        worker.status = 'error';
-        worker.error = errMsg;
-        worker.currentAction = 'Plan retry failed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         this.emit({ type: 'worker_update', worker });

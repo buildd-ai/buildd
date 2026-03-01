@@ -188,19 +188,6 @@ export class BuilddClient {
     });
   }
 
-  async approvePlan(workerId: string) {
-    return this.fetch(`/api/workers/${workerId}/plan/approve`, {
-      method: 'POST',
-    });
-  }
-
-  async revisePlan(workerId: string, feedback: string) {
-    return this.fetch(`/api/workers/${workerId}/plan/revise`, {
-      method: 'POST',
-      body: JSON.stringify({ feedback }),
-    });
-  }
-
   async createObservation(workspaceId: string, data: {
     type: string;
     title: string;

@@ -53,7 +53,7 @@ export default async function ArtifactsPage() {
     : [];
 
   const deliverableArtifacts = allArtifacts.filter(
-    a => a.type !== 'task_plan' && a.type !== 'impl_plan'
+    a => a.type !== 'impl_plan'
   );
 
   // Build mappings
