@@ -160,3 +160,28 @@ if [ -n "$EXISTING_PR" ]; then
 else
   gh pr create --base main --head dev --title "Release ${NEW_VERSION}" --body "$BODY"
 fi
+
+# Create changelog task (if BUILDD_API_KEY is available)
+BUILDD_KEY="${BUILDD_API_KEY:-}"
+if [ -z "$BUILDD_KEY" ] && [ -f .env.local ]; then
+  BUILDD_KEY=$(grep '^BUILDD_API_KEY=' .env.local 2>/dev/null | cut -d= -f2)
+fi
+
+if [ -n "$BUILDD_KEY" ]; then
+  echo ""
+  echo "📝 Creating changelog task for ${NEW_VERSION}..."
+  curl -s -X POST \
+    -H "Authorization: Bearer ${BUILDD_KEY}" \
+    -H "Content-Type: application/json" \
+    "https://buildd-three.vercel.app/api/tasks" \
+    -d "{
+      \"title\": \"Update CHANGELOG.md for ${NEW_VERSION}\",
+      \"description\": \"Release ${NEW_VERSION} was just created. Update CHANGELOG.md: move [Unreleased] entries into a [${VERSION}] section and verify all commits are accounted for.\",
+      \"category\": \"docs\",
+      \"priority\": 2,
+      \"context\": {
+        \"skillSlugs\": [\"changelog-generator\"],
+        \"releaseVersion\": \"${NEW_VERSION}\"
+      }
+    }" > /dev/null 2>&1 && echo "  ✅ Changelog task created" || echo "  ⚠️  Failed to create changelog task (non-fatal)"
+fi

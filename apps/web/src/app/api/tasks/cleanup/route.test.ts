@@ -29,6 +29,11 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockCleanupStaleWorkers = mock(() => Promise.resolve());
+mock.module('@/lib/stale-workers', () => ({
+  cleanupStaleWorkers: mockCleanupStaleWorkers,
+}));
+
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
@@ -78,6 +83,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockTasksUpdate.mockReset();
     mockHeartbeatsFindMany.mockReset();
     mockHeartbeatsDelete.mockReset();
+    mockCleanupStaleWorkers.mockReset();
+    mockCleanupStaleWorkers.mockResolvedValue(undefined);
 
     // Default: no stale heartbeats
     mockHeartbeatsFindMany.mockResolvedValue([]);
@@ -175,6 +182,8 @@ describe('POST /api/tasks/cleanup', () => {
         { id: 'w2', status: 'starting', updatedAt: new Date(0) },
       ])
       // Second findMany: expired plan workers
+      .mockResolvedValueOnce([])
+      // Third findMany: active account IDs for per-account cleanup
       .mockResolvedValueOnce([]);
 
     mockTasksFindMany.mockResolvedValue([]);
@@ -195,6 +204,7 @@ describe('POST /api/tasks/cleanup', () => {
     mockWorkersFindMany
       .mockResolvedValueOnce([])  // stalled running
       .mockResolvedValueOnce([])  // expired plans
+      .mockResolvedValueOnce([])  // active account IDs for per-account cleanup
       // heartbeat orphan check: workers with stale heartbeat accounts
       .mockResolvedValueOnce([
         { id: 'w1', taskId: 'task-1' },
