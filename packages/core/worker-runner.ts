@@ -7,9 +7,11 @@ import { eq } from 'drizzle-orm';
 import { config } from '../config';
 import { createBuilddMcpServer } from './buildd-mcp-server';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
+import { checkReservation, acquireReservation, releaseWorkerReservations } from './file-reservations';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
+  private workspaceId: string | null = null;
   private abortController: AbortController | null = null;
   private status: WorkerStatusType = 'idle';
   private costUsd = 0;
@@ -37,6 +39,7 @@ export class WorkerRunner extends EventEmitter {
       });
 
       if (!worker) throw new Error('Worker not found');
+      this.workspaceId = worker.workspaceId;
 
       await this.setStatus('running');
 
@@ -218,6 +221,9 @@ export class WorkerRunner extends EventEmitter {
         }
       }
     } catch (error) {
+      // Release file reservations on error/abort
+      try { await releaseWorkerReservations(this.workerId); } catch { /* advisory */ }
+
       if ((error as Error).name === 'AbortError') {
         await this.setStatus('paused');
       } else {
@@ -427,6 +433,13 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
+      // Release all file reservations held by this worker
+      try {
+        await releaseWorkerReservations(this.workerId);
+      } catch {
+        // Advisory only — non-fatal
+      }
+
       const totalToolFailures = Object.values(this.toolFailures).reduce((sum, s) => sum + s.count, 0);
       this.emitEvent('worker:completed', {
         result: resultMsg.result,
@@ -542,8 +555,11 @@ export class WorkerRunner extends EventEmitter {
       }
     }
 
-    if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
-      const filePath = (toolInput.file_path as string) || (toolInput.filePath as string) || '';
+    if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(toolName)) {
+      const filePath = (toolInput.file_path as string) || (toolInput.filePath as string)
+        || (toolInput.notebook_path as string) || (toolInput.notebookPath as string) || '';
+
+      // Sensitive path check
       for (const pattern of SENSITIVE_PATHS) {
         if (pattern.test(filePath)) {
           return {
@@ -553,6 +569,31 @@ export class WorkerRunner extends EventEmitter {
               permissionDecisionReason: `Cannot write to sensitive path: ${filePath}`,
             },
           };
+        }
+      }
+
+      // Advisory file reservation check
+      if (filePath && this.workspaceId) {
+        try {
+          const check = await checkReservation(this.workspaceId, filePath, this.workerId);
+          if (check.reserved) {
+            this.emitEvent('worker:file_reservation_denied', {
+              filePath,
+              holderId: check.holderId,
+            });
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `File reserved by worker ${check.holderId}`,
+              },
+            };
+          }
+
+          // Acquire/refresh reservation for this worker
+          await acquireReservation(this.workspaceId, filePath, this.workerId);
+        } catch {
+          // Advisory only — don't block the worker if reservation system is unavailable
         }
       }
     }
