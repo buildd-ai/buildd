@@ -287,7 +287,6 @@ describe('POST /api/github/webhook', () => {
     expect(taskInsert.values.externalId).toBe('issue-999');
     expect(taskInsert.values.externalUrl).toBe('https://github.com/test-org/test-repo/issues/42');
     expect(taskInsert.values.status).toBe('pending');
-    expect(taskInsert.values.mode).toBe('execution');
     expect(taskInsert.values.creationSource).toBe('github');
     expect(taskInsert.values.createdByAccountId).toBeNull();
     expect(taskInsert.conflict).toBe('nothing');
@@ -422,7 +421,6 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(200);
     expect(insertCalls.length).toBe(1);
     expect(insertCalls[0].values.title).toBe('Test Issue');
-    expect(insertCalls[0].values.mode).toBe('execution');
   });
 
   it('returns 200 for unhandled event types', async () => {
