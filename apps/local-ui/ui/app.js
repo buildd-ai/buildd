@@ -876,9 +876,6 @@ function renderWorkerDetail(worker, opts = {}) {
     descriptionEl.innerHTML = '';
   }
 
-  // Render plan artifact (between description and timeline)
-  renderPlanArtifact(worker);
-
   // Render chat timeline
   const timelineEl = document.getElementById('chatTimeline');
   const existingTimeline = timelineEl;
@@ -2728,12 +2725,10 @@ async function sendQuestionAnswer(answer) {
   }
 }
 
-// Track whether plan artifact is collapsed (after approval)
 async function createTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
-  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2748,7 +2743,6 @@ async function createTask() {
     workspaceId,
     title,
     description,
-    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
