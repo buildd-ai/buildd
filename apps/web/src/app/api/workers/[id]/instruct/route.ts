@@ -58,7 +58,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { message, type = 'instruction', priority } = body;
+  const { message, priority } = body;
 
   if (!message || typeof message !== 'string') {
     return NextResponse.json(
@@ -71,17 +71,11 @@ export async function POST(
   const currentHistory = (worker.instructionHistory as any[]) || [];
 
   // Build the pending instruction payload
-  let pendingPayload: string;
-  if (type === 'request_plan') {
-    // Structured instruction for plan request
-    pendingPayload = JSON.stringify({ type: 'request_plan', message });
-  } else {
-    pendingPayload = message;
-  }
+  const pendingPayload = message;
 
   // Add to history and set as pending
   const newHistoryEntry = {
-    type: type === 'request_plan' ? 'request_plan' as const : 'instruction' as const,
+    type: 'instruction' as const,
     message,
     timestamp: Date.now(),
   };
@@ -113,11 +107,9 @@ export async function POST(
 
   return NextResponse.json({
     ok: true,
-    message: type === 'request_plan'
-      ? 'Plan request queued for delivery on next worker check-in'
-      : priority === 'urgent'
-        ? 'Instructions sent instantly via Pusher'
-        : 'Instructions queued for delivery on next worker check-in',
+    message: priority === 'urgent'
+      ? 'Instructions sent instantly via Pusher'
+      : 'Instructions queued for delivery on next worker check-in',
     workerId: id,
   });
 }

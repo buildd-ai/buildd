@@ -272,9 +272,8 @@ Each task has an \`outputRequirement\` that controls what you must produce befor
 - Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)
 
 **Pipeline patterns (optional):**
-- Fan-out: create_task multiple children, then create_task a rollup with blockedByTaskIds=[child1, child2, ...]
-- The rollup task auto-starts when all blockers complete/fail. Its claim response includes childResults.
-- Dynamic expansion: use update_task with addBlockedByTaskIds to add new blockers to an existing task.`
+- Fan-out: create_task with parentTaskId linking children to a parent. The parent receives a CHILDREN_COMPLETED event when all children finish.
+- The claim response for a parent task includes childResults with status and result of each child.`
       : `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
 
 **Worker workflow:**
@@ -312,9 +311,8 @@ Each task has an \`outputRequirement\` that controls what you must produce befor
 - Observation types: **gotcha** (non-obvious bugs/traps), **pattern** (recurring code conventions), **decision** (architectural choices), **discovery** (learned behaviors/undocumented APIs), **architecture** (system structure/data flow)
 
 **Pipeline patterns (optional):**
-- Fan-out: create_task multiple children, then create_task a rollup with blockedByTaskIds=[child1, child2, ...]
-- The rollup task auto-starts when all blockers complete/fail. Its claim response includes childResults.
-- Dynamic expansion: use update_task with addBlockedByTaskIds to add new blockers to an existing task.`,
+- Fan-out: create_task with parentTaskId linking children to a parent. The parent receives a CHILDREN_COMPLETED event when all children finish.
+- The claim response for a parent task includes childResults with status and result of each child.`,
   }
 );
 

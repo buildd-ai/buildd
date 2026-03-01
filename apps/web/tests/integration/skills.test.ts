@@ -1,7 +1,7 @@
 /**
  * Integration Tests: Skills API
  *
- * Tests the full skills CRUD lifecycle, sync, install, and promote
+ * Tests the full skills CRUD lifecycle, sync, and install
  * endpoints against a real server with a real database.
  *
  * Covers:

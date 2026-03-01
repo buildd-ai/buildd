@@ -238,14 +238,7 @@ export async function handleBuilddAction(
 
       const instructions = response.instructions;
       if (instructions) {
-        let parsedInstruction: { type?: string; message?: string } | null = null;
-        try { parsedInstruction = JSON.parse(instructions); } catch { /* plain text */ }
-
-        if (parsedInstruction?.type === 'request_plan') {
-          resultText += `\n\n**PLAN REQUESTED:** Please pause implementation. Investigate the codebase, then use update_progress with plan param to submit your implementation plan. ${parsedInstruction.message || ''}`;
-        } else {
-          resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
-        }
+        resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
       }
 
       return text(resultText);

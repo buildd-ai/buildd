@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, artifacts } from '@buildd/core/db/schema';
-import { eq, desc, inArray, sql } from 'drizzle-orm';
+import { tasks, workers, artifacts } from '@buildd/core/db/schema';
+import { eq, desc, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';

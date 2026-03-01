@@ -241,23 +241,4 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(res.status).toBe(400);
   });
 
-  it('handles request_plan type', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
-      status: 'running',
-      workspace: { teamId: 'team-1' },
-      instructionHistory: [],
-      pendingInstructions: null,
-    });
-
-    const req = createMockRequest({ message: 'Create a plan', type: 'request_plan' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.message).toContain('Plan request queued');
-  });
 });
