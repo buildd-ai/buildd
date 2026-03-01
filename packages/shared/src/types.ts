@@ -697,6 +697,7 @@ export type SSEEventType =
   | 'worker:tool_failure'
   | 'worker:task_started'
   | 'worker:task_notification'
+  | 'worker:task_progress'
   | 'worker:notification'
   | 'worker:session_start'
   | 'worker:session_end'

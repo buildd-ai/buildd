@@ -571,11 +571,23 @@ export class WorkerManager {
         });
       }
 
+      // Collect active subagent progress for dashboard visibility
+      const activeProgress = worker.subagentTasks
+        .filter(t => t.status === 'running' && t.progress)
+        .map(t => ({
+          taskId: t.taskId,
+          agentName: t.progress!.agentName,
+          toolCount: t.progress!.toolCount,
+          durationMs: t.progress!.durationMs,
+          cumulativeUsage: t.progress!.cumulativeUsage,
+        }));
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
         milestones,
         localUiUrl: this.config.localUiUrl,
+        ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
@@ -751,6 +763,10 @@ export class WorkerManager {
   getWorker(id: string): LocalWorker | undefined {
     // Check in-memory first, then fall back to disk for evicted completed workers
     return this.workers.get(id) || storeLoadWorker(id) || undefined;
+  }
+
+  getSession(id: string): WorkerSession | undefined {
+    return this.sessions.get(id);
   }
 
   markRead(workerId: string) {
@@ -2355,6 +2371,26 @@ export class WorkerManager {
         : `Subagent ${status}: ${taskId.slice(0, 12)}`;
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent task ${status}: ${taskId}${toolUseId ? ` (tool_use_id=${toolUseId.slice(0, 12)})` : ''}${message ? ` — ${message}` : ''}`);
+      this.emit({ type: 'worker_update', worker });
+    }
+
+    // SDK v0.2.51+: Subagent task progress — cumulative metrics for background subagents
+    if (msg.type === 'system' && (msg as any).subtype === 'task_progress') {
+      const event = msg as any;
+      const taskId = event.task_id as string;
+      const toolUseId = event.tool_use_id as string | undefined;
+
+      // Update tracked subagent task with progress data
+      const tracked = worker.subagentTasks.find(t => t.taskId === taskId)
+        || (toolUseId ? worker.subagentTasks.find(t => t.toolUseId === toolUseId) : undefined);
+      if (tracked) {
+        tracked.progress = {
+          toolCount: event.tool_count ?? 0,
+          durationMs: event.duration_ms ?? 0,
+          agentName: event.agent_name ?? null,
+          cumulativeUsage: event.cumulative_usage ?? null,
+        };
+      }
       this.emit({ type: 'worker_update', worker });
     }
 

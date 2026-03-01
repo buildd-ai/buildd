@@ -90,6 +90,8 @@ export async function PATCH(
     lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
     // SDK result metadata
     resultMeta,
+    // Transient subagent progress (not persisted — forwarded via Pusher only)
+    taskProgress,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -298,17 +300,22 @@ export async function PATCH(
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
 
+  const pusherPayload: Record<string, unknown> = { worker: updated };
+  if (taskProgress && Array.isArray(taskProgress) && taskProgress.length > 0) {
+    pusherPayload.taskProgress = taskProgress;
+  }
+
   await triggerEvent(
     channels.worker(id),
     eventName,
-    { worker: updated }
+    pusherPayload
   );
 
   if (worker.workspaceId) {
     await triggerEvent(
       channels.workspace(worker.workspaceId),
       eventName,
-      { worker: updated }
+      pusherPayload
     );
   }
 
