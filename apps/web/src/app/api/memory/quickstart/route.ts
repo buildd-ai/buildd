@@ -8,10 +8,27 @@ import { randomBytes } from 'crypto';
  * Creates a new team with a random ID and provisions an API key via the Memory service.
  *
  * Rate limited: 3 requests per IP per hour (in-memory).
+ * CORS: Allows requests from buildd.dev (marketing site).
  */
 
 const MEMORY_API_URL = process.env.MEMORY_API_URL;
 const MEMORY_ROOT_KEY = process.env.MEMORY_ROOT_KEY;
+
+const ALLOWED_ORIGINS = [
+  'https://buildd.dev',
+  'https://www.buildd.dev',
+];
+
+function corsHeaders(origin: string | null) {
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+  }
+  return headers;
+}
 
 // Simple in-memory rate limiter (IP → timestamps[])
 const rateLimitMap = new Map<string, number[]>();
@@ -34,11 +51,19 @@ function isRateLimited(ip: string): boolean {
   return false;
 }
 
+export async function OPTIONS(req: NextRequest) {
+  const origin = req.headers.get('origin');
+  return new NextResponse(null, { status: 204, headers: corsHeaders(origin) });
+}
+
 export async function POST(req: NextRequest) {
+  const origin = req.headers.get('origin');
+  const cors = corsHeaders(origin);
+
   if (!MEMORY_API_URL || !MEMORY_ROOT_KEY) {
     return NextResponse.json(
       { error: 'Memory service not configured' },
-      { status: 503 },
+      { status: 503, headers: cors },
     );
   }
 
@@ -48,7 +73,7 @@ export async function POST(req: NextRequest) {
   if (isRateLimited(ip)) {
     return NextResponse.json(
       { error: 'Rate limit exceeded. Try again later.' },
-      { status: 429 },
+      { status: 429, headers: cors },
     );
   }
 
@@ -70,7 +95,7 @@ export async function POST(req: NextRequest) {
       console.error('Memory API error:', res.status, body);
       return NextResponse.json(
         { error: 'Failed to create API key' },
-        { status: 502 },
+        { status: 502, headers: cors },
       );
     }
 
@@ -89,12 +114,12 @@ export async function POST(req: NextRequest) {
       },
     };
 
-    return NextResponse.json({ key, teamId, mcpConfig });
+    return NextResponse.json({ key, teamId, mcpConfig }, { headers: cors });
   } catch (err: any) {
     console.error('Quickstart error:', err);
     return NextResponse.json(
       { error: 'Internal server error' },
-      { status: 500 },
+      { status: 500, headers: cors },
     );
   }
 }
