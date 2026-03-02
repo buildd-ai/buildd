@@ -118,7 +118,6 @@ export class BuilddClient {
     workspaceId: string;
     title: string;
     description: string;
-    mode?: 'execution' | 'planning';
     attachments?: Array<{ data: string; mimeType: string; filename: string }>;
   }) {
     return this.fetch('/api/tasks', {
@@ -145,7 +144,6 @@ export class BuilddClient {
       autoCreatePR: boolean;
       agentInstructions?: string;
       useClaudeMd: boolean;
-      pluginPaths?: string[];
       maxBudgetUsd?: number;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
@@ -186,19 +184,6 @@ export class BuilddClient {
     return this.fetch(`/api/workers/${workerId}/artifacts`, {
       method: 'POST',
       body: JSON.stringify(data),
-    });
-  }
-
-  async approvePlan(workerId: string) {
-    return this.fetch(`/api/workers/${workerId}/plan/approve`, {
-      method: 'POST',
-    });
-  }
-
-  async revisePlan(workerId: string, feedback: string) {
-    return this.fetch(`/api/workers/${workerId}/plan/revise`, {
-      method: 'POST',
-      body: JSON.stringify({ feedback }),
     });
   }
 

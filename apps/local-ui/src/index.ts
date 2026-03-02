@@ -114,7 +114,6 @@ interface SavedConfig {
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
   // Remote skill installation
-  skillInstallerAllowlist?: string[]; // Override workspace allowlist locally
   rejectRemoteInstallers?: boolean; // Block all remote installer commands
   maxTurns?: number; // Max turns per worker session (default: no limit)
 }
@@ -138,7 +137,6 @@ function loadSavedConfig(): SavedConfig {
         llmProvider: data.llmProvider,
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
-        skillInstallerAllowlist: data.skillInstallerAllowlist,
         rejectRemoteInstallers: data.rejectRemoteInstallers,
         maxTurns: data.maxTurns,
       };
@@ -377,7 +375,6 @@ const config: LocalUIConfig = {
   // Bypass permission prompts (default: false)
   bypassPermissions: savedConfig.bypassPermissions || false,
   // Remote skill installation
-  skillInstallerAllowlist: savedConfig.skillInstallerAllowlist,
   rejectRemoteInstallers: savedConfig.rejectRemoteInstallers,
   // Max turns per worker session
   maxTurns: savedConfig.maxTurns,
@@ -1312,11 +1309,7 @@ const server = Bun.serve({
 
     if (path === '/api/retry' && req.method === 'POST') {
       const body = await parseBody(req);
-      if (body.withPlan) {
-        await workerManager!.retryWithPlan(body.workerId);
-      } else {
-        await workerManager!.retry(body.workerId);
-      }
+      await workerManager!.retry(body.workerId);
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 

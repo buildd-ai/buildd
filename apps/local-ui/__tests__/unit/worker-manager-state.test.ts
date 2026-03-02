@@ -1,6 +1,6 @@
 /**
  * WorkerManager state machine tests — verifies status transitions + emitted events
- * when the SDK sends messages (ExitPlanMode, AskUserQuestion, result, error).
+ * when the SDK sends messages (AskUserQuestion, result, error).
  *
  * Strategy: Call handleMessage() indirectly via a mock SDK query that yields
  * controlled message sequences. We mock all external deps before importing WorkerManager.
@@ -179,87 +179,6 @@ describe('WorkerManager — state transitions', () => {
     mockGetBatchObservations.mockClear();
     mockCreateObservation.mockClear();
     mockStreamInputFn.mockClear();
-  });
-
-  describe('ExitPlanMode detection (regression)', () => {
-    test('emits worker_update and sets waiting/plan_approval status', async () => {
-      // SDK will emit: init, assistant (text + ExitPlanMode tool_use), result
-      mockMessages = [
-        { type: 'system', subtype: 'init', session_id: 'sess-1' },
-        {
-          type: 'assistant',
-          message: {
-            content: [
-              { type: 'text', text: 'Here is my plan:\n\n1. Step one\n2. Step two' },
-              { type: 'tool_use', id: 'toolu_plan_1', name: 'ExitPlanMode', input: {} },
-            ],
-          },
-        },
-        { type: 'result', subtype: 'success', session_id: 'sess-1' },
-      ];
-
-      mockClaimTask.mockImplementation(async () => ({ workers: [{
-        id: 'w-plan-1',
-        branch: 'buildd/plan-test',
-        task: makeTask(),
-      }] }));
-
-      manager = new WorkerManager(makeConfig());
-      const events = collectEvents(manager);
-
-      await manager.claimAndStart(makeTask());
-
-      // Wait for the async session to complete
-      await new Promise(r => setTimeout(r, 100));
-
-      const worker = manager.getWorker('w-plan-1');
-      // After result message, worker transitions to done (session completes)
-      // But the intermediate state should have been 'waiting' with plan_approval
-      // Check that worker_update events include the plan_approval state
-      const planEvents = events.filter(
-        (e: any) => e.type === 'worker_update' &&
-          e.worker?.waitingFor?.type === 'plan_approval'
-      );
-      expect(planEvents.length).toBeGreaterThanOrEqual(1);
-
-      // Verify the plan event had correct properties (using snapshot)
-      const planEvent = planEvents[0];
-      expect(planEvent.worker.status).toBe('waiting');
-      expect(planEvent.worker.waitingFor.prompt).toContain('plan');
-      expect(planEvent.worker.waitingFor.toolUseId).toBe('toolu_plan_1');
-    });
-
-    test('syncs plan_approval status to server', async () => {
-      mockMessages = [
-        { type: 'system', subtype: 'init', session_id: 'sess-1' },
-        {
-          type: 'assistant',
-          message: {
-            content: [
-              { type: 'text', text: 'My plan' },
-              { type: 'tool_use', id: 'toolu_p1', name: 'ExitPlanMode', input: {} },
-            ],
-          },
-        },
-        { type: 'result', subtype: 'success', session_id: 'sess-1' },
-      ];
-
-      mockClaimTask.mockImplementation(async () => ({ workers: [{
-        id: 'w-plan-sync',
-        branch: 'buildd/sync-test',
-        task: makeTask(),
-      }] }));
-
-      manager = new WorkerManager(makeConfig());
-      await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 100));
-
-      // Verify updateWorker was called with waiting_input status
-      const planSyncCalls = mockUpdateWorker.mock.calls.filter(
-        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.waitingFor?.type === 'plan_approval'
-      );
-      expect(planSyncCalls.length).toBeGreaterThanOrEqual(1);
-    });
   });
 
   describe('AskUserQuestion detection', () => {

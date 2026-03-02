@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, artifacts } from '@buildd/core/db/schema';
-import { eq, desc, inArray, sql } from 'drizzle-orm';
+import { tasks, workers, artifacts } from '@buildd/core/db/schema';
+import { eq, desc, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -11,7 +11,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
-import PlanReviewPanel from './PlanReviewPanel';
+
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
@@ -71,21 +71,6 @@ export default async function TaskDetailPage({
     notFound();
   }
 
-  // Get blocker tasks (tasks that block this one)
-  const blockedByIds = (task.blockedByTaskIds as string[] | null) ?? [];
-  const blockerTasks = blockedByIds.length > 0
-    ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, blockedByIds),
-        columns: { id: true, title: true, status: true },
-      })
-    : [];
-
-  // Get dependent tasks (tasks that this one blocks)
-  const dependentRows = await db.execute(
-    sql`SELECT id, title, status FROM tasks WHERE blocked_by_task_ids @> ${JSON.stringify([id])}::jsonb AND workspace_id = ${task.workspaceId}`
-  );
-  const dependentTasks = (dependentRows.rows ?? dependentRows) as Array<{ id: string; title: string; status: string }>;
-
   // Get workers for this task
   const taskWorkers = await db.query.workers.findMany({
     where: eq(workers.taskId, id),
@@ -101,22 +86,20 @@ export default async function TaskDetailPage({
     ? await db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
     : [];
   const deliverableArtifacts = taskArtifacts.filter(
-    a => a.type !== 'task_plan' && a.type !== 'impl_plan'
+    a => a.type !== 'impl_plan'
   );
 
   // Get the active worker (if any)
   const activeWorker = taskWorkers.find(w =>
-    ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(w.status)
+    ['running', 'starting', 'waiting_input'].includes(w.status)
   );
 
-  // Override task status for UI if worker is waiting or awaiting plan
+  // Override task status for UI if worker is waiting
   // Don't override if task is already in a terminal state (completed/failed)
   const isTerminal = task.status === 'completed' || task.status === 'failed';
   const displayStatus = !isTerminal && activeWorker?.status === 'waiting_input'
     ? 'waiting_input'
-    : !isTerminal && activeWorker?.status === 'awaiting_plan_approval'
-      ? 'awaiting_plan_approval'
-      : task.status;
+    : task.status;
 
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
@@ -168,8 +151,6 @@ export default async function TaskDetailPage({
     pending:                { icon: '\u25CB', bg: 'bg-status-warning/12', text: 'text-status-warning' },
     failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
     waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
-    awaiting_plan_approval: { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
-    blocked:                { icon: '\u29B8', bg: 'bg-status-info/12',    text: 'text-status-info' },
   };
   const DEFAULT_ICON = TASK_ICONS.pending;
 
@@ -262,7 +243,7 @@ export default async function TaskDetailPage({
         )}
 
         {/* Task Relationships */}
-        {(task.parentTask || (task.subTasks && task.subTasks.length > 0) || blockerTasks.length > 0 || dependentTasks.length > 0) && (
+        {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
           <div className="mb-6">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
@@ -297,36 +278,6 @@ export default async function TaskDetailPage({
                         <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
                           {sub.status}
                         </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {blockerTasks.length > 0 && (
-                <div>
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Blocked By ({blockerTasks.length}):</span>
-                  <div className="mt-2 space-y-1 ml-4">
-                    {blockerTasks.map((blocker) => (
-                      <div key={blocker.id} className="flex items-center gap-2">
-                        <Link href={`/app/tasks/${blocker.id}`} className="text-sm text-primary-400 hover:underline">
-                          {blocker.title}
-                        </Link>
-                        <StatusBadge status={blocker.status} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {dependentTasks.length > 0 && (
-                <div>
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Blocking ({dependentTasks.length}):</span>
-                  <div className="mt-2 space-y-1 ml-4">
-                    {dependentTasks.map((dep) => (
-                      <div key={dep.id} className="flex items-center gap-2">
-                        <Link href={`/app/tasks/${dep.id}`} className="text-sm text-primary-400 hover:underline">
-                          {dep.title}
-                        </Link>
-                        <StatusBadge status={dep.status} />
                       </div>
                     ))}
                   </div>
@@ -398,15 +349,6 @@ export default async function TaskDetailPage({
               <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true"></span>
               Active Worker
             </div>
-            {/* Plan Review Panel — shown when awaiting approval or when a plan artifact exists */}
-            {(displayStatus === 'awaiting_plan_approval' || taskArtifacts.some(a => a.type === 'task_plan' && a.workerId === activeWorker.id)) && (
-              <PlanReviewPanel
-                workerId={activeWorker.id}
-                isAwaitingApproval={displayStatus === 'awaiting_plan_approval'}
-                milestones={(activeWorker.milestones as any[]) || []}
-                currentAction={activeWorker.currentAction}
-              />
-            )}
             <RealTimeWorkerView
               initialWorker={{
                 id: activeWorker.id,

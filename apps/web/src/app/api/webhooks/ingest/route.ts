@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { sources, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { tasks, workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 
@@ -99,15 +99,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `No workspace found for repo: ${data.project.repo}` }, { status: 404 });
   }
 
-  // 3. Find webhook source for this workspace (to get config with secret + label filters)
-  const source = await db.query.sources.findFirst({
-    where: and(
-      eq(sources.workspaceId, workspace.id),
-      eq(sources.type, 'webhook'),
-    ),
-  });
-
-  const config = (source?.config || {}) as unknown as WebhookSourceConfig;
+  // 3. Resolve webhook config from workspace
+  const webhookConfig = (workspace as any).webhookConfig as WebhookSourceConfig | null;
+  const config = webhookConfig || {} as WebhookSourceConfig;
 
   // 4. Verify HMAC signature if source has a webhook secret
   if (config.webhookSecret) {
@@ -133,24 +127,15 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Check for planning mode label
-        const planLabel = config.planLabel || 'plan';
-        const hasPlanLabel = data.issue.labels.some(
-          l => l.toLowerCase() === planLabel.toLowerCase()
-        );
-        const mode = hasPlanLabel ? 'planning' : 'execution';
-
         const [newTask] = await db
           .insert(tasks)
           .values({
             workspaceId: workspace.id,
-            sourceId: source?.id || null,
             title: data.issue.title,
             description: data.issue.body || '',
             externalId,
             externalUrl: data.issue.url,
             status: 'pending',
-            mode,
             context: {
               webhook: {
                 issueId: data.issue.id,

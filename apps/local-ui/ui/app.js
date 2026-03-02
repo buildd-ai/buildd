@@ -609,20 +609,15 @@ function renderWorkerCard(w) {
 }
 
 function renderWaitingCard(w) {
-  const isPlan = w.waitingFor?.type === 'plan_approval';
   const isPermission = w.waitingFor?.type === 'permission';
   const question = w.waitingFor?.prompt || 'Awaiting input';
   const truncatedQuestion = question.length > 120 ? question.slice(0, 120) + '...' : question;
-  const badgeLabel = isPlan ? 'plan review' : isPermission ? 'permission' : 'needs input';
+  const badgeLabel = isPermission ? 'permission' : 'needs input';
   // Use complete class strings so Tailwind's JIT scanner can detect them
-  const cardClasses = isPlan
-    ? 'bg-status-info/[0.08] border-status-info/30 hover:border-status-info'
-    : isPermission
+  const cardClasses = isPermission
     ? 'bg-orange-500/[0.08] border-orange-500/30 hover:border-orange-500'
     : 'bg-status-warning/[0.08] border-status-warning/30 hover:border-status-warning';
-  const badgeClasses = isPlan
-    ? 'text-status-info bg-status-info/15'
-    : isPermission
+  const badgeClasses = isPermission
     ? 'text-orange-400 bg-orange-500/15'
     : 'text-status-warning bg-status-warning/15';
   return `
@@ -881,9 +876,6 @@ function renderWorkerDetail(worker, opts = {}) {
     descriptionEl.innerHTML = '';
   }
 
-  // Render plan artifact (between description and timeline)
-  renderPlanArtifact(worker);
-
   // Render chat timeline
   const timelineEl = document.getElementById('chatTimeline');
   const existingTimeline = timelineEl;
@@ -1012,19 +1004,9 @@ function renderWorkerDetail(worker, opts = {}) {
       </div>`;
   }
 
-  // Question/plan prompt for waiting workers
+  // Question/permission prompt for waiting workers
   if (worker.status === 'waiting' && worker.waitingFor) {
-    if (worker.waitingFor.type === 'plan_approval') {
-      // Plan approval is handled by the dedicated plan artifact panel above.
-      // Show a small inline indicator pointing to it.
-      timelineEl.innerHTML += `
-        <div class="flex items-center gap-2 py-2 text-[13px] text-brand">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <polyline points="18 15 12 9 6 15"/>
-          </svg>
-          <span>Plan submitted — review and approve above</span>
-        </div>`;
-    } else if (worker.waitingFor.type === 'permission') {
+    if (worker.waitingFor.type === 'permission') {
       // Permission request UI with suggestions
       const suggestions = worker.waitingFor.permissionSuggestions || [];
       const toolName = worker.waitingFor.toolName || 'Unknown tool';
@@ -1122,16 +1104,6 @@ function renderWorkerDetail(worker, opts = {}) {
         </div>`
       : '';
 
-    // Plan-specific context with retry button
-    const hasSavedPlan = !!worker.planContent;
-    const hadPlan = hasSavedPlan || recentMilestones.some(m => m.label.includes('Plan'));
-    const planHint = hadPlan
-      ? `<div class="flex items-center gap-2 mt-2">
-          <div class="text-xs text-status-info">This was a planning task.</div>
-          ${hasSavedPlan ? `<button class="text-[12px] font-medium text-brand bg-brand/10 border border-brand/30 rounded-md py-1 px-2.5 cursor-pointer transition-all hover:bg-brand/20" onclick="retryWithPlan()">Retry with plan</button>` : ''}
-        </div>`
-      : '';
-
     const logsId = 'logs-' + worker.id.slice(0, 8);
 
     timelineEl.innerHTML += `
@@ -1147,7 +1119,6 @@ function renderWorkerDetail(worker, opts = {}) {
         <div class="text-sm text-text-primary leading-normal mb-1">${escapeHtml(worker.error || 'Task was aborted or failed')}</div>
         ${metaHtml}
         ${milestonesHtml}
-        ${planHint}
         <div class="flex items-center gap-2 mt-3">
           <div class="text-xs text-text-secondary">Send a message below to restart with new instructions</div>
           <button class="text-[11px] text-text-tertiary underline cursor-pointer bg-transparent border-none p-0 hover:text-text-secondary" onclick="toggleSessionLogs('${worker.id}', '${logsId}')">View logs</button>
@@ -1254,9 +1225,7 @@ function renderWorkerDetail(worker, opts = {}) {
     if (worker.status === 'done') {
       placeholder = 'Give the agent a follow-up task...';
     } else if (worker.status === 'waiting') {
-      placeholder = worker.waitingFor?.type === 'plan_approval'
-        ? 'Approve above or type changes...'
-        : worker.waitingFor?.type === 'permission'
+      placeholder = worker.waitingFor?.type === 'permission'
         ? 'Click Allow, Always allow, or Deny above...'
         : 'Type your answer or click an option above...';
     } else if (worker.status === 'error') {
@@ -2657,26 +2626,6 @@ async function retryWorker() {
   }
 }
 
-async function retryWithPlan() {
-  if (!currentWorkerId) return;
-  try {
-    const res = await fetch('./api/retry', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: currentWorkerId, withPlan: true })
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || 'Failed to retry with plan', 'error');
-      return;
-    }
-    showToast('Re-executing plan...', 'success');
-  } catch (err) {
-    console.error('Failed to retry with plan:', err);
-    showToast('Failed to retry with plan', 'error');
-  }
-}
-
 async function markDone() {
   if (!currentWorkerId) return;
   try {
@@ -2745,117 +2694,10 @@ async function sendQuestionAnswer(answer) {
   }
 }
 
-// Track whether plan artifact is collapsed (after approval)
-let planArtifactCollapsed = false;
-
-// Render the dedicated plan artifact panel
-function renderPlanArtifact(worker) {
-  const container = document.getElementById('planArtifact');
-  if (!container) return;
-
-  const hasPlan = worker.planContent && worker.planContent.length > 0;
-  const isAwaitingApproval = worker.status === 'waiting' && worker.waitingFor?.type === 'plan_approval';
-  const wasApproved = hasPlan && !isAwaitingApproval && worker.status !== 'waiting';
-
-  if (!hasPlan) {
-    container.classList.add('hidden');
-    container.innerHTML = '';
-    return;
-  }
-
-  container.classList.remove('hidden');
-
-  // Status badge
-  const statusBadge = isAwaitingApproval
-    ? '<span class="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium uppercase tracking-wide text-brand"><span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-brand"></span></span>Awaiting Review</span>'
-    : '<span class="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium uppercase tracking-wide text-status-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="20 6 9 17 4 12"/></svg>Approved</span>';
-
-  const planHtml = marked.parse(worker.planContent);
-
-  if (wasApproved && planArtifactCollapsed) {
-    // Collapsed state after approval
-    container.innerHTML = `
-      <div class="bg-brand/[0.04] border border-brand/15 rounded-xl mb-3 overflow-hidden">
-        <div class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-brand/[0.06] transition-colors" onclick="togglePlanExpand()">
-          <div class="flex items-center gap-3">
-            <span class="text-[11px] font-mono font-semibold uppercase tracking-[2.5px] text-brand">Implementation Plan</span>
-            ${statusBadge}
-          </div>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" class="text-text-tertiary">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </div>
-      </div>`;
-    return;
-  }
-
-  // Full expanded state
-  container.innerHTML = `
-    <div class="bg-brand/[0.04] border border-brand/15 rounded-xl mb-3 overflow-hidden">
-      <div class="flex items-center justify-between px-4 py-3 ${wasApproved ? 'cursor-pointer hover:bg-brand/[0.06] transition-colors' : ''}" ${wasApproved ? 'onclick="togglePlanExpand()"' : ''}>
-        <div class="flex items-center gap-3">
-          <span class="text-[11px] font-mono font-semibold uppercase tracking-[2.5px] text-brand">Implementation Plan</span>
-          ${statusBadge}
-        </div>
-        ${wasApproved ? `
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" class="text-text-tertiary rotate-180">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        ` : ''}
-      </div>
-      <div class="px-4 pb-4">
-        <div class="markdown-content text-sm leading-relaxed max-h-[60vh] overflow-y-auto">${planHtml}</div>
-      </div>
-      ${isAwaitingApproval ? `
-        <div class="border-t border-brand/15 px-4 py-3 flex flex-wrap gap-2">
-          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/40 rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
-            onclick="approvePlan('bypass')">
-            Implement (bypass)
-            <span class="text-[11px] text-text-secondary font-normal">No permission prompts</span>
-          </button>
-          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-brand/10 border border-brand/30 rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-brand/20 hover:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
-            onclick="approvePlan('review')">
-            Implement (review)
-            <span class="text-[11px] text-text-secondary font-normal">With edit review</span>
-          </button>
-          <button class="flex flex-col items-start gap-0.5 py-2.5 px-4 bg-surface-hover border border-border-default rounded-lg text-text-primary text-[13px] font-medium cursor-pointer transition-all hover:bg-surface hover:border-status-warning focus-visible:ring-2 focus-visible:ring-status-warning focus-visible:outline-none"
-            onclick="promptPlanChanges()">
-            Request changes
-            <span class="text-[11px] text-text-secondary font-normal">Ask the agent to revise</span>
-          </button>
-        </div>
-      ` : ''}
-    </div>`;
-}
-
-// Approve plan with specified permission mode
-function approvePlan(mode) {
-  const message = mode === 'bypass'
-    ? 'Approve & implement (bypass permissions)'
-    : 'Approve & implement (with review)';
-  planArtifactCollapsed = true;
-  sendQuestionAnswer(message);
-}
-
-// Toggle plan artifact expanded/collapsed state
-function togglePlanExpand() {
-  planArtifactCollapsed = !planArtifactCollapsed;
-  const worker = workers.find(w => w.id === currentWorkerId);
-  if (worker) renderPlanArtifact(worker);
-}
-
-// Focus message input for plan change requests
-function promptPlanChanges() {
-  const input = document.getElementById('messageInput');
-  input.focus();
-  input.placeholder = 'Describe changes you want to the plan, then press Send';
-}
-
 async function createTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
-  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2870,7 +2712,6 @@ async function createTask() {
     workspaceId,
     title,
     description,
-    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
@@ -2922,7 +2763,6 @@ async function createAndStartTask() {
   const workspaceId = selectedWorkspaceId || document.getElementById('taskWorkspace').value;
   const title = document.getElementById('taskTitle').value.trim();
   const description = document.getElementById('taskDescription').value.trim();
-  const requirePlan = document.getElementById('taskRequirePlan').checked;
 
   if (!workspaceId || !title) {
     showToast('Please select a workspace and fill in the title', 'warning');
@@ -2937,7 +2777,6 @@ async function createAndStartTask() {
     workspaceId,
     title,
     description,
-    ...(requirePlan && { mode: 'planning' }),
     attachments: attachments.map(a => ({
       data: a.data,
       mimeType: a.mimeType,
@@ -3064,7 +2903,6 @@ function clearTaskForm() {
   document.getElementById('taskTitle').value = '';
   document.getElementById('taskDescription').value = '';
   document.getElementById('taskWorkspace').value = '';
-  document.getElementById('taskRequirePlan').checked = false;
   selectedWorkspaceId = '';
   attachments = [];
   renderAttachments();

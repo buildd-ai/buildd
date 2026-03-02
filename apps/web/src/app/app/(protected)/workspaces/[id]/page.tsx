@@ -99,7 +99,7 @@ export default async function WorkspaceDetailPage({
       .from(artifacts)
       .where(and(
         inArray(artifacts.workerId, wIds),
-        notInArray(artifacts.type, ['task_plan', 'impl_plan']),
+        notInArray(artifacts.type, ['impl_plan']),
       ));
     artifactCount = Number(artCount?.count || 0);
   }

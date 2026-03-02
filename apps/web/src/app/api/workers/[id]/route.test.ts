@@ -41,7 +41,6 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findFirst: mockWorkersFindFirst },
       tasks: { findFirst: mock(() => Promise.resolve(null)) },
-      sources: { findFirst: mock(() => Promise.resolve(null)) },
       artifacts: { findMany: mock(() => Promise.resolve([])) },
     },
     update: (table: any) => {
@@ -58,7 +57,6 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
-  sources: 'sources',
   artifacts: 'artifacts',
 }));
 

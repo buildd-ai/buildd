@@ -256,7 +256,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   }
 
-  const isActive = ['running', 'starting', 'waiting_input', 'awaiting_plan_approval'].includes(worker.status);
+  const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
 
   return (
     <div className="border border-border-default bg-surface-2 rounded-md p-4">
@@ -401,8 +401,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
-      {/* Waiting for input banner — skip for plan_approval (handled by PlanReviewPanel) */}
-      {worker.status === 'waiting_input' && worker.waitingFor && worker.waitingFor.type !== 'plan_approval' && (
+      {/* Waiting for input banner */}
+      {worker.status === 'waiting_input' && worker.waitingFor && (
         <div
           data-testid="worker-needs-input-banner"
           className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3"

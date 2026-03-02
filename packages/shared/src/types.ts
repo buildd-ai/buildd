@@ -7,7 +7,6 @@ export const WorkerStatus = {
   STARTING: 'starting',
   RUNNING: 'running',
   WAITING_INPUT: 'waiting_input',
-  AWAITING_PLAN_APPROVAL: 'awaiting_plan_approval',
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ERROR: 'error',
@@ -17,14 +16,12 @@ export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
 
 export const TaskMode = {
   EXECUTION: 'execution',
-  PLANNING: 'planning',
 } as const;
 
 export type TaskModeValue = typeof TaskMode[keyof typeof TaskMode];
 
 export const TaskStatus = {
   PENDING: 'pending',
-  BLOCKED: 'blocked',
   ASSIGNED: 'assigned',
   IN_PROGRESS: 'in_progress',
   REVIEW: 'review',
@@ -59,7 +56,6 @@ export const RunnerPreference = {
 export type RunnerPreferenceValue = typeof RunnerPreference[keyof typeof RunnerPreference];
 
 export const ArtifactType = {
-  TASK_PLAN: 'task_plan',
   IMPL_PLAN: 'impl_plan',
   SCREENSHOT: 'screenshot',
   RECORDING: 'recording',
@@ -73,16 +69,6 @@ export const ArtifactType = {
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
-
-export const SourceType = {
-  MANUAL: 'manual',
-  GITHUB: 'github',
-  JIRA: 'jira',
-  LINEAR: 'linear',
-  WEBHOOK: 'webhook',
-} as const;
-
-export type SourceTypeValue = typeof SourceType[keyof typeof SourceType];
 
 export const CreationSource = {
   DASHBOARD: 'dashboard',
@@ -234,15 +220,6 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
-export interface Source {
-  id: string;
-  workspaceId: string;
-  type: SourceTypeValue;
-  name: string;
-  config: Record<string, unknown>;
-  createdAt: Date;
-}
-
 export interface TaskResult {
   summary?: string;
   branch?: string;
@@ -259,7 +236,6 @@ export interface TaskResult {
 export interface Task {
   id: string;
   workspaceId: string;
-  sourceId: string | null;
   externalId: string | null;
   externalUrl: string | null;
   title: string;
@@ -278,7 +254,6 @@ export interface Task {
   createdByWorkerId: string | null;
   creationSource: CreationSourceValue;
   parentTaskId: string | null;
-  blockedByTaskIds?: string[];
   project?: string | null;
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
@@ -287,7 +262,6 @@ export interface Task {
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
-  source?: Source;
   worker?: Worker;
   account?: Account;
   // Creator tracking relations
@@ -402,32 +376,11 @@ export interface TaskSchedule {
   updatedAt: Date;
 }
 
-export interface Skill {
-  id: string;
-  teamId: string;
-  slug: string;
-  name: string;
-  description: string | null;
-  contentHash: string;
-  content: string | null;
-  source: string | null;
-  sourceVersion: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface SkillRef {
-  skillId: string;
-  slug: string;
-  contentHash: string;
-}
-
-export type WorkspaceSkillOrigin = 'scan' | 'manual' | 'promoted';
+export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
 export interface WorkspaceSkill {
   id: string;
   workspaceId: string;
-  skillId: string | null;
   slug: string;
   name: string;
   description: string | null;
@@ -511,7 +464,6 @@ export interface CreateWorkspaceInput {
 
 export interface CreateTaskInput {
   workspaceId: string;
-  sourceId?: string;
   externalId?: string;
   externalUrl?: string;
   title: string;
@@ -523,8 +475,6 @@ export interface CreateTaskInput {
   createdByWorkerId?: string;
   parentTaskId?: string;
   creationSource?: CreationSourceValue;
-  // Task dependency — blocked tasks start as 'blocked' and auto-unblock when all blockers complete
-  blockedByTaskIds?: string[];
   // Project scoping
   project?: string;
   // Task category
@@ -631,25 +581,6 @@ export interface CreateScheduleInput {
   pauseAfterFailures?: number;
 }
 
-export interface RegisterSkillInput {
-  slug: string;
-  name: string;
-  description?: string;
-  contentHash: string;
-  content?: string;
-  source?: string;
-  sourceVersion?: string;
-}
-
-export interface UpdateSkillInput {
-  name?: string;
-  description?: string;
-  contentHash?: string;
-  content?: string;
-  source?: string;
-  sourceVersion?: string;
-}
-
 export interface CreateWorkspaceSkillInput {
   slug?: string;
   name: string;
@@ -706,7 +637,6 @@ export type SSEEventType =
   | 'worker:rate_limit'
   | 'worker:model_capabilities'
   | 'task:updated'
-  | 'task:unblocked'
   | 'task:children_completed';
 
 export interface SSEEvent<T = unknown> {
@@ -776,8 +706,6 @@ export interface SkillInstallResult {
 export function validateInstallerCommand(
   command: string,
   config: {
-    workspaceAllowlist?: string[];
-    localAllowlist?: string[];
     rejectAll?: boolean;
   }
 ): { allowed: boolean; reason?: string } {
@@ -789,7 +717,7 @@ export function validateInstallerCommand(
       return { allowed: false, reason: 'Blocked by dangerous pattern' };
     }
   }
-  const allowlist = config.localAllowlist ?? config.workspaceAllowlist ?? [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
+  const allowlist = [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
   const trimmed = command.trim();
   if (!allowlist.some(prefix => trimmed.startsWith(prefix))) {
     return { allowed: false, reason: `No matching allowlist prefix. Allowed: ${allowlist.join(', ')}` };

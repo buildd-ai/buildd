@@ -115,12 +115,6 @@ export interface WorkspaceGitConfig {
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
 
-  // Remote skill installation — allowlist of command prefixes workers can execute
-  skillInstallerAllowlist?: string[];
-
-  // Plugin directories to load when workers start tasks
-  // Each path should point to a directory containing .claude-plugin/plugin.json
-  pluginPaths?: string[];
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
@@ -178,16 +172,6 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
-  // Organizer agent configuration — reviews completed tasks and course-corrects
-  organizer?: {
-    enabled?: boolean;
-    // Review window in hours (default: 24)
-    reviewWindowHours?: number;
-    // What to check for
-    requirePR?: boolean;        // Flag tasks that complete without a PR
-    requirePlanSummary?: boolean; // Flag planning tasks without summaries
-    autoCreateFollowUp?: boolean; // Auto-create follow-up tasks for failed tasks
-  };
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
@@ -289,21 +273,9 @@ export const workspaces = pgTable('workspaces', {
   configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
-export const sources = pgTable('sources', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  type: text('type').notNull().$type<'manual' | 'github' | 'jira' | 'linear' | 'webhook'>(),
-  name: text('name').notNull(),
-  config: jsonb('config').default({}).$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  workspaceIdx: index('sources_workspace_idx').on(t.workspaceId),
-}));
-
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  sourceId: uuid('source_id').references(() => sources.id, { onDelete: 'set null' }),
   externalId: text('external_id'),
   externalUrl: text('external_url'),
   title: text('title').notNull(),
@@ -322,8 +294,6 @@ export const tasks = pgTable('tasks', {
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
-  // Task dependency — tasks with blockers start as 'blocked' and auto-unblock when all blockers complete/fail
-  blockedByTaskIds: jsonb('blocked_by_task_ids').default([]).$type<string[]>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
   project: text('project'),
@@ -341,7 +311,6 @@ export const tasks = pgTable('tasks', {
   claimedByIdx: index('tasks_claimed_by_idx').on(t.claimedBy),
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   modeIdx: index('tasks_mode_idx').on(t.mode),
-  sourceExternalIdx: uniqueIndex('tasks_source_external_idx').on(t.sourceId, t.externalId),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
@@ -527,29 +496,10 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
-// Skill registry — team-level canonical definitions
-export const skills = pgTable('skills', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  slug: text('slug').notNull(),
-  name: text('name').notNull(),
-  description: text('description'),
-  contentHash: text('content_hash').notNull(), // SHA-256 hex of SKILL.md
-  content: text('content').notNull(), // Full SKILL.md content
-  source: text('source'), // e.g. 'npm:uxtools/ui-audit' or 'github:owner/repo/path'
-  sourceVersion: text('source_version'), // npm version or git ref
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  teamSlugIdx: uniqueIndex('skills_team_slug_idx').on(t.teamId, t.slug),
-  teamIdx: index('skills_team_idx').on(t.teamId),
-}));
-
 // Workspace-scoped skills — per-project bindings, discovered locally or manually registered
 export const workspaceSkills = pgTable('workspace_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  skillId: uuid('skill_id').references(() => skills.id, { onDelete: 'set null' }), // Links to team skill when promoted
   slug: text('slug').notNull(),
   name: text('name').notNull(),
   description: text('description'),
@@ -557,14 +507,13 @@ export const workspaceSkills = pgTable('workspace_skills', {
   contentHash: text('content_hash').notNull(), // SHA-256 for verification
   source: text('source'), // 'local_scan', 'manual', 'github:owner/repo', etc.
   enabled: boolean('enabled').default(true).notNull(),
-  origin: text('origin').default('manual').notNull().$type<'scan' | 'manual' | 'promoted'>(),
+  origin: text('origin').default('manual').notNull().$type<'scan' | 'manual'>(),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
-  skillIdx: index('workspace_skills_skill_idx').on(t.skillId),
 }));
 
 // Team invitations for multi-tenancy
@@ -639,7 +588,6 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   members: many(teamMembers),
   accounts: many(accounts),
   workspaces: many(workspaces),
-  skills: many(skills),
   invitations: many(teamInvitations),
 }));
 
@@ -674,7 +622,6 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   team: one(teams, { fields: [workspaces.teamId], references: [teams.id] }),
-  sources: many(sources),
   tasks: many(tasks),
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
@@ -686,14 +633,8 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
 
-export const sourcesRelations = relations(sources, ({ one, many }) => ({
-  workspace: one(workspaces, { fields: [sources.workspaceId], references: [workspaces.id] }),
-  tasks: many(tasks),
-}));
-
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
-  source: one(sources, { fields: [tasks.sourceId], references: [sources.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
   workers: many(workers),
   observations: many(observations),
@@ -743,14 +684,8 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
   workspaces: many(workspaces),
 }));
 
-export const skillsRelations = relations(skills, ({ one, many }) => ({
-  team: one(teams, { fields: [skills.teamId], references: [teams.id] }),
-  workspaceSkills: many(workspaceSkills),
-}));
-
 export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
   workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
-  skill: one(skills, { fields: [workspaceSkills.skillId], references: [skills.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({

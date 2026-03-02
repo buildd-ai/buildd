@@ -10,7 +10,7 @@ const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
 const PERSISTED_FIELDS = [
   'id', 'taskId', 'taskTitle', 'taskDescription', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'lastActivity', 'sessionId',
-  'waitingFor', 'planContent', 'planFilePath', 'planStartMessageIndex',
+  'waitingFor',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
 ] as const;
@@ -152,9 +152,6 @@ export function loadAllWorkers(): LocalWorker[] {
         lastActivity: data.lastActivity as number,
         sessionId: data.sessionId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
-        planContent: data.planContent as string | undefined,
-        planStartMessageIndex: data.planStartMessageIndex as number | undefined,
-        planFilePath: data.planFilePath as string | undefined,
         messages: (data.messages as LocalWorker['messages']) || [],
         milestones: (data.milestones as LocalWorker['milestones']) || [],
         toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
@@ -219,9 +216,6 @@ export function loadWorker(workerId: string): LocalWorker | null {
       lastActivity: data.lastActivity as number,
       sessionId: data.sessionId as string | undefined,
       waitingFor: data.waitingFor as LocalWorker['waitingFor'],
-      planContent: data.planContent as string | undefined,
-      planStartMessageIndex: data.planStartMessageIndex as number | undefined,
-      planFilePath: data.planFilePath as string | undefined,
       messages: (data.messages as LocalWorker['messages']) || [],
       milestones: (data.milestones as LocalWorker['milestones']) || [],
       toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],

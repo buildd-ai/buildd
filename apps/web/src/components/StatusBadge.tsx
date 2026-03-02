@@ -4,11 +4,9 @@ const STATUS_LABELS: Record<string, string> = {
   running: 'Running',
   starting: 'Starting',
   waiting_input: 'Needs Input',
-  awaiting_plan_approval: 'Awaiting Plan',
   completed: 'Completed',
   failed: 'Failed',
   idle: 'Idle',
-  blocked: 'Blocked',
 };
 
 // Moodboard: status colors at 10% opacity bg, status color text, pill shape
@@ -18,11 +16,9 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   running:                { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
   starting:               { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
   waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
-  awaiting_plan_approval: { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
   completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
   failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
   idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
-  blocked:                { dot: 'bg-status-info',                           bg: 'bg-status-info/10',    text: 'text-status-info' },
 };
 
 const DEFAULT_STYLE = STATUS_STYLES.pending;

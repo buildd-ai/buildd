@@ -160,7 +160,7 @@ export async function GET(req: NextRequest) {
       const activeWorkerRecords = await db.query.workers.findMany({
         where: and(
           inArray(workers.accountId, accountIds),
-          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input', 'awaiting_plan_approval']),
+          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
         ),
         columns: { accountId: true },
       });

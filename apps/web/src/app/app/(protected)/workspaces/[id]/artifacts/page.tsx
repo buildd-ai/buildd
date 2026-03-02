@@ -50,7 +50,7 @@ export default async function WorkspaceArtifactsPage({
     : [];
 
   const deliverableArtifacts = allArtifacts.filter(
-    a => a.type !== 'task_plan' && a.type !== 'impl_plan'
+    a => a.type !== 'impl_plan'
   );
 
   // Build worker→task mapping for task titles

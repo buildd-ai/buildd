@@ -669,56 +669,7 @@ describe('dogfood', () => {
   }, 30_000);
 
   // ---------------------------------------------------------------
-  // 11. Plan approval — submit and approve via API
-  // ---------------------------------------------------------------
-
-  test('plan approval — submit plan, verify state, approve', async () => {
-    const task = await createTask(workspaceId, '[DOGFOOD] Plan test', 'Plan: improve error handling');
-    const workerId = await serverClaim(workspaceId, task.id);
-
-    // Set worker to running
-    await api(`/api/workers/${workerId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'running' }),
-    });
-
-    // Submit plan
-    const planContent = '## Plan\n\n1. Add error boundaries\n2. Implement retry logic\n3. Add logging';
-    const planRes = await api(`/api/workers/${workerId}/plan`, {
-      method: 'POST',
-      body: JSON.stringify({ plan: planContent }),
-    });
-    expect(planRes.message).toContain('Plan submitted');
-
-    // Verify worker is awaiting approval
-    const { body: workerAfterPlan } = await apiRaw(`/api/workers/${workerId}`);
-    expect(workerAfterPlan.status).toBe('awaiting_plan_approval');
-
-    // Get plan
-    const { plan: retrievedPlan } = await api(`/api/workers/${workerId}/plan`);
-    expect(retrievedPlan).toBeTruthy();
-    expect(retrievedPlan.content).toContain('error boundaries');
-
-    // Approve plan
-    const approveRes = await api(`/api/workers/${workerId}/plan/approve`, {
-      method: 'POST',
-    });
-    expect(approveRes.worker.status).toBe('running');
-
-    // Verify worker is back to running with pending instructions
-    const { body: workerAfterApprove } = await apiRaw(`/api/workers/${workerId}`);
-    expect(workerAfterApprove.status).toBe('running');
-    expect(workerAfterApprove.pendingInstructions).toContain('APPROVED');
-
-    // Cleanup
-    await api(`/api/workers/${workerId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'failed', error: 'Dogfood test cleanup' }),
-    });
-  }, 30_000);
-
-  // ---------------------------------------------------------------
-  // 12. Stale cleanup — maintenance endpoint smoke test
+  // 11. Stale cleanup — maintenance endpoint smoke test
   // ---------------------------------------------------------------
 
   test('stale cleanup — cleanup endpoint returns correct structure', async () => {
@@ -730,7 +681,6 @@ describe('dogfood', () => {
       // Admin auth accepted — verify response structure
       expect(typeof body.cleaned.stalledWorkers).toBe('number');
       expect(typeof body.cleaned.orphanedTasks).toBe('number');
-      expect(typeof body.cleaned.expiredPlans).toBe('number');
       expect(typeof body.cleaned.staleHeartbeats).toBe('number');
     } else {
       // Non-admin API key → auth error (expected)

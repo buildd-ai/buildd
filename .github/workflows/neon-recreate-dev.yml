@@ -1,0 +1,160 @@
+name: Recreate Neon Dev Branch
+
+# Weekly fresh clone of production DB for preview/test environments.
+# Neon archives branches after ~7 days of inactivity, so this ensures
+# the dev branch always has up-to-date schema and data.
+
+on:
+  schedule:
+    # Every Sunday at 06:00 UTC (before the work week)
+    - cron: '0 6 * * 0'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  recreate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete old vercel-dev branch
+        run: |
+          set -euo pipefail
+
+          # Find the existing vercel-dev branch
+          RESPONSE=$(curl -sf \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branches[] | select(.name == "vercel-dev") | .id')
+
+          if [ -n "$BRANCH_ID" ] && [ "$BRANCH_ID" != "null" ]; then
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID")
+
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "Deleted old vercel-dev branch: $BRANCH_ID"
+            else
+              echo "::warning::Failed to delete old branch (HTTP $HTTP_CODE), continuing anyway"
+            fi
+          else
+            echo "No existing vercel-dev branch found"
+          fi
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+
+      - name: Create fresh vercel-dev from production
+        id: create
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl -sf -X POST \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\": {\"name\": \"vercel-dev\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+          if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+            echo "::error::Failed to create Neon branch"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+          echo "Created vercel-dev branch: $BRANCH_ID"
+
+          # Get the endpoint host
+          ENDPOINTS=$(curl -sf \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+
+          HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+          DATABASE_URL="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
+
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "database_url=$DATABASE_URL" >> "$GITHUB_OUTPUT"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
+          NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
+          NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
+
+      - name: Update Vercel preview DATABASE_URL
+        run: |
+          set -euo pipefail
+
+          DATABASE_URL="${{ steps.create.outputs.database_url }}"
+
+          # Find and delete the existing base preview+development DATABASE_URL
+          EXISTING_ID=$(curl -sf \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+            | jq -r '.envs[] | select(.key == "DATABASE_URL" and .gitBranch == null and (.target | contains(["preview"]))) | .id')
+
+          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+            curl -sf -X DELETE \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$EXISTING_ID"
+            echo "Deleted old preview DATABASE_URL: $EXISTING_ID"
+          fi
+
+          # Create new one for preview + development
+          RESULT=$(curl -sf -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"key\": \"DATABASE_URL\",
+              \"value\": \"$DATABASE_URL\",
+              \"type\": \"encrypted\",
+              \"target\": [\"preview\", \"development\"]
+            }" \
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env")
+
+          NEW_ID=$(echo "$RESULT" | jq -r '.id')
+          if [ "$NEW_ID" = "null" ] || [ -z "$NEW_ID" ]; then
+            echo "::error::Failed to create new preview DATABASE_URL"
+            echo "$RESULT" | jq .
+            exit 1
+          fi
+          echo "Created new preview DATABASE_URL: $NEW_ID"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Clean up stale Vercel env overrides
+        run: |
+          set -euo pipefail
+
+          # Find all branch-specific DATABASE_URL overrides for preview
+          OVERRIDES=$(curl -sf \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+            | jq -r '.envs[] | select(.key == "DATABASE_URL" and .gitBranch != null) | "\(.id) \(.gitBranch)"')
+
+          if [ -z "$OVERRIDES" ]; then
+            echo "No stale branch overrides to clean"
+            exit 0
+          fi
+
+          CLEANED=0
+          while IFS=' ' read -r id branch; do
+            # Check if the branch still has an open PR
+            PR_STATE=$(curl -sf \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:$branch&state=open" \
+              | jq 'length')
+
+            if [ "$PR_STATE" = "0" ]; then
+              curl -sf -X DELETE \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$id"
+              echo "Cleaned stale override for closed branch: $branch"
+              CLEANED=$((CLEANED + 1))
+            fi
+          done <<< "$OVERRIDES"
+
+          echo "Cleaned $CLEANED stale branch overrides"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -153,13 +153,6 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
         return;
       }
 
-      // Check for planning mode label
-      const hasPlanLabel = issue.labels.some(
-        (l) => l.name.toLowerCase() === 'buildd:plan'
-      );
-
-      const mode = hasPlanLabel ? 'planning' : 'execution';
-
       const [newTask] = await db
         .insert(tasks)
         .values({
@@ -169,7 +162,6 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
           externalId: `issue-${issue.id}`,
           externalUrl: issue.html_url,
           status: 'pending',
-          mode,
           context: {
             github: {
               issueNumber: issue.number,

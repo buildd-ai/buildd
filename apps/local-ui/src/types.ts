@@ -10,7 +10,7 @@ export interface PermissionSuggestion {
 
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question' | 'plan_approval' | 'permission';
+  type: 'question' | 'permission';
   prompt: string;
   options?: Array<{
     label: string;
@@ -29,7 +29,6 @@ export const CheckpointEvent = {
   FIRST_READ: 'first_read',
   FIRST_EDIT: 'first_edit',
   FIRST_COMMIT: 'first_commit',
-  PLAN_SUBMITTED: 'plan_submitted',
   TASK_COMPLETED: 'task_completed',
   TASK_ERROR: 'task_error',
 } as const;
@@ -42,7 +41,6 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
   first_read: 'First file read',
   first_edit: 'First file edit',
   first_commit: 'First commit',
-  plan_submitted: 'Plan submitted',
   task_completed: 'Task completed',
   task_error: 'Task failed',
 };
@@ -141,9 +139,6 @@ export interface LocalWorker {
   sessionId?: string;
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
-  planContent?: string;  // Extracted plan markdown when ExitPlanMode fires
-  planStartMessageIndex?: number;  // messages.length when EnterPlanMode fires — used to extract full plan
-  planFilePath?: string;  // Path to persisted plan markdown file (~/.buildd/plans/{workerId}.md)
   teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
@@ -194,9 +189,6 @@ export interface ResultMeta {
   permissionDenials?: Array<{ tool: string; reason: string }>;
 }
 
-// Task mode
-export type TaskMode = 'execution' | 'planning';
-
 // Task from buildd
 export interface BuilddTask {
   id: string;
@@ -212,7 +204,7 @@ export interface BuilddTask {
   };
   status: string;
   priority: number;
-  mode?: TaskMode;  // 'planning' or 'execution' (default)
+  mode?: string;
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
   // JSON Schema for structured output — passed to SDK outputFormat
@@ -348,7 +340,6 @@ export interface LocalUIConfig {
   // Bypass permission prompts for bash commands (dangerous commands still blocked)
   bypassPermissions?: boolean;
   // Remote skill installation
-  skillInstallerAllowlist?: string[];
   rejectRemoteInstallers?: boolean;
   // Maximum budget in USD per worker session (local fallback; workspace gitConfig.maxBudgetUsd takes priority)
   maxBudgetUsd?: number;

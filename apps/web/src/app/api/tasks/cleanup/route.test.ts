@@ -166,7 +166,6 @@ describe('POST /api/tasks/cleanup', () => {
     const data = await res.json();
     expect(data.cleaned.stalledWorkers).toBe(0);
     expect(data.cleaned.orphanedTasks).toBe(0);
-    expect(data.cleaned.expiredPlans).toBe(0);
     expect(data.cleaned.heartbeatOrphans).toBe(0);
     expect(data.cleaned.staleHeartbeats).toBe(0);
   });
@@ -181,9 +180,7 @@ describe('POST /api/tasks/cleanup', () => {
         { id: 'w1', status: 'running', updatedAt: new Date(0) },
         { id: 'w2', status: 'starting', updatedAt: new Date(0) },
       ])
-      // Second findMany: expired plan workers
-      .mockResolvedValueOnce([])
-      // Third findMany: active account IDs for per-account cleanup
+      // Second findMany: active account IDs for per-account cleanup
       .mockResolvedValueOnce([]);
 
     mockTasksFindMany.mockResolvedValue([]);
@@ -200,10 +197,9 @@ describe('POST /api/tasks/cleanup', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
 
-    // No stalled running/starting workers or expired plans
+    // No stalled running/starting workers
     mockWorkersFindMany
       .mockResolvedValueOnce([])  // stalled running
-      .mockResolvedValueOnce([])  // expired plans
       .mockResolvedValueOnce([])  // active account IDs for per-account cleanup
       // heartbeat orphan check: workers with stale heartbeat accounts
       .mockResolvedValueOnce([
