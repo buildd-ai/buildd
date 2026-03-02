@@ -24,6 +24,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
+import { MemoryClient } from "@buildd/core/memory-client";
 import { detectProjects } from "./detect-projects.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -43,6 +44,40 @@ const SERVER_URL = process.env.BUILDD_SERVER || config.builddServer || "https://
 const API_KEY = process.env.BUILDD_API_KEY || config.apiKey || "";
 const EXPLICIT_WORKSPACE_ID = process.env.BUILDD_WORKSPACE_ID || process.env.BUILDD_WORKSPACE || "";
 const WORKER_ID = process.env.BUILDD_WORKER_ID || "";
+const MEMORY_API_URL = process.env.MEMORY_API_URL || "";
+const MEMORY_API_KEY = process.env.MEMORY_API_KEY || "";
+
+// ── Memory Client ────────────────────────────────────────────────────────────
+
+let memoryClient: MemoryClient | null = null;
+
+function getMemoryClient(): MemoryClient {
+  if (memoryClient) return memoryClient;
+  if (!MEMORY_API_URL || !MEMORY_API_KEY) {
+    throw new Error(
+      'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY environment variables.'
+    );
+  }
+  memoryClient = new MemoryClient(MEMORY_API_URL, MEMORY_API_KEY);
+  return memoryClient;
+}
+
+// Resolve workspace repo name for memory project scoping
+let cachedProject: string | null = null;
+
+async function getMemoryProject(): Promise<string | undefined> {
+  if (cachedProject !== null) return cachedProject || undefined;
+
+  // Use git remote to derive a stable project identifier
+  const repoName = getRepoFullNameFromGit();
+  if (repoName) {
+    cachedProject = repoName;
+    return repoName;
+  }
+
+  cachedProject = '';
+  return undefined;
+}
 
 // ── Workspace Resolution ─────────────────────────────────────────────────────
 
@@ -351,7 +386,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "buildd_memory",
-      description: `Search, save, update, or delete workspace memory (observations about code patterns, gotchas, decisions). Actions: ${[...memoryActions].join(', ')}`,
+      description: `Search, save, and manage shared team memories (code patterns, gotchas, decisions). Actions: ${[...memoryActions].join(', ')}`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -425,13 +460,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const action = args?.action as string;
       const params = (args?.params || {}) as Record<string, unknown>;
 
-      const memoryCtx = {
-        workspaceId: EXPLICIT_WORKSPACE_ID || undefined,
+      const project = await getMemoryProject();
+      return await handleMemoryAction(getMemoryClient(), action, params, {
+        project,
         workerId: WORKER_ID || undefined,
-        getWorkspaceId,
-      };
-
-      return await handleMemoryAction(api, action, params, memoryCtx);
+      });
     } else {
       throw new Error(`Unknown tool: ${name}`);
     }
@@ -503,25 +536,17 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     }
 
     case "buildd://workspace/memory": {
-      const wsId = EXPLICIT_WORKSPACE_ID || await getWorkspaceId();
-      if (!wsId) {
+      try {
+        const project = await getMemoryProject();
+        const data = await getMemoryClient().getContext(project);
         return {
-          contents: [{ uri, mimeType: "text/plain", text: "No workspace detected." }],
+          contents: [{ uri, mimeType: "text/plain", text: data.markdown || "No memories yet." }],
+        };
+      } catch {
+        return {
+          contents: [{ uri, mimeType: "text/plain", text: "Memory service not configured or unavailable." }],
         };
       }
-
-      const data = await api(`/api/workspaces/${wsId}/observations?limit=20`);
-      const obs = data.observations || [];
-
-      const content = obs.length === 0
-        ? "No observations in workspace."
-        : obs.map((o: any) =>
-            `[${o.type}] ${o.title} (${o.id})\n  Files: ${o.files?.join(', ') || 'none'}\n  ${o.content.slice(0, 200)}`
-          ).join("\n\n");
-
-      return {
-        contents: [{ uri, mimeType: "text/plain", text: content }],
-      };
     }
 
     case "buildd://workspace/skills": {

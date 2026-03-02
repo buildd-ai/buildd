@@ -39,9 +39,9 @@ describe('Outbox', () => {
       expect(outbox.shouldQueue('PATCH', '/api/workers/w123')).toBe(true);
     });
 
-    test('queues POST observations', () => {
+    test('queues POST memory saves', () => {
       const outbox = new Outbox();
-      expect(outbox.shouldQueue('POST', '/api/workspaces/ws1/observations')).toBe(true);
+      expect(outbox.shouldQueue('POST', '/api/workspaces/ws1/memory')).toBe(true);
     });
 
     test('queues POST plan submissions', () => {
@@ -115,7 +115,7 @@ describe('Outbox', () => {
     test('flushes successfully and removes entries', async () => {
       const outbox = new Outbox();
       outbox.enqueue('PATCH', '/api/workers/w1', '{}');
-      outbox.enqueue('POST', '/api/workspaces/ws1/observations', '{}');
+      outbox.enqueue('POST', '/api/workspaces/ws1/memory', '{}');
 
       outbox.setFlushHandler(async () => true);
       const result = await outbox.flush();

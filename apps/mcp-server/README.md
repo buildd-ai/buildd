@@ -107,12 +107,16 @@ Single tool with an `action` parameter. Available actions depend on your account
 
 ### `buildd_memory` — Workspace Knowledge
 
+Backed by the external memory service. Memories are scoped to the workspace via `project`.
+
 | Action | Params | Description |
 |--------|--------|-------------|
-| `search` | `query?, type?, files?, concepts?, limit?` | Search observations |
-| `save` | `type, title, content, files?, concepts?` | Save an observation |
-| `update` | `id, title?, content?, type?, files?, concepts?` | Update an observation |
-| `delete` | `id` | Delete an observation |
+| `context` | — | Load relevant memories for current project |
+| `search` | `query?, type?, files?, tags?, limit?` | Search memories |
+| `save` | `type, title, content, files?, tags?` | Save a new memory |
+| `get` | `id` | Retrieve a specific memory |
+| `update` | `id, title?, content?, type?, files?, tags?` | Update a memory |
+| `delete` | `id` | Delete a memory |
 
 ## MCP Resources
 
@@ -121,7 +125,7 @@ The server also exposes read-only resources:
 | URI | Description |
 |-----|-------------|
 | `buildd://tasks/pending` | Pending tasks sorted by priority |
-| `buildd://workspace/memory` | Recent workspace observations |
+| `buildd://workspace/memory` | Recent workspace memories |
 | `buildd://workspace/skills` | Available skills |
 
 ## Usage
@@ -133,7 +137,7 @@ Just ask Claude Code:
 - *"Update buildd progress to 50%"*
 - *"Mark the buildd task as complete"*
 - *"Search buildd memory for auth patterns"*
-- *"Save this as a buildd observation"*
+- *"Save this as a buildd memory"*
 
 ## Environment Variables
 
@@ -143,3 +147,5 @@ Just ask Claude Code:
 | `BUILDD_API_KEY` | API key (default: reads from `~/.buildd/config.json`) |
 | `BUILDD_WORKSPACE` | Filter to a specific workspace ID |
 | `BUILDD_WORKER_ID` | Worker context for subtask creation |
+| `MEMORY_API_URL` | Memory service URL (default: https://memory.buildd.dev) |
+| `MEMORY_API_KEY` | Memory service API key (required for `buildd_memory` tool) |
