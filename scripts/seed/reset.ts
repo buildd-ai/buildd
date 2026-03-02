@@ -1,7 +1,7 @@
 /**
  * Seed Reset: Clean up seeded test data
  *
- * Removes any tasks/workers/observations created by the seed scripts.
+ * Removes any tasks/workers/memories created by the seed scripts.
  * Handles both single-ID seeds (waiting-input, error-worker) and
  * multi-ID seeds (completed-tasks, multi-user, concurrent).
  *
@@ -47,16 +47,16 @@ async function deleteTask(taskId: string) {
     }
 }
 
-async function deleteObservation(workspaceId: string, observationId: string) {
+async function deleteMemory(workspaceId: string, memoryId: string) {
     try {
-        await fetch(`${API_BASE}/api/workspaces/${workspaceId}/observations/${observationId}`, {
+        await fetch(`${API_BASE}/api/workspaces/${workspaceId}/memory/${memoryId}`, {
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${API_KEY}`,
             },
         });
     } catch (e) {
-        console.warn(`  Warning: Failed to delete observation ${observationId}:`, (e as Error).message);
+        console.warn(`  Warning: Failed to delete memory ${memoryId}:`, (e as Error).message);
     }
 }
 
@@ -78,9 +78,9 @@ async function resetSeeds() {
     const workerIds: string[] = seedData.workerIds || (seedData.workerId ? [seedData.workerId] : []);
     // Collect all task IDs (single or array)
     const taskIds: string[] = seedData.taskIds || (seedData.taskId ? [seedData.taskId] : []);
-    // Collect all observation IDs
-    const observationIds: string[] = seedData.observationIds || [];
-    // Workspace ID for observation cleanup
+    // Collect all memory IDs (supports both old observationIds and new memoryIds)
+    const memoryIds: string[] = seedData.memoryIds || seedData.observationIds || [];
+    // Workspace ID for memory cleanup
     const workspaceId: string | undefined = seedData.workspaceId || (seedData.workspaceIds?.[0]);
 
     // Mark workers as failed to release capacity
@@ -91,11 +91,11 @@ async function resetSeeds() {
         }
     }
 
-    // Delete observations
-    if (observationIds.length > 0 && workspaceId) {
-        console.log(`Deleting ${observationIds.length} observation(s)...`);
-        for (const id of observationIds) {
-            await deleteObservation(workspaceId, id);
+    // Delete memories
+    if (memoryIds.length > 0 && workspaceId) {
+        console.log(`Deleting ${memoryIds.length} memory(ies)...`);
+        for (const id of memoryIds) {
+            await deleteMemory(workspaceId, id);
         }
     }
 

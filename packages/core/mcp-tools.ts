@@ -37,7 +37,7 @@ export const adminActions = [
 
 export const allActions = [...workerActions, ...adminActions] as const;
 
-export const memoryActions = ['search', 'save', 'update', 'delete'] as const;
+export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete'] as const;
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
@@ -77,9 +77,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
 
 export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    search: '{ query?, type?, files? (array), concepts? (array), project? (monorepo project name), limit? }',
-    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), concepts? (array), project? (monorepo project name) }',
-    update: '{ id (required), title?, content?, type?, files? (array), concepts? (array), project? }',
+    context: '{ project? } — get markdown-formatted memory context for agent injection',
+    search: '{ query?, type?, files? (array), project?, limit?, offset? }',
+    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source? }',
+    get: '{ id (required) }',
+    update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
   };
 
@@ -146,24 +148,26 @@ export async function handleBuilddAction(
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
       ).join('\n\n---\n\n');
 
-      // Proactively fetch relevant memory
+      // Proactively fetch relevant memory from memory service
       let memorySection = '';
       try {
-        const firstWorker = workers[0];
-        const resolvedWsId = wsId || firstWorker.task?.workspaceId;
-        if (resolvedWsId && firstWorker.task.title) {
-          const searchData = await api(`/api/workspaces/${resolvedWsId}/observations/search?query=${encodeURIComponent(firstWorker.task.title)}&limit=5`);
+        const { getMemoryClient } = await import('./memory-client');
+        const memClient = getMemoryClient();
+        if (memClient && workers[0]?.task?.title) {
+          const searchData = await memClient.search({
+            query: workers[0].task.title,
+            limit: 5,
+          });
           const results = searchData.results || [];
           if (results.length > 0) {
-            const ids = results.map((r: any) => r.id).join(',');
-            const batchData = await api(`/api/workspaces/${resolvedWsId}/observations/batch?ids=${ids}`);
-            const observations = batchData.observations || [];
-            if (observations.length > 0) {
-              const memoryLines = observations.map((o: any) => {
-                const truncContent = o.content.length > 200 ? o.content.slice(0, 200) + '...' : o.content;
-                return `- **[${o.type}] ${o.title}**: ${truncContent}`;
+            const batchData = await memClient.batch(results.map(r => r.id));
+            const memories = batchData.memories || [];
+            if (memories.length > 0) {
+              const memoryLines = memories.map((m: any) => {
+                const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+                return `- **[${m.type}] ${m.title}**: ${truncContent}`;
               });
-              memorySection = `\n\n## Relevant Memory\nREAD these observations before starting work:\n${memoryLines.join('\n')}\n\nUse \`buildd_memory\` action=search for more context.`;
+              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nUse \`buildd_memory\` action=search for more context.`;
             }
           }
         }
@@ -599,68 +603,62 @@ export async function handleBuilddAction(
 
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
+import { MemoryClient } from './memory-client';
+
 export async function handleMemoryAction(
-  api: ApiFn,
+  memoryClient: MemoryClient,
   action: string,
   params: Record<string, unknown>,
-  ctx: { workspaceId?: string; workerId?: string; getWorkspaceId?: () => Promise<string | null> },
+  ctx: { project?: string; workerId?: string },
 ): Promise<ToolResult> {
-  const resolveWsId = async (): Promise<string> => {
-    const wsId = ctx.workspaceId || (ctx.getWorkspaceId ? await ctx.getWorkspaceId() : null);
-    if (!wsId) throw new Error('Could not determine workspace. Set workspaceId.');
-    return wsId;
-  };
-
   switch (action) {
+    case 'context': {
+      const project = (params.project as string) || ctx.project;
+      const data = await memoryClient.getContext(project);
+      return text(data.markdown || '(No memories yet)');
+    }
+
     case 'search': {
-      const wsId = await resolveWsId();
-
-      const searchParams = new URLSearchParams();
-      if (params.query) searchParams.set('query', params.query as string);
-      if (params.type) searchParams.set('type', params.type as string);
-      if (params.files && Array.isArray(params.files) && params.files.length > 0) {
-        searchParams.set('files', (params.files as string[]).join(','));
-      }
-      if (params.concepts && Array.isArray(params.concepts) && params.concepts.length > 0) {
-        searchParams.set('concepts', (params.concepts as string[]).join(','));
-      }
-      if (params.project) searchParams.set('project', params.project as string);
-      searchParams.set('limit', String(Math.min((params.limit as number) || 10, 50)));
-
-      const data = await api(`/api/workspaces/${wsId}/observations/search?${searchParams}`);
+      const data = await memoryClient.search({
+        query: params.query as string | undefined,
+        type: params.type as string | undefined,
+        project: (params.project as string) || ctx.project,
+        files: params.files as string[] | undefined,
+        limit: Math.min((params.limit as number) || 10, 50),
+        offset: params.offset as number | undefined,
+      });
 
       if (!data.results || data.results.length === 0) {
-        return text(`No observations found${params.query ? ` matching "${params.query}"` : ''}. Use buildd_memory action=save to record observations.`);
+        return text(`No memories found${params.query ? ` matching "${params.query}"` : ''}. Use buildd_memory action=save to record memories.`);
       }
 
       // Fetch full content
-      const ids = data.results.map((r: any) => r.id).join(',');
-      let fetchedObservations: any[] = [];
+      const ids = data.results.map(r => r.id);
+      let fetched: any[] = [];
       try {
-        const batchData = await api(`/api/workspaces/${wsId}/observations/batch?ids=${ids}`);
-        fetchedObservations = batchData.observations || [];
+        const batchData = await memoryClient.batch(ids);
+        fetched = batchData.memories || [];
       } catch {
-        fetchedObservations = [];
+        fetched = [];
       }
 
-      if (fetchedObservations.length > 0) {
-        const details = fetchedObservations.map((obs: any) =>
-          `## ${obs.type}: ${obs.title}\n**ID:** ${obs.id}\n**Files:** ${obs.files?.join(', ') || 'none'}\n**Concepts:** ${obs.concepts?.join(', ') || 'none'}\n\n${obs.content}`
+      if (fetched.length > 0) {
+        const details = fetched.map((m: any) =>
+          `## ${m.type}: ${m.title}\n**ID:** ${m.id}\n**Files:** ${m.files?.join(', ') || 'none'}\n**Tags:** ${m.tags?.join(', ') || 'none'}\n\n${m.content}`
         ).join('\n\n---\n\n');
 
-        return text(`Found ${data.total} observation(s)${data.total > fetchedObservations.length ? ` (showing ${fetchedObservations.length})` : ''}:\n\n${details}`);
+        return text(`Found ${data.total} memory(s)${data.total > fetched.length ? ` (showing ${fetched.length})` : ''}:\n\n${details}`);
       }
 
       // Fallback: summary only
-      const summary = data.results.map((obs: any) =>
-        `- **${obs.type}**: ${obs.title}\n  ID: ${obs.id}\n  Files: ${obs.files?.slice(0, 3).join(', ') || 'none'}`
+      const summary = data.results.map((m: any) =>
+        `- **${m.type}**: ${m.title}\n  ID: ${m.id}\n  Files: ${m.files?.slice(0, 3).join(', ') || 'none'}`
       ).join('\n\n');
 
-      return text(`Found ${data.total} observation(s)${data.total > data.results.length ? ` (showing ${data.results.length})` : ''}:\n\n${summary}`);
+      return text(`Found ${data.total} memory(s)${data.total > data.results.length ? ` (showing ${data.results.length})` : ''}:\n\n${summary}`);
     }
 
     case 'save': {
-      const wsId = await resolveWsId();
       if (!params.type || !params.title || !params.content) throw new Error('type, title, and content are required');
 
       const validTypes = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'];
@@ -668,57 +666,56 @@ export async function handleMemoryAction(
         throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
       }
 
-      const body: Record<string, unknown> = {
-        type: params.type,
-        title: params.title,
-        content: params.content,
-      };
-      if (params.files && Array.isArray(params.files)) body.files = params.files;
-      if (params.concepts && Array.isArray(params.concepts)) body.concepts = params.concepts;
-      if (params.project) body.project = params.project;
-      if (ctx.workerId) body.workerId = ctx.workerId;
-
-      const data = await api(`/api/workspaces/${wsId}/observations`, {
-        method: 'POST',
-        body: JSON.stringify(body),
+      const data = await memoryClient.save({
+        type: params.type as string,
+        title: params.title as string,
+        content: params.content as string,
+        project: (params.project as string) || ctx.project || undefined,
+        tags: params.tags as string[] | undefined,
+        files: params.files as string[] | undefined,
+        source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
       });
 
-      return text(`Observation saved: "${data.observation.title}" (${data.observation.type})\nID: ${data.observation.id}`);
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
+    }
+
+    case 'get': {
+      if (!params.id) throw new Error('id is required');
+      const data = await memoryClient.get(params.id as string);
+      const m = data.memory;
+      const meta = [
+        `Type: ${m.type}`,
+        m.project && `Project: ${m.project}`,
+        m.tags?.length && `Tags: ${m.tags.join(', ')}`,
+        m.files?.length && `Files: ${m.files.join(', ')}`,
+        m.source && `Source: ${m.source}`,
+      ].filter(Boolean).join('\n');
+      return text(`# ${m.title}\n\n${meta}\n\n${m.content}`);
     }
 
     case 'update': {
-      const wsId = await resolveWsId();
       if (!params.id) throw new Error('id is required');
 
-      const updateBody: Record<string, unknown> = {};
-      if (params.title !== undefined) updateBody.title = params.title;
-      if (params.content !== undefined) updateBody.content = params.content;
-      if (params.type !== undefined) updateBody.type = params.type;
-      if (params.files !== undefined) updateBody.files = params.files;
-      if (params.concepts !== undefined) updateBody.concepts = params.concepts;
-      if (params.project !== undefined) updateBody.project = params.project;
+      const updateFields: Record<string, unknown> = {};
+      if (params.title !== undefined) updateFields.title = params.title;
+      if (params.content !== undefined) updateFields.content = params.content;
+      if (params.type !== undefined) updateFields.type = params.type;
+      if (params.files !== undefined) updateFields.files = params.files;
+      if (params.tags !== undefined) updateFields.tags = params.tags;
+      if (params.project !== undefined) updateFields.project = params.project;
 
-      if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (title, content, type, files, concepts, project) must be provided');
+      if (Object.keys(updateFields).length === 0) {
+        throw new Error('At least one field (title, content, type, files, tags, project) must be provided');
       }
 
-      const data = await api(`/api/workspaces/${wsId}/observations/${params.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updateBody),
-      });
-
-      return text(`Observation updated: "${data.observation.title}" (${data.observation.type})\nID: ${data.observation.id}`);
+      const data = await memoryClient.update(params.id as string, updateFields);
+      return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
     }
 
     case 'delete': {
-      const wsId = await resolveWsId();
       if (!params.id) throw new Error('id is required');
-
-      await api(`/api/workspaces/${wsId}/observations/${params.id}`, {
-        method: 'DELETE',
-      });
-
-      return text(`Observation deleted: ${params.id}`);
+      await memoryClient.delete(params.id as string);
+      return text(`Memory deleted: ${params.id}`);
     }
 
     default:

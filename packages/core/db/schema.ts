@@ -389,26 +389,7 @@ export const artifacts = pgTable('artifacts', {
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
 }));
 
-// Workspace observations (persistent memory across tasks)
-export const observations = pgTable('observations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
-  type: text('type').notNull().$type<'discovery' | 'decision' | 'gotcha' | 'pattern' | 'architecture' | 'summary'>(),
-  title: text('title').notNull(),
-  content: text('content').notNull(),
-  files: jsonb('files').default([]).$type<string[]>(),
-  concepts: jsonb('concepts').default([]).$type<string[]>(),
-  project: text('project'),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  workspaceIdx: index('observations_workspace_idx').on(t.workspaceId),
-  typeIdx: index('observations_type_idx').on(t.type),
-  workerIdx: index('observations_worker_idx').on(t.workerId),
-  taskIdx: index('observations_task_idx').on(t.taskId),
-  projectIdx: index('observations_project_idx').on(t.project),
-}));
+// observations table removed — memory is now stored in external memory service
 
 // Worker heartbeats - tracks runner instance availability independent of worker records
 export const workerHeartbeats = pgTable('worker_heartbeats', {
@@ -625,7 +606,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   tasks: many(tasks),
   workers: many(workers),
   accountWorkspaces: many(accountWorkspaces),
-  observations: many(observations),
+
   artifacts: many(artifacts),
   taskSchedules: many(taskSchedules),
   workspaceSkills: many(workspaceSkills),
@@ -637,7 +618,7 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
   workers: many(workers),
-  observations: many(observations),
+
   // Creator tracking relations
   creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'createdTasks' }),
   creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'createdTasks' }),
@@ -650,7 +631,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [workers.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [workers.accountId], references: [accounts.id] }),
   artifacts: many(artifacts),
-  observations: many(observations),
+
   createdTasks: many(tasks, { relationName: 'createdTasks' }),
 }));
 
@@ -659,11 +640,6 @@ export const artifactsRelations = relations(artifacts, ({ one }) => ({
   workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
 }));
 
-export const observationsRelations = relations(observations, ({ one }) => ({
-  workspace: one(workspaces, { fields: [observations.workspaceId], references: [workspaces.id] }),
-  worker: one(workers, { fields: [observations.workerId], references: [workers.id] }),
-  task: one(tasks, { fields: [observations.taskId], references: [tasks.id] }),
-}));
 
 export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({
   account: one(accounts, { fields: [workerHeartbeats.accountId], references: [accounts.id] }),

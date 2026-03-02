@@ -1,7 +1,7 @@
 /**
  * Seed: Completed Tasks
  *
- * Creates 10 completed tasks with associated observations (discoveries, decisions, gotchas).
+ * Creates 10 completed tasks with associated memories (discoveries, decisions, gotchas).
  * Useful for testing dashboard history views.
  *
  * Usage: BUILDD_API_KEY=your_key bun run seed:completed-tasks
@@ -94,7 +94,7 @@ const SEED_TASKS = [
 ];
 
 async function seedCompletedTasks() {
-    console.log('🌱 Seeding: 10 Completed Tasks with Observations');
+    console.log('🌱 Seeding: 10 Completed Tasks with Memories');
 
     // Get workspaces via API
     console.log('Fetching workspaces...');
@@ -120,7 +120,7 @@ async function seedCompletedTasks() {
 
     const createdTaskIds: string[] = [];
     const createdWorkerIds: string[] = [];
-    const createdObservationIds: string[] = [];
+    const createdMemoryIds: string[] = [];
 
     for (let i = 0; i < SEED_TASKS.length; i++) {
         const seedTask = SEED_TASKS[i];
@@ -190,9 +190,9 @@ async function seedCompletedTasks() {
             }),
         });
 
-        // Create observations for this task
+        // Create memories for this task
         for (const obs of seedTask.observations) {
-            const obsRes = await fetch(`${API_BASE}/api/workspaces/${workspace.id}/observations`, {
+            const memRes = await fetch(`${API_BASE}/api/workspaces/${workspace.id}/memory`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -202,26 +202,26 @@ async function seedCompletedTasks() {
                     type: obs.type,
                     title: obs.title,
                     content: obs.content,
-                    workerId: worker.id,
-                    taskId: task.id,
+                    source: `worker:${worker.id}`,
                 }),
             });
 
-            if (obsRes.ok) {
-                const { observation } = await obsRes.json();
-                createdObservationIds.push(observation.id);
+            if (memRes.ok) {
+                const data = await memRes.json();
+                const id = data.memory?.id || data.observation?.id;
+                if (id) createdMemoryIds.push(id);
             } else {
-                console.warn(`  Warning: Failed to create observation "${obs.title}":`, await obsRes.text());
+                console.warn(`  Warning: Failed to create memory "${obs.title}":`, await memRes.text());
             }
         }
 
-        console.log(`  ✓ Task completed with ${seedTask.observations.length} observation(s)`);
+        console.log(`  ✓ Task completed with ${seedTask.observations.length} memory(ies)`);
     }
 
     console.log('\n✅ Seed complete!');
     console.log(`   Created ${createdTaskIds.length} tasks`);
     console.log(`   Created ${createdWorkerIds.length} workers`);
-    console.log(`   Created ${createdObservationIds.length} observations`);
+    console.log(`   Created ${createdMemoryIds.length} memories`);
     console.log(`   View at: ${API_BASE}/app/tasks`);
 
     // Save IDs for cleanup
@@ -229,7 +229,7 @@ async function seedCompletedTasks() {
     fs.writeFileSync('scripts/seed/.last-seed.json', JSON.stringify({
         taskIds: createdTaskIds,
         workerIds: createdWorkerIds,
-        observationIds: createdObservationIds,
+        memoryIds: createdMemoryIds,
         workspaceId: workspace.id,
         type: 'completed-tasks',
         createdAt: new Date().toISOString(),

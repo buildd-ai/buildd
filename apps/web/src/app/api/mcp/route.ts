@@ -37,6 +37,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
+import { MemoryClient } from "@buildd/core/memory-client";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -85,7 +86,7 @@ async function getAccountLevel(api: ApiFn): Promise<'worker' | 'admin'> {
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspaceId?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspaceId?: string, repoName?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : [...workerActions];
@@ -146,7 +147,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
       },
       {
         name: "buildd_memory",
-        description: `Search, save, update, or delete workspace memory. Actions: ${[...memoryActions].join(', ')}`,
+        description: `Search, save, and manage shared team memories. Actions: ${[...memoryActions].join(', ')}`,
         annotations: {
           readOnlyHint: false,
           destructiveHint: false,
@@ -191,7 +192,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
       } else if (name === "buildd_memory") {
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
-        return await handleMemoryAction(api, action, params, { workspaceId, getWorkspaceId: async () => workspaceId || null });
+
+        const memUrl = process.env.MEMORY_API_URL;
+        const memKey = process.env.MEMORY_API_KEY;
+        if (!memUrl || !memKey) {
+          return {
+            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            isError: true,
+          };
+        }
+        const memClient = new MemoryClient(memUrl, memKey);
+        return await handleMemoryAction(memClient, action, params, { project: repoName });
       } else {
         throw new Error(`Unknown tool: ${name}`);
       }
@@ -216,7 +227,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
       {
         uri: "buildd://workspace/memory",
         name: "Workspace Memory",
-        description: "Recent observations",
+        description: "Team memories (patterns, gotchas, decisions)",
         mimeType: "text/plain",
       },
       {
@@ -251,7 +262,25 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
         };
       }
 
-      case "buildd://workspace/memory":
+      case "buildd://workspace/memory": {
+        try {
+          const memUrl = process.env.MEMORY_API_URL;
+          const memKey = process.env.MEMORY_API_KEY;
+          if (memUrl && memKey) {
+            const memClient = new MemoryClient(memUrl, memKey);
+            const data = await memClient.getContext(repoName);
+            return {
+              contents: [{ uri, mimeType: "text/plain", text: data.markdown || "No memories yet." }],
+            };
+          }
+        } catch {
+          // Fall through to default message
+        }
+        return {
+          contents: [{ uri, mimeType: "text/plain", text: "Memory service not configured." }],
+        };
+      }
+
       case "buildd://workspace/skills":
         return {
           contents: [{
@@ -308,7 +337,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'worker' | 'admin' || 'worker';
-  const server = createMcpServer(api, accountLevel, workspaceId);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless
