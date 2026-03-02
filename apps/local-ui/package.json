@@ -1,6 +1,6 @@
 {
   "name": "@buildd/local-ui",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",

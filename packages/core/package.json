@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -15,7 +15,8 @@
     "./buildd-mcp-server": "./buildd-mcp-server.ts",
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
-    "./secrets": "./secrets/index.ts"
+    "./secrets": "./secrets/index.ts",
+    "./file-reservations": "./file-reservations.ts"
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",

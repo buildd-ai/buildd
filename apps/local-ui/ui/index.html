@@ -266,7 +266,6 @@
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 flex flex-col min-h-0 relative">
           <div class="flex flex-wrap gap-2 mb-4" id="modalMeta"></div>
           <div class="mb-4 shrink-0 max-h-[40vh] overflow-y-auto" id="modalDescription"></div>
-          <div id="planArtifact" class="hidden"></div>
           <div class="flex flex-col gap-1.5 flex-1 min-h-[200px] overflow-y-auto py-1" id="chatTimeline"></div>
           <button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" onclick="scrollTimelineToBottom()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -335,15 +334,6 @@
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Description</label>
             <textarea id="taskDescription" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring min-h-[120px] resize-y" placeholder="Describe the task..."></textarea>
-          </div>
-          <div class="mb-4">
-            <label class="flex items-center gap-3 cursor-pointer">
-              <input type="checkbox" id="taskRequirePlan" class="w-[18px] h-[18px] accent-brand cursor-pointer">
-              <div>
-                <span class="text-[13px] font-medium text-text-primary">Require plan first</span>
-                <p class="text-[11px] text-text-secondary mt-0.5">Agent will create an implementation plan for your approval before writing code</p>
-              </div>
-            </label>
           </div>
           <div class="mb-4" id="taskSkillsSection">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Skills</label>

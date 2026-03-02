@@ -102,54 +102,24 @@ function hashContent(content: string): string {
 }
 
 // ============================================================================
-// Server registration
+// Server registration (no-op: team-level skills have been removed)
 // ============================================================================
 
 async function registerWithServer(
-  config: { apiKey?: string; builddServer?: string },
-  skill: { slug: string; name: string; description?: string; contentHash: string; source?: string; sourceVersion?: string },
+  _config: { apiKey?: string; builddServer?: string },
+  _skill: { slug: string; name: string; description?: string; contentHash: string; source?: string; sourceVersion?: string },
 ): Promise<boolean> {
-  if (!config.apiKey) return false;
-
-  const server = config.builddServer || 'https://buildd.dev';
-  try {
-    const res = await fetch(`${server}/api/skills`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(skill),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      console.error(`${RED}Server registration failed: ${err}${NC}`);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error(`${DIM}Server registration skipped: ${err instanceof Error ? err.message : err}${NC}`);
-    return false;
-  }
+  // Team-level skills API has been removed. Skills are now workspace-scoped
+  // and registered via the sync endpoint or dashboard.
+  return false;
 }
 
 async function lookupSkillSource(
-  config: { apiKey?: string; builddServer?: string },
-  slug: string,
+  _config: { apiKey?: string; builddServer?: string },
+  _slug: string,
 ): Promise<{ source?: string; sourceVersion?: string; contentHash?: string } | null> {
-  if (!config.apiKey) return null;
-
-  const server = config.builddServer || 'https://buildd.dev';
-  try {
-    const res = await fetch(`${server}/api/skills`, {
-      headers: { 'Authorization': `Bearer ${config.apiKey}` },
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { skills: Array<{ slug: string; source?: string; sourceVersion?: string; contentHash: string }> };
-    return data.skills.find(s => s.slug === slug) || null;
-  } catch {
-    return null;
-  }
+  // Team-level skills API has been removed. Skills are now workspace-scoped.
+  return null;
 }
 
 // ============================================================================
@@ -365,12 +335,6 @@ async function installSkill(source: string) {
       if (existingHash === contentHash) {
         console.log(`${GREEN}Skill "${slug}" is already up to date.${NC} ${DIM}(${contentHash.slice(0, 12)})${NC}`);
         rmSync(tmpDir, { recursive: true, force: true });
-        // Still register in case it wasn't registered
-        await registerWithServer(config, {
-          slug, name, description, contentHash,
-          source: resolvedSource,
-          sourceVersion: sourceType === 'github' ? parseGitHubSource(resolvedSource).ref || undefined : undefined,
-        });
         return;
       }
     }
@@ -389,48 +353,18 @@ async function installSkill(source: string) {
 
   console.log(`${GREEN}Installed "${slug}" → ~/.buildd/skills/${slug}/${NC}`);
   console.log(`  ${DIM}${fileCount} file${fileCount !== 1 ? 's' : ''} · hash: ${contentHash.slice(0, 12)}${NC}`);
-
-  // Register with server
-  const registered = await registerWithServer(config, {
-    slug, name, description, contentHash,
-    source: resolvedSource,
-    sourceVersion: sourceType === 'github' ? parseGitHubSource(resolvedSource).ref || undefined : undefined,
-  });
-  if (registered) {
-    console.log(`  ${GREEN}Registered with server${NC}`);
-  } else if (config.apiKey) {
-    console.log(`  ${YELLOW}Server registration failed — skill installed locally only${NC}`);
-  } else {
-    console.log(`  ${DIM}No server configured — run "buildd login" to enable registration${NC}`);
-  }
 }
 
 async function registerSkill(slug: string) {
-  const config = loadConfig();
-  if (!config.apiKey) {
-    console.error(`${RED}Not logged in. Run "buildd login" first.${NC}`);
-    process.exit(1);
-  }
-
   const skillMdPath = join(SKILLS_DIR, slug, 'SKILL.md');
   if (!existsSync(skillMdPath)) {
     console.error(`${RED}Skill "${slug}" not found at ~/.buildd/skills/${slug}/SKILL.md${NC}`);
     process.exit(1);
   }
 
-  const content = readFileSync(skillMdPath, 'utf-8');
-  const { meta } = parseFrontmatter(content);
-  const contentHash = hashContent(content);
-  const name = (meta.name as string) || slug;
-  const description = (meta.description as string) || undefined;
-
-  const registered = await registerWithServer(config, { slug, name, description, contentHash });
-  if (registered) {
-    console.log(`${GREEN}Registered "${slug}" with server${NC} ${DIM}(${contentHash.slice(0, 12)})${NC}`);
-  } else {
-    console.error(`${RED}Registration failed.${NC}`);
-    process.exit(1);
-  }
+  console.log(`${YELLOW}Team-level skill registration has been removed.${NC}`);
+  console.log(`Skills are now workspace-scoped. Use the workspace skill sync endpoint or dashboard to register skills.`);
+  console.log(`${DIM}The skill is already installed locally at ~/.buildd/skills/${slug}/${NC}`);
 }
 
 async function listSkills() {
@@ -455,64 +389,24 @@ async function listSkills() {
     }
   }
 
-  // Server skills
-  let serverSkills = new Map<string, { hash: string; source?: string }>();
-  if (config.apiKey) {
-    const server = config.builddServer || 'https://buildd.dev';
-    try {
-      const res = await fetch(`${server}/api/skills`, {
-        headers: { 'Authorization': `Bearer ${config.apiKey}` },
-      });
-      if (res.ok) {
-        const data = await res.json() as { skills: Array<{ slug: string; contentHash: string; source?: string }> };
-        for (const s of data.skills) {
-          serverSkills.set(s.slug, { hash: s.contentHash, source: s.source || undefined });
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  if (localSkills.size === 0 && serverSkills.size === 0) {
-    console.log('No skills installed or registered.');
+  if (localSkills.size === 0) {
+    console.log('No skills installed.');
     console.log(`${DIM}Install one: buildd skill install github:owner/repo${NC}`);
     return;
   }
 
-  // Merge all slugs
-  const allSlugs = new Set([...localSkills.keys(), ...serverSkills.keys()]);
-
   console.log(`${BOLD}Skills${NC}\n`);
 
-  for (const slug of [...allSlugs].sort()) {
-    const local = localSkills.get(slug);
-    const remote = serverSkills.get(slug);
+  for (const slug of [...localSkills.keys()].sort()) {
+    const local = localSkills.get(slug)!;
+    const hashDisplay = `${DIM}${local.hash.slice(0, 12)}${NC}`;
 
-    let status: string;
-    if (local && remote) {
-      if (local.hash === remote.hash) {
-        status = `${GREEN}✓ synced${NC}`;
-      } else {
-        status = `${YELLOW}⚠ hash mismatch${NC}`;
-      }
-    } else if (local && !remote) {
-      status = `${DIM}local only${NC}`;
-    } else {
-      status = `${YELLOW}not installed${NC}`;
-    }
-
-    const name = local?.name || slug;
-    const hashDisplay = local ? `${DIM}${local.hash.slice(0, 12)}${NC}` : '';
-    const sourceDisplay = remote?.source ? `${DIM}${remote.source}${NC}` : '';
-
-    console.log(`  ${BOLD}${name}${NC} ${status} ${hashDisplay}`);
-    if (local?.linked) {
+    console.log(`  ${BOLD}${local.name}${NC} ${hashDisplay}`);
+    if (local.linked) {
       console.log(`    ${DIM}→ ${local.linked}${NC}`);
     }
-    if (local?.description) {
+    if (local.description) {
       console.log(`    ${DIM}${local.description}${NC}`);
-    }
-    if (sourceDisplay) {
-      console.log(`    ${sourceDisplay}`);
     }
   }
 }

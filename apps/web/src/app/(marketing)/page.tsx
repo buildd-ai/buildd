@@ -250,8 +250,8 @@ export default function LandingPage() {
             </div>
             <h3 className="text-xl font-semibold mb-2">Shared Memory</h3>
             <p className="text-gray-300">
-              Agents record gotchas, patterns, and decisions as they work.
-              Future agents read them automatically &mdash; so your 10th task avoids the mistakes of your first.
+              Persistent team knowledge via <a href="/memory" className="text-amber-400 hover:text-amber-300 underline">Buildd Memory</a>.
+              Agents record gotchas, patterns, and decisions &mdash; future sessions start with full context.
             </p>
           </div>
 
@@ -319,22 +319,16 @@ export default function LandingPage() {
         </div>
       </div>
 
-      {/* Pricing CTA */}
+      {/* Alpha CTA */}
       <div className="max-w-4xl mx-auto px-6 py-16 text-center">
-        <h2 className="text-2xl font-bold mb-3">Free forever for open source</h2>
-        <p className="text-gray-300 mb-6">Unlimited workspaces, workers, and tasks on public repos. No credit card required.</p>
+        <h2 className="text-2xl font-bold mb-3">Free while in alpha</h2>
+        <p className="text-gray-300 mb-6">All features unlocked. Unlimited workspaces, workers, and tasks. No credit card required.</p>
         <div className="flex flex-wrap justify-center gap-4">
           <a
             href="/app"
             className="inline-flex items-center gap-2 px-6 py-3 bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-semibold rounded-lg transition-colors"
           >
             Get Started Free
-          </a>
-          <a
-            href="/pricing"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-medium rounded-lg transition-colors"
-          >
-            View Pricing
           </a>
         </div>
       </div>
@@ -347,6 +341,12 @@ export default function LandingPage() {
               buildd &mdash; Open source task queue for AI agents
             </p>
             <div className="flex gap-6 text-sm text-gray-400">
+              <a
+                href="/memory"
+                className="hover:text-white transition-colors"
+              >
+                Memory
+              </a>
               <a
                 href="https://docs.buildd.dev"
                 target="_blank"
@@ -368,12 +368,6 @@ export default function LandingPage() {
                 className="hover:text-white transition-colors"
               >
                 Contact
-              </a>
-              <a
-                href="/pricing"
-                className="hover:text-white transition-colors"
-              >
-                Pricing
               </a>
               <a
                 href="/app"

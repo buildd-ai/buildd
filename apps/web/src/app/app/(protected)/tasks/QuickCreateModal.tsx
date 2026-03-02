@@ -43,9 +43,6 @@ export default function QuickCreateModal({
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
 
-  // Mode toggle
-  const [mode, setMode] = useState<'execution' | 'planning'>('execution');
-
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
@@ -229,7 +226,6 @@ export default function QuickCreateModal({
           title: title.trim(),
           description: description.trim() || null,
           priority: 5,
-          mode,
           creationSource: 'dashboard',
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
@@ -469,28 +465,6 @@ export default function QuickCreateModal({
 
               {/* Mode + Recurring toggles */}
               <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setMode('execution')}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                    mode === 'execution'
-                      ? 'border-primary/30 bg-primary-subtle text-primary'
-                      : 'border-border-default text-text-muted hover:text-text-secondary'
-                  }`}
-                >
-                  Execute
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode('planning')}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                    mode === 'planning'
-                      ? 'border-primary/30 bg-primary-subtle text-primary'
-                      : 'border-border-default text-text-muted hover:text-text-secondary'
-                  }`}
-                >
-                  Plan first
-                </button>
                 <button
                   type="button"
                   onClick={() => setRecurring(!recurring)}

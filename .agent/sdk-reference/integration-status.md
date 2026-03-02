@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.52)
+## Buildd Integration Status (v0.2.59)
 
 Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,12 +22,16 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.52`** | Memory leak fixes, Bun binary fix, task_progress events | **P1** | **New** |
+| **Bump SDK pin to `>=0.2.59`** | Session APIs, multi-agent memory fix, auto-memory, MCP OAuth fix, config corruption fix | **P1** | **New** |
+| **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
 | **Handle `WorktreeCreate`/`WorktreeRemove` hooks** | Custom setup/cleanup for subagent worktrees | **P3** | **New** |
-| **Evaluate `remote-control` for hybrid execution** | `claude remote-control` — local execution, remote coordination | **P3** | **New** |
+| **Evaluate `remote-control` for hybrid execution** | `claude remote-control` — expanded to more users in v2.1.58 | **P3** | **New** |
 | **Reduce tool result disk threshold** | Results > 50K persisted to disk (was 100K) — improves conversation longevity | **P3** | **Auto (CLI-side)** |
+| **Use `persistSession: false` for ephemeral workers** | Skip disk persistence for fire-and-forget workers | **P3** | **New** |
+| **Evaluate `spawnClaudeCodeProcess` for remote execution** | Custom process spawning for containers/VMs | **P3** | **New** |
+| **Enable auto-memory for workers** | Workers accumulate cross-session learnings per workspace | **P3** | **New** |
 | Add `ConfigChange` hook for config audit trails | Enterprise security auditing of config changes | P3 | Task created |
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
 | Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
@@ -57,10 +61,15 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.52 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.59 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.59 | 0.2.59 | **Auto-memory** (persistent agent learnings, `/memory` command); **`/copy` command** (code block picker); smarter bash "always allow" prefix suggestions; **multi-agent memory optimization** (release completed subagent task state); MCP OAuth token refresh race fix; config file corruption fix (multiple instances); shell CWD-deleted error fix |
+| 2.1.58 | 0.2.58 | **Remote Control expanded** to more users |
+| 2.1.56 | 0.2.56 | VS Code Windows crash fix (another cause) |
+| 2.1.55 | 0.2.55 | BashTool Windows EINVAL fix |
+| 2.1.53 | 0.2.53 | **`listSessions()`** API; UI flicker fix; bulk agent kill aggregated notification; graceful shutdown stale Remote Control session fix; `--worktree` first-launch fix; Windows panic/crash/WASM fixes |
 | 2.1.52 | 0.2.52 | VS Code Windows crash fix |
 | 2.1.51 | 0.2.51 | `claude remote-control` subcommand; `task_progress` events for background agents; Bun binary fix; unbounded memory growth fix (UUID tracking); `session.close()` persistence fix; account identity env vars (`CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID`); tool result disk threshold 50K; plugin npm registry support; BashTool login shell skip; managed settings via plist/Registry |
 | 2.1.50 | 0.2.50 | `WorktreeCreate`/`WorktreeRemove` hooks; `isolation: "worktree"` stable; `claude agents` CLI command; `CLAUDE_CODE_DISABLE_1M_CONTEXT` env var; Opus 4.6 1M context; `CLAUDE_CODE_SIMPLE` full strip-down; headless startup perf; LSP `startupTimeout`; 10+ memory leak fixes (teammate tasks, AppState, LSP, file history, CircularBuffer, TaskOutput, shell execution); symlink session resume fix; Linux glibc < 2.30 fix |

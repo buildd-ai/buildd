@@ -252,10 +252,6 @@ function renderArchivedSession(session) {
     descEl.innerHTML = '';
   }
 
-  // Hide plan artifact
-  const planEl = document.getElementById('planArtifact');
-  if (planEl) { planEl.classList.add('hidden'); planEl.innerHTML = ''; }
-
   // Timeline: tabs for different views
   const timelineEl = document.getElementById('chatTimeline');
   let tabsHtml = `

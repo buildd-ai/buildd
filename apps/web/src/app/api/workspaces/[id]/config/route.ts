@@ -90,16 +90,6 @@ export async function POST(
             // Permission mode
             bypassPermissions: body.bypassPermissions ?? false,
 
-            // Remote skill installation allowlist
-            ...(Array.isArray(body.skillInstallerAllowlist)
-                ? { skillInstallerAllowlist: body.skillInstallerAllowlist.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
-                : {}),
-
-            // Plugin directories to load when workers start tasks
-            ...(Array.isArray(body.pluginPaths)
-                ? { pluginPaths: body.pluginPaths.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
-                : {}),
-
             // Max budget per worker session (SDK-enforced)
             ...(typeof body.maxBudgetUsd === 'number' && body.maxBudgetUsd > 0
                 ? { maxBudgetUsd: body.maxBudgetUsd }
@@ -160,20 +150,6 @@ export async function POST(
                 ? { effort: body.effort }
                 : {}),
 
-            // Organizer agent configuration
-            ...(body.organizer && typeof body.organizer === 'object'
-                ? {
-                    organizer: {
-                        enabled: Boolean(body.organizer.enabled),
-                        ...(typeof body.organizer.reviewWindowHours === 'number' && body.organizer.reviewWindowHours > 0
-                            ? { reviewWindowHours: Math.min(body.organizer.reviewWindowHours, 168) }
-                            : {}),
-                        requirePR: body.organizer.requirePR ?? true,
-                        requirePlanSummary: body.organizer.requirePlanSummary ?? true,
-                        autoCreateFollowUp: body.organizer.autoCreateFollowUp ?? false,
-                    },
-                }
-                : {}),
         };
 
         await db

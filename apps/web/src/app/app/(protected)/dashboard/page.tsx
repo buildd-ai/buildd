@@ -197,7 +197,6 @@ export default async function DashboardPage() {
     pending:                { icon: '\u25CB', bg: 'bg-status-warning/12', text: 'text-status-warning' },
     failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
     waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
-    awaiting_plan_approval: { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
   };
   const DEFAULT_ICON = TASK_ICONS.pending;
 

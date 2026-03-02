@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, workspaceSkills, accounts } from '@buildd/core/db/schema';
+import { workspaceSkills, accounts } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { validateInstallerCommand, DEFAULT_SKILL_INSTALLER_ALLOWLIST, type SkillInstallPayload, type SkillBundle } from '@buildd/shared';
+import { validateInstallerCommand, type SkillInstallPayload, type SkillBundle } from '@buildd/shared';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -96,18 +96,8 @@ export async function POST(
             targetLocalUiUrl: targetLocalUiUrl || null,
         };
     } else {
-        // Command execution: validate against workspace allowlist
-        const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
-            columns: { gitConfig: true },
-        });
-
-        const workspaceAllowlist = (workspace?.gitConfig as any)?.skillInstallerAllowlist
-            ?? [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
-
-        const validation = validateInstallerCommand(installerCommand, {
-            workspaceAllowlist,
-        });
+        // Command execution: validate against default allowlist
+        const validation = validateInstallerCommand(installerCommand, {});
 
         if (!validation.allowed) {
             return NextResponse.json({ error: validation.reason }, { status: 403 });

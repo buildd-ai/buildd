@@ -15,3 +15,5 @@ coverage/
 .plan
 .buildd-worktrees/
 scripts/seed/.last-seed.json
+.agent/research/
+.agent/runbooks/

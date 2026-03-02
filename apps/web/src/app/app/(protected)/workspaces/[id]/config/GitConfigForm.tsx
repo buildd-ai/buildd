@@ -17,7 +17,6 @@ interface GitConfig {
     agentInstructions?: string;
     useClaudeMd: boolean;
     bypassPermissions?: boolean;
-    pluginPaths?: string[];
     fallbackModel?: string;
     sandbox?: {
         enabled?: boolean;
@@ -65,7 +64,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
     const [fallbackModel, setFallbackModel] = useState(initialConfig?.fallbackModel || '');
-    const [pluginPaths, setPluginPaths] = useState((initialConfig?.pluginPaths || []).join('\n'));
     const [sandboxEnabled, setSandboxEnabled] = useState(initialConfig?.sandbox?.enabled || false);
     const [sandboxAutoAllowBash, setSandboxAutoAllowBash] = useState(initialConfig?.sandbox?.autoAllowBashIfSandboxed || false);
     const [sandboxAllowedDomains, setSandboxAllowedDomains] = useState((initialConfig?.sandbox?.network?.allowedDomains || []).join('\n'));
@@ -107,7 +105,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     useClaudeMd,
                     bypassPermissions,
                     fallbackModel: fallbackModel.trim() || undefined,
-                    pluginPaths: pluginPaths.split('\n').map(s => s.trim()).filter(Boolean),
                     sandbox: sandboxEnabled ? {
                         enabled: true,
                         autoAllowBashIfSandboxed: sandboxAutoAllowBash,
@@ -367,29 +364,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Model to use if the primary model fails (e.g., rate limited or unavailable). Can be overridden per-task via <code>context.fallbackModel</code>.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* Plugins Section */}
-            <div className="border border-border-default rounded-lg p-4">
-                <h3 className="font-medium mb-4">Plugins</h3>
-
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium mb-1">
-                            Plugin Directories
-                            <span className="text-text-muted font-normal ml-1">(one path per line)</span>
-                        </label>
-                        <textarea
-                            value={pluginPaths}
-                            onChange={(e) => setPluginPaths(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
-                            placeholder={"./plugins/linter\n/home/team/shared-plugins/deploy"}
-                        />
-                        <p className="text-xs text-text-muted mt-1">
-                            Paths to plugin directories (containing <code>.claude-plugin/plugin.json</code>). Loaded when workers start tasks.
                         </p>
                     </div>
                 </div>

@@ -56,9 +56,6 @@ function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
       options: [{ label: 'Option A', description: 'First option' }],
       toolUseId: 'tool-use-1',
     },
-    planContent: '## Plan\n- Step 1\n- Step 2',
-    planFilePath: '/tmp/plans/test.md',
-    planStartMessageIndex: 3,
     messages: [
       { type: 'text', content: 'Hello', timestamp: 1000 },
       { type: 'tool_use', name: 'Read', input: { file: 'test.ts' }, timestamp: 2000 },
@@ -144,9 +141,6 @@ describe('worker-store round-trip', () => {
     expect(loaded!.lastActivity).toBe(worker.lastActivity);
     expect(loaded!.sessionId).toBe(worker.sessionId);
     expect(loaded!.waitingFor).toEqual(worker.waitingFor);
-    expect(loaded!.planContent).toBe(worker.planContent);
-    expect(loaded!.planFilePath).toBe(worker.planFilePath);
-    expect(loaded!.planStartMessageIndex).toBe(worker.planStartMessageIndex);
     expect(loaded!.messages).toEqual(worker.messages);
     expect(loaded!.milestones).toEqual(worker.milestones);
     expect(loaded!.toolCalls).toEqual(worker.toolCalls);
@@ -368,9 +362,6 @@ describe('worker-store round-trip', () => {
       completedAt: undefined,
       sessionId: undefined,
       waitingFor: undefined,
-      planContent: undefined,
-      planFilePath: undefined,
-      planStartMessageIndex: undefined,
       teamState: undefined,
       worktreePath: undefined,
       promptSuggestions: undefined,
@@ -385,7 +376,6 @@ describe('worker-store round-trip', () => {
     expect(loaded.completedAt).toBeUndefined();
     expect(loaded.sessionId).toBeUndefined();
     expect(loaded.waitingFor).toBeUndefined();
-    expect(loaded.planContent).toBeUndefined();
     expect(loaded.teamState).toBeUndefined();
     expect(loaded.worktreePath).toBeUndefined();
   });

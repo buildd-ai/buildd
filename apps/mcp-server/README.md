@@ -93,7 +93,6 @@ Single tool with an `action` parameter. Available actions depend on your account
 | `create_artifact` | `workerId, type, title, content?, url?` | Create a shareable artifact |
 | `list_artifacts` | `workspaceId?, key?, type?` | List artifacts |
 | `update_artifact` | `artifactId, title?, content?` | Update an artifact |
-| `review_workspace` | `hoursBack?, workspaceId?` | Review recent task quality |
 | `emit_event` | `workerId, type, label, metadata?` | Record a custom milestone event |
 | `query_events` | `workerId, type?` | Read events from worker timeline |
 

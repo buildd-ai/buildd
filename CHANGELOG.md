@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Display project roots in local-ui settings (was reading wrong field name)
+
+## [0.14.0] - 2026-02-25
+
 ### Added
 
+- Repo-based workspace resolution for HTTP MCP server (#197)
 - Retry action for failed tasks across web dashboard (#190)
 - Connection popover and enhanced empty state in local-ui (#189)
 - Tabbed worker detail with Logs, Cost, and Commits tabs in local-ui (#188)
@@ -19,10 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Installer and updater use main branch, self-heal corrupted checkouts (#184)
 - sync-dev recreates dev branch when auto-deleted after merge
+- Pass BUILDD_API_KEY to test instance screen session (CI)
 
 ### Changed
 
 - Remove grandfathering patterns and squash migrations (#185)
+
+### Documentation
+
+- Update claude-agent-sdk docs with v0.2.50–v0.2.52 / CLI v2.1.50–v2.1.52 changes
 
 ### Tests
 
@@ -237,7 +249,8 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/buildd-ai/buildd/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/buildd-ai/buildd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/buildd-ai/buildd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/buildd-ai/buildd/compare/v0.10.0...v0.11.0

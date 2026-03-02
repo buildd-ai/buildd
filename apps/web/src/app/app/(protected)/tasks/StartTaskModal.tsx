@@ -40,7 +40,6 @@ export default function StartTaskModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
-  const [mode, setMode] = useState<'execution' | 'planning'>('execution');
   const [recurring, setRecurring] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 9 * * *');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -132,7 +131,6 @@ export default function StartTaskModal({
           title: title.trim(),
           description: description.trim() || null,
           priority: 5,
-          mode,
           creationSource: 'dashboard',
           ...(attachments && { attachments }),
         }),
@@ -212,28 +210,6 @@ export default function StartTaskModal({
 
             {/* Mode + Recurring toggles */}
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setMode('execution')}
-                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                  mode === 'execution'
-                    ? 'border-primary/30 bg-primary-subtle text-primary'
-                    : 'border-border-default text-text-muted hover:text-text-secondary'
-                }`}
-              >
-                Execute
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('planning')}
-                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                  mode === 'planning'
-                    ? 'border-primary/30 bg-primary-subtle text-primary'
-                    : 'border-border-default text-text-muted hover:text-text-secondary'
-                }`}
-              >
-                Plan first
-              </button>
               <button
                 type="button"
                 onClick={() => setRecurring(!recurring)}

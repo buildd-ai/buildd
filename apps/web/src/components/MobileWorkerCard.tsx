@@ -19,7 +19,6 @@ const STATUS_DOT_COLORS: Record<string, string> = {
   running: 'bg-status-success',
   starting: 'bg-status-success',
   waiting_input: 'bg-status-warning',
-  awaiting_plan_approval: 'bg-status-warning',
   completed: 'bg-status-info',
   failed: 'bg-status-error',
   idle: 'bg-text-muted',
@@ -53,7 +52,7 @@ export default function MobileWorkerCard({
   const progressWidth = checkpointCount > 0
     ? Math.round((checkpointCount / CHECKPOINT_ORDER.length) * 100)
     : Math.min(100, milestones.length * 10); // Fallback for workers without checkpoints
-  const isWaiting = status === 'waiting_input' || status === 'awaiting_plan_approval';
+  const isWaiting = status === 'waiting_input';
 
   return (
     <Link href={`/app/tasks/${taskId}`} className="block">
@@ -95,7 +94,7 @@ export default function MobileWorkerCard({
 
           {isWaiting && (
             <span className="text-xs font-medium text-status-warning">
-              Review Plan &rarr;
+              Needs Input &rarr;
             </span>
           )}
         </div>

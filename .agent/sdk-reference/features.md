@@ -475,17 +475,24 @@ hooks: {
 ```typescript
 type CanUseTool = (
   toolName: string,
-  input: ToolInput,
-  options: { signal: AbortSignal; suggestions?: PermissionUpdate[]; }
+  input: Record<string, unknown>,
+  options: {
+    signal: AbortSignal;
+    suggestions?: PermissionUpdate[];
+    blockedPath?: string;        // File path that triggered the request
+    decisionReason?: string;     // Why this permission was triggered
+    toolUseID: string;           // Unique ID for this tool call
+    agentID?: string;            // Sub-agent ID if in a sub-agent
+  }
 ) => Promise<PermissionResult>;
 
 type PermissionResult =
-  | { behavior: 'allow'; updatedInput: ToolInput; updatedPermissions?: PermissionUpdate[]; }
-  | { behavior: 'deny'; message: string; interrupt?: boolean; };
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[]; toolUseID?: string; }
+  | { behavior: 'deny'; message: string; interrupt?: boolean; toolUseID?: string; };
 
 // Usage:
 options: {
-  canUseTool: async (tool, input, { signal }) => {
+  canUseTool: async (tool, input, { signal, agentID, blockedPath }) => {
     if (tool === 'Bash' && input.dangerouslyDisableSandbox) {
       return { behavior: 'deny', message: 'Unsandboxed commands not allowed' };
     }
@@ -693,3 +700,145 @@ The SDK emits `is_background: true` on `task_started` system messages for backgr
 - **Resolution**: Task-level override > workspace-level setting
 - **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
 - **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
+
+---
+
+## 38. Session Discovery & History (SDK v0.2.53 / v0.2.59)
+
+### `listSessions()` (v0.2.53)
+
+Discovers and lists past sessions with light metadata. Can filter by project directory or list all sessions.
+
+```typescript
+import { listSessions } from "@anthropic-ai/claude-agent-sdk";
+
+// List sessions for a specific project (includes worktree sessions)
+const sessions = await listSessions({ dir: "/path/to/project" });
+
+// List all sessions, limited to 10
+const recent = await listSessions({ limit: 10 });
+
+for (const session of sessions) {
+  console.log(`${session.summary} (${new Date(session.lastModified).toLocaleDateString()})`);
+}
+```
+
+**Return type: `SDKSessionInfo`**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `sessionId` | `string` | Unique session identifier (UUID) |
+| `summary` | `string` | Display title: custom title, auto-generated summary, or first prompt |
+| `lastModified` | `number` | Last modified time in ms since epoch |
+| `fileSize` | `number` | Session file size in bytes |
+| `customTitle` | `string \| undefined` | User-set session title (via `/rename`) |
+| `firstPrompt` | `string \| undefined` | First meaningful user prompt |
+| `gitBranch` | `string \| undefined` | Git branch at end of session |
+| `cwd` | `string \| undefined` | Working directory for the session |
+
+### `getSessionMessages()` (v0.2.59)
+
+Reads a session's conversation history from its transcript file, with pagination support.
+
+```typescript
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+
+// Read full history
+const messages = await getSessionMessages(sessionId);
+
+// Read with pagination
+const page = await getSessionMessages(sessionId, { limit: 50, offset: 0 });
+```
+
+**Buildd use cases**:
+- **Session history in dashboard**: Show past worker conversations for debugging/review
+- **Session analytics**: Analyze tool usage patterns, costs, and turn counts across sessions
+- **Session export**: Export full conversation transcripts for audit trails
+
+---
+
+## 39. `persistSession` Option (SDK v0.2.52+)
+
+```typescript
+options: {
+  persistSession: false,  // Default: true
+}
+```
+
+When `false`, disables session persistence to disk. Sessions cannot be resumed later. Useful for ephemeral/fire-and-forget workers where session replay is not needed.
+
+---
+
+## 40. `spawnClaudeCodeProcess` Option (SDK v0.2.52+)
+
+```typescript
+options: {
+  spawnClaudeCodeProcess: (options: SpawnOptions) => SpawnedProcess,
+}
+```
+
+Custom function to spawn the Claude Code process. Enables running Claude Code in VMs, containers, or remote environments instead of the local system.
+
+---
+
+## 41. Auto-Memory (CLI v2.1.59)
+
+Claude automatically saves useful context to a persistent auto-memory directory at `~/.claude/projects/<project>/memory/`. Manage with `/memory` command.
+
+- Auto-memory loads first 200 lines of `MEMORY.md` on each session start
+- Claude writes notes about patterns, conventions, and insights it discovers
+- Distinct from CLAUDE.md (user instructions) — auto-memory is agent-written
+
+**SDK relevance**: When `settingSources` includes `'user'` or `'project'`, auto-memory is loaded. For Buildd workers using `settingSources: ['project']`, auto-memory accumulates across worker sessions in the same workspace.
+
+**Opt-in**: Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` in env if not seeing auto-memory.
+
+---
+
+## 42. Multi-Agent Memory Optimization (CLI v2.1.59)
+
+Improved memory usage in multi-agent sessions by releasing completed subagent task state. Critical for long-running Buildd workers that spawn many skills-as-subagents — RSS should remain stable instead of growing with each completed subagent.
+
+---
+
+## 43. Expanded `AgentDefinition` Fields (SDK v0.2.52+)
+
+```typescript
+type AgentDefinition = {
+  description: string;
+  tools?: string[];
+  disallowedTools?: string[];
+  prompt: string;
+  model?: "sonnet" | "opus" | "haiku" | "inherit";
+  mcpServers?: AgentMcpServerSpec[];
+  skills?: string[];              // Preload skill names into agent context
+  maxTurns?: number;              // Max API round-trips before stopping
+  criticalSystemReminder_EXPERIMENTAL?: string;  // Critical reminder in system prompt
+};
+```
+
+New fields vs previously documented:
+- **`skills`**: Array of skill names to preload into the agent context
+- **`maxTurns`**: Per-agent turn limit (independent of parent's `maxTurns`)
+- **`criticalSystemReminder_EXPERIMENTAL`**: Experimental critical reminder added to the system prompt
+
+---
+
+## 44. Expanded `CanUseTool` Parameters (SDK v0.2.52+)
+
+```typescript
+type CanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: {
+    signal: AbortSignal;
+    suggestions?: PermissionUpdate[];
+    blockedPath?: string;        // File path that triggered the request
+    decisionReason?: string;     // Why this permission request was triggered
+    toolUseID: string;           // Unique ID for this tool call
+    agentID?: string;            // Sub-agent ID if running in a sub-agent
+  }
+) => Promise<PermissionResult>;
+```
+
+New parameters: `blockedPath`, `decisionReason`, `toolUseID`, `agentID` — useful for fine-grained per-tool, per-agent permission decisions in Buildd workers.
