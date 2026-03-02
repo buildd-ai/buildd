@@ -3,7 +3,6 @@
  *
  * Used by:
  * - packages/core/buildd-mcp-server.ts (in-process SDK server)
- * - apps/mcp-server/src/index.ts (stdio server)
  * - apps/web/src/app/api/mcp/route.ts (HTTP server)
  */
 

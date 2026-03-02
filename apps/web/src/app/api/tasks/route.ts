@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
       createdByWorkerId,
       parentTaskId,
       creationSource: requestedSource,
-      // Direct assignment to a specific local-ui instance
+      // Direct assignment to a specific runner instance
       assignToLocalUiUrl,
       // Skill slugs
       skillSlugs: rawSkillSlugs,

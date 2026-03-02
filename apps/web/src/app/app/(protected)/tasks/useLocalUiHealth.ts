@@ -47,7 +47,7 @@ interface UseLocalUiHealthResult {
 }
 
 /**
- * Hook that fetches active local-ui workers and tries to ping them directly
+ * Hook that fetches active runner workers and tries to ping them directly
  * for real-time capacity data. Falls back to heartbeat data gracefully.
  */
 export function useLocalUiHealth(workspaceId: string): UseLocalUiHealthResult {
@@ -97,10 +97,10 @@ export function useLocalUiHealth(workspaceId: string): UseLocalUiHealthResult {
       }));
       setLocalUis(initial);
 
-      // Step 3: Try to ping each local-ui directly (in parallel)
+      // Step 3: Try to ping each runner directly (in parallel)
       const results = await Promise.allSettled(
         heartbeats.map(async (hb): Promise<{ url: string; health: HealthResponse | null }> => {
-          // Skip if dashboard is HTTPS and local-ui is HTTP (mixed-content blocked)
+          // Skip if dashboard is HTTPS and runner is HTTP (mixed-content blocked)
           if (typeof window !== 'undefined' && window.location.protocol === 'https:' && hb.localUiUrl.startsWith('http://')) {
             return { url: hb.localUiUrl, health: null };
           }

@@ -7,8 +7,7 @@
 | Package | Version | Notes |
 |---------|---------|-------|
 | `packages/core` | `>=0.2.49` | Needs bump to `>=0.2.59` |
-| `apps/agent` | `>=0.2.49` | Needs bump to `>=0.2.59` |
-| `apps/local-ui` | `^0.2.50` | Needs bump to `^0.2.59` |
+| `apps/runner` | `^0.2.50` | Needs bump to `^0.2.59` |
 
 ---
 

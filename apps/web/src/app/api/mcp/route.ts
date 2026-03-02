@@ -289,12 +289,15 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
-  // Resolve workspace from ?repo= query param
+  // Resolve workspace from query params: ?workspace= (ID) or ?repo= (repo name)
   const url = new URL(req.url);
+  const workspaceParam = url.searchParams.get("workspace");
   const repoParam = url.searchParams.get("repo");
   let workspaceId: string | undefined;
 
-  if (repoParam) {
+  if (workspaceParam) {
+    workspaceId = workspaceParam;
+  } else if (repoParam) {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.repo, repoParam),
       columns: { id: true },

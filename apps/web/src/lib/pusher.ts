@@ -57,13 +57,13 @@ export const events = {
   TASK_CLAIMED: 'task:claimed',
   TASK_COMPLETED: 'task:completed',
   TASK_FAILED: 'task:failed',
-  // Task assigned to specific local-ui
+  // Task assigned to specific runner
   TASK_ASSIGNED: 'task:assigned',
   WORKER_STARTED: 'worker:started',
   WORKER_PROGRESS: 'worker:progress',
   WORKER_COMPLETED: 'worker:completed',
   WORKER_FAILED: 'worker:failed',
-  // Commands sent to local-ui
+  // Commands sent to runner
   WORKER_COMMAND: 'worker:command',
   // Schedule events
   SCHEDULE_TRIGGERED: 'schedule:triggered',

@@ -12,15 +12,15 @@ const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes (heartbeat every 5 min 
 /**
  * GET /api/workers/active
  *
- * Returns active local-ui instances with capacity.
+ * Returns active runner instances with capacity.
  * Supports dual auth: API key (Bearer) or session cookie.
  *
  * Response includes:
- * - localUiUrl: The URL to access the local-ui
+ * - localUiUrl: The URL to access the runner
  * - activeWorkers: Number of currently active workers
  * - maxConcurrent: Maximum concurrent workers allowed
  * - capacity: Remaining capacity (maxConcurrent - activeWorkers)
- * - workspaceIds: Workspaces this local-ui can work on
+ * - workspaceIds: Workspaces this runner can work on
  */
 
 async function authenticateRequest(req: NextRequest) {
@@ -188,7 +188,7 @@ export async function GET(req: NextRequest) {
         if (overlapping.length === 0) return null;
 
         // Use the higher of heartbeat-reported count and actual DB count
-        // This catches cases where local-ui reports 0 but workers are still 'running' in DB
+        // This catches cases where runner reports 0 but workers are still 'running' in DB
         const reportedCount = hb.activeWorkerCount;
         const dbCount = actualWorkerCounts.get(hb.accountId) || 0;
         const effectiveActiveWorkers = Math.max(reportedCount, dbCount);

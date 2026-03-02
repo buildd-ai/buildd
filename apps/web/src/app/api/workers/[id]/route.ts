@@ -67,7 +67,7 @@ export async function PATCH(
   const body = await req.json();
 
   // Check if worker was already terminated (reassigned/failed)
-  // Allow reactivation with 'running' status for follow-up messages from local-ui
+  // Allow reactivation with 'running' status for follow-up messages from runner
   if (worker.status === 'failed' || worker.status === 'completed') {
     if (body.status !== 'running') {
       return NextResponse.json({

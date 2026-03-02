@@ -119,7 +119,7 @@ echo "Current: ${LATEST_TAG} → New: ${NEW_VERSION} (${BUMP} bump)"
 # Bump version in all package.json files on dev
 echo "Bumping package.json versions to ${SEMVER}..."
 BUMPED_FILES=""
-for PKG in apps/local-ui/package.json apps/mcp-server/package.json apps/web/package.json apps/agent/package.json packages/core/package.json packages/shared/package.json; do
+for PKG in apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json; do
   if [ -f "$PKG" ]; then
     jq --arg v "$SEMVER" '.version = $v' "$PKG" > tmp.json && mv tmp.json "$PKG"
     BUMPED_FILES="${BUMPED_FILES} ${PKG}"

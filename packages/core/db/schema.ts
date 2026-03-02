@@ -334,9 +334,9 @@ export const workers = pgTable('workers', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
   error: text('error'),
-  // Local-UI direct access URL (e.g., https://local-ui--workspace.coder.dev or http://100.x.x.x:8766)
+  // Runner direct access URL (e.g., https://runner--workspace.coder.dev or http://100.x.x.x:8766)
   localUiUrl: text('local_ui_url'),
-  // Current action/status line from local-ui
+  // Current action/status line from runner
   currentAction: text('current_action'),
   // Milestones stored as JSON array
   milestones: jsonb('milestones').default([]).$type<Array<{ label: string; timestamp: number }>>(),
@@ -410,7 +410,7 @@ export const observations = pgTable('observations', {
   projectIdx: index('observations_project_idx').on(t.project),
 }));
 
-// Worker heartbeats - tracks local-ui instance availability independent of worker records
+// Worker heartbeats - tracks runner instance availability independent of worker records
 export const workerHeartbeats = pgTable('worker_heartbeats', {
   id: uuid('id').primaryKey().defaultRandom(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),

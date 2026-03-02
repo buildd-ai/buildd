@@ -8,11 +8,10 @@
 - **Key paths**:
   - Web dashboard: `apps/web/src/app/`
   - API routes: `apps/web/src/app/api/`
-  - Local UI (Bun): `apps/local-ui/` - standalone worker runner with web UI
-  - MCP server: `apps/mcp-server/` - Claude Code MCP integration
+  - Runner (Bun): `apps/runner/` - standalone worker runner with web UI
+  - MCP server (HTTP): `apps/web/src/app/api/mcp/route.ts`
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - CLI agent: `apps/agent/`
   - Worker runner: `packages/core/worker-runner.ts`
 
 ## Architecture
