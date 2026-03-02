@@ -97,10 +97,23 @@ export default function ObservationList({
       if (searchText) params.set('search', searchText);
       params.set('limit', '50');
 
-      const res = await fetch(`/api/workspaces/${workspaceId}/observations?${params}`);
+      const res = await fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
       if (res.ok) {
         const data = await res.json();
-        setObservations(data.observations || []);
+        // Map memory service response to observation shape
+        const mapped = (data.memories || []).map((m: any) => ({
+          id: m.id,
+          workspaceId,
+          workerId: null,
+          taskId: null,
+          type: m.type,
+          title: m.title,
+          content: m.content,
+          files: m.files || [],
+          concepts: m.tags || [],
+          createdAt: m.createdAt,
+        }));
+        setObservations(mapped);
       }
     } finally {
       setLoading(false);
@@ -120,8 +133,8 @@ export default function ObservationList({
   }
 
   async function handleDelete(obsId: string) {
-    if (!confirm('Delete this observation?')) return;
-    const res = await fetch(`/api/workspaces/${workspaceId}/observations/${obsId}`, {
+    if (!confirm('Delete this memory?')) return;
+    const res = await fetch(`/api/workspaces/${workspaceId}/memory/${obsId}`, {
       method: 'DELETE',
     });
     if (res.ok) {
@@ -154,31 +167,24 @@ export default function ObservationList({
         .split(',')
         .map(f => f.trim())
         .filter(Boolean);
-      const concepts = editForm.conceptsInput
+      const tags = editForm.conceptsInput
         .split(',')
         .map(c => c.trim())
         .filter(Boolean);
 
-      // Note: This requires an update endpoint. For now, we'll delete and recreate.
-      // In a production app, you'd have a PATCH endpoint.
-      const deleteRes = await fetch(`/api/workspaces/${workspaceId}/observations/${obsId}`, {
-        method: 'DELETE',
-      });
-      if (!deleteRes.ok) throw new Error('Failed to update');
-
-      const createRes = await fetch(`/api/workspaces/${workspaceId}/observations`, {
-        method: 'POST',
+      const res = await fetch(`/api/workspaces/${workspaceId}/memory/${obsId}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: editForm.type,
           title: editForm.title,
           content: editForm.content,
           files: files.length > 0 ? files : undefined,
-          concepts: concepts.length > 0 ? concepts : undefined,
+          tags: tags.length > 0 ? tags : undefined,
         }),
       });
 
-      if (!createRes.ok) throw new Error('Failed to update');
+      if (!res.ok) throw new Error('Failed to update');
 
       // Refresh the list
       await fetchFiltered(typeFilter, search);

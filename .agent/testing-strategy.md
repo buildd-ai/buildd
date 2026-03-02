@@ -18,7 +18,7 @@
 - Abort scenarios (loop detection, user abort, timeout)
 - Network failures (API unreachable, 500 errors, timeouts)
 - Invalid server responses (malformed JSON, missing fields)
-- Observation creation failures (FK violations, validation errors)
+- Memory save failures (API errors, validation errors)
 ```
 
 **Worker State Transitions (`worker-state.test.ts`)**
@@ -101,20 +101,19 @@
 - Worker output/milestone updates propagate
 ```
 
-**Observation System (`observations.test.ts`)**
+**Memory System (`memory.test.ts`)**
 ```typescript
-- Create observations (discovery, decision, gotcha, etc.)
-- Search observations by type, keywords, files
-- Batch observation creation
-- Observation deduplication
-- FK validation (taskId, workspaceId)
+- Save memories via memory service (discovery, decision, gotcha, etc.)
+- Search memories by type, keywords, files
+- Memory CRUD operations via proxy routes
+- Project scoping (workspace → project mapping)
 ```
 
 **Error Recovery (`error-recovery.test.ts`)**
 ```typescript
 - Network failure during execution → retry → success
 - Server 500 during worker sync → queued → sent on reconnect
-- Observation creation fails → task still completes
+- Memory save fails → task still completes
 - Worker crashes → task marked as failed → can be reassigned
 ```
 
@@ -144,14 +143,14 @@
 - Login → Create workspace → Create task → Monitor worker
 - Task detail page shows realtime updates
 - Worker list shows active/stale status
-- Observation panel displays discoveries
-- Filtering/searching tasks and observations
+- Memory panel displays discoveries
+- Filtering/searching tasks and memories
 ```
 
 **Multi-User Scenarios (`multi-user.test.ts`)**
 ```typescript
 - User A creates task → User B's worker claims it (shared workspace)
-- User A creates observation → User B sees it in search
+- User A saves memory → User B sees it in search
 - User A's worker at capacity → User B's worker claims task
 ```
 
@@ -207,7 +206,7 @@ bun test
   - `task-lifecycle.test.ts` - Full task lifecycle (create → claim → execute → complete)
   - `worker-state-machine.test.ts` - Worker status transitions (waiting_input handling)
   - `concurrency.test.ts` - Capacity limits, race conditions
-  - `observations.test.ts` - Observation CRUD operations (TODO)
+  - `memory.test.ts` - Memory CRUD via proxy routes (TODO)
 - **Run**: `bun run test:integration` (all files in the directory)
 - **Requirements**: API key, live server
 
@@ -256,7 +255,7 @@ e2e-tests:
 ```bash
 bun run seed:waiting-input     # Task with worker in waiting_input state
 bun run seed:error-worker      # Worker in error state (loop detected)
-bun run seed:completed-tasks   # 10 completed tasks with observations
+bun run seed:completed-tasks   # 10 completed tasks with memories
 bun run seed:multi-user        # Tasks across multiple workspaces in various states
 bun run seed:concurrent        # Account at maxConcurrent limit with active workers
 bun run seed:reset             # Cleans up seeded data (handles all seed types)
@@ -269,7 +268,7 @@ bun run seed:reset             # Cleans up seeded data (handles all seed types)
 - invalid-config.json
 - sample-tasks.json
 - sample-workers.json
-- sample-observations.json
+- sample-memories.json
 ```
 
 ---

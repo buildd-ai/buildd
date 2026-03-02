@@ -27,9 +27,9 @@ function shouldQueue(method: string, endpoint: string): boolean {
   for (const excluded of EXCLUDED_ENDPOINTS) {
     if (endpoint.includes(excluded) && !endpoint.includes('/api/workers/') ) return false;
   }
-  // Specifically queue worker updates and observations
+  // Specifically queue worker updates and memory saves
   if (endpoint.match(/\/api\/workers\/[^/]+$/) && method === 'PATCH') return true;
-  if (endpoint.includes('/observations') && method === 'POST') return true;
+  if (endpoint.includes('/memory') && method === 'POST') return true;
   if (endpoint.includes('/plan') && method === 'POST') return true;
   return false;
 }

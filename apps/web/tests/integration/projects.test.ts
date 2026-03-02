@@ -1,7 +1,7 @@
 /**
  * Integration Tests: Project Scoping Feature
  *
- * Tests the projects registry on workspaces and project field on tasks/observations.
+ * Tests the projects registry on workspaces and project field on tasks.
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
@@ -37,14 +37,14 @@ async function findWorkspace(): Promise<string> {
   return ws.id;
 }
 
-// Track created observation IDs for cleanup
-const createdObservationIds: string[] = [];
+// Track created memory IDs for cleanup
+const createdMemoryIds: string[] = [];
 
 async function cleanupAll() {
-  // Clean observations
-  for (const id of createdObservationIds) {
+  // Clean memories
+  for (const id of createdMemoryIds) {
     try {
-      await api(`/api/workspaces/${workspaceId}/observations/${id}`, {
+      await api(`/api/workspaces/${workspaceId}/memory/${id}`, {
         method: 'DELETE',
         retries: 0,
       });
@@ -200,109 +200,65 @@ describe('Project Scoping', () => {
   }, TIMEOUT);
 
   // ---------------------------------------------------------------
-  // Observations with Project
+  // Memories with Project (via memory service proxy)
   // ---------------------------------------------------------------
 
-  test('create observation with project field', async () => {
+  test('create memory via proxy route', async () => {
     const mk = marker();
-    const { observation } = await api(`/api/workspaces/${workspaceId}/observations`, {
+    const res = await api(`/api/workspaces/${workspaceId}/memory`, {
       method: 'POST',
       body: JSON.stringify({
         type: 'discovery',
-        title: `${mk} project obs`,
-        content: `Observation with project ${mk}`,
-        project: '@test/web',
+        title: `${mk} project mem`,
+        content: `Memory with project ${mk}`,
       }),
     });
-    createdObservationIds.push(observation.id);
+    const memoryId = res.memory?.id || res.observation?.id;
+    createdMemoryIds.push(memoryId);
 
-    expect(observation.project).toBe('@test/web');
+    expect(memoryId).toBeTruthy();
   }, TIMEOUT);
 
-  test('list observations filtered by project', async () => {
+  test('list memories via proxy route', async () => {
     const mk = marker();
-    // Create observations with different projects
-    const { observation: obs1 } = await api(`/api/workspaces/${workspaceId}/observations`, {
+    const createRes = await api(`/api/workspaces/${workspaceId}/memory`, {
       method: 'POST',
       body: JSON.stringify({
         type: 'pattern',
-        title: `${mk} filtered-a`,
-        content: `Project filter test A ${mk}`,
-        project: `@test/filter-${mk}`,
+        title: `${mk} list-test`,
+        content: `List test ${mk}`,
       }),
     });
-    createdObservationIds.push(obs1.id);
+    const memoryId = createRes.memory?.id || createRes.observation?.id;
+    createdMemoryIds.push(memoryId);
 
-    const { observation: obs2 } = await api(`/api/workspaces/${workspaceId}/observations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'pattern',
-        title: `${mk} filtered-b`,
-        content: `Project filter test B ${mk}`,
-        project: '@test/other',
-      }),
-    });
-    createdObservationIds.push(obs2.id);
-
-    const { observations } = await api(
-      `/api/workspaces/${workspaceId}/observations?project=${encodeURIComponent(`@test/filter-${mk}`)}&limit=50`
+    const listRes = await api(
+      `/api/workspaces/${workspaceId}/memory?type=pattern&limit=50`
     );
+    const memories = listRes.memories || listRes.observations || [];
 
-    expect(observations.some((o: any) => o.id === obs1.id)).toBe(true);
-    expect(observations.some((o: any) => o.id === obs2.id)).toBe(false);
+    expect(memories.some((m: any) => m.id === memoryId)).toBe(true);
   }, TIMEOUT);
 
-  test('search observations filtered by project', async () => {
+  test('search memories via proxy route', async () => {
     const mk = marker();
-    const { observation: obs } = await api(`/api/workspaces/${workspaceId}/observations`, {
+    const createRes = await api(`/api/workspaces/${workspaceId}/memory`, {
       method: 'POST',
       body: JSON.stringify({
         type: 'gotcha',
-        title: `${mk} search-project`,
-        content: `Search project filter ${mk}`,
-        project: `@test/search-${mk}`,
+        title: `${mk} search-test`,
+        content: `Search test ${mk}`,
       }),
     });
-    createdObservationIds.push(obs.id);
+    const memoryId = createRes.memory?.id || createRes.observation?.id;
+    createdMemoryIds.push(memoryId);
 
-    const { results } = await api(
-      `/api/workspaces/${workspaceId}/observations/search?query=${encodeURIComponent(mk)}&project=${encodeURIComponent(`@test/search-${mk}`)}`
+    const searchRes = await api(
+      `/api/workspaces/${workspaceId}/memory?query=${encodeURIComponent(mk)}`
     );
+    const results = searchRes.memories || searchRes.observations || [];
 
-    expect(results.some((r: any) => r.id === obs.id)).toBe(true);
-  }, TIMEOUT);
-
-  test('observations without project filter return all', async () => {
-    const mk = marker();
-    const { observation: obs1 } = await api(`/api/workspaces/${workspaceId}/observations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'discovery',
-        title: `${mk} no-filter-a`,
-        content: `No filter A ${mk}`,
-        project: '@test/a',
-      }),
-    });
-    createdObservationIds.push(obs1.id);
-
-    const { observation: obs2 } = await api(`/api/workspaces/${workspaceId}/observations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'discovery',
-        title: `${mk} no-filter-b`,
-        content: `No filter B ${mk}`,
-        project: '@test/b',
-      }),
-    });
-    createdObservationIds.push(obs2.id);
-
-    const { observations } = await api(
-      `/api/workspaces/${workspaceId}/observations?search=${encodeURIComponent(mk)}&limit=50`
-    );
-
-    const ids = observations.map((o: any) => o.id);
-    expect(ids).toContain(obs1.id);
-    expect(ids).toContain(obs2.id);
+    expect(results.some((r: any) => r.id === memoryId)).toBe(true);
   }, TIMEOUT);
 
   // Clean up projects registry at the end

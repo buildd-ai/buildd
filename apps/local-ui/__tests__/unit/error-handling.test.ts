@@ -1,8 +1,8 @@
 /**
  * Unit tests for error handling in local-ui WorkerManager
  *
- * Tests abort scenarios, network failures, invalid responses, observation
- * creation failures, and graceful degradation to ensure workers handle
+ * Tests abort scenarios, network failures, invalid responses, memory
+ * save failures, and graceful degradation to ensure workers handle
  * errors without crashing.
  *
  * Strategy: Mock SDK query to yield controlled message sequences, then
@@ -743,13 +743,13 @@ describe('Error Handling', () => {
     });
   });
 
-  // ─── 5. Observation Creation Failures ────────────────────────────────────
+  // ─── 5. Memory Save Failures ────────────────────────────────────
 
-  describe('Observation Creation Failures', () => {
-    test('observation save failure does not fail the task', async () => {
-      // Make observation creation fail
+  describe('Memory Save Failures', () => {
+    test('memory save failure does not fail the task', async () => {
+      // Make memory creation fail
       mockCreateObservation.mockImplementation(async () => {
-        throw new Error('API error: 500 - Failed to create observation');
+        throw new Error('API error: 500 - Failed to create memory');
       });
 
       mockMessages = [
@@ -777,9 +777,9 @@ describe('Error Handling', () => {
       expect(worker?.currentAction).toBe('Completed');
     });
 
-    test('observation FK violation does not crash worker', async () => {
+    test('memory save validation error does not crash worker', async () => {
       mockCreateObservation.mockImplementation(async () => {
-        throw new Error('API error: 500 - {"error":"Failed to create observation","detail":"Invalid reference (task or workspace may not exist)"}');
+        throw new Error('API error: 500 - {"error":"Failed to create memory","detail":"Invalid reference"}');
       });
 
       mockMessages = [
@@ -805,14 +805,14 @@ describe('Error Handling', () => {
       expect(worker?.status).toBe('done');
     });
 
-    test('observation batch fetch failure does not prevent session start', async () => {
+    test('memory batch fetch failure does not prevent session start', async () => {
       // getBatchObservations fails during session setup
       mockGetBatchObservations.mockImplementation(async () => {
         throw new Error('Request timeout');
       });
       // searchObservations returns results so batch fetch is triggered
       mockSearchObservations.mockImplementation(async () => [
-        { id: 'obs-1', type: 'pattern', title: 'Test', score: 0.9 },
+        { id: 'mem-1', type: 'pattern', title: 'Test', score: 0.9 },
       ]);
 
       mockMessages = [
@@ -836,7 +836,7 @@ describe('Error Handling', () => {
 
       const worker = manager.getWorker('w-batch-fail');
       // Session should have started and completed despite batch fetch failure
-      // (getBatchObservations failure will cause startSession to fail since it's not wrapped in try/catch)
+      // (memory batch failure will cause startSession to fail since it's not wrapped in try/catch)
       // Actually, this propagates up to the startSession catch, marking worker as error
       expect(['done', 'error']).toContain(worker?.status);
     });

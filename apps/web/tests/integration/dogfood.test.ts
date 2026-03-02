@@ -13,7 +13,7 @@
  *   - Abort handling (force-stop running workers)
  *   - Follow-up messages (send to completed workers)
  *   - Concurrent worker limits (429 when at capacity)
- *   - Observations CRUD (create, list, search, compact, batch)
+ *   - Memory CRUD (create, list, search via memory service proxy)
  *   - Task reassignment (pending re-broadcast, assigned rejection)
  *   - Plan approval (submit plan, verify state, approve)
  *   - Stale cleanup (maintenance endpoint smoke test)
@@ -566,55 +566,43 @@ describe('dogfood', () => {
   }, 60_000);
 
   // ---------------------------------------------------------------
-  // 9. Observations — CRUD and search
+  // 9. Memory — CRUD and search (via memory service proxy)
   // ---------------------------------------------------------------
 
-  test('observations — create, list, search, compact, batch', async () => {
-    const marker = `OBS_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  test('memory — create, list, search', async () => {
+    const marker = `MEM_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-    // Create observation
-    const { observation } = await api(`/api/workspaces/${workspaceId}/observations`, {
+    // Create memory
+    const createRes = await api(`/api/workspaces/${workspaceId}/memory`, {
       method: 'POST',
       body: JSON.stringify({
         type: 'discovery',
         title: `${marker} Test Discovery`,
-        content: `Integration test observation created by dogfood tests: ${marker}`,
+        content: `Integration test memory created by dogfood tests: ${marker}`,
         files: ['tests/integration/dogfood.test.ts'],
-        concepts: ['testing', 'dogfood'],
+        tags: ['testing', 'dogfood'],
       }),
     });
-    expect(observation.id).toBeTruthy();
-    expect(observation.type).toBe('discovery');
+    const memoryId = createRes.memory?.id || createRes.observation?.id;
+    expect(memoryId).toBeTruthy();
 
     // List with type filter
-    const { observations } = await api(
-      `/api/workspaces/${workspaceId}/observations?type=discovery&limit=50`
+    const listRes = await api(
+      `/api/workspaces/${workspaceId}/memory?type=discovery&limit=50`
     );
-    expect(observations.some((o: any) => o.id === observation.id)).toBe(true);
+    const memories = listRes.memories || listRes.observations || [];
+    expect(memories.some((m: any) => m.id === memoryId)).toBe(true);
 
     // Search by marker
-    const { results } = await api(
-      `/api/workspaces/${workspaceId}/observations/search?query=${encodeURIComponent(marker)}`
+    const searchRes = await api(
+      `/api/workspaces/${workspaceId}/memory?query=${encodeURIComponent(marker)}`
     );
-    expect(results.some((r: any) => r.id === observation.id)).toBe(true);
+    const results = searchRes.memories || searchRes.observations || [];
+    expect(results.some((r: any) => r.id === memoryId)).toBe(true);
 
-    // Compact digest
-    const { markdown, count } = await api(
-      `/api/workspaces/${workspaceId}/observations/compact`
-    );
-    expect(count).toBeGreaterThan(0);
-    expect(markdown).toContain(marker);
-
-    // Batch get
-    const { observations: batch } = await api(
-      `/api/workspaces/${workspaceId}/observations/batch?ids=${observation.id}`
-    );
-    expect(batch.length).toBe(1);
-    expect(batch[0].id).toBe(observation.id);
-
-    // Cleanup: delete test observation
+    // Cleanup: delete test memory
     try {
-      await api(`/api/workspaces/${workspaceId}/observations/${observation.id}`, {
+      await api(`/api/workspaces/${workspaceId}/memory/${memoryId}`, {
         method: 'DELETE',
       });
     } catch {}

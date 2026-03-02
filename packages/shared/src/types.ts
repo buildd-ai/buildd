@@ -104,17 +104,6 @@ export const OutputRequirement = {
 
 export type OutputRequirementValue = typeof OutputRequirement[keyof typeof OutputRequirement];
 
-export const ObservationType = {
-  DISCOVERY: 'discovery',
-  DECISION: 'decision',
-  GOTCHA: 'gotcha',
-  PATTERN: 'pattern',
-  ARCHITECTURE: 'architecture',
-  SUMMARY: 'summary',
-} as const;
-
-export type ObservationTypeValue = typeof ObservationType[keyof typeof ObservationType];
-
 // ============================================================================
 // ENTITIES
 // ============================================================================
@@ -331,13 +320,14 @@ export interface UpdateArtifactInput {
   metadata?: Record<string, unknown>;
 }
 
+/** @deprecated Use Memory service types instead. Kept for backward compat. */
 export interface Observation {
   id: string;
   workspaceId: string;
   workerId: string | null;
   taskId: string | null;
   project: string | null;
-  type: ObservationTypeValue;
+  type: 'discovery' | 'decision' | 'gotcha' | 'pattern' | 'architecture' | 'summary';
   title: string;
   content: string;
   files: string[];
@@ -560,8 +550,9 @@ export interface ClaimTasksResponse {
   diagnostics?: ClaimDiagnostics;
 }
 
+/** @deprecated Use Memory service types instead. Kept for backward compat. */
 export interface CreateObservationInput {
-  type: ObservationTypeValue;
+  type: 'discovery' | 'decision' | 'gotcha' | 'pattern' | 'architecture' | 'summary';
   title: string;
   content: string;
   files?: string[];

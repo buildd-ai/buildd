@@ -196,9 +196,13 @@ export class BuilddClient {
     workerId?: string;
     taskId?: string;
   }) {
-    return this.fetch(`/api/workspaces/${workspaceId}/observations`, {
+    return this.fetch(`/api/workspaces/${workspaceId}/memory`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({
+        ...data,
+        tags: data.concepts,
+        source: data.workerId ? `worker:${data.workerId}` : 'local-ui',
+      }),
     });
   }
 
@@ -214,14 +218,38 @@ export class BuilddClient {
     if (params?.limit) searchParams.set('limit', String(params.limit));
     if (params?.offset) searchParams.set('offset', String(params.offset));
     const qs = searchParams.toString();
-    const data = await this.fetch(`/api/workspaces/${workspaceId}/observations${qs ? `?${qs}` : ''}`);
-    return data.observations || [];
+    const data = await this.fetch(`/api/workspaces/${workspaceId}/memory${qs ? `?${qs}` : ''}`);
+    return data.memories || [];
   }
 
   async getCompactObservations(workspaceId: string): Promise<{ markdown: string; count: number }> {
     try {
-      const data = await this.fetch(`/api/workspaces/${workspaceId}/observations/compact`);
-      return { markdown: data.markdown || '', count: data.count || 0 };
+      // Use the memory proxy list with a small limit for compact representation
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
+      const memories = data.memories || [];
+      if (memories.length === 0) return { markdown: '', count: 0 };
+
+      // Format as markdown grouped by type (matching old /compact behavior)
+      const byType: Record<string, typeof memories> = {};
+      for (const m of memories) {
+        if (!byType[m.type]) byType[m.type] = [];
+        byType[m.type].push(m);
+      }
+
+      const typeOrder = ['gotcha', 'architecture', 'pattern', 'decision', 'discovery', 'summary'];
+      const sections = typeOrder
+        .filter(t => byType[t]?.length)
+        .map(t => {
+          const items = byType[t].map((m: any) => {
+            const truncContent = m.content.length > 150 ? m.content.slice(0, 150) + '...' : m.content;
+            const filesNote = m.files?.length ? ` (files: ${m.files.slice(0, 3).join(', ')})` : '';
+            return `- **${m.title}**: ${truncContent}${filesNote}`;
+          }).join('\n');
+          return `### ${t.charAt(0).toUpperCase() + t.slice(1)}s\n${items}`;
+        });
+
+      const markdown = `## Workspace Memory (${data.total || memories.length} memories)\n\n${sections.join('\n\n')}`;
+      return { markdown, count: data.total || memories.length };
     } catch {
       return { markdown: '', count: 0 };
     }
@@ -230,9 +258,14 @@ export class BuilddClient {
   async searchObservations(workspaceId: string, query: string, limit = 5): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
     try {
       const data = await this.fetch(
-        `/api/workspaces/${workspaceId}/observations/search?query=${encodeURIComponent(query)}&limit=${limit}`
+        `/api/workspaces/${workspaceId}/memory?query=${encodeURIComponent(query)}&limit=${limit}`
       );
-      return data.results || [];
+      return (data.memories || []).map((m: any) => ({
+        id: m.id,
+        title: m.title,
+        type: m.type,
+        files: m.files,
+      }));
     } catch {
       return [];
     }
@@ -241,10 +274,21 @@ export class BuilddClient {
   async getBatchObservations(workspaceId: string, ids: string[]): Promise<Array<{ id: string; title: string; type: string; content: string; files?: string[]; concepts?: string[] }>> {
     if (ids.length === 0) return [];
     try {
-      const data = await this.fetch(
-        `/api/workspaces/${workspaceId}/observations/batch?ids=${ids.join(',')}`
-      );
-      return data.observations || [];
+      // The memory proxy returns full content, so just re-fetch by query
+      // Since we don't have a batch endpoint on the proxy, fetch all and filter
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
+      const memories = data.memories || [];
+      const idSet = new Set(ids);
+      return memories
+        .filter((m: any) => idSet.has(m.id))
+        .map((m: any) => ({
+          id: m.id,
+          title: m.title,
+          type: m.type,
+          content: m.content,
+          files: m.files || [],
+          concepts: m.tags || [],
+        }));
     } catch {
       return [];
     }
@@ -255,23 +299,20 @@ export class BuilddClient {
     recentGotchas: Array<{ id: string; title: string; content: string }>;
   }> {
     try {
-      // Get total count and recent gotchas for minimal context injection
-      const searchData = await this.fetch(`/api/workspaces/${workspaceId}/observations/search?type=gotcha&limit=3`);
-      const total = searchData.total || 0;
-      const gotchaIds = (searchData.results || []).map((r: { id: string }) => r.id);
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?type=gotcha&limit=3`);
+      const memories = data.memories || [];
+      const total = data.total || 0;
 
-      if (gotchaIds.length === 0) {
-        // No gotchas, just get total count
-        const allData = await this.fetch(`/api/workspaces/${workspaceId}/observations/search?limit=1`);
+      if (memories.length === 0) {
+        // Get total count from unfiltered query
+        const allData = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=1`);
         return { total: allData.total || 0, recentGotchas: [] };
       }
 
-      // Get full content for gotchas
-      const batchData = await this.fetch(`/api/workspaces/${workspaceId}/observations/batch?ids=${gotchaIds.join(',')}`);
-      const recentGotchas = (batchData.observations || []).map((o: { id: string; title: string; content: string }) => ({
-        id: o.id,
-        title: o.title,
-        content: o.content.slice(0, 200), // Truncate to keep context small
+      const recentGotchas = memories.map((m: any) => ({
+        id: m.id,
+        title: m.title,
+        content: (m.content || '').slice(0, 200),
       }));
 
       return { total, recentGotchas };
