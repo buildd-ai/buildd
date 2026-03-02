@@ -679,7 +679,7 @@ export interface SkillInstallPayload {
   bundle?: SkillBundle;
   /** Command execution — mutually exclusive with bundle */
   installerCommand?: string;
-  /** Targeting (optional) — only the matching local-ui handles the install */
+  /** Targeting (optional) — only the matching runner handles the install */
   targetLocalUiUrl?: string | null;
 }
 

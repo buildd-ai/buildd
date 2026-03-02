@@ -17,7 +17,7 @@ The SDK exposes two main APIs:
 
 ## Local-UI Implementation
 
-**Location**: `apps/local-ui/src/workers.ts`
+**Location**: `apps/runner/src/workers.ts`
 
 ```typescript
 import { query } from '@anthropic-ai/claude-agent-sdk';

@@ -385,7 +385,7 @@ options: {
 
 ### Skills as Subagents (Buildd Pattern)
 
-**Implementation**: `apps/local-ui/src/workers.ts:936-947`
+**Implementation**: `apps/runner/src/workers.ts:936-947`
 
 ```typescript
 const agents: Record<string, { description: string; prompt: string; tools: string[]; model: string }> = {};
@@ -698,8 +698,8 @@ The SDK emits `is_background: true` on `task_started` system messages for backgr
 
 - **Config**: `useBackgroundAgents` in workspace `gitConfig` (or per-task via `task.context.useBackgroundAgents`)
 - **Resolution**: Task-level override > workspace-level setting
-- **Implementation**: Both `worker-runner.ts` and `local-ui/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
-- **Tracking**: `SubagentTask.isBackground` field tracks background status in local-ui, shown in milestone labels
+- **Implementation**: Both `worker-runner.ts` and `runner/workers.ts` pass `background: true` on skill-as-subagent definitions when enabled
+- **Tracking**: `SubagentTask.isBackground` field tracks background status in runner, shown in milestone labels
 
 ---
 

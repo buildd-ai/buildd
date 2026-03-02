@@ -268,17 +268,17 @@ describe('Concurrency Control', () => {
     assert(!!worker2.id, 'Worker 2 claimed task 2 (capacity released after error)');
   }, TIMEOUT);
 
-  test('should handle multiple local-ui instances sharing capacity', async () => {
+  test('should handle multiple runner instances sharing capacity', async () => {
     console.log('\n=== Test: Multiple Local-UI Instances ===');
 
     // This test validates that capacity is tracked per-account, not per-instance
-    // In practice, this would require multiple local-ui processes running
+    // In practice, this would require multiple runner processes running
 
-    // Get active local-ui instances
+    // Get active runner instances
     const { activeLocalUis } = await api('/api/workers/active');
 
     if (activeLocalUis.length === 0) {
-      console.log('  Skipping (no active local-ui instances)');
+      console.log('  Skipping (no active runner instances)');
       return;
     }
 

@@ -179,7 +179,7 @@ describe('API Authentication', () => {
   // =================================================================
 
   describe('Dual Auth — workers/active', () => {
-    test('API key auth — returns active local-ui instances', async () => {
+    test('API key auth — returns active runner instances', async () => {
       const { status, body } = await apiRaw('/api/workers/active');
       expect(status).toBe(200);
       expect(Array.isArray(body.activeLocalUis)).toBe(true);
@@ -426,10 +426,10 @@ describe('API Authentication', () => {
   // 6. Local-UI Auth Redirect
   // =================================================================
 
-  describe('Local-UI Auth — /api/auth/local-ui', () => {
-    test('GET redirects to /api/auth/cli with client=local-ui', async () => {
+  describe('Runner Auth — /api/auth/runner', () => {
+    test('GET redirects to /api/auth/cli with client=runner', async () => {
       const { status, headers } = await fetchNoRedirect(
-        '/api/auth/local-ui?callback=http://localhost:8766/callback'
+        '/api/auth/runner?callback=http://localhost:8766/callback'
       );
 
       // Should redirect
@@ -439,24 +439,24 @@ describe('API Authentication', () => {
       const location = headers.get('location');
       expect(location).toBeTruthy();
       expect(location).toContain('/api/auth/cli');
-      expect(location).toContain('client=local-ui');
+      expect(location).toContain('client=runner');
     }, 15_000);
 
     test('GET forwards query params to cli route', async () => {
       const { status, headers } = await fetchNoRedirect(
-        '/api/auth/local-ui?callback=http://localhost:8766/callback&level=worker'
+        '/api/auth/runner?callback=http://localhost:8766/callback&level=worker'
       );
 
       const location = headers.get('location');
       expect(location).toBeTruthy();
       expect(location).toContain('callback=');
       expect(location).toContain('level=worker');
-      expect(location).toContain('client=local-ui');
+      expect(location).toContain('client=runner');
     }, 15_000);
 
     test('GET preserves custom client param if already set', async () => {
       const { status, headers } = await fetchNoRedirect(
-        '/api/auth/local-ui?callback=http://localhost:8766/callback&client=custom'
+        '/api/auth/runner?callback=http://localhost:8766/callback&client=custom'
       );
 
       const location = headers.get('location');

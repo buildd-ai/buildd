@@ -54,7 +54,7 @@ jobs:
           TESTS="${{ steps.affected.outputs.tests }}"
           if [ "$TESTS" = "ALL" ]; then
             echo "Running all tests..."
-            bun test apps/web/src apps/local-ui/__tests__/unit
+            bun test apps/web/src apps/runner/__tests__/unit
           else
             echo "Running affected tests: $TESTS"
             bun test $TESTS
@@ -89,7 +89,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Start preview local-ui
+      - name: Start preview runner
         run: |
           tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
             docker exec coder-ai-run-my-claude-workspace bash -c '
@@ -111,7 +111,7 @@ jobs:
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
                apps/web/tests/integration/worker-state-machine.test.ts \
-               apps/local-ui/__tests__/integration-config.test.ts
+               apps/runner/__tests__/integration-config.test.ts
         env:
           BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
@@ -126,6 +126,6 @@ jobs:
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
 
-      - name: Cleanup preview local-ui
+      - name: Cleanup preview runner
         if: always()
         run: tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace screen -X -S buildd-test quit' || true

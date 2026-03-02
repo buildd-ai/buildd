@@ -37,7 +37,7 @@ File: `packages/core/drizzle/0008_special_caretaker.sql`
 - `GET` - Fetch workspace git config
 - `POST` - Save workspace git config (sets `configStatus` to `'admin_confirmed'`)
 
-### 4. Worker Updates (`apps/local-ui/src/workers.ts`)
+### 4. Worker Updates (`apps/runner/src/workers.ts`)
 
 - Fetches workspace config from server before starting task
 - Builds prompt with:

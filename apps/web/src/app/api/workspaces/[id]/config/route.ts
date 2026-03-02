@@ -12,7 +12,7 @@ export async function GET(
 ) {
     const { id } = await params;
 
-    // In development, allow without auth for local-ui
+    // In development, allow without auth for runner
     const authHeader = req.headers.get('authorization');
     const isApiAuth = authHeader?.startsWith('Bearer ');
 

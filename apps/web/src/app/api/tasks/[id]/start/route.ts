@@ -13,10 +13,10 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
  * Start a pending task by notifying workers to claim it.
  * Supports dual auth: API key (Bearer) or session cookie.
  * - Broadcasts TASK_ASSIGNED event to workers
- * - Optionally targets a specific local-ui instance
+ * - Optionally targets a specific runner instance
  *
  * Body:
- * - targetLocalUiUrl?: string - Specific local-ui to assign to (optional)
+ * - targetLocalUiUrl?: string - Specific runner to assign to (optional)
  */
 export async function POST(
   req: NextRequest,

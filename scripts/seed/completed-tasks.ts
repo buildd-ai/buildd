@@ -84,10 +84,10 @@ const SEED_TASKS = [
         ],
     },
     {
-        title: '[SEED] Add CLI agent runner',
-        description: 'Create standalone CLI tool for running workers outside the web dashboard.',
+        title: '[SEED] Add runner worker',
+        description: 'Create standalone local UI for running workers outside the web dashboard.',
         observations: [
-            { type: 'architecture', title: 'Worker runner is a shared package', content: 'The worker-runner logic lives in packages/core, shared between the CLI agent (apps/agent) and local UI (apps/local-ui).' },
+            { type: 'architecture', title: 'Worker runner is a shared package', content: 'The worker-runner logic lives in packages/core, shared by the runner (apps/runner).' },
             { type: 'discovery', title: 'Claude SDK conversation.sendMessage returns async iterator', content: 'The Claude SDK conversation.sendMessage() returns an async iterator of messages. Must iterate to completion for the turn to finish.' },
         ],
     },

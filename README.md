@@ -19,7 +19,7 @@ buildd login
 buildd
 ```
 
-That's it. `buildd login` saves your API key and auto-configures the MCP server in `~/.claude.json`, so Claude Code can use buildd tools immediately.
+That's it. `buildd login` saves your API key and auto-configures the remote MCP server in `~/.claude.json`, so Claude Code can use buildd tools immediately.
 
 For headless/SSH environments: `buildd login --device`
 
@@ -35,12 +35,12 @@ For headless/SSH environments: `buildd login --device`
                               │ REST API
           ┌──────────┬────────┼────────┬──────────┐
           │          │        │        │          │
-   ┌──────┴──────┐ ┌─┴────────┴─┐ ┌────┴───┐ ┌────┴─────┐
-   │ Claude Code │ │  Local UI  │ │ Agent  │ │ GitHub   │
-   │ + MCP       │ │  (Bun)     │ │ Binary │ │ Actions  │
-   │             │ │            │ │        │ │          │
-   │ Your laptop │ │ Your laptop│ │ VM     │ │ CI runner│
-   └─────────────┘ └────────────┘ └────────┘ └──────────┘
+   ┌──────┴──────┐ ┌─┴────────┴─┐ ┌────┴─────┐
+   │ Claude Code │ │  Local UI  │ │ GitHub   │
+   │ + MCP       │ │  (Bun)     │ │ Actions  │
+   │             │ │            │ │          │
+   │ Your laptop │ │ Your laptop│ │ CI runner│
+   └─────────────┘ └────────────┘ └──────────┘
 ```
 
 Buildd separates **coordination** from **execution**. The server manages tasks, auth, and state. Workers run wherever you want — your laptop, a VM, CI — and talk to the server via REST API.
@@ -88,9 +88,7 @@ Full documentation at **[docs.buildd.dev](https://docs.buildd.dev)**
 ```
 apps/
 ├── web/              Next.js dashboard + API (deployed on Vercel)
-├── local-ui/         Standalone worker runner with web UI (Bun)
-├── mcp-server/       Claude Code MCP integration
-└── agent/            CLI-based headless worker
+└── runner/           Standalone worker runner with web UI (Bun)
 
 packages/
 ├── core/             Database schema (Drizzle ORM) + migrations

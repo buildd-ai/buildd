@@ -190,7 +190,7 @@ Buildd uses two MCP patterns:
 
 1. **In-process MCP server** (`worker-runner.ts`): `createSdkMcpServer()` creates an MCP server that runs in the same Node.js process as the SDK, using `createBuilddMcpServer()` from `buildd-mcp-server.ts`. Zero subprocess overhead.
 
-2. **Subprocess MCP server** (`local-ui/workers.ts`): Spawns `apps/mcp-server` as a stdio subprocess via `mcpServers: { buildd: { command: 'node', args: [...] } }`.
+2. **HTTP MCP server** (`runner/workers.ts`): Connects to the remote HTTP MCP endpoint at `/api/mcp` via `mcpServers: { buildd: { type: 'http', url: '...', headers: {...} } }`.
 
 ### Python MCP Implications
 

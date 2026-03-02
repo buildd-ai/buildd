@@ -2,11 +2,11 @@
  * Dogfood Tests — Full E2E through buildd's own task coordination
  *
  * Creates real tasks on the server and waits for a connected worker
- * (local-ui or other runner) to claim and execute them. This is
+ * (runner or other worker) to claim and execute them. This is
  * "eating our own dogfood" — the system tests itself.
  *
  * Tests cover:
- *   - Heartbeat & discovery (server sees local-ui)
+ *   - Heartbeat & discovery (server sees runner)
  *   - Direct claim flow (API-driven, used by external workers)
  *   - Dashboard dispatch flow (Pusher-driven, used by UI "Start Task")
  *   - Worker lifecycle (status transitions reflected on server)
@@ -22,7 +22,7 @@
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
- *   - local-ui running (claims tasks and runs Claude)
+ *   - runner running (claims tasks and runs Claude)
  *
  * Usage:
  *   bun test apps/web/tests/integration/dogfood.test.ts
@@ -61,7 +61,7 @@ async function createTask(workspaceId: string, title: string, description: strin
   return task;
 }
 
-/** Claim a task via local-ui. Retries on 429 (capacity full from parallel tests). */
+/** Claim a task via the runner. Retries on 429 (capacity full from parallel tests). */
 async function triggerClaim(taskId: string): Promise<string> {
   const maxAttempts = 10;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -91,7 +91,7 @@ async function triggerClaim(taskId: string): Promise<string> {
   throw new Error('triggerClaim: unreachable');
 }
 
-/** Claim a task directly on the server (creates a DB worker, no local-ui).
+/** Claim a task directly on the server (creates a DB worker, no runner).
  *  Retries on 429 (capacity full from parallel tests) with backoff. */
 async function serverClaim(workspaceId: string, taskId: string): Promise<string> {
   const maxAttempts = 10;
@@ -154,7 +154,7 @@ async function waitForTaskClaimed(taskId: string, timeoutMs = 60_000): Promise<a
 
 async function getLocalWorkerOutput(workerId: string): Promise<string[]> {
   const res = await fetch(`${LOCAL_UI}/api/workers`);
-  if (!res.ok) throw new Error(`Failed to get workers from local-ui: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to get workers from runner: ${res.status}`);
   const data = await res.json();
   const worker = data.workers?.find((w: any) => w.id === workerId);
   return worker?.output || [];
@@ -173,7 +173,7 @@ async function getLocalWorkerStatus(workerId: string): Promise<{ status: string;
   }
 }
 
-/** Find a worker on local-ui by task ID */
+/** Find a worker on runner by task ID */
 async function findLocalWorkerByTask(taskId: string): Promise<string | null> {
   try {
     const res = await fetch(`${LOCAL_UI}/api/workers`);
@@ -213,24 +213,24 @@ describe('dogfood', () => {
   let originalLocalUiServer: string | null = null;
 
   beforeAll(async () => {
-    // Verify local-ui is running and configured
+    // Verify runner is running and configured
     let localUiConfig: any;
     try {
       const healthRes = await fetch(`${LOCAL_UI}/api/config`);
       if (!healthRes.ok) throw new Error(`status ${healthRes.status}`);
       localUiConfig = await healthRes.json();
     } catch (err: any) {
-      throw new Error(`local-ui not reachable at ${LOCAL_UI} (${err.message}). Start local-ui first.`);
+      throw new Error(`runner not reachable at ${LOCAL_UI} (${err.message}). Start runner first.`);
     }
 
     if (!localUiConfig.configured) {
-      throw new Error('local-ui is running but not configured (no API key)');
+      throw new Error('runner is running but not configured (no API key)');
     }
 
-    // Repoint local-ui to the test server if needed
+    // Repoint runner to the test server if needed
     originalLocalUiServer = localUiConfig.builddServer || null;
     if (localUiConfig.builddServer !== SERVER) {
-      console.log(`Repointing local-ui: ${localUiConfig.builddServer} → ${SERVER}`);
+      console.log(`Repointing runner: ${localUiConfig.builddServer} → ${SERVER}`);
       await fetch(`${LOCAL_UI}/api/config/server`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -262,7 +262,7 @@ describe('dogfood', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ server: originalLocalUiServer }),
         });
-        console.log(`Restored local-ui server → ${originalLocalUiServer}`);
+        console.log(`Restored runner server → ${originalLocalUiServer}`);
       } catch { /* best effort */ }
     }
   });
@@ -271,7 +271,7 @@ describe('dogfood', () => {
   // 1. Infrastructure — verify the plumbing works
   // ---------------------------------------------------------------
 
-  test('heartbeat — server sees local-ui instance', async () => {
+  test('heartbeat — server sees runner instance', async () => {
     // Heartbeat fires every 30s — retry to account for timing
     let activeLocalUis: any[] = [];
     for (let i = 0; i < 12; i++) {
@@ -285,7 +285,7 @@ describe('dogfood', () => {
 
     const ui = activeLocalUis[0];
     expect(ui.workspaceIds).toContain(workspaceId);
-    console.log(`  ${activeLocalUis.length} local-ui(s) — ${ui.activeWorkers} active, ${ui.capacity} capacity`);
+    console.log(`  ${activeLocalUis.length} runner(s) — ${ui.activeWorkers} active, ${ui.capacity} capacity`);
   }, 90_000);
 
   test('workers/mine — lists account workers', async () => {
@@ -323,7 +323,7 @@ describe('dogfood', () => {
 
   test('dashboard dispatch — start triggers Pusher claim', async () => {
     if (!hasPusher) {
-      console.log('  SKIP: Pusher not configured on local-ui');
+      console.log('  SKIP: Pusher not configured on runner');
       return;
     }
 
@@ -344,10 +344,10 @@ describe('dogfood', () => {
     expect(startRes.started).toBe(true);
     console.log(`  Started task ${task.id} via dashboard dispatch`);
 
-    // Wait for local-ui to receive Pusher event and claim it
+    // Wait for runner to receive Pusher event and claim it
     await waitForTaskClaimed(task.id);
 
-    // Find the worker that local-ui created
+    // Find the worker that runner created
     let workerId: string | null = null;
     const start = Date.now();
     while (Date.now() - start < 30_000) {
@@ -377,7 +377,7 @@ describe('dogfood', () => {
     );
     const workerId = await triggerClaim(task.id);
 
-    // Poll local-ui for status transitions
+    // Poll runner for status transitions
     let sawWorking = false;
     const start = Date.now();
     while (Date.now() - start < 60_000) {
@@ -528,7 +528,7 @@ describe('dogfood', () => {
       return;
     }
 
-    // Create server-side workers directly (not through local-ui)
+    // Create server-side workers directly (not through runner)
     // These stay "running" because nothing will complete them
     const fillerWorkers: string[] = [];
     for (let i = 0; i < slotsToFill; i++) {
@@ -729,7 +729,7 @@ describe('dogfood', () => {
     expect(serverWorker.status).toBe('waiting_input');
     expect(serverWorker.waitingFor).toBeTruthy();
 
-    // Send answer via local-ui
+    // Send answer via runner
     const sendRes = await fetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
