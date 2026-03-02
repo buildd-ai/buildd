@@ -1,10 +1,14 @@
 name: Recreate Neon Dev Branch
 
-# Weekly fresh clone of production DB for preview/test environments.
-# Neon archives branches after ~7 days of inactivity, so this ensures
-# the dev branch always has up-to-date schema and data.
+# Fresh clone of production DB for preview/test environments.
+# Triggers:
+#   - On release (push to main) — ensures preview DB has latest schema
+#   - Weekly cron — Neon archives branches after ~7 days of inactivity
+#   - Manual dispatch
 
 on:
+  push:
+    branches: [main]
   schedule:
     # Every Sunday at 06:00 UTC (before the work week)
     - cron: '0 6 * * 0'
