@@ -114,7 +114,7 @@ jobs:
             }" \
             "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env")
 
-          NEW_ID=$(echo "$RESULT" | jq -r '.id')
+          NEW_ID=$(echo "$RESULT" | jq -r '.created.id // .id')
           if [ "$NEW_ID" = "null" ] || [ -z "$NEW_ID" ]; then
             echo "::error::Failed to create new preview DATABASE_URL"
             echo "$RESULT" | jq .
