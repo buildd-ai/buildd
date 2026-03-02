@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { QuickstartButton } from "./QuickstartButton";
 
 const memoryTypes = [
   {
@@ -99,6 +100,10 @@ const faqs = [
     a: "Yes. Memory is fully open source. Run it on your own infrastructure with your own Postgres database. The hosted version at memory.buildd.dev is the easiest way to get started.",
   },
   {
+    q: "Do I need a separate API key for the AI?",
+    a: "No. Memory doesn't call AI models — your agents do. They run on your existing Anthropic or Claude subscription. Memory just stores and retrieves knowledge, so there's no extra AI cost.",
+  },
+  {
     q: "How does the free tier work?",
     a: "Sign up, create a workspace, connect your agents. No credit card required. You get 200 memories and 500 context calls per month — enough to evaluate Memory on a real project.",
   },
@@ -119,6 +124,14 @@ export default function MemoryPage() {
           <Link href="/" className="hover:text-white transition-colors">
             Task Queue
           </Link>
+          <a
+            href="https://docs.buildd.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-white transition-colors"
+          >
+            Docs
+          </a>
           <Link href="/app" className="hover:text-white transition-colors">
             Sign In
           </Link>
@@ -184,6 +197,9 @@ export default function MemoryPage() {
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight">
             Shared Memory for AI Agents
           </h1>
+          <p className="text-sm text-amber-400 font-medium tracking-wide uppercase">
+            Part of the Buildd platform
+          </p>
           <p className="text-xl text-gray-300 max-w-2xl mx-auto">
             Persistent team knowledge that follows your agents across sessions.
             Every agent starts with the full context of everything your team has
@@ -286,6 +302,19 @@ export default function MemoryPage() {
   }
 }`}</code>
             </pre>
+            <QuickstartButton />
+            <p className="text-xs text-gray-500 mt-4">
+              See the{" "}
+              <a
+                href="https://docs.buildd.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber-400/80 hover:text-amber-400 underline underline-offset-2"
+              >
+                full setup guide
+              </a>{" "}
+              for advanced configuration, self-hosting, and API usage.
+            </p>
           </div>
         </div>
       </div>
@@ -446,6 +475,40 @@ export default function MemoryPage() {
         </div>
       </div>
 
+      {/* Cross-link to Task Queue */}
+      <div className="max-w-4xl mx-auto px-6 pb-16">
+        <div className="bg-white/5 rounded-xl p-8 border border-white/10 flex flex-col md:flex-row items-center gap-6">
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold mb-2">
+              Memory works best with Buildd&apos;s Task Queue
+            </h3>
+            <p className="text-sm text-gray-400">
+              Assign tasks to agents, let them claim and execute autonomously, and watch knowledge compound across every run. Memory provides the context &mdash; Task Queue provides the coordination.
+            </p>
+          </div>
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap"
+          >
+            Explore Task Queue
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13 7l5 5m0 0l-5 5m5-5H6"
+              />
+            </svg>
+          </Link>
+        </div>
+      </div>
+
       {/* CTA */}
       <div className="max-w-4xl mx-auto px-6 pb-20 text-center">
         <h2 className="text-2xl font-bold mb-3">
@@ -491,7 +554,7 @@ export default function MemoryPage() {
         <div className="max-w-6xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <p className="text-gray-400 text-sm">
-              buildd &mdash; Shared memory for AI agents
+              buildd &mdash; Task queue and shared memory for AI agents
             </p>
             <div className="flex gap-6 text-sm text-gray-400">
               <Link
