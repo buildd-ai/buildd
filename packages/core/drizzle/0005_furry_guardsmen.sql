@@ -1,1 +1,0 @@
-ALTER TABLE "workspaces" ADD COLUMN "discord_config" jsonb;
