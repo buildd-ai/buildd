@@ -210,6 +210,7 @@ export default async function TaskDetailPage({
                 priority: task.priority,
                 project: task.project,
                 workspaceId: task.workspaceId,
+                dependsOn: (task.dependsOn as string[]) || [],
               }}
             />
             {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}

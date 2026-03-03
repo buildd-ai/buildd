@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "heartbeat_checklist" jsonb DEFAULT '[]'::jsonb;
