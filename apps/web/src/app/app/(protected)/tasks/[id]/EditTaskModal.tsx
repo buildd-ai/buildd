@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 interface Props {
   task: {
@@ -11,6 +12,7 @@ interface Props {
     priority: number;
     project?: string | null;
     workspaceId?: string;
+    dependsOn?: string[];
   };
   onClose: () => void;
 }
@@ -20,6 +22,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || '');
   const [priority, setPriority] = useState(task.priority);
+  const [selectedDeps, setSelectedDeps] = useState<string[]>(task.dependsOn || []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -45,6 +48,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
           description: description.trim() || null,
           priority,
           project: task.project ?? null,
+          dependsOn: selectedDeps,
         }),
       });
 
@@ -88,7 +92,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
             </div>
           </div>
 
-          <div className="p-4 space-y-4">
+          <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
             {error && (
               <div className="p-2 text-sm bg-status-error/10 text-status-error rounded">
                 {error}
@@ -139,6 +143,16 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 disabled={loading}
               />
             </div>
+
+            {task.workspaceId && (
+              <DependencySelector
+                workspaceId={task.workspaceId}
+                excludeTaskId={task.id}
+                selectedIds={selectedDeps}
+                onChange={setSelectedDeps}
+                disabled={loading}
+              />
+            )}
           </div>
 
           <div className="p-4 border-t border-border-default flex justify-end gap-2">

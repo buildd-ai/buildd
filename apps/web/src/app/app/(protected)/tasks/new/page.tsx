@@ -10,6 +10,7 @@ import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
 import type { TaskCategoryValue } from '@buildd/shared';
+import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
@@ -84,6 +85,9 @@ export default function NewTaskPage() {
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
+
+  // Dependencies
+  const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
 
   // Advanced options toggle
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -329,6 +333,7 @@ export default function NewTaskPage() {
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
             ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
+            ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
           }),
         });
 
@@ -666,7 +671,7 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(useOutputSchema || taskTargetBranch) && (
+                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0) && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -759,6 +764,16 @@ export default function NewTaskPage() {
                       />
                       <p className="text-xs text-text-secondary mt-1">Override workspace default for this task only. PRs will target this branch.</p>
                     </div>
+                  )}
+
+                  {/* Dependencies */}
+                  {selectedWorkspaceId && !recurring && (
+                    <DependencySelector
+                      workspaceId={selectedWorkspaceId}
+                      selectedIds={selectedDeps}
+                      onChange={setSelectedDeps}
+                      disabled={loading}
+                    />
                   )}
                 </div>
               )}
