@@ -16,6 +16,7 @@ export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
 
 export const TaskMode = {
   EXECUTION: 'execution',
+  PLANNING: 'planning',
 } as const;
 
 export type TaskModeValue = typeof TaskMode[keyof typeof TaskMode];
@@ -247,6 +248,8 @@ export interface Task {
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
+  // Workflow DAG: task IDs that must complete before this task is claimable
+  dependsOn: string[];
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
@@ -473,6 +476,8 @@ export interface CreateTaskInput {
   outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
+  // Workflow DAG: task IDs that must complete before this task is claimable
+  dependsOn?: string[];
 }
 
 export interface CreateWorkerInput {
@@ -628,7 +633,8 @@ export type SSEEventType =
   | 'worker:rate_limit'
   | 'worker:model_capabilities'
   | 'task:updated'
-  | 'task:children_completed';
+  | 'task:children_completed'
+  | 'task:unblocked';
 
 export interface SSEEvent<T = unknown> {
   type: SSEEventType;

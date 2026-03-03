@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 /**
@@ -22,6 +22,9 @@ export async function resolveCompletedTask(
   if (completedTask?.parentTaskId) {
     await checkChildrenCompleted(completedTask.parentTaskId);
   }
+
+  // Check if any tasks have this task in their dependsOn list
+  await checkDependsOnResolved(completedTaskId);
 }
 
 /**
@@ -54,5 +57,69 @@ async function checkChildrenCompleted(
         failed: children.filter((c) => c.status === 'failed').length,
       }
     );
+  }
+}
+
+/**
+ * Check if completing a task unblocks any tasks that depend on it via `dependsOn`.
+ * For each dependent task, verify all its dependencies are in terminal state,
+ * then fire a TASK_UNBLOCKED Pusher event.
+ */
+async function checkDependsOnResolved(
+  completedTaskId: string
+): Promise<void> {
+  // Find all tasks where dependsOn contains the completed task ID
+  const dependentTasks = await db
+    .select({
+      id: tasks.id,
+      dependsOn: tasks.dependsOn,
+      workspaceId: tasks.workspaceId,
+    })
+    .from(tasks)
+    .where(
+      sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([completedTaskId])}::jsonb`
+    );
+
+  if (dependentTasks.length === 0) return;
+
+  // Collect all unique dependency IDs across all dependent tasks
+  const allDepIds = new Set<string>();
+  for (const task of dependentTasks) {
+    const deps = task.dependsOn as string[] | null;
+    if (deps) {
+      for (const depId of deps) {
+        allDepIds.add(depId);
+      }
+    }
+  }
+
+  // Fetch statuses for all dependency tasks in a single query
+  const depTasks = await db
+    .select({ id: tasks.id, status: tasks.status })
+    .from(tasks)
+    .where(inArray(tasks.id, Array.from(allDepIds)));
+
+  const statusMap = new Map(depTasks.map((t) => [t.id, t.status]));
+
+  // Check each dependent task to see if all its dependencies are resolved
+  for (const task of dependentTasks) {
+    const deps = task.dependsOn as string[] | null;
+    if (!deps || deps.length === 0) continue;
+
+    const allResolved = deps.every((depId) => {
+      const status = statusMap.get(depId);
+      return status === 'completed' || status === 'failed';
+    });
+
+    if (allResolved) {
+      await triggerEvent(
+        channels.workspace(task.workspaceId),
+        events.TASK_UNBLOCKED,
+        {
+          taskId: task.id,
+          resolvedDependency: completedTaskId,
+        }
+      );
+    }
   }
 }

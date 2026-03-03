@@ -301,6 +301,8 @@ export const tasks = pgTable('tasks', {
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
+  // Workflow DAG: task IDs that must complete before this task is claimable
+  dependsOn: jsonb('depends_on').default([]).$type<string[]>(),
   // Deliverable snapshot - populated on worker completion
   result: jsonb('result').$type<TaskResult | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

@@ -72,4 +72,5 @@ export const events = {
   SKILL_INSTALL_RESULT: 'skill:install_result',
   // Task dependency events
   CHILDREN_COMPLETED: 'task:children_completed',
+  TASK_UNBLOCKED: 'task:unblocked',
 } as const;

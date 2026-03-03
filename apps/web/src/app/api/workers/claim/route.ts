@@ -167,8 +167,39 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Filter out tasks with unresolved dependencies
+  const allDepIds = [...new Set(
+    claimableTasks.flatMap(t => (t.dependsOn as string[] | null) ?? [])
+  )];
+
+  let tasksAfterDeps = claimableTasks;
+  if (allDepIds.length > 0) {
+    const depTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, allDepIds),
+      columns: { id: true, status: true },
+    });
+    const depStatusMap = new Map(depTasks.map(t => [t.id, t.status]));
+    const terminalStatuses = new Set(['completed', 'failed']);
+
+    tasksAfterDeps = claimableTasks.filter(task => {
+      const deps = (task.dependsOn as string[] | null) ?? [];
+      if (deps.length === 0) return true;
+      return deps.every(depId => terminalStatuses.has(depStatusMap.get(depId) ?? ''));
+    });
+  }
+
+  if (tasksAfterDeps.length === 0) {
+    return NextResponse.json({
+      workers: [],
+      diagnostics: {
+        reason: 'no_pending_tasks',
+        availableSlots,
+      } satisfies ClaimDiagnostics,
+    });
+  }
+
   // Filter by capabilities
-  const filteredTasks = claimableTasks.filter((task) => {
+  const filteredTasks = tasksAfterDeps.filter((task) => {
     if (capabilities.length === 0) return true;
     const reqCaps = task.requiredCapabilities || [];
     if (reqCaps.length === 0) return true;
