@@ -1,1 +1,1 @@
-ALTER TABLE "workspaces" ADD COLUMN "heartbeat_checklist" jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE "workspaces" ADD COLUMN IF NOT EXISTS "heartbeat_checklist" jsonb DEFAULT '[]'::jsonb;

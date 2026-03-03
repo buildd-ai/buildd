@@ -118,6 +118,12 @@ See `.agent/testing.md` for details.
 
 This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
 
+## Preview URLs
+
+- **Production**: `https://buildd.dev`
+- **Dev (stable)**: `https://buildd-git-dev-maxs-projects-45386f31.vercel.app`
+- **PR previews**: `https://buildd-git-<branch-slug>-maxs-projects-45386f31.vercel.app`
+
 ## Docs
 
 - **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)
