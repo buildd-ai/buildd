@@ -1,5 +1,5 @@
 /**
- * E2E Integration Test: Server + Local-UI Full Flow
+ * E2E Integration Test: Server + Runner Full Flow
  *
  * Validates the core buildd distributed flow:
  *   Server reachable → Create task → Local worker picks it up → Completion confirmed
@@ -7,13 +7,13 @@
  * Environment variables:
  *   BUILDD_TEST_SERVER   Remote server URL  (required — no fallback to production)
  *   BUILDD_API_KEY       API key            (fallback: ~/.buildd/config.json)
- *   LOCAL_UI_URL         Local-UI address   (default: http://localhost:8766)
- *   SKIP_LOCAL_UI_START  Set to "1" if local-ui is already running
+ *   LOCAL_UI_URL         Runner address   (default: http://localhost:8766)
+ *   SKIP_LOCAL_UI_START  Set to "1" if runner is already running
  *   E2E_MODEL            Model to use       (default: claude-haiku-4-5-20251001)
  *
  * Usage:
  *   bun run test:e2e                                     # full lifecycle
- *   SKIP_LOCAL_UI_START=1 bun run test:e2e               # local-ui already running
+ *   SKIP_LOCAL_UI_START=1 bun run test:e2e               # runner already running
  *   BUILDD_TEST_SERVER=https://your-preview.vercel.app bun run test:e2e
  */
 
@@ -76,7 +76,7 @@ beforeAll(async () => {
   server = new ServerClient(BUILDD_SERVER, apiKey);
   localUI = new LocalUIClient(LOCAL_UI_URL);
 
-  // 2. Start local-ui (or verify it's running)
+  // 2. Start runner (or verify it's running)
   await startLocalUI(LOCAL_UI_URL);
 
   // 3. Verify server reachable
@@ -90,16 +90,16 @@ beforeAll(async () => {
   testWorkspaceId = ws.id;
   console.log(`  Workspace: ${ws.name} (${testWorkspaceId})`);
 
-  // 4. Verify local-ui is configured and healthy
+  // 4. Verify runner is configured and healthy
   const cfg = await localUI.getConfig();
   if (!cfg.configured) {
-    throw new Error('Local-UI is not configured (no API key). Set up first.');
+    throw new Error('Runner is not configured (no API key). Set up first.');
   }
 
-  // 5. Sync local-ui's server URL to match this test's target
+  // 5. Sync runner's server URL to match this test's target
   originalServer = cfg.builddServer;
   if (cfg.builddServer !== BUILDD_SERVER) {
-    console.log(`  Syncing local-ui server: ${cfg.builddServer} → ${BUILDD_SERVER}`);
+    console.log(`  Syncing runner server: ${cfg.builddServer} → ${BUILDD_SERVER}`);
     await localUI.setServer(BUILDD_SERVER);
   }
 
@@ -141,7 +141,7 @@ afterAll(async () => {
     } catch { /* may already be gone */ }
   }
 
-  // Restore original settings on local-ui
+  // Restore original settings on runner
   if (originalAcceptRemote) {
     try {
       await localUI.setAcceptRemoteTasks(true);
@@ -151,17 +151,17 @@ afterAll(async () => {
   if (originalServer && originalServer !== BUILDD_SERVER) {
     try {
       await localUI.setServer(originalServer);
-      console.log(`  Restored local-ui server → ${originalServer}`);
+      console.log(`  Restored runner server → ${originalServer}`);
     } catch { /* best effort */ }
   }
   if (originalModel && originalModel !== TEST_MODEL) {
     try {
       await localUI.setModel(originalModel);
-      console.log(`  Restored local-ui model → ${originalModel}`);
+      console.log(`  Restored runner model → ${originalModel}`);
     } catch { /* best effort */ }
   }
 
-  // Stop local-ui if we started it
+  // Stop runner if we started it
   await stopLocalUI();
 
   console.log('=== Cleanup complete ===\n');
@@ -185,9 +185,9 @@ describe('E2E: Server + Worker Flow', () => {
     expect(ws).toBeTruthy();
   });
 
-  // ── 2. Local-UI Health ──────────────────────────────────────────────────
+  // ── 2. Runner Health ──────────────────────────────────────────────────
 
-  test('local-ui is operational and lists workers', async () => {
+  test('runner is operational and lists workers', async () => {
     const cfg = await localUI.getConfig();
     expect(cfg.configured).toBe(true);
 
@@ -228,7 +228,7 @@ describe('E2E: Server + Worker Flow', () => {
     });
     createdTaskIds.push(task.id);
 
-    // Claim via local-ui (triggers server-side claim + starts worker)
+    // Claim via runner (triggers server-side claim + starts worker)
     const { worker } = await localUI.claimTask(task.id);
     createdWorkerIds.push(worker.id);
     expect(worker.status).toBe('working');
@@ -241,7 +241,7 @@ describe('E2E: Server + Worker Flow', () => {
       // Non-critical — server may be slow to reflect claim status
     }
 
-    // Poll local-ui until worker finishes
+    // Poll runner until worker finishes
     const finalWorker = await pollUntil(
       async () => {
         const { workers } = await localUI.listWorkers();

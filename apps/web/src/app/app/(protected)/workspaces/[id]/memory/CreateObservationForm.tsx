@@ -47,7 +47,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
         .map(c => c.trim())
         .filter(Boolean);
 
-      const res = await fetch(`/api/workspaces/${workspaceId}/observations`, {
+      const res = await fetch(`/api/workspaces/${workspaceId}/memory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -55,7 +55,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
           title: title.trim(),
           content: content.trim(),
           files: files.length > 0 ? files : undefined,
-          concepts: concepts.length > 0 ? concepts : undefined,
+          tags: concepts.length > 0 ? concepts : undefined,
         }),
       });
 

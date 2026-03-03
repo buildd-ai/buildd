@@ -55,7 +55,7 @@ interface Props {
   statusColors?: Record<string, string>;
 }
 
-// Probe direct connection to local-ui and cache viewer token
+// Probe direct connection to runner and cache viewer token
 function useDirectConnect(localUiUrl: string | null) {
   const [status, setStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking');
   const viewerTokenRef = useRef<string | null>(null);
@@ -66,7 +66,7 @@ function useDirectConnect(localUiUrl: string | null) {
       return;
     }
 
-    // Mixed content: HTTPS dashboard can't reach HTTP local-ui
+    // Mixed content: HTTPS dashboard can't reach HTTP runner
     if (typeof window !== 'undefined' && window.location.protocol === 'https:' && localUiUrl.startsWith('http://')) {
       setStatus('unavailable');
       return;
@@ -90,7 +90,7 @@ function useDirectConnect(localUiUrl: string | null) {
           }
         }
 
-        // Ping local-ui health endpoint
+        // Ping runner health endpoint
         const healthUrl = new URL('/health', url);
         if (viewerTokenRef.current) {
           healthUrl.searchParams.set('token', viewerTokenRef.current);
@@ -113,7 +113,7 @@ function useDirectConnect(localUiUrl: string | null) {
     return () => { cancelled = true; };
   }, [localUiUrl]);
 
-  // Send message directly to local-ui, returns true on success
+  // Send message directly to runner, returns true on success
   const sendDirect = useCallback(async (workerId: string, message: string): Promise<boolean> => {
     if (status !== 'connected' || !localUiUrl) return false;
     try {
@@ -310,7 +310,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               {directStatus === 'connected' && (
                 <span
                   className="flex items-center gap-1 px-2 py-1 text-[10px] text-status-success bg-status-success/10 border border-status-success/20 rounded-full font-mono"
-                  title="Direct connection to local-ui available (Tailscale/LAN)"
+                  title="Direct connection to runner available (Tailscale/LAN)"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
                   Direct
@@ -451,7 +451,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         currentAction={isActive ? worker.currentAction : undefined}
       />
 
-      {/* Team Panel (P2P — fetches directly from local-ui) */}
+      {/* Team Panel (P2P — fetches directly from runner) */}
       {directStatus === 'connected' && resolvedLocalUiUrl && (
         <TeamPanel
           localUiUrl={resolvedLocalUiUrl}
@@ -460,7 +460,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         />
       )}
 
-      {/* Session History (P2P — fetches directly from local-ui) */}
+      {/* Session History (P2P — fetches directly from runner) */}
       {directStatus === 'connected' && resolvedLocalUiUrl && (
         <SessionHistoryPanel
           localUiUrl={resolvedLocalUiUrl}

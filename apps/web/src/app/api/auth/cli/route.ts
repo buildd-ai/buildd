@@ -15,12 +15,12 @@ import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
 //
 // Query params:
 //   callback (required) - localhost URL to redirect back to
-//   client   (optional) - client identifier: 'local-ui', 'cli', 'mcp', 'agent' (default: 'cli')
+//   client   (optional) - client identifier: 'runner', 'cli', 'mcp', 'agent' (default: 'cli')
 //   account_name (optional) - custom account name (overrides client-based name)
 //   level    (optional) - 'admin' or 'worker' (default depends on client)
 
 const CLIENT_DEFAULTS: Record<string, { name: string; level: 'admin' | 'worker' }> = {
-  'local-ui': { name: 'Local UI', level: 'worker' },
+  'runner': { name: 'Runner', level: 'worker' },
   'cli': { name: 'CLI', level: 'admin' },
   'mcp': { name: 'MCP Server', level: 'admin' },
   'agent': { name: 'Agent', level: 'admin' },

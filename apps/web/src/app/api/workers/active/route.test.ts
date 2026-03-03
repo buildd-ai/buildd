@@ -116,7 +116,7 @@ describe('GET /api/workers/active', () => {
     expect(data.activeLocalUis).toEqual([]);
   });
 
-  it('returns active local-ui instances for session auth', async () => {
+  it('returns active runner instances for session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);

@@ -15,24 +15,9 @@
         "ws": "^8.19.0",
       },
     },
-    "apps/agent": {
-      "name": "@buildd/agent",
-      "version": "0.12.0",
-      "bin": {
-        "buildd-agent": "./dist/index.js",
-      },
-      "dependencies": {
-        "@anthropic-ai/claude-agent-sdk": ">=0.2.49",
-        "@buildd/shared": "workspace:*",
-      },
-      "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5.4.0",
-      },
-    },
-    "apps/local-ui": {
-      "name": "@buildd/local-ui",
-      "version": "0.12.0",
+    "apps/runner": {
+      "name": "@buildd/runner",
+      "version": "0.15.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.50",
         "@buildd/shared": "workspace:*",
@@ -45,23 +30,9 @@
         "tailwindcss": "^3.4.19",
       },
     },
-    "apps/mcp-server": {
-      "name": "@buildd/mcp-server",
-      "version": "0.12.0",
-      "bin": {
-        "buildd-mcp": "./dist/index.js",
-      },
-      "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.0.0",
-      },
-      "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5.4.0",
-      },
-    },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.12.0",
+      "version": "0.15.0",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
@@ -93,7 +64,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.12.0",
+      "version": "0.15.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.2.49",
         "@buildd/shared": "workspace:*",
@@ -120,7 +91,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.12.0",
+      "version": "0.15.0",
       "devDependencies": {
         "typescript": "^5.4.0",
       },
@@ -222,15 +193,11 @@
 
     "@aws/lambda-invoke-store": ["@aws/lambda-invoke-store@0.2.3", "", {}, "sha512-oLvsaPMTBejkkmHhjf09xTgk71mOqyr/409NKhRIL08If7AhVfUsJhVsx386uJaqNd42v9kWamQ9lFbkoC2dYw=="],
 
-    "@buildd/agent": ["@buildd/agent@workspace:apps/agent"],
-
     "@buildd/core": ["@buildd/core@workspace:packages/core"],
 
-    "@buildd/local-ui": ["@buildd/local-ui@workspace:apps/local-ui"],
-
-    "@buildd/mcp-server": ["@buildd/mcp-server@workspace:apps/mcp-server"],
-
     "@buildd/openclaw-skill": ["@buildd/openclaw-skill@workspace:packages/openclaw-skill"],
+
+    "@buildd/runner": ["@buildd/runner@workspace:apps/runner"],
 
     "@buildd/shared": ["@buildd/shared@workspace:packages/shared"],
 

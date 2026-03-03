@@ -71,7 +71,7 @@ describe('WorkerRunner — agent teams env', () => {
 
 /**
  * Mirrors the skill + subagent configuration logic from WorkerRunner.
- * The core runner doesn't convert skills to agents (that's local-ui's job),
+ * The core runner doesn't convert skills to agents (that's the runner's job),
  * but it should correctly handle the allowedTools and systemPrompt when
  * useSkillAgents is present.
  */

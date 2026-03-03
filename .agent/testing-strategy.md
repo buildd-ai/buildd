@@ -2,7 +2,7 @@
 
 ## Testing Layers
 
-### 1. Unit Tests (`apps/local-ui/__tests__/unit/*.test.ts`)
+### 1. Unit Tests (`apps/runner/__tests__/unit/*.test.ts`)
 **Purpose**: Test individual functions/classes in isolation
 **Runtime**: Fast (<1s per suite)
 **Dependencies**: None (mocked)
@@ -18,7 +18,7 @@
 - Abort scenarios (loop detection, user abort, timeout)
 - Network failures (API unreachable, 500 errors, timeouts)
 - Invalid server responses (malformed JSON, missing fields)
-- Observation creation failures (FK violations, validation errors)
+- Memory save failures (API errors, validation errors)
 ```
 
 **Worker State Transitions (`worker-state.test.ts`)**
@@ -57,7 +57,7 @@
 ---
 
 ### 2. Integration Tests (`apps/web/tests/integration/*.test.ts`)
-**Purpose**: Test components working together (local-ui + API server)
+**Purpose**: Test components working together (runner + API server)
 **Runtime**: Medium (10-30s per test)
 **Dependencies**: Live API server, test database
 
@@ -90,7 +90,7 @@
 - Account maxConcurrentWorkers limit enforced
 - Worker cannot claim if at capacity
 - Worker releases capacity on completion/error
-- Multiple local-ui instances share capacity
+- Multiple runner instances share capacity
 ```
 
 **Status Sync & Pusher Events (`realtime.test.ts`)**
@@ -101,20 +101,19 @@
 - Worker output/milestone updates propagate
 ```
 
-**Observation System (`observations.test.ts`)**
+**Memory System (`memory.test.ts`)**
 ```typescript
-- Create observations (discovery, decision, gotcha, etc.)
-- Search observations by type, keywords, files
-- Batch observation creation
-- Observation deduplication
-- FK validation (taskId, workspaceId)
+- Save memories via memory service (discovery, decision, gotcha, etc.)
+- Search memories by type, keywords, files
+- Memory CRUD operations via proxy routes
+- Project scoping (workspace → project mapping)
 ```
 
 **Error Recovery (`error-recovery.test.ts`)**
 ```typescript
 - Network failure during execution → retry → success
 - Server 500 during worker sync → queued → sent on reconnect
-- Observation creation fails → task still completes
+- Memory save fails → task still completes
 - Worker crashes → task marked as failed → can be reassigned
 ```
 
@@ -132,7 +131,7 @@
 ### 3. E2E Tests (`tests/e2e/*.test.ts`)
 **Purpose**: Full user flow tests (browser + API + worker)
 **Runtime**: Slow (1-3 min per test)
-**Dependencies**: Full stack (browser, server, local-ui, DB)
+**Dependencies**: Full stack (browser, server, runner, DB)
 
 #### Existing Coverage:
 - ✅ Server + Local-UI full flow (task creation → completion)
@@ -144,14 +143,14 @@
 - Login → Create workspace → Create task → Monitor worker
 - Task detail page shows realtime updates
 - Worker list shows active/stale status
-- Observation panel displays discoveries
-- Filtering/searching tasks and observations
+- Memory panel displays discoveries
+- Filtering/searching tasks and memories
 ```
 
 **Multi-User Scenarios (`multi-user.test.ts`)**
 ```typescript
 - User A creates task → User B's worker claims it (shared workspace)
-- User A creates observation → User B sees it in search
+- User A saves memory → User B sees it in search
 - User A's worker at capacity → User B's worker claims task
 ```
 
@@ -167,7 +166,7 @@
 ## Test Organization & Naming
 
 ### Current State:
-- **Unit tests**: `apps/local-ui/__tests__/unit/*.test.ts` ✅
+- **Unit tests**: `apps/runner/__tests__/unit/*.test.ts` ✅
 - **Integration tests**: `apps/web/tests/integration/*.test.ts` ✅
 - **E2E tests**: `tests/e2e/*.test.ts` ✅
 
@@ -182,8 +181,8 @@
 
 ### Run Commands:
 ```bash
-# Unit tests (local-ui only)
-bun test apps/local-ui/__tests__/unit/
+# Unit tests (runner only)
+bun test apps/runner/__tests__/unit/
 
 # Integration tests (requires live server)
 bun run test:integration
@@ -207,7 +206,7 @@ bun test
   - `task-lifecycle.test.ts` - Full task lifecycle (create → claim → execute → complete)
   - `worker-state-machine.test.ts` - Worker status transitions (waiting_input handling)
   - `concurrency.test.ts` - Capacity limits, race conditions
-  - `observations.test.ts` - Observation CRUD operations (TODO)
+  - `memory.test.ts` - Memory CRUD via proxy routes (TODO)
 - **Run**: `bun run test:integration` (all files in the directory)
 - **Requirements**: API key, live server
 
@@ -218,9 +217,9 @@ bun test
 - **How**: Browser automation (Playwright/Puppeteer) + API + worker
 - **Examples**:
   - `dashboard-ui.test.ts` - Login → create task → monitor worker in browser
-  - `server-worker-flow.test.ts` - Full stack with local-ui startup
+  - `server-worker-flow.test.ts` - Full stack with runner startup
 - **Run**: `bun run test:e2e`
-- **Requirements**: Browser, API key, live server, local-ui
+- **Requirements**: Browser, API key, live server, runner
 
 **Relationship**: Integration tests validate the API/worker layer. E2E tests validate the browser UI layer on top of that.
 
@@ -256,7 +255,7 @@ e2e-tests:
 ```bash
 bun run seed:waiting-input     # Task with worker in waiting_input state
 bun run seed:error-worker      # Worker in error state (loop detected)
-bun run seed:completed-tasks   # 10 completed tasks with observations
+bun run seed:completed-tasks   # 10 completed tasks with memories
 bun run seed:multi-user        # Tasks across multiple workspaces in various states
 bun run seed:concurrent        # Account at maxConcurrent limit with active workers
 bun run seed:reset             # Cleans up seeded data (handles all seed types)
@@ -264,12 +263,12 @@ bun run seed:reset             # Cleans up seeded data (handles all seed types)
 
 ### Test Fixtures:
 ```typescript
-// apps/local-ui/__tests__/fixtures/
+// apps/runner/__tests__/fixtures/
 - valid-config.json
 - invalid-config.json
 - sample-tasks.json
 - sample-workers.json
-- sample-observations.json
+- sample-memories.json
 ```
 
 ---

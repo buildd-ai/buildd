@@ -4,7 +4,7 @@
 
 ## Buildd Integration Status (v0.2.59)
 
-Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
+Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
@@ -14,7 +14,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
 - Skills-as-subagents via `agents` option
-- In-process MCP server (worker-runner.ts) and subprocess MCP server (local-ui)
+- In-process MCP server (worker-runner.ts) and subprocess MCP server (runner)
 - `sessionId` for worker/session correlation
 - Claude Sonnet 4.6 in model lists
 
@@ -36,12 +36,12 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 | Use model capability discovery for dynamic effort/thinking | `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` | P3 | Task created |
 | Worktree isolation for subagents | `isolation: "worktree"` on agent definitions | P2 | Task created |
 | Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
-| Expose `promptSuggestion()` in local-ui | Offer next-step suggestions in dashboard UI | P3 | Task created |
-| Display permission suggestions in local-ui | `permission_suggestions` on safety check ask responses | P3 | Task created |
+| Expose `promptSuggestion()` in runner | Offer next-step suggestions in dashboard UI | P3 | Task created |
+| Display permission suggestions in runner | `permission_suggestions` on safety check ask responses | P3 | Task created |
 
 ## Completed Integrations
 
-- **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in local-ui
+- **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
 - **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
@@ -89,7 +89,7 @@ Features fully integrated in both `worker-runner.ts` and `local-ui/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
-- **10+ memory leak fixes** — Teammate tasks, AppState, LSP diagnostics, file history, CircularBuffer, TaskOutput, shell execution, UUID tracking — all fixed (v2.1.50–v2.1.51). Critical for long-running local-ui workers.
+- **10+ memory leak fixes** — Teammate tasks, AppState, LSP diagnostics, file history, CircularBuffer, TaskOutput, shell execution, UUID tracking — all fixed (v2.1.50–v2.1.51). Critical for long-running runner workers.
 - **Bun binary compatibility** — Fixed SDK crash (`ReferenceError`) in `bun build --compile` binaries (v0.2.51)
 - **`session.close()` persistence** — Fixed subprocess being killed before persisting session data, which broke `resumeSession()` (v0.2.51)
 - **Tool result disk threshold** — Results > 50K chars (was 100K) now persisted to disk, reducing context window usage (v2.1.51)

@@ -164,7 +164,7 @@ for await (const msg of queryInstance) {
 
 **Problem**: When the CLI subprocess encounters `AskUserQuestion`, in non-interactive (no TTY) mode it auto-resolves without waiting for user input.
 
-**Fix** (implemented in local-ui): Set `parent_tool_use_id` and `session_id` correctly:
+**Fix** (implemented in runner): Set `parent_tool_use_id` and `session_id` correctly:
 
 ```typescript
 // Capture the tool_use block ID
@@ -197,18 +197,18 @@ unset CLAUDE_CODE_OAUTH_TOKEN
 
 ## Integration Test
 
-**Location**: `apps/local-ui/src/test-query-integration.ts`
-**Run**: `bun run test:integration` (from `apps/local-ui`)
+**Location**: `apps/runner/src/test-query-integration.ts`
+**Run**: `bun run test:integration` (from `apps/runner`)
 
 Tests that `query()` with `settingSources: ['project']` correctly loads CLAUDE.md by checking for a unique marker.
 
 ---
 
-## Prompt Suggestions (local-ui implementation)
+## Prompt Suggestions (runner implementation)
 
 The CLI's `promptSuggestion` feature is internal to the terminal UI and **not exposed** on the programmatic `Query` interface (as of v0.2.45). Local-UI implements its own:
 
-- **Location**: `apps/local-ui/src/workers.ts` — `generatePromptSuggestions()`
+- **Location**: `apps/runner/src/workers.ts` — `generatePromptSuggestions()`
 - **Trigger**: Called after successful task completion
 - **Approach**: Heuristic-based suggestions from worker context (commits, tool calls, task metadata) — no extra LLM call
 - **Storage**: `worker.promptSuggestions: string[]` — persisted via worker-store, exposed via `/api/workers` and SSE events

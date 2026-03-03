@@ -2,11 +2,11 @@
  * Integration Tests: Task Lifecycle
  *
  * Tests the complete task lifecycle from creation through execution to completion.
- * Creates real tasks on the server and validates that connected workers (local-ui)
+ * Creates real tasks on the server and validates that connected workers (runner)
  * claim and execute them correctly.
  *
  * Tests cover:
- *   - Heartbeat & discovery (server sees local-ui)
+ *   - Heartbeat & discovery (server sees runner)
  *   - Direct claim flow (API-driven, used by external workers)
  *   - Dashboard dispatch flow (Pusher-driven, used by UI "Start Task")
  *   - Worker lifecycle (status transitions reflected on server)
@@ -17,7 +17,7 @@
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
  *   - BUILDD_API_KEY set (or in ~/.buildd/config.json)
- *   - local-ui running with Pusher configured (claims tasks)
+ *   - runner running with Pusher configured (claims tasks)
  *
  * Usage:
  *   bun run test:integration task-lifecycle
@@ -63,7 +63,7 @@ async function createTask(workspaceId: string, title: string, description: strin
   return task;
 }
 
-/** Claim a task via local-ui. Retries on 429 (capacity full from parallel tests). */
+/** Claim a task via the runner. Retries on 429 (capacity full from parallel tests). */
 async function triggerClaim(taskId: string): Promise<string> {
   const maxAttempts = 10;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -129,7 +129,7 @@ async function waitForTaskClaimed(taskId: string, timeoutMs = 60_000): Promise<a
 
 async function getLocalWorkerOutput(workerId: string): Promise<string[]> {
   const res = await fetch(`${LOCAL_UI}/api/workers`);
-  if (!res.ok) throw new Error(`Failed to get workers from local-ui: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to get workers from runner: ${res.status}`);
   const data = await res.json();
   const worker = data.workers?.find((w: any) => w.id === workerId);
   return worker?.output || [];
@@ -148,7 +148,7 @@ async function getLocalWorkerStatus(workerId: string): Promise<{ status: string;
   }
 }
 
-/** Find a worker on local-ui by task ID */
+/** Find a worker on runner by task ID */
 async function findLocalWorkerByTask(taskId: string): Promise<string | null> {
   try {
     const res = await fetch(`${LOCAL_UI}/api/workers`);
@@ -187,24 +187,24 @@ describe('Task Lifecycle', () => {
   let originalLocalUiServer: string | null = null;
 
   beforeAll(async () => {
-    // Verify local-ui is running and configured
+    // Verify runner is running and configured
     let localUiConfig: any;
     try {
       const healthRes = await fetch(`${LOCAL_UI}/api/config`);
       if (!healthRes.ok) throw new Error(`status ${healthRes.status}`);
       localUiConfig = await healthRes.json();
     } catch (err: any) {
-      throw new Error(`local-ui not reachable at ${LOCAL_UI} (${err.message}). Start local-ui first.`);
+      throw new Error(`runner not reachable at ${LOCAL_UI} (${err.message}). Start runner first.`);
     }
 
     if (!localUiConfig.configured) {
-      throw new Error('local-ui is running but not configured (no API key)');
+      throw new Error('runner is running but not configured (no API key)');
     }
 
-    // Repoint local-ui to the test server if needed
+    // Repoint runner to the test server if needed
     originalLocalUiServer = localUiConfig.builddServer || null;
     if (localUiConfig.builddServer !== SERVER) {
-      console.log(`Repointing local-ui: ${localUiConfig.builddServer} → ${SERVER}`);
+      console.log(`Repointing runner: ${localUiConfig.builddServer} → ${SERVER}`);
       await fetch(`${LOCAL_UI}/api/config/server`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -230,7 +230,7 @@ describe('Task Lifecycle', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ server: originalLocalUiServer }),
         });
-        console.log(`Restored local-ui server → ${originalLocalUiServer}`);
+        console.log(`Restored runner server → ${originalLocalUiServer}`);
       } catch { /* best effort */ }
     }
   });
@@ -239,7 +239,7 @@ describe('Task Lifecycle', () => {
   // 1. Infrastructure tests — verify the plumbing works
   // ---------------------------------------------------------------
 
-  test('heartbeat — server sees local-ui instance', async () => {
+  test('heartbeat — server sees runner instance', async () => {
     const { activeLocalUis } = await api('/api/workers/active');
     expect(activeLocalUis?.length).toBeGreaterThan(0);
 
@@ -247,7 +247,7 @@ describe('Task Lifecycle', () => {
     expect(ui.capacity).toBeGreaterThan(0);
     expect(ui.workspaceIds).toContain(workspaceId);
 
-    console.log(`  ${activeLocalUis.length} local-ui(s) — ${ui.activeWorkers} active, ${ui.capacity} capacity`);
+    console.log(`  ${activeLocalUis.length} runner(s) — ${ui.activeWorkers} active, ${ui.capacity} capacity`);
   }, 30_000);
 
   test('workers/mine — lists account workers', async () => {
@@ -261,7 +261,7 @@ describe('Task Lifecycle', () => {
   }, 15_000);
 
   // ---------------------------------------------------------------
-  // 2. Direct claim flow — API-driven (external workers, local-ui /api/claim)
+  // 2. Direct claim flow — API-driven (external workers, runner /api/claim)
   // ---------------------------------------------------------------
 
   test('direct claim — agent echoes a marker', async () => {
@@ -305,10 +305,10 @@ describe('Task Lifecycle', () => {
     expect(startRes.started).toBe(true);
     console.log(`  Started task ${task.id} via dashboard dispatch`);
 
-    // Wait for local-ui to receive Pusher event and claim it
+    // Wait for runner to receive Pusher event and claim it
     await waitForTaskClaimed(task.id);
 
-    // Find the worker that local-ui created
+    // Find the worker that runner created
     let workerId: string | null = null;
     const start = Date.now();
     while (Date.now() - start < 30_000) {
@@ -413,7 +413,7 @@ describe('Task Lifecycle', () => {
       await sleep(500);
     }
 
-    // Abort via local-ui
+    // Abort via runner
     const abortRes = await fetch(`${LOCAL_UI}/api/abort`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -508,7 +508,7 @@ describe('Task Lifecycle', () => {
       return;
     }
 
-    // Fill remaining slots with long-running tasks via local-ui
+    // Fill remaining slots with long-running tasks via runner
     const fillerWorkers: string[] = [];
     for (let i = 0; i < slotsToFill; i++) {
       const task = await createTask(

@@ -9,11 +9,11 @@ import { getLatestVersion } from '@/lib/version-cache';
 /**
  * POST /api/workers/heartbeat
  *
- * Called by local-ui instances every 30s to announce availability.
+ * Called by runner instances every 30s to announce availability.
  * Upserts a heartbeat record so the dashboard knows this instance is alive
  * and ready to accept tasks, even if it has no active workers.
  *
- * Returns a viewerToken that the local-ui should require on its
+ * Returns a viewerToken that the runner should require on its
  * /api/* endpoints. The dashboard retrieves this token via /api/workers/active
  * and passes it to the browser so it can fetch live data directly.
  */

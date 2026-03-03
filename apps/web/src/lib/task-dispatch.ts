@@ -55,7 +55,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
  *
  * Dispatch chain:
  * 1. Pusher TASK_CREATED (real-time dashboard)
- * 2. Direct local-ui assignment (if specified)
+ * 2. Direct runner assignment (if specified)
  * 3. Webhook dispatch (OpenClaw, etc.)
  * 4. GitHub Actions repository_dispatch (if workspace has GitHub integration)
  * 5. Fallback: Pusher TASK_ASSIGNED (connected local workers)
@@ -91,7 +91,7 @@ export async function dispatchNewTask(
     { task: taskPayload }
   );
 
-  // If assigning to a specific local-ui, trigger assignment event
+  // If assigning to a specific runner, trigger assignment event
   if (options?.assignToLocalUiUrl) {
     await triggerEvent(
       channels.workspace(task.workspaceId),

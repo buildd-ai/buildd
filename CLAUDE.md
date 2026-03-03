@@ -8,11 +8,10 @@
 - **Key paths**:
   - Web dashboard: `apps/web/src/app/`
   - API routes: `apps/web/src/app/api/`
-  - Local UI (Bun): `apps/local-ui/` - standalone worker runner with web UI
-  - MCP server: `apps/mcp-server/` - Claude Code MCP integration
+  - Runner (Bun): `apps/runner/` - standalone worker runner with web UI
+  - MCP server (HTTP): `apps/web/src/app/api/mcp/route.ts`
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - CLI agent: `apps/agent/`
   - Worker runner: `packages/core/worker-runner.ts`
 
 ## Architecture
@@ -93,7 +92,7 @@ Create test data without manual setup:
 ```bash
 bun run seed:waiting-input     # Task with worker in waiting_input state
 bun run seed:error-worker      # Worker in error state (loop detected)
-bun run seed:completed-tasks   # 10 completed tasks with observations
+bun run seed:completed-tasks   # 10 completed tasks with memories
 bun run seed:multi-user        # Tasks across multiple workspaces in various states
 bun run seed:concurrent        # Account at maxConcurrent limit with active workers
 bun run seed:reset             # Cleans up seeded data (handles all seed types)
@@ -110,7 +109,16 @@ Key components have `data-testid` attributes for E2E testing:
 
 See `.agent/testing.md` for details.
 
+## Related Repos
+
+| Repo | Purpose | Domain |
+|------|---------|--------|
+| [buildd-ai/memory](https://github.com/buildd-ai/memory) | Shared memory service (standalone) | `memory.buildd.dev` |
+| [buildd-ai/buildd-docs](https://github.com/buildd-ai/buildd-docs) | Product documentation (Fumadocs) | `docs.buildd.dev` |
+
+This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
+
 ## Docs
 
 - **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)
-- **Product documentation**: If available, check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.
+- **Product documentation**: Check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.

@@ -2,7 +2,7 @@
  * E2E Test Helpers
  *
  * API clients, polling utilities, and subprocess management
- * for server + local-ui integration tests.
+ * for server + runner integration tests.
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -91,7 +91,7 @@ export class ServerClient {
 }
 
 // ---------------------------------------------------------------------------
-// Local-UI Client — talks to the local-ui HTTP API
+// Runner Client — talks to the runner HTTP API
 // ---------------------------------------------------------------------------
 
 export class LocalUIClient {
@@ -109,7 +109,7 @@ export class LocalUIClient {
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`Local-UI ${init?.method || 'GET'} ${path} → ${res.status}: ${body}`);
+      throw new Error(`Runner ${init?.method || 'GET'} ${path} → ${res.status}: ${body}`);
     }
 
     return res.json() as Promise<T>;
@@ -200,32 +200,32 @@ export async function pollUntil<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Local-UI Subprocess Management
+// Runner Subprocess Management
 // ---------------------------------------------------------------------------
 
 let localUIProc: Subprocess | null = null;
 
 /**
- * Start local-ui as a subprocess.
- * Prefers the repo's apps/local-ui/ (latest code), falls back to ~/.buildd/apps/local-ui/.
+ * Start runner as a subprocess.
+ * Prefers the repo's apps/runner/ (latest code), falls back to ~/.buildd/apps/runner/.
  * Waits for the health-check endpoint before returning.
  */
 export async function startLocalUI(localUIUrl: string): Promise<void> {
   if (process.env.SKIP_LOCAL_UI_START === '1') {
-    console.log('  SKIP_LOCAL_UI_START=1 → assuming local-ui is already running');
+    console.log('  SKIP_LOCAL_UI_START=1 → assuming runner is already running');
     return;
   }
 
   // Prefer repo version (has latest code), fall back to installed version
-  const repoDir = join(import.meta.dir, '..', '..', 'apps', 'local-ui');
-  const installedDir = join(homedir(), '.buildd', 'apps', 'local-ui');
+  const repoDir = join(import.meta.dir, '..', '..', 'apps', 'runner');
+  const installedDir = join(homedir(), '.buildd', 'apps', 'runner');
   const localUIDir = existsSync(join(repoDir, 'package.json')) ? repoDir : installedDir;
 
   if (!existsSync(join(localUIDir, 'package.json'))) {
-    throw new Error(`local-ui not found at ${repoDir} or ${installedDir}`);
+    throw new Error(`runner not found at ${repoDir} or ${installedDir}`);
   }
 
-  console.log(`  Starting local-ui from ${localUIDir} ...`);
+  console.log(`  Starting runner from ${localUIDir} ...`);
 
   localUIProc = Bun.spawn(['bun', 'start'], {
     cwd: localUIDir,
@@ -248,15 +248,15 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
         return null;
       }
     },
-    { timeout: 15_000, interval: 500, label: 'local-ui startup' },
+    { timeout: 15_000, interval: 500, label: 'runner startup' },
   );
 
-  console.log('  local-ui is up');
+  console.log('  runner is up');
 }
 
 export async function stopLocalUI(): Promise<void> {
   if (localUIProc) {
-    console.log('  Stopping local-ui subprocess ...');
+    console.log('  Stopping runner subprocess ...');
     localUIProc.kill();
     localUIProc = null;
   }

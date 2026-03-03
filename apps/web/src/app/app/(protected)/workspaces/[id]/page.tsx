@@ -1,5 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, observations, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
+import { MemoryClient } from '@buildd/core/memory-client';
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -68,11 +69,20 @@ export default async function WorkspaceDetailPage({
 
   const taskCountMap = Object.fromEntries(taskCounts.map((t) => [t.status, Number(t.count)]));
 
-  const [obsCount] = await db
-    .select({ count: count() })
-    .from(observations)
-    .where(eq(observations.workspaceId, id));
-  const observationCount = Number(obsCount?.count || 0);
+  // Fetch memory count from memory service
+  let memoryCount = 0;
+  try {
+    const memUrl = process.env.MEMORY_API_URL;
+    const memKey = process.env.MEMORY_API_KEY;
+    if (memUrl && memKey) {
+      const memClient = new MemoryClient(memUrl, memKey);
+      const project = workspace.repo || workspace.name;
+      const data = await memClient.search({ project, limit: 1 });
+      memoryCount = data.total;
+    }
+  } catch {
+    // Non-fatal
+  }
 
   const [schedCount] = await db
     .select({ count: count() })
@@ -153,7 +163,7 @@ export default async function WorkspaceDetailPage({
             href={`/app/workspaces/${workspace.id}/memory`}
             className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
-            Memory{observationCount > 0 ? ` (${observationCount})` : ''}
+            Memory{memoryCount > 0 ? ` (${memoryCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/config`}

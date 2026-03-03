@@ -9,7 +9,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 /**
  * GET /api/workers/[id]/sessions
  *
- * Proxies to local-ui's sessions endpoint which calls the SDK's
+ * Proxies to runner's sessions endpoint which calls the SDK's
  * listSessions() and getSessionMessages() APIs.
  *
  * Query params:
@@ -77,12 +77,12 @@ export async function GET(
 
   if (!worker?.localUiUrl) {
     return NextResponse.json(
-      { error: 'Worker has no local-ui URL — session history requires a direct connection' },
+      { error: 'Worker has no runner URL — session history requires a direct connection' },
       { status: 404 }
     );
   }
 
-  // Proxy the request to local-ui
+  // Proxy the request to runner
   const url = new URL(req.url);
   const proxyUrl = new URL(`/api/workers/${id}/sessions`, worker.localUiUrl);
 
@@ -105,7 +105,7 @@ export async function GET(
     return NextResponse.json(data, { status: res.status });
   } catch (err: any) {
     return NextResponse.json(
-      { error: 'Failed to reach local-ui: ' + (err.message || 'connection refused') },
+      { error: 'Failed to reach runner: ' + (err.message || 'connection refused') },
       { status: 502 }
     );
   }

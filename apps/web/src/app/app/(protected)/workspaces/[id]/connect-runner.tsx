@@ -232,37 +232,34 @@ jobs:
             </div>
 
             <div>
-              <div className="text-sm font-medium mb-2">Step 2: Run the agent</div>
+              <div className="text-sm font-medium mb-2">Step 2: Install and run buildd</div>
               <p className="text-sm text-text-secondary mb-2">
-                On your server, clone your repo and run:
+                On your server, install buildd and log in:
               </p>
               <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`cd your-repo
-export BUILDD_API_KEY=bld_xxx
-export BUILDD_SERVER=https://buildd.dev
-export ANTHROPIC_API_KEY=sk-ant-xxx
+{`# Install buildd
+curl -fsSL https://raw.githubusercontent.com/buildd-ai/buildd/main/apps/runner/install.sh | bash
 
-# Run the agent (loops forever, claiming tasks)
-bun run ~/buildd/apps/agent/src/index.ts --workspace-id=${workspaceId}`}
+# Log in (creates API key)
+buildd login --device
+
+# Start the worker (claims and runs tasks)
+buildd`}
               </pre>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Or use systemd for persistent running:</div>
               <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`# /etc/systemd/system/buildd-agent.service
+{`# /etc/systemd/system/buildd.service
 [Unit]
-Description=Buildd Agent
+Description=Buildd Worker
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/your-repo
-Environment=BUILDD_API_KEY=bld_xxx
-Environment=BUILDD_SERVER=https://buildd.dev
-Environment=ANTHROPIC_API_KEY=sk-ant-xxx
-ExecStart=/usr/local/bin/bun run /home/ubuntu/buildd/apps/agent/src/index.ts
+ExecStart=/home/ubuntu/.local/bin/buildd
 Restart=always
 
 [Install]
@@ -291,7 +288,7 @@ WantedBy=multi-user.target`}
                 Run this command in your terminal:
               </p>
               <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-{`claude mcp add-json buildd '{"type":"stdio","command":"bun","args":["run","~/path/to/buildd/apps/mcp-server/src/index.ts"],"env":{"BUILDD_API_KEY":"YOUR_API_KEY","BUILDD_SERVER":"https://buildd.dev"}}'`}
+{`claude mcp add --transport http buildd https://buildd.dev/api/mcp --header "Authorization: Bearer YOUR_API_KEY"`}
               </pre>
             </div>
 

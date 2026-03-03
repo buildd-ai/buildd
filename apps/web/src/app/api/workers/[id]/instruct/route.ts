@@ -96,7 +96,7 @@ export async function POST(
     .where(eq(workers.id, id))
     .returning();
 
-  // Urgent priority: bridge to Pusher for instant delivery via local-ui's handleCommand
+  // Urgent priority: bridge to Pusher for instant delivery via runner's handleCommand
   if (priority === 'urgent') {
     await triggerEvent(
       channels.worker(id),
