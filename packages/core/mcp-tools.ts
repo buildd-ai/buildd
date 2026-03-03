@@ -35,6 +35,7 @@ export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
   'approve_plan', 'reject_plan',
   'manage_heartbeat', 'create_heartbeat',
+  'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -70,6 +71,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_heartbeat: '{ workspaceId?, action: "get" | "set", checklist?: string[] } — get or update workspace heartbeat checklist [admin]',
     create_heartbeat: '{ workspaceId?, cronExpression? (default "*/30 * * * *"), name? } — create a heartbeat schedule that checks workspace checklist [admin]',
+    list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
+    create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
+    run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
@@ -688,6 +692,71 @@ export async function handleBuilddAction(
 
       const sched = schedule.schedule;
       return text(`Heartbeat schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nTask: "${sched.taskTemplate.title}" (mode: planning, priority: 3)`);
+    }
+
+    // ── Recipes ───────────────────────────────────────────────────────────
+
+    case 'list_recipes': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const data = await api(`/api/workspaces/${wsId}/recipes`);
+      const recipes = data.recipes || [];
+
+      if (recipes.length === 0) return text('No recipes configured for this workspace.');
+
+      const summary = recipes.map((r: any) =>
+        `- **${r.name}**${r.category ? ` [${r.category}]` : ''}\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
+      ).join('\n\n');
+
+      return text(`${recipes.length} recipe(s):\n\n${summary}`);
+    }
+
+    case 'create_recipe': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.name || !params.steps) throw new Error('name and steps are required');
+
+      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const data = await api(`/api/workspaces/${wsId}/recipes`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: params.name,
+          steps: params.steps,
+          description: params.description || undefined,
+          category: params.category || undefined,
+          variables: params.variables || undefined,
+          isPublic: params.isPublic || false,
+        }),
+      });
+
+      const recipe = data.recipe;
+      return text(`Recipe created: "${recipe.name}" (ID: ${recipe.id})\nSteps: ${recipe.steps?.length || 0}\nCategory: ${recipe.category || 'none'}`);
+    }
+
+    case 'run_recipe': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.recipeId) throw new Error('recipeId is required');
+
+      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const data = await api(`/api/workspaces/${wsId}/recipes/${params.recipeId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          variables: params.variables || {},
+          parentTaskId: params.parentTaskId || undefined,
+        }),
+      });
+
+      const taskIds = data.tasks || [];
+      return text(`Recipe instantiated! Created ${taskIds.length} task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
     }
 
     default:

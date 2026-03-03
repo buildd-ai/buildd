@@ -43,6 +43,13 @@
       "when": 1772504556933,
       "tag": "0005_spicy_devos",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1772505989092,
+      "tag": "0006_ordinary_mongu",
+      "breakpoints": true
     }
   ]
 }
