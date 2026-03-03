@@ -19,6 +19,7 @@ interface Task {
   status: string;
   category?: string | null;
   project?: string | null;
+  dependsOn?: string[];
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
 }
@@ -502,6 +503,14 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
                     {/* Tasks */}
                     {!isCollapsed && (() => {
+                      // Build a lookup of task statuses for dependency checking
+                      const taskStatusMap = new Map(ws.tasks.map(t => [t.id, t.status]));
+                      const hasUnresolvedDeps = (task: Task) => {
+                        const deps = task.dependsOn || [];
+                        if (deps.length === 0) return false;
+                        return deps.some(depId => taskStatusMap.get(depId) !== 'completed');
+                      };
+
                       // Split ALL tasks into active vs completed BEFORE slicing
                       const allActiveTasks = ws.tasks.filter(t =>
                         ['running', 'assigned', 'pending', 'waiting_input'].includes(t.status)
@@ -529,7 +538,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                               {allActiveTasks.length > 0 && (
                                 <div className="section-label px-2 py-1.5 mb-0.5">Active</div>
                               )}
-                              {allActiveTasks.map((task) => (
+                              {allActiveTasks.map((task) => {
+                                const isBlocked = hasUnresolvedDeps(task);
+                                return (
                                 <Link
                                   key={task.id}
                                   href={`/app/tasks/${task.id}`}
@@ -545,6 +556,12 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                   <span className="flex-1 min-w-0">
                                     <span className="flex items-center gap-1.5">
                                       <span className="truncate">{task.title}</span>
+                                      {isBlocked && (
+                                        <svg className="w-3 h-3 text-text-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Blocked by dependencies">
+                                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                        </svg>
+                                      )}
                                       {task.category && <CategoryBadge category={task.category} />}
                                       {task.project && (
                                         <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0 flex items-center gap-0.5">
@@ -565,7 +582,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                     )}
                                   </span>
                                 </Link>
-                              ))}
+                                );
+                              })}
 
                               {/* Completed section - collapsible */}
                               {allCompletedTasks.length > 0 && (

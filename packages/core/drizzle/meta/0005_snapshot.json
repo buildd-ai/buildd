@@ -1,5 +1,5 @@
 {
-  "id": "dc95e28a-d130-4076-9781-f86bf50293b4",
+  "id": "2e8c1aef-9569-4d59-ad7f-fc757dddf998",
   "prevId": "d4f7e1d8-0162-4559-9c3a-447190de660d",
   "version": "5",
   "dialect": "pg",
@@ -2554,11 +2554,12 @@
           "primaryKey": false,
           "notNull": false
         },
-        "discord_config": {
-          "name": "discord_config",
+        "heartbeat_checklist": {
+          "name": "heartbeat_checklist",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": false,
+          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",

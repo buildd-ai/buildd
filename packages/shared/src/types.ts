@@ -375,6 +375,29 @@ export interface TaskSchedule {
   updatedAt: Date;
 }
 
+export interface Recipe {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description?: string | null;
+  category?: 'content' | 'research' | 'code' | 'ops' | 'custom' | null;
+  steps: RecipeStep[];
+  variables: Record<string, { type: string; description?: string; default?: string }>;
+  isPublic: boolean;
+  createdAt: string;
+}
+
+export interface RecipeStep {
+  ref: string;
+  title: string;
+  description?: string;
+  mode?: 'execution' | 'planning';
+  dependsOn?: string[];
+  requiredCapabilities?: string[];
+  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
+  priority?: number;
+}
+
 export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
 export interface WorkspaceSkill {

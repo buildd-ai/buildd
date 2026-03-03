@@ -1,6 +1,6 @@
 {
-  "id": "2cb44a20-eaac-4e70-bd55-7e390db1d543",
-  "prevId": "2e8c1aef-9569-4d59-ad7f-fc757dddf998",
+  "id": "6a0843b3-af5c-42fb-921a-65055af84d51",
+  "prevId": "2cb44a20-eaac-4e70-bd55-7e390db1d543",
   "version": "5",
   "dialect": "pg",
   "tables": {
@@ -2673,6 +2673,18 @@
         },
         "webhook_config": {
           "name": "webhook_config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discord_config": {
+          "name": "discord_config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "slack_config": {
+          "name": "slack_config",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

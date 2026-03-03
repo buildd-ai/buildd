@@ -11,6 +11,7 @@ interface Props {
     priority: number;
     project?: string | null;
     workspaceId?: string;
+    dependsOn?: string[];
   };
 }
 

@@ -11,6 +11,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import PlanReviewPanel from './PlanReviewPanel';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -70,6 +71,15 @@ export default async function TaskDetailPage({
   if (!access) {
     notFound();
   }
+
+  // Fetch dependency tasks if dependsOn has entries
+  const depTaskIds = (task.dependsOn as string[] | undefined) || [];
+  const depTasks = depTaskIds.length > 0
+    ? await db.query.tasks.findMany({
+        where: inArray(tasks.id, depTaskIds),
+        columns: { id: true, title: true, status: true },
+      })
+    : [];
 
   // Get workers for this task
   const taskWorkers = await db.query.workers.findMany({
@@ -200,6 +210,7 @@ export default async function TaskDetailPage({
                 priority: task.priority,
                 project: task.project,
                 workspaceId: task.workspaceId,
+                dependsOn: (task.dependsOn as string[]) || [],
               }}
             />
             {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}
@@ -287,6 +298,41 @@ export default async function TaskDetailPage({
           </div>
         )}
 
+        {/* Dependencies (dependsOn) */}
+        {depTasks.length > 0 && (() => {
+          const allResolved = depTasks.every(d => d.status === 'completed');
+          return (
+            <div className="mb-6">
+              <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+                Dependencies
+              </div>
+              <div className="p-4 bg-surface-2 rounded-[10px] space-y-2">
+                {depTasks.map((dep) => (
+                  <div key={dep.id} className="flex items-center gap-2">
+                    <Link
+                      href={`/app/tasks/${dep.id}`}
+                      className="text-sm text-primary-400 hover:underline"
+                    >
+                      {dep.title}
+                    </Link>
+                    <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
+                      {dep.status}
+                    </span>
+                  </div>
+                ))}
+                {allResolved && (
+                  <div className="flex items-center gap-1.5 mt-2 text-xs text-status-success">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                    All dependencies resolved
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
           <div className="mb-6">
@@ -341,6 +387,14 @@ export default async function TaskDetailPage({
             <div className="text-2xl font-semibold">{taskWorkers.length}</div>
           </div>
         </div>
+
+        {/* Plan Review — shown for completed planning tasks */}
+        <PlanReviewPanel
+          taskId={task.id}
+          mode={task.mode}
+          status={task.status}
+          result={task.result as Record<string, unknown> | null}
+        />
 
         {/* Active Worker */}
         {activeWorker && (

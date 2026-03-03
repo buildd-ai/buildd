@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocalUiHealth } from './useLocalUiHealth';
 import { uploadImagesToR2 } from '@/lib/upload';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
+import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 const PIPELINE_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
@@ -42,6 +43,10 @@ export default function QuickCreateModal({
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
+
+  // Dependencies state
+  const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
+  const [showDeps, setShowDeps] = useState(false);
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
@@ -230,6 +235,7 @@ export default function QuickCreateModal({
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
           ...(Object.keys(context).length > 0 && { context }),
+          ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
         }),
       });
 
@@ -279,6 +285,8 @@ export default function QuickCreateModal({
     setShowDescription(false);
     setPastedImages([]);
     setSelectedSkillSlugs([]);
+    setSelectedDeps([]);
+    setShowDeps(false);
     setError('');
     setAssignmentStatus('idle');
     setCreatedTaskId(null);
@@ -557,6 +565,24 @@ export default function QuickCreateModal({
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* Dependencies */}
+              {showDeps ? (
+                <DependencySelector
+                  workspaceId={workspaceId}
+                  selectedIds={selectedDeps}
+                  onChange={setSelectedDeps}
+                  disabled={loading}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowDeps(true)}
+                  className="px-3 py-2 text-sm text-text-muted hover:text-text-secondary hover:bg-surface-3 rounded-lg border border-dashed border-border-default w-full text-left"
+                >
+                  + Add dependencies
+                </button>
               )}
 
               {/* Worker assignment */}
