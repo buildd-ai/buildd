@@ -33,6 +33,7 @@ export const workerActions = [
 
 export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
+  'approve_plan', 'reject_plan',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -64,6 +65,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     list_schedules: '{ workspaceId? } [admin]',
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
+    approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
+    reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
@@ -594,6 +597,33 @@ export async function handleBuilddAction(
       ).join('\n');
 
       return text(`${filtered.length} event(s):\n\n${summary}`);
+    }
+
+    case 'approve_plan': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const data = await api(`/api/tasks/${params.taskId}/approve-plan`, {
+        method: 'POST',
+      });
+
+      const taskIds = data.tasks || [];
+      return text(`Plan approved! Created ${taskIds.length} child task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
+    }
+
+    case 'reject_plan': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.taskId) throw new Error('taskId is required');
+      if (!params.feedback) throw new Error('feedback is required');
+
+      const data = await api(`/api/tasks/${params.taskId}/reject-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ feedback: params.feedback }),
+      });
+
+      return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
     default:
