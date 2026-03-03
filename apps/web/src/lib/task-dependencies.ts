@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { eq, sql, inArray } from 'drizzle-orm';
+import { eq, and, sql, inArray, like } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 /**
@@ -30,13 +30,14 @@ export async function resolveCompletedTask(
 /**
  * Check if all children of a parent task have reached terminal state.
  * Fires a CHILDREN_COMPLETED Pusher event for dashboard visibility.
+ * If the parent is a planning task, auto-creates an aggregation child task.
  */
 async function checkChildrenCompleted(
   parentTaskId: string
 ): Promise<void> {
   const children = await db.query.tasks.findMany({
     where: eq(tasks.parentTaskId, parentTaskId),
-    columns: { id: true, status: true, workspaceId: true },
+    columns: { id: true, status: true, workspaceId: true, title: true, result: true },
   });
 
   if (children.length === 0) return;
@@ -57,7 +58,65 @@ async function checkChildrenCompleted(
         failed: children.filter((c) => c.status === 'failed').length,
       }
     );
+
+    // Auto-create aggregation task for planning parents
+    await maybeCreateAggregationTask(parentTaskId, children);
   }
+}
+
+/**
+ * If the parent task has mode='planning', create an aggregation child task
+ * to synthesize the results of all completed sub-tasks.
+ * Guards against duplicate creation by checking for existing aggregation tasks.
+ */
+async function maybeCreateAggregationTask(
+  parentTaskId: string,
+  children: Array<{ id: string; status: string; workspaceId: string; title: string; result: unknown }>
+): Promise<void> {
+  // Fetch parent to check if it's a planning task
+  const parent = await db.query.tasks.findFirst({
+    where: eq(tasks.id, parentTaskId),
+    columns: { id: true, mode: true, title: true, workspaceId: true },
+  });
+
+  if (!parent || parent.mode !== 'planning') return;
+
+  // Guard: check if an aggregation task already exists
+  const existing = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.parentTaskId, parentTaskId),
+        like(tasks.title, 'Aggregate results:%')
+      )
+    );
+
+  if (existing.length > 0) return;
+
+  // Build context with child task summaries
+  const childSummaries = children.map((c) => ({
+    taskId: c.id,
+    title: c.title,
+    status: c.status,
+    result: c.result ?? null,
+  }));
+
+  await db.insert(tasks).values({
+    workspaceId: parent.workspaceId,
+    title: `Aggregate results: ${parent.title}`,
+    description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
+    mode: 'execution',
+    parentTaskId,
+    status: 'pending',
+    creationSource: 'api',
+    outputRequirement: 'artifact_required',
+    context: {
+      aggregation: true,
+      parentTaskId,
+      childTasks: childSummaries,
+    },
+  });
 }
 
 /**
