@@ -68,7 +68,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, accessMode } = body;
+    const { name, accessMode, discordConfig } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -76,6 +76,7 @@ export async function PATCH(
 
     if (name !== undefined) updates.name = name;
     if (accessMode !== undefined) updates.accessMode = accessMode;
+    if (discordConfig !== undefined) updates.discordConfig = discordConfig;
 
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
 
