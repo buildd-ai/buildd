@@ -261,6 +261,9 @@ export const workspaces = pgTable('workspaces', {
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
   webhookConfig: jsonb('webhook_config').$type<WorkspaceWebhookConfig>(),
 
+  // Heartbeat checklist — items for proactive agent to monitor
+  heartbeatChecklist: jsonb('heartbeat_checklist').default([]).$type<string[]>(),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 

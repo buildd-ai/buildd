@@ -34,6 +34,7 @@ export const workerActions = [
 export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
   'approve_plan', 'reject_plan',
+  'manage_heartbeat', 'create_heartbeat',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -67,6 +68,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
+    manage_heartbeat: '{ workspaceId?, action: "get" | "set", checklist?: string[] } — get or update workspace heartbeat checklist [admin]',
+    create_heartbeat: '{ workspaceId?, cronExpression? (default "*/30 * * * *"), name? } — create a heartbeat schedule that checks workspace checklist [admin]',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
@@ -624,6 +627,67 @@ export async function handleBuilddAction(
       });
 
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
+    }
+
+    case 'manage_heartbeat': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const hbAction = params.action as string;
+      if (hbAction === 'get') {
+        const data = await api(`/api/workspaces/${wsId}/heartbeat`);
+        const checklist = data.checklist || [];
+        if (checklist.length === 0) return text('Heartbeat checklist is empty. Use action="set" to configure items to monitor.');
+        const items = checklist.map((item: string, i: number) => `${i + 1}. ${item}`).join('\n');
+        return text(`Heartbeat checklist (${checklist.length} item(s)):\n\n${items}`);
+      }
+
+      if (hbAction === 'set') {
+        if (!params.checklist || !Array.isArray(params.checklist)) {
+          throw new Error('checklist (string array) is required for action="set"');
+        }
+        const data = await api(`/api/workspaces/${wsId}/heartbeat`, {
+          method: 'PATCH',
+          body: JSON.stringify({ checklist: params.checklist }),
+        });
+        const updated = data.checklist || [];
+        const items = updated.map((item: string, i: number) => `${i + 1}. ${item}`).join('\n');
+        return text(`Heartbeat checklist updated (${updated.length} item(s)):\n\n${items}`);
+      }
+
+      throw new Error('action must be "get" or "set"');
+    }
+
+    case 'create_heartbeat': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const cronExpression = (params.cronExpression as string) || '*/30 * * * *';
+      const name = (params.name as string) || 'Heartbeat';
+
+      const schedule = await api(`/api/workspaces/${wsId}/schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          cronExpression,
+          timezone: 'UTC',
+          maxConcurrentFromSchedule: 1,
+          taskTemplate: {
+            title: 'Heartbeat: check monitored items',
+            mode: 'planning',
+            priority: 3,
+          },
+        }),
+      });
+
+      const sched = schedule.schedule;
+      return text(`Heartbeat schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nTask: "${sched.taskTemplate.title}" (mode: planning, priority: 3)`);
     }
 
     default:
