@@ -67,6 +67,12 @@ export const ArtifactType = {
   REPORT: 'report',
   DATA: 'data',
   LINK: 'link',
+  EMAIL_DRAFT: 'email_draft',
+  SOCIAL_POST: 'social_post',
+  ANALYSIS: 'analysis',
+  RECOMMENDATION: 'recommendation',
+  ALERT: 'alert',
+  CALENDAR_EVENT: 'calendar_event',
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];

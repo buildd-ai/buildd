@@ -36,6 +36,20 @@
       "when": 1772500445797,
       "tag": "0004_omniscient_red_shift",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1772506476139,
+      "tag": "0005_furry_guardsmen",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1772506537034,
+      "tag": "0006_tearful_mindworm",
+      "breakpoints": true
     }
   ]
 }
