@@ -10,6 +10,8 @@ import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
 import SkillsSection from './SkillsSection';
+import SlackSection from './SlackSection';
+import DiscordSection from './DiscordSection';
 import HeartbeatSection from './HeartbeatSection';
 
 export const dynamic = 'force-dynamic';
@@ -172,6 +174,16 @@ export default async function SettingsPage() {
               </div>
             )}
           </section>
+
+          <hr className="border-border-default" />
+
+          {/* Slack */}
+          <SlackSection workspaces={userWorkspaces} />
+
+          <hr className="border-border-default" />
+
+          {/* Discord */}
+          <DiscordSection workspaces={userWorkspaces} />
 
           <hr className="border-border-default" />
 

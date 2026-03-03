@@ -29,6 +29,7 @@ export const workerActions = [
   'create_pr', 'update_task', 'create_task', 'create_artifact',
   'list_artifacts', 'update_artifact',
   'emit_event', 'query_events',
+  'list_artifact_templates',
 ] as const;
 
 export const adminActions = [
@@ -60,7 +61,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_pr: '{ workerId (required), title (required), head (required), body?, base?, draft? }',
     update_task: '{ taskId (required), title?, description?, priority?, project? }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping) }',
-    create_artifact: '{ workerId (required), type (required: content|report|data|link|summary), title (required), content?, url?, metadata?, key? }',
+    create_artifact: '{ workerId (required), type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? }',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -76,6 +77,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId (required), type (required), label (required), metadata? }',
     query_events: '{ workerId (required), type? }',
+    list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
 
@@ -493,7 +495,7 @@ export async function handleBuilddAction(
       if (!params.workerId) throw new Error('workerId is required');
       if (!params.type || !params.title) throw new Error('type and title are required');
 
-      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary'];
+      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event'];
       if (!validArtifactTypes.includes(params.type as string)) {
         throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
       }
@@ -560,6 +562,14 @@ export async function handleBuilddAction(
 
       const updatedArt = updated.artifact;
       return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+    }
+
+    case 'list_artifact_templates': {
+      const { artifactTemplates } = await import('./artifact-templates');
+      const templateList = Object.entries(artifactTemplates).map(([name, tmpl]) =>
+        `## ${name}\n**Type:** ${tmpl.type}\n**Description:** ${tmpl.description}\n**Schema:**\n\`\`\`json\n${JSON.stringify(tmpl.schema, null, 2)}\n\`\`\``
+      ).join('\n\n---\n\n');
+      return text(`Available artifact templates:\n\n${templateList}\n\nUse create_artifact with matching type and structured content following the schema.`);
     }
 
     // ── Observability (Phase 5) ────────────────────────────────────────────

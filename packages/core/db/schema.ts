@@ -261,6 +261,22 @@ export const workspaces = pgTable('workspaces', {
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
   webhookConfig: jsonb('webhook_config').$type<WorkspaceWebhookConfig>(),
 
+  // Discord integration
+  discordConfig: jsonb('discord_config').$type<{
+    guildId?: string;
+    channelId?: string;
+    botToken?: string;
+    enabled?: boolean;
+  }>(),
+
+  // Slack integration
+  slackConfig: jsonb('slack_config').$type<{
+    teamId?: string;
+    channelId?: string;
+    botToken?: string;
+    enabled?: boolean;
+  }>(),
+
   // Heartbeat checklist — items for proactive agent to monitor
   heartbeatChecklist: jsonb('heartbeat_checklist').default([]).$type<string[]>(),
 
