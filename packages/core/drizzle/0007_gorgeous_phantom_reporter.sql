@@ -1,2 +1,2 @@
-ALTER TABLE "workspaces" ADD COLUMN "discord_config" jsonb;--> statement-breakpoint
-ALTER TABLE "workspaces" ADD COLUMN "slack_config" jsonb;
+ALTER TABLE "workspaces" ADD COLUMN IF NOT EXISTS "discord_config" jsonb;--> statement-breakpoint
+ALTER TABLE "workspaces" ADD COLUMN IF NOT EXISTS "slack_config" jsonb;

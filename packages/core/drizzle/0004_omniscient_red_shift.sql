@@ -1,1 +1,1 @@
-ALTER TABLE "tasks" ADD COLUMN "depends_on" jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "depends_on" jsonb DEFAULT '[]'::jsonb;
