@@ -46,12 +46,15 @@ export interface UpdateResult {
 export function applyUpdate(): UpdateResult {
   const previousCommit = getCurrentCommit();
   try {
-    execSync('git fetch origin main && git reset --hard origin/main', {
-      cwd: INSTALL_DIR,
-      encoding: 'utf-8',
-      timeout: 30_000,
-      stdio: 'pipe',
-    });
+    // Ensure we're on main before resetting
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    execSync(
+      (branch !== 'main' ? 'git checkout -f main && ' : '') +
+      'git fetch origin main && git reset --hard origin/main',
+      { cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 30_000, stdio: 'pipe' },
+    );
 
     execSync('bun install', {
       cwd: INSTALL_DIR,

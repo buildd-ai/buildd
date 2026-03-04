@@ -749,23 +749,20 @@ const server = Bun.serve({
         }, { status: 409, headers: corsHeaders });
       }
 
-      // Check branch — only update from main
+      // Ensure we're on main branch (switch if needed)
       const branch = await getCurrentBranch();
-      if (branch !== 'main') {
-        return Response.json({
-          error: `Currently on branch '${branch}', expected 'main'`,
-          hint: 'Switch to main branch before updating: git checkout main',
-        }, { status: 409, headers: corsHeaders });
-      }
 
       updateState.updating = true;
       const prevCommit = updateState.currentCommit;
       broadcast({ type: 'update_started' });
 
       try {
-        // Fetch + pull latest (async, non-blocking)
+        // Fetch latest and ensure we're on main
         await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
-        await gitAsync(['pull', '--ff-only', 'origin', 'main'], BUILDD_DIR, 30_000);
+        if (branch !== 'main') {
+          await gitAsync(['checkout', 'main'], BUILDD_DIR, 10_000);
+        }
+        await gitAsync(['reset', '--hard', 'origin/main'], BUILDD_DIR, 10_000);
 
         // Install dependencies
         const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
@@ -2309,19 +2306,18 @@ setInterval(async () => {
     updateState.lastIdleAt &&
     Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS
   ) {
-    // Preflight: clean tree, on main branch
-    const clean = await isWorkingTreeClean();
-    const branch = await getCurrentBranch();
-    if (!clean || branch !== 'main') return;
-
     console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle...`);
     updateState.updating = true;
     const prevCommit = updateState.currentCommit;
+    const prevBranch = await getCurrentBranch();
     broadcast({ type: 'update_started' });
 
     try {
       await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
-      await gitAsync(['pull', '--ff-only', 'origin', 'main'], BUILDD_DIR, 30_000);
+      if (prevBranch !== 'main') {
+        await gitAsync(['checkout', '-f', 'main'], BUILDD_DIR, 10_000);
+      }
+      await gitAsync(['reset', '--hard', 'origin/main'], BUILDD_DIR, 10_000);
       const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
       await installProc.exited;
       await initCurrentCommit();
