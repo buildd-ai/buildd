@@ -114,6 +114,8 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Project scoping
       project,
+      // Objective linking
+      objectiveId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
     } = body;
@@ -233,6 +235,7 @@ export async function POST(req: NextRequest) {
         ...(category ? { category } : {}),
         ...(outputRequirement ? { outputRequirement } : {}),
         ...(outputSchema ? { outputSchema } : {}),
+        ...(objectiveId ? { objectiveId } : {}),
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
         // Creator tracking (from service)
         ...creatorContext,
