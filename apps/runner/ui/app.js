@@ -591,11 +591,15 @@ function updateStats(activeCount, pendingCount, completedCount) {
 
 function renderWorkerCard(w) {
   const progress = renderMilestoneBoxes(w.milestones);
+  const planningBadge = w.taskMode === 'planning'
+    ? '<div class="text-[11px] font-semibold uppercase tracking-wide text-purple-400 bg-purple-500/15 py-0.5 px-2 rounded">Planning</div>'
+    : '';
   return `
     <div class="worker-card bg-surface rounded-xl p-4 cursor-pointer transition-all duration-200 relative active:scale-[0.98] active:bg-surface-hover hover:bg-surface-hover" data-id="${w.id}">
       <div class="flex items-start gap-3 mb-2">
         <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 ${getStatusClass(w)}"></div>
         <div class="flex-1 text-[15px] font-medium leading-relaxed">${escapeHtml(w.taskTitle)}</div>
+        ${planningBadge}
         <div class="text-xs text-text-secondary bg-surface-hover py-1 px-2 rounded">${w.status}</div>
       </div>
       <div class="text-[13px] text-text-secondary mb-2.5">${escapeHtml(w.workspaceName)} &bull; ${w.branch}</div>
@@ -762,12 +766,39 @@ function renderTasks() {
   } else if (pending.length === 0) {
     // Only assigned, no pending - skip empty message
   } else {
-    html += pending.map(t => `
-      <div class="bg-surface rounded-xl py-3.5 px-4 cursor-pointer transition-all duration-200 relative border border-transparent hover:bg-surface-hover hover:border-border-hover active:scale-[0.98]" data-id="${t.id}">
+    // Build a set of completed/failed task IDs for dependency resolution
+    const resolvedTaskIds = new Set(
+      tasks.filter(t => t.status === 'completed' || t.status === 'failed').map(t => t.id)
+    );
+
+    html += pending.map(t => {
+      // Check for unresolved dependencies
+      const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
+      const unresolvedDeps = deps.filter(depId => !resolvedTaskIds.has(depId));
+      const isBlocked = unresolvedDeps.length > 0;
+
+      const planningBadge = t.mode === 'planning'
+        ? '<div class="text-[11px] font-semibold uppercase tracking-wide text-purple-400 bg-purple-500/15 py-0.5 px-2 rounded ml-1.5">Planning</div>'
+        : '';
+
+      const actionButton = isBlocked
+        ? `<div class="shrink-0 text-[11px] text-status-warning bg-status-warning/10 py-1 px-2.5 rounded-md font-medium flex items-center gap-1.5">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            Blocked by ${unresolvedDeps.length} task${unresolvedDeps.length === 1 ? '' : 's'}
+          </div>`
+        : `<button class="task-card-start shrink-0 py-1.5 px-3.5 text-[13px] font-medium bg-brand text-white border-none rounded-md cursor-pointer transition-all duration-150 whitespace-nowrap hover:opacity-90 active:scale-95" data-id="${t.id}">Start</button>`;
+
+      return `
+      <div class="bg-surface rounded-xl py-3.5 px-4 ${isBlocked ? 'cursor-default opacity-75' : 'cursor-pointer'} transition-all duration-200 relative border border-transparent hover:bg-surface-hover hover:border-border-hover ${isBlocked ? '' : 'active:scale-[0.98]'}" data-id="${t.id}" ${isBlocked ? 'data-blocked="true"' : ''}>
         <div class="flex items-start gap-2.5">
           <div class="status-dot w-2.5 h-2.5 rounded-full mt-[5px] shrink-0 pending"></div>
           <div class="flex-1 min-w-0">
-            <div class="text-[15px] font-medium leading-relaxed text-text-primary mb-1">${escapeHtml(t.title)}</div>
+            <div class="flex items-center gap-1">
+              <div class="text-[15px] font-medium leading-relaxed text-text-primary mb-1">${escapeHtml(t.title)}</div>
+              ${planningBadge}
+            </div>
             <div class="text-xs text-text-secondary flex items-center gap-1">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 opacity-60">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -775,10 +806,10 @@ function renderTasks() {
               ${escapeHtml(t.workspace?.name || 'Unknown')}
             </div>
           </div>
-          <button class="task-card-start shrink-0 py-1.5 px-3.5 text-[13px] font-medium bg-brand text-white border-none rounded-md cursor-pointer transition-all duration-150 whitespace-nowrap hover:opacity-90 active:scale-95" data-id="${t.id}">Start</button>
+          ${actionButton}
         </div>
       </div>
-    `).join('');
+    `}).join('');
   }
 
   // Assigned tasks section
@@ -825,6 +856,7 @@ function renderTasks() {
   // Add click handler for card body (also starts)
   tasksEl.querySelectorAll('[data-id]:not(.takeover-btn):not(.delete-btn):not(.task-card-start)').forEach(card => {
     if (card.closest('.mt-6')) return; // Skip assigned cards
+    if (card.dataset.blocked === 'true') return; // Skip blocked tasks
     card.onclick = () => claimTask(card.dataset.id);
   });
 
@@ -848,9 +880,13 @@ function renderTasks() {
 function renderWorkerDetail(worker, opts = {}) {
   document.getElementById('modalTitle').textContent = worker.taskTitle;
 
+  const planningTag = worker.taskMode === 'planning'
+    ? '<span class="text-[11px] font-semibold uppercase tracking-wide text-purple-400 bg-purple-500/15 py-0.5 px-2 rounded">Planning</span>'
+    : '';
   document.getElementById('modalMeta').innerHTML = `
     <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary">${worker.workspaceName}</span>
     <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary">${worker.branch}</span>
+    ${planningTag}
     <span class="text-xs bg-surface-hover py-1.5 px-2.5 rounded text-text-secondary meta-tag status-${worker.status}">${worker.status}</span>
   `;
 

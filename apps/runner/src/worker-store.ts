@@ -8,7 +8,7 @@ const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
-  'id', 'taskId', 'taskTitle', 'taskDescription', 'workspaceId', 'workspaceName',
+  'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'lastActivity', 'sessionId',
   'waitingFor',
   'messages', 'milestones', 'toolCalls', 'commits',
@@ -143,6 +143,7 @@ export function loadAllWorkers(): LocalWorker[] {
         taskId: data.taskId as string,
         taskTitle: data.taskTitle as string,
         taskDescription: data.taskDescription as string | undefined,
+        taskMode: data.taskMode as string | undefined,
         workspaceId: data.workspaceId as string,
         workspaceName: data.workspaceName as string,
         branch: data.branch as string,
@@ -207,6 +208,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       taskId: data.taskId as string,
       taskTitle: data.taskTitle as string,
       taskDescription: data.taskDescription as string | undefined,
+      taskMode: data.taskMode as string | undefined,
       workspaceId: data.workspaceId as string,
       workspaceName: data.workspaceName as string,
       branch: data.branch as string,

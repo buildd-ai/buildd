@@ -9,7 +9,7 @@ import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
-import type { TaskCategoryValue } from '@buildd/shared';
+import type { TaskCategoryValue, TaskModeValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
@@ -85,6 +85,9 @@ export default function NewTaskPage() {
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
+
+  // Mode state (planning vs execution)
+  const [mode, setMode] = useState<TaskModeValue>('execution');
 
   // Dependencies
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
@@ -257,6 +260,7 @@ export default function NewTaskPage() {
               title,
               description: description || undefined,
               priority,
+              ...(mode !== 'execution' && { mode }),
               ...(selectedSkillSlugs.length > 0 && {
                 context: {
                   skillSlugs: selectedSkillSlugs,
@@ -328,6 +332,7 @@ export default function NewTaskPage() {
             title,
             description: description || undefined,
             priority,
+            ...(mode !== 'execution' && { mode }),
             ...(selectedCategory && { category: selectedCategory }),
             ...(project.trim() && { project: project.trim() }),
             ...(attachments && { attachments }),
@@ -394,33 +399,58 @@ export default function NewTaskPage() {
               </div>
             )}
 
-            {/* Run once / Recurring toggle */}
-            <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
-              <button
-                type="button"
-                onClick={() => setRecurring(false)}
-                className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
-                  !recurring
-                    ? 'bg-surface-1 text-text-primary shadow-sm'
-                    : 'text-text-secondary hover:text-text-primary'
-                }`}
-              >
-                Run once
-              </button>
-              <button
-                type="button"
-                onClick={() => setRecurring(true)}
-                className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
-                  recurring
-                    ? 'bg-surface-1 text-text-primary shadow-sm'
-                    : 'text-text-secondary hover:text-text-primary'
-                }`}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Recurring
-              </button>
+            {/* Mode toggles — single row */}
+            <div>
+              <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
+                <button
+                  type="button"
+                  onClick={() => setRecurring(false)}
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                    !recurring
+                      ? 'bg-surface-1 text-text-primary shadow-sm'
+                      : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  Run once
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecurring(true)}
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                    recurring
+                      ? 'bg-surface-1 text-text-primary shadow-sm'
+                      : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Recurring
+                </button>
+                <div className="w-px h-5 bg-border-default mx-0.5" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode(mode === 'planning' ? 'execution' : 'planning');
+                    if (mode !== 'planning') setUseOutputSchema(true);
+                  }}
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                    mode === 'planning'
+                      ? 'bg-surface-1 text-text-primary shadow-sm'
+                      : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                  </svg>
+                  Planning
+                </button>
+              </div>
+              {mode === 'planning' && (
+                <p className="text-xs text-text-secondary mt-2">
+                  Agent will create a structured plan for review instead of executing directly
+                </p>
+              )}
             </div>
 
             <div>
@@ -671,7 +701,7 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0) && (
+                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning') && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
