@@ -291,7 +291,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Enable GitHub auto-merge (squash) on agent PRs. Requires branch protection rules with required status checks enabled on the repo.
+                        Automatically squash-merge agent PRs when all CI checks pass.
                     </p>
                 </div>
             </div>
