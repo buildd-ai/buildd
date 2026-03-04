@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.59)
+## Buildd Integration Status (v0.2.68)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,7 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.59`** | Session APIs, multi-agent memory fix, auto-memory, MCP OAuth fix, config corruption fix | **P1** | **New** |
+| **Bump SDK pin to `>=0.2.68`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, session APIs, memory fixes | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -38,11 +38,15 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 | Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Expose `promptSuggestion()` in runner | Offer next-step suggestions in dashboard UI | P3 | Task created |
 | Display permission suggestions in runner | `permission_suggestions` on safety check ask responses | P3 | Task created |
+| Evaluate `DirectConnectTransport` for persistent sessions | WebSocket to `claude server`, stable session keys across reconnects (v0.2.64) | P2 | New |
+| Use `supportedAgents()` for dynamic agent discovery | Query available subagents at runtime (v0.2.63) | P3 | New |
+| Leverage HTTP hooks for dashboard integration | POST JSON to URL instead of shell commands (v2.1.63) | P2 | New |
 
 ## Completed Integrations
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.68`** — All packages now pin `>=0.2.68`
 - **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
@@ -61,10 +65,15 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.59 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.68 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.68 | 0.2.68 | Opus 4.6 defaults to medium effort for Max/Team; "ultrathink" keyword for high effort; removed Opus 4/4.1 (auto-migrated to 4.6) |
+| 2.1.66 | 0.2.66 | Reduced spurious error logging |
+| 2.1.63 | 0.2.63 | `/simplify` + `/batch` bundled slash commands; project configs & auto-memory shared across worktrees; HTTP hooks (POST JSON to URL); 10+ memory/listener leak fixes (MCP OAuth, bridge polling, hooks config, bash cache, WebSocket transport, git root cache); `/clear` now resets cached skills; VS Code session rename/remove; `/model` shows active model |
+| 2.1.62 | 0.2.62 | Fixed prompt suggestion cache regression reducing cache hit rates |
+| 2.1.61 | 0.2.61 | Fixed concurrent writes corrupting config file on Windows |
 | 2.1.59 | 0.2.59 | **Auto-memory** (persistent agent learnings, `/memory` command); **`/copy` command** (code block picker); smarter bash "always allow" prefix suggestions; **multi-agent memory optimization** (release completed subagent task state); MCP OAuth token refresh race fix; config file corruption fix (multiple instances); shell CWD-deleted error fix |
 | 2.1.58 | 0.2.58 | **Remote Control expanded** to more users |
 | 2.1.56 | 0.2.56 | VS Code Windows crash fix (another cause) |
