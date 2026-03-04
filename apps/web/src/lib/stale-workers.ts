@@ -21,7 +21,7 @@ export async function cleanupStaleWorkers(accountId: string) {
   const staleWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, accountId),
-      inArray(workers.status, ['running', 'starting', 'waiting_input']),
+      inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, staleThreshold)
     ),
     columns: { id: true, taskId: true },
