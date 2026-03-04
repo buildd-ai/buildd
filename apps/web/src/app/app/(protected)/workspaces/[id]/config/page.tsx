@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { TeamTransferSection } from './TeamTransferSection';
+import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -29,10 +30,13 @@ export default async function WorkspaceConfigPage({
             id: true,
             name: true,
             repo: true,
+            teamId: true,
             gitConfig: true,
             configStatus: true,
         },
     });
+
+    const userTeams = await getUserTeamsWithDetails(user.id);
 
     if (!workspace) {
         notFound();
@@ -67,6 +71,14 @@ export default async function WorkspaceConfigPage({
                     initialConfig={workspace.gitConfig as WorkspaceGitConfig | null}
                     configStatus={workspace.configStatus as 'unconfigured' | 'admin_confirmed'}
                 />
+
+                {userTeams.length > 1 && (
+                    <TeamTransferSection
+                        workspaceId={workspace.id}
+                        currentTeamId={workspace.teamId}
+                        teams={userTeams}
+                    />
+                )}
             </div>
         </main>
     );

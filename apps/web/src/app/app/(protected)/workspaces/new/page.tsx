@@ -170,14 +170,17 @@ export default function NewWorkspacePage() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [selectedInstallation, setSelectedInstallation] = useState<string>('');
   const [repos, setRepos] = useState<Repo[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
+  const [selectedRepos, setSelectedRepos] = useState<Repo[]>([]);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [useManual, setUseManual] = useState(false);
 
-  // Workspace name
+  // Workspace name (used for single-select and manual entry)
   const [workspaceName, setWorkspaceName] = useState('');
   const [showNameModal, setShowNameModal] = useState(false);
   const [manualRepoUrl, setManualRepoUrl] = useState('');
+
+  // Batch creation state
+  const [batchErrors, setBatchErrors] = useState<string[]>([]);
 
   // Access control
   const [accessMode, setAccessMode] = useState<'open' | 'restricted'>('open');
@@ -202,12 +205,25 @@ export default function NewWorkspacePage() {
     return null;
   }
 
-  // Auto-update name when repo changes
+  // Toggle repo selection
+  function handleToggleRepo(repo: Repo) {
+    setSelectedRepos((prev) => {
+      const exists = prev.find((r) => r.id === repo.id);
+      if (exists) {
+        return prev.filter((r) => r.id !== repo.id);
+      }
+      return [...prev, repo];
+    });
+  }
+
+  // Auto-update name when single repo selected
   useEffect(() => {
-    if (selectedRepo) {
-      setWorkspaceName(selectedRepo.name);
+    if (selectedRepos.length === 1) {
+      setWorkspaceName(selectedRepos[0].name);
+    } else {
+      setWorkspaceName('');
     }
-  }, [selectedRepo]);
+  }, [selectedRepos]);
 
   // Auto-update name when manual URL changes
   useEffect(() => {
@@ -289,20 +305,70 @@ export default function NewWorkspacePage() {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setBatchErrors([]);
 
     const formData = new FormData(e.currentTarget);
-    const manualRepoUrl = formData.get('repoUrl') as string;
+    const manualUrl = formData.get('repoUrl') as string;
 
-    // Determine final name
+    // Batch creation for multiple repos
+    if (selectedRepos.length > 1 && !useManual) {
+      const errors: string[] = [];
+
+      for (const repo of selectedRepos) {
+        const data: Record<string, unknown> = {
+          name: repo.name,
+          accessMode,
+          repoUrl: repo.fullName,
+          githubRepo: repo,
+          githubInstallationId: selectedInstallation,
+        };
+        if (selectedTeamId) data.teamId = selectedTeamId;
+
+        try {
+          const res = await fetch('/api/workspaces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            errors.push(`${repo.name}: ${err.error || 'Failed'}`);
+          }
+        } catch {
+          errors.push(`${repo.name}: Network error`);
+        }
+      }
+
+      if (errors.length > 0) {
+        setBatchErrors(errors);
+        setError(`${errors.length} of ${selectedRepos.length} workspaces failed to create`);
+        if (errors.length < selectedRepos.length) {
+          // Some succeeded - navigate after a delay so user sees errors
+          setTimeout(() => {
+            router.push('/app/workspaces');
+            router.refresh();
+          }, 2000);
+        }
+      } else {
+        router.push('/app/workspaces');
+        router.refresh();
+      }
+      setLoading(false);
+      return;
+    }
+
+    // Single workspace creation
+    const selectedRepo = selectedRepos[0] || null;
+
     let finalName = workspaceName;
     if (!finalName && selectedRepo) {
       finalName = selectedRepo.name;
-    } else if (!finalName && manualRepoUrl) {
-      finalName = extractRepoInfo(manualRepoUrl)?.name || '';
+    } else if (!finalName && manualUrl) {
+      finalName = extractRepoInfo(manualUrl)?.name || '';
     }
 
     const data: Record<string, unknown> = {
-      name: finalName || undefined, // Let server auto-derive if empty
+      name: finalName || undefined,
       accessMode,
     };
 
@@ -315,7 +381,7 @@ export default function NewWorkspacePage() {
       data.githubRepo = selectedRepo;
       data.githubInstallationId = selectedInstallation;
     } else {
-      data.repoUrl = manualRepoUrl;
+      data.repoUrl = manualUrl;
     }
 
     try {
@@ -352,7 +418,14 @@ export default function NewWorkspacePage() {
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
             <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
-              {error}
+              <p>{error}</p>
+              {batchErrors.length > 0 && (
+                <ul className="mt-2 text-sm space-y-1">
+                  {batchErrors.map((err, i) => (
+                    <li key={i}>{err}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -391,7 +464,7 @@ export default function NewWorkspacePage() {
                         type="button"
                         onClick={() => {
                           setSelectedInstallation(inst.id);
-                          setSelectedRepo(null);
+                          setSelectedRepos([]);
                         }}
                         className={`px-3 py-2 rounded-lg border text-sm transition-all ${
                           selectedInstallation === inst.id
@@ -408,12 +481,12 @@ export default function NewWorkspacePage() {
 
               <div>
                 <label className="block text-sm font-medium mb-2">
-                  Repository
+                  Repositories
                 </label>
                 <RepoPicker
                   repos={repos}
-                  selectedRepo={selectedRepo}
-                  onSelect={setSelectedRepo}
+                  selectedRepos={selectedRepos}
+                  onToggle={handleToggleRepo}
                   loading={loadingRepos}
                 />
               </div>
@@ -452,7 +525,6 @@ export default function NewWorkspacePage() {
                   value={manualRepoUrl}
                   onChange={(e) => {
                     setManualRepoUrl(e.target.value);
-                    // Auto-derive name from URL
                     const info = extractRepoInfo(e.target.value);
                     if (info) {
                       setWorkspaceName(info.name);
@@ -477,15 +549,15 @@ export default function NewWorkspacePage() {
             </>
           )}
 
-          {/* Workspace Name - shown when repo is selected or manual URL entered */}
-          {(selectedRepo || manualRepoUrl || workspaceName) && (
+          {/* Workspace Name - shown for single repo or manual entry (not for batch) */}
+          {selectedRepos.length <= 1 && (selectedRepos[0] || manualRepoUrl || workspaceName) && (
             <div>
               <label className="block text-sm font-medium mb-2">
                 Workspace Name
               </label>
               <div className="flex items-center gap-2">
                 <div className="flex-1 px-4 py-2 bg-surface-3 border border-border-default rounded-lg font-mono text-sm">
-                  {workspaceName || selectedRepo?.name || extractRepoInfo(manualRepoUrl)?.name || 'unnamed'}
+                  {workspaceName || selectedRepos[0]?.name || extractRepoInfo(manualRepoUrl)?.name || 'unnamed'}
                 </div>
                 <button
                   type="button"
@@ -496,6 +568,14 @@ export default function NewWorkspacePage() {
                 </button>
               </div>
               <p className="text-xs text-text-muted mt-1">Auto-derived from repository</p>
+            </div>
+          )}
+
+          {/* Batch summary for multi-select */}
+          {selectedRepos.length > 1 && !useManual && (
+            <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg">
+              <p className="text-sm font-medium">{selectedRepos.length} repositories selected</p>
+              <p className="text-xs text-text-muted mt-1">Each workspace will be named after its repository</p>
             </div>
           )}
 
@@ -550,10 +630,14 @@ export default function NewWorkspacePage() {
           <div className="flex gap-4">
             <button
               type="submit"
-              disabled={loading || (hasGitHub && !useManual && !selectedRepo)}
+              disabled={loading || (hasGitHub && !useManual && selectedRepos.length === 0)}
               className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg disabled:opacity-50"
             >
-              {loading ? 'Creating...' : 'Create Workspace'}
+              {loading
+                ? 'Creating...'
+                : selectedRepos.length > 1
+                ? `Create ${selectedRepos.length} Workspaces`
+                : 'Create Workspace'}
             </button>
             <Link
               href="/app/workspaces"
@@ -564,11 +648,11 @@ export default function NewWorkspacePage() {
           </div>
         </form>
 
-        {/* Name editing modal */}
+        {/* Name editing modal - only for single repo */}
         {showNameModal && (
           <NameModal
-            repo={selectedRepo || extractRepoInfo(manualRepoUrl)}
-            currentName={workspaceName || selectedRepo?.name || extractRepoInfo(manualRepoUrl)?.name || ''}
+            repo={selectedRepos[0] || extractRepoInfo(manualRepoUrl)}
+            currentName={workspaceName || selectedRepos[0]?.name || extractRepoInfo(manualRepoUrl)?.name || ''}
             onSelect={(name) => {
               setWorkspaceName(name);
               setShowNameModal(false);
