@@ -185,7 +185,7 @@ function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; w
   }
 
   function mcpCommand(repo?: string) {
-    return `claude mcp add --transport http buildd "${mcpUrl(repo)}" -- --header "Authorization: Bearer ${key}"`;
+    return `claude mcp add --transport http buildd "${mcpUrl(repo)}" --header "Authorization: Bearer ${key}"`;
   }
 
   return (

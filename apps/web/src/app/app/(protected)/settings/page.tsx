@@ -108,6 +108,11 @@ export default async function SettingsPage() {
 
           <hr className="border-border-default" />
 
+          {/* Worker Goals */}
+          <HeartbeatSection workspaces={userWorkspaces} />
+
+          <hr className="border-border-default" />
+
           {/* Teams */}
           <section>
             <div className="flex justify-between items-center mb-4">
@@ -190,15 +195,6 @@ export default async function SettingsPage() {
           {/* Skills */}
           <SkillsSection workspaces={userWorkspaces} />
 
-          {/* Heartbeat Checklist — one per workspace */}
-          {userWorkspaces.length > 0 && (
-            <>
-              <hr className="border-border-default" />
-              {userWorkspaces.map((ws) => (
-                <HeartbeatSection key={ws.id} workspaceId={ws.id} />
-              ))}
-            </>
-          )}
         </div>
       </div>
     </main>
