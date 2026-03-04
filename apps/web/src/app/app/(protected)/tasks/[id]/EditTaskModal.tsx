@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
+import type { TaskModeValue } from '@buildd/shared';
 
 interface Props {
   task: {
@@ -13,6 +14,8 @@ interface Props {
     project?: string | null;
     workspaceId?: string;
     dependsOn?: string[];
+    mode?: TaskModeValue;
+    status?: string;
   };
   onClose: () => void;
 }
@@ -22,6 +25,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || '');
   const [priority, setPriority] = useState(task.priority);
+  const [mode, setMode] = useState<TaskModeValue>(task.mode || 'execution');
   const [selectedDeps, setSelectedDeps] = useState<string[]>(task.dependsOn || []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -47,6 +51,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
           title: title.trim(),
           description: description.trim() || null,
           priority,
+          mode,
           project: task.project ?? null,
           dependsOn: selectedDeps,
         }),
@@ -143,6 +148,47 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 disabled={loading}
               />
             </div>
+
+            {/* Mode toggle — only when task is still pending */}
+            {(!task.status || task.status === 'pending') && (
+              <div>
+                <label className="block text-sm font-medium mb-1">Mode</label>
+                <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setMode('execution')}
+                    disabled={loading}
+                    className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                      mode === 'execution'
+                        ? 'bg-surface-1 text-text-primary shadow-sm'
+                        : 'text-text-secondary hover:text-text-primary'
+                    }`}
+                  >
+                    Execution
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('planning')}
+                    disabled={loading}
+                    className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                      mode === 'planning'
+                        ? 'bg-surface-1 text-text-primary shadow-sm'
+                        : 'text-text-secondary hover:text-text-primary'
+                    }`}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                    </svg>
+                    Planning
+                  </button>
+                </div>
+                {mode === 'planning' && (
+                  <p className="text-xs text-text-secondary mt-1">
+                    Agent will create a structured plan for review instead of executing directly
+                  </p>
+                )}
+              </div>
+            )}
 
             {task.workspaceId && (
               <DependencySelector

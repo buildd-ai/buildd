@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import EditTaskModal from './EditTaskModal';
+import type { TaskModeValue } from '@buildd/shared';
 
 interface Props {
   task: {
@@ -12,6 +13,8 @@ interface Props {
     project?: string | null;
     workspaceId?: string;
     dependsOn?: string[];
+    mode?: TaskModeValue;
+    status?: string;
   };
 }
 
