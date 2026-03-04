@@ -10,7 +10,7 @@
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
- *   - BUILDD_API_KEY set (admin-level key)
+ *   - BUILDD_ADMIN_API_KEY or BUILDD_API_KEY set (heartbeat endpoints require admin-level key)
  *
  * Usage:
  *   bun test apps/web/tests/integration/heartbeat-checklist.test.ts
@@ -21,8 +21,16 @@ import { requireTestEnv, createTestApi } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
-const { server, apiKey } = requireTestEnv();
-const { api, apiRaw } = createTestApi(server, apiKey);
+const { server, apiKey: _defaultKey } = requireTestEnv();
+
+// Heartbeat endpoints require admin-level API key
+const ADMIN_KEY = process.env.BUILDD_ADMIN_API_KEY || process.env.BUILDD_API_KEY;
+if (!ADMIN_KEY) {
+  console.log('⏭️  Skipping: BUILDD_ADMIN_API_KEY (or BUILDD_API_KEY) not set (heartbeat tests require admin key)');
+  process.exit(0);
+}
+
+const { api, apiRaw } = createTestApi(server, ADMIN_KEY);
 
 describe('Heartbeat Checklist', () => {
   let workspaceId: string;

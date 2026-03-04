@@ -12,7 +12,7 @@
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
- *   - BUILDD_API_KEY set (admin-level key)
+ *   - BUILDD_ADMIN_API_KEY or BUILDD_API_KEY set (recipe endpoints require admin-level key)
  *
  * Usage:
  *   bun test apps/web/tests/integration/recipes.test.ts
@@ -23,8 +23,16 @@ import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/
 
 const TIMEOUT = 30_000;
 
-const { server, apiKey } = requireTestEnv();
-const { api, apiRaw } = createTestApi(server, apiKey);
+const { server, apiKey: _defaultKey } = requireTestEnv();
+
+// Recipe endpoints require admin-level API key
+const ADMIN_KEY = process.env.BUILDD_ADMIN_API_KEY || process.env.BUILDD_API_KEY;
+if (!ADMIN_KEY) {
+  console.log('⏭️  Skipping: BUILDD_ADMIN_API_KEY (or BUILDD_API_KEY) not set (recipe tests require admin key)');
+  process.exit(0);
+}
+
+const { api, apiRaw } = createTestApi(server, ADMIN_KEY);
 const cleanup = createCleanup(api);
 
 describe('Recipe CRUD', () => {
