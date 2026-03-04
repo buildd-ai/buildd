@@ -112,7 +112,32 @@ export class WorkerRunner extends EventEmitter {
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Extract outputSchema from task for structured output support
-      const outputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
+      // For planning mode tasks without an explicit schema, inject the default plan schema
+      const taskOutputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
+      const isPlanningMode = (worker.task as any)?.mode === 'planning';
+      const outputSchema = taskOutputSchema || (isPlanningMode ? {
+        type: 'object',
+        properties: {
+          plan: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string' },
+                title: { type: 'string' },
+                description: { type: 'string' },
+                dependsOn: { type: 'array', items: { type: 'string' } },
+                requiredCapabilities: { type: 'array', items: { type: 'string' } },
+                outputRequirement: { type: 'string' },
+                priority: { type: 'integer' },
+              },
+              required: ['ref', 'title', 'description'],
+            },
+          },
+          summary: { type: 'string' },
+        },
+        required: ['plan', 'summary'],
+      } : null);
 
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (worker.task as any)?.context?.fallbackModel as string | undefined;
@@ -827,18 +852,61 @@ export class WorkerRunner extends EventEmitter {
     }
 
     // Add output requirement context
-    const outputReq = worker.task?.outputRequirement || 'auto';
+    const isPlanning = worker.task?.mode === 'planning';
     const outputContext: string[] = ['\n## Output Requirement'];
-    if (outputReq === 'pr_required') {
-      outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
-    } else if (outputReq === 'artifact_required') {
-      outputContext.push('This task **requires a deliverable** (PR or artifact). Create a PR for code changes, or an artifact for research/reports.');
-    } else if (outputReq === 'none') {
-      outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+    if (isPlanning) {
+      outputContext.push('This is a **planning task**. Produce a structured plan — do not make code changes.');
     } else {
-      outputContext.push('Output: **auto** — if you make commits, create a PR or artifact. If no code changes needed, just complete with a summary.');
+      const outputReq = worker.task?.outputRequirement || 'auto';
+      if (outputReq === 'pr_required') {
+        outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
+      } else if (outputReq === 'artifact_required') {
+        outputContext.push('This task **requires a deliverable** (PR or artifact). Create a PR for code changes, or an artifact for research/reports.');
+      } else if (outputReq === 'none') {
+        outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+      } else {
+        outputContext.push('Output: **auto** — if you make commits, create a PR or artifact. If no code changes needed, just complete with a summary.');
+      }
     }
     parts.push(outputContext.join('\n'));
+
+    // Add planning mode context when task mode is 'planning'
+    if (isPlanning) {
+      parts.push(`
+## Planning Mode
+
+You are in PLANNING mode. Do NOT execute code changes or create PRs.
+
+Your job is to analyze the task and produce a structured execution plan that will be reviewed by a human before any work begins.
+
+### Plan Format
+
+Complete the task by calling \`complete_task\` with a \`structuredOutput\` containing your plan:
+
+\`\`\`json
+{
+  "plan": [
+    {
+      "ref": "unique-step-id",
+      "title": "Step title",
+      "description": "What this step does and acceptance criteria",
+      "dependsOn": ["ref-of-prerequisite-step"],
+      "requiredCapabilities": ["git", "web-search"],
+      "outputRequirement": "pr_required|artifact_required|none|auto",
+      "priority": 0
+    }
+  ],
+  "summary": "Brief overview of the plan"
+}
+\`\`\`
+
+### Guidelines for Planning
+- Break complex work into independent, parallelizable steps where possible
+- Be specific about what each step produces and what it depends on
+- Include capability requirements so the right worker type claims each step
+- Keep steps small enough for a single worker session (under $5 budget)
+- Use \`dependsOn\` to express ordering constraints between steps`);
+    }
 
     parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
     return parts.join('\n');

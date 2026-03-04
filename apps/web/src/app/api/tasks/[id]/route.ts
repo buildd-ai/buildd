@@ -102,7 +102,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project } = body;
+    const { title, description, priority, project, dependsOn } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -112,6 +112,12 @@ export async function PATCH(
     if (description !== undefined) updateData.description = description;
     if (priority !== undefined) updateData.priority = priority;
     if (project !== undefined) updateData.project = project;
+    if (dependsOn !== undefined) {
+      if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
+        return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
+      }
+      updateData.dependsOn = dependsOn;
+    }
 
     const [updated] = await db
       .update(tasks)

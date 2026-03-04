@@ -29,6 +29,7 @@ export default async function TasksLayout({
       title: string;
       status: string;
       category?: string | null;
+      dependsOn?: string[];
       updatedAt: Date;
       waitingFor?: { type: string; prompt: string; options?: string[] } | null;
     }>;
@@ -52,6 +53,7 @@ export default async function TasksLayout({
             title: true,
             status: true,
             category: true,
+            dependsOn: true,
             workspaceId: true,
             updatedAt: true,
             priority: true,
@@ -72,7 +74,7 @@ export default async function TasksLayout({
         }
 
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; status: string; category?: string | null; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null };
+        type TaskSummary = { id: string; title: string; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           // Only override status with waiting_input if the task isn't already completed/failed
@@ -82,6 +84,7 @@ export default async function TasksLayout({
             title: task.title,
             status: !isTerminal && waitingForByTaskId.has(task.id) ? 'waiting_input' : task.status,
             category: task.category,
+            dependsOn: (task.dependsOn as string[]) || [],
             updatedAt: task.updatedAt,
             waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
           });

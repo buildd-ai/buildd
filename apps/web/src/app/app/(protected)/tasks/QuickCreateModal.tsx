@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocalUiHealth } from './useLocalUiHealth';
 import { uploadImagesToR2 } from '@/lib/upload';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
+import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 const PIPELINE_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
@@ -43,9 +44,16 @@ export default function QuickCreateModal({
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
 
+  // Dependencies state
+  const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
+  const [showDeps, setShowDeps] = useState(false);
+
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
+
+  // Mode (planning vs execution)
+  const [planningMode, setPlanningMode] = useState(false);
 
   // Recurring schedule
   const [recurring, setRecurring] = useState(false);
@@ -188,6 +196,7 @@ export default function QuickCreateModal({
               title: title.trim(),
               description: description.trim() || undefined,
               priority: 5,
+              ...(planningMode && { mode: 'planning' }),
             },
           }),
         });
@@ -227,9 +236,11 @@ export default function QuickCreateModal({
           description: description.trim() || null,
           priority: 5,
           creationSource: 'dashboard',
+          ...(planningMode && { mode: 'planning' }),
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
           ...(Object.keys(context).length > 0 && { context }),
+          ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
         }),
       });
 
@@ -279,6 +290,9 @@ export default function QuickCreateModal({
     setShowDescription(false);
     setPastedImages([]);
     setSelectedSkillSlugs([]);
+    setSelectedDeps([]);
+    setShowDeps(false);
+    setPlanningMode(false);
     setError('');
     setAssignmentStatus('idle');
     setCreatedTaskId(null);
@@ -467,6 +481,20 @@ export default function QuickCreateModal({
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
+                  onClick={() => setPlanningMode(!planningMode)}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                    planningMode
+                      ? 'border-purple-500/30 bg-purple-500/10 text-purple-400'
+                      : 'border-border-default text-text-muted hover:text-text-secondary'
+                  }`}
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                  </svg>
+                  Planning
+                </button>
+                <button
+                  type="button"
                   onClick={() => setRecurring(!recurring)}
                   className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                     recurring
@@ -557,6 +585,24 @@ export default function QuickCreateModal({
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* Dependencies */}
+              {showDeps ? (
+                <DependencySelector
+                  workspaceId={workspaceId}
+                  selectedIds={selectedDeps}
+                  onChange={setSelectedDeps}
+                  disabled={loading}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowDeps(true)}
+                  className="px-3 py-2 text-sm text-text-muted hover:text-text-secondary hover:bg-surface-3 rounded-lg border border-dashed border-border-default w-full text-left"
+                >
+                  + Add dependencies
+                </button>
               )}
 
               {/* Worker assignment */}

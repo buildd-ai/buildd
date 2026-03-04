@@ -64,7 +64,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
@@ -376,5 +376,257 @@ describe('POST /api/workers/claim', () => {
     // Task requires 'docker' but explicit capabilities only has 'node'
     // Even though environment has docker, it should NOT be used because explicit caps were provided
     expect(data.workers).toEqual([]);
+  });
+
+  // --- Dependency filtering tests ---
+
+  it('filters out tasks with unresolved dependsOn dependencies', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Call 1: claimable tasks with an unresolved dependency
+    // Call 2: dependency status lookup
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          dependsOn: ['dep-1'],
+          workspace: { id: 'ws-1' },
+        },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'dep-1', status: 'pending' },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toEqual([]);
+  });
+
+  it('allows tasks with all dependsOn dependencies completed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Test task',
+          dependsOn: ['dep-1'],
+          workspace: { id: 'ws-1', gitConfig: null },
+        },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'dep-1', status: 'completed' },
+      ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('allows tasks with failed dependencies (terminal state)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Test task',
+          dependsOn: ['dep-1'],
+          workspace: { id: 'ws-1', gitConfig: null },
+        },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'dep-1', status: 'failed' },
+      ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('filters tasks with partially resolved dependencies', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          dependsOn: ['dep-1', 'dep-2'],
+          workspace: { id: 'ws-1' },
+        },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'dep-1', status: 'completed' },
+        { id: 'dep-2', status: 'in_progress' },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toEqual([]);
+  });
+
+  it('passes through tasks with empty dependsOn', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Only one findMany call needed — no deps to look up
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].taskId).toBe('task-1');
   });
 });

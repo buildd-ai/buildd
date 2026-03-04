@@ -123,6 +123,7 @@ export interface LocalWorker {
   taskId: string;
   taskTitle: string;
   taskDescription?: string;
+  taskMode?: string;  // 'execution' or 'planning'
   workspaceId: string;
   workspaceName: string;
   branch: string;
@@ -205,6 +206,7 @@ export interface BuilddTask {
   status: string;
   priority: number;
   mode?: string;
+  dependsOn?: string[];
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
   // JSON Schema for structured output — passed to SDK outputFormat

@@ -16,6 +16,7 @@ export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
 
 export const TaskMode = {
   EXECUTION: 'execution',
+  PLANNING: 'planning',
 } as const;
 
 export type TaskModeValue = typeof TaskMode[keyof typeof TaskMode];
@@ -66,6 +67,12 @@ export const ArtifactType = {
   REPORT: 'report',
   DATA: 'data',
   LINK: 'link',
+  EMAIL_DRAFT: 'email_draft',
+  SOCIAL_POST: 'social_post',
+  ANALYSIS: 'analysis',
+  RECOMMENDATION: 'recommendation',
+  ALERT: 'alert',
+  CALENDAR_EVENT: 'calendar_event',
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
@@ -247,6 +254,8 @@ export interface Task {
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
+  // Workflow DAG: task IDs that must complete before this task is claimable
+  dependsOn: string[];
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
@@ -366,6 +375,29 @@ export interface TaskSchedule {
   updatedAt: Date;
 }
 
+export interface Recipe {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description?: string | null;
+  category?: 'content' | 'research' | 'code' | 'ops' | 'custom' | null;
+  steps: RecipeStep[];
+  variables: Record<string, { type: string; description?: string; default?: string }>;
+  isPublic: boolean;
+  createdAt: string;
+}
+
+export interface RecipeStep {
+  ref: string;
+  title: string;
+  description?: string;
+  mode?: 'execution' | 'planning';
+  dependsOn?: string[];
+  requiredCapabilities?: string[];
+  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
+  priority?: number;
+}
+
 export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
 export interface WorkspaceSkill {
@@ -473,6 +505,8 @@ export interface CreateTaskInput {
   outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
+  // Workflow DAG: task IDs that must complete before this task is claimable
+  dependsOn?: string[];
 }
 
 export interface CreateWorkerInput {
@@ -628,7 +662,8 @@ export type SSEEventType =
   | 'worker:rate_limit'
   | 'worker:model_capabilities'
   | 'task:updated'
-  | 'task:children_completed';
+  | 'task:children_completed'
+  | 'task:unblocked';
 
 export interface SSEEvent<T = unknown> {
   type: SSEEventType;
