@@ -852,6 +852,7 @@ export class WorkerManager {
       taskId: fullTask.id,
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
+      taskMode: fullTask.mode,
       workspaceId: fullTask.workspaceId,
       workspaceName: fullTask.workspace?.name || 'unknown',
       branch: claimedWorker.branch,

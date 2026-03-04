@@ -135,8 +135,12 @@ export default async function TaskDetailPage({
     );
   }
 
+  // Dependency resolution checks
+  const unresolvedDeps = depTasks.filter(d => d.status !== 'completed');
+  const isBlocked = task.status === 'pending' && unresolvedDeps.length > 0;
+
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
-  const canStart = task.status === 'pending';
+  const canStart = task.status === 'pending' && !isBlocked;
 
   // --- Helpers ---
 
@@ -167,8 +171,15 @@ export default async function TaskDetailPage({
   return (
     <div className="p-4 md:p-8 overflow-auto h-full">
       <div className="max-w-4xl">
-        {/* Auto-refresh when worker claims this task */}
-        <TaskAutoRefresh taskId={task.id} workspaceId={task.workspaceId} taskStatus={task.status} />
+        {/* Auto-refresh when worker claims this task or deps resolve */}
+        <TaskAutoRefresh
+          taskId={task.id}
+          workspaceId={task.workspaceId}
+          taskStatus={task.status}
+          taskMode={task.mode}
+          depTaskIds={depTaskIds}
+          hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
+        />
 
         {/* Breadcrumbs — hidden on mobile (mobile header has nav) */}
         <nav aria-label="Breadcrumb" className="hidden md:block text-sm text-text-secondary mb-4">
@@ -185,6 +196,14 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus}>
                 <StatusBadge status={displayStatus} />
               </span>
+              {task.mode === 'planning' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                  </svg>
+                  Planning
+                </span>
+              )}
               {task.category && (
                 <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
                   {task.category}
@@ -211,6 +230,8 @@ export default async function TaskDetailPage({
                 project: task.project,
                 workspaceId: task.workspaceId,
                 dependsOn: (task.dependsOn as string[]) || [],
+                mode: task.mode,
+                status: task.status,
               }}
             />
             {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}
@@ -229,6 +250,33 @@ export default async function TaskDetailPage({
         </div>
 
         <div className="flex flex-col">
+        {/* Blocked Banner — shown when task has unresolved dependencies */}
+        {isBlocked && (
+          <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+            <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              This task is blocked — waiting for {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} to complete
+            </div>
+            <div className="space-y-1.5 ml-6">
+              {unresolvedDeps.map((dep) => (
+                <div key={dep.id} className="flex items-center gap-2">
+                  <Link
+                    href={`/app/tasks/${dep.id}`}
+                    className="text-sm text-primary-400 hover:underline"
+                  >
+                    {dep.title}
+                  </Link>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
+                    {dep.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Description */}
         {task.description && (
           <div className="mb-6">
@@ -358,6 +406,52 @@ export default async function TaskDetailPage({
             </div>
           </div>
         )}
+
+        {/* Planning Mode Lifecycle */}
+        {task.mode === 'planning' && (() => {
+          const hasSubTasks = task.subTasks && task.subTasks.length > 0;
+
+          if (hasSubTasks) {
+            // Plan was approved and child tasks created
+            return (
+              <div className="bg-status-success/10 border border-status-success/20 rounded-[10px] p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-success font-medium text-sm">
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Plan approved — {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
+                </div>
+              </div>
+            );
+          }
+
+          if (task.status === 'running') {
+            return (
+              <div className="bg-status-running/10 border border-status-running/20 rounded-[10px] p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-running font-medium text-sm">
+                  <span className="w-3.5 h-3.5 border-2 border-status-running border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  Agent is generating a plan...
+                </div>
+              </div>
+            );
+          }
+
+          if (task.status === 'pending' || task.status === 'assigned') {
+            return (
+              <div className="bg-status-info/10 border border-status-info/20 rounded-[10px] p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-info font-medium text-sm">
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  Planning agent will create a structured plan
+                </div>
+              </div>
+            );
+          }
+
+          // completed state with plan is handled by PlanReviewPanel
+          return null;
+        })()}
 
         {/* Stat Cards — compact inline on mobile */}
         <div className="md:hidden mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
@@ -656,11 +750,22 @@ export default async function TaskDetailPage({
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (
           <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
-            <p className="text-text-secondary mb-2">This task is waiting to be started</p>
-            <p className="text-sm text-text-muted mb-4">
-              Click &quot;Start Task&quot; above to assign it to a worker, or wait for a worker to claim it automatically.
-            </p>
-            <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />
+            {isBlocked ? (
+              <>
+                <p className="text-text-secondary mb-2">This task is waiting for dependencies to complete</p>
+                <p className="text-sm text-text-muted">
+                  {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} must finish before this task can start.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-text-secondary mb-2">This task is waiting to be started</p>
+                <p className="text-sm text-text-muted mb-4">
+                  Click &quot;Start Task&quot; above to assign it to a worker, or wait for a worker to claim it automatically.
+                </p>
+                <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />
+              </>
+            )}
           </div>
         )}
       </div>
