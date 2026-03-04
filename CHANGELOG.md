@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Planning mode UX, blocked task display, and runner indicators (#222)
+- Phase 5 artifact expansion + Phase 6 Slack and Discord gateway (#218)
+- Phase 4 task recipes (#217)
+- Phase 3 heartbeat + dependency selector UI (#216)
+- Phase 1+2 aggregation, MCP tools, plan review UI, and dependency display (#215)
+- Planning loop and workflow DAG support
+
 ### Fixed
 
 - Display project roots in local-ui settings (was reading wrong field name)
+- Make migrations idempotent to prevent deploy failures (#220)
+- Remove duplicate migration files from Phase 5+6 merge (#219)
+
+### CI
+
+- Force-reset dev to main when ff-only fails (#225)
+
+### Tests
+
+- Add Phase 3-6 verification tests (#221)
 
 ## [0.14.0] - 2026-02-25
 
@@ -249,7 +268,10 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/buildd-ai/buildd/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/buildd-ai/buildd/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/buildd-ai/buildd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/buildd-ai/buildd/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/buildd-ai/buildd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/buildd-ai/buildd/compare/v0.11.0...v0.12.0
