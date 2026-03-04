@@ -24,7 +24,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
   function mcpCommand(repo?: string) {
     const base = 'https://buildd.dev/api/mcp';
     const url = repo ? `${base}?repo=${repo}` : base;
-    return `claude mcp add --transport http buildd "${url}" -- --header "Authorization: Bearer ${apiKey}"`;
+    return `claude mcp add --transport http buildd "${url}" --header "Authorization: Bearer ${apiKey}"`;
   }
 
   async function handleCopy(text: string) {
