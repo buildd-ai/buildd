@@ -14,6 +14,7 @@ import SlackSection from './SlackSection';
 import DiscordSection from './DiscordSection';
 
 
+
 export const dynamic = 'force-dynamic';
 
 export default async function SettingsPage() {
