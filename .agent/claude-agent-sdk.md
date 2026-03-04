@@ -6,8 +6,8 @@
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.49` | Needs bump to `>=0.2.68` |
-| `apps/runner` | `^0.2.50` | Needs bump to `^0.2.68` |
+| `packages/core` | `>=0.2.68` | Current |
+| `apps/runner` | `^0.2.68` | Current |
 
 ---
 

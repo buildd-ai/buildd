@@ -22,7 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.68`** | DirectConnectTransport, supportedAgents(), agent_id in hooks, Opus 4.6 medium effort default, memory leak fixes | **P1** | **New** |
+| **Bump SDK pin to `>=0.2.68`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -48,6 +48,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.68`** — All packages now pin `>=0.2.68`
 - **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
 - **`last_assistant_message` in Stop hook** — Integrated in both workers.ts and worker-runner.ts (#92)
