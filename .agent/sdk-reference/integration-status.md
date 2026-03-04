@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.59)
+## Buildd Integration Status (v0.2.68)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,7 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.59`** | Session APIs, multi-agent memory fix, auto-memory, MCP OAuth fix, config corruption fix | **P1** | **New** |
+| **Bump SDK pin to `>=0.2.68`** | DirectConnectTransport, supportedAgents(), agent_id in hooks, Opus 4.6 medium effort default, memory leak fixes | **P1** | **New** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -38,6 +38,11 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 | Update 1M context beta to target Sonnet 4.6 | Sonnet 4.5 1M being removed | P2 | Task created |
 | Expose `promptSuggestion()` in runner | Offer next-step suggestions in dashboard UI | P3 | Task created |
 | Display permission suggestions in runner | `permission_suggestions` on safety check ask responses | P3 | Task created |
+| **Evaluate DirectConnectTransport for runner** | v0.2.64 — WebSocket connection to persistent `claude server`, stable session keys | **P1** | **New** |
+| **Use `supportedAgents()` for dynamic skill discovery** | v0.2.63 — Query available subagents at runtime for dashboard display | **P2** | **New** |
+| **Leverage `agent_id`/`agent_type` in hooks** | v0.2.64 — Per-skill cost tracking, subagent-specific monitoring | **P2** | **New** |
+| **Evaluate HTTP hooks** | CLI v2.1.63 — POST JSON to URLs instead of shell commands | **P2** | **New** |
+| **Progressive memory disclosure in buildd_memory** | Community pattern — Layered retrieval for ~10x token savings | **P2** | **New** |
 
 ## Completed Integrations
 
@@ -61,10 +66,16 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.59 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.68 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.68 | 0.2.68 | **Opus 4.6 defaults to medium effort** (Max/Team); "ultrathink" keyword re-introduced; **Opus 4.0/4.1 removed** from first-party API (auto-migrate to 4.6) |
+| 2.1.66 | 0.2.66 | Reduced spurious error logging |
+| 2.1.63 | 0.2.63 | **`/simplify` and `/batch` slash commands**; **HTTP hooks** (POST JSON to URLs); **Project configs shared across worktrees**; `supportedAgents()` method; MCP replacement tool fix in subagents; 4+ memory leak fixes (bridge polling, MCP OAuth, hooks config, MCP caching); MCP OAuth manual URL fallback; `/clear` skills reset fix; `/model` active model display |
+| 2.1.64 | 0.2.64 | **`DirectConnectTransport`** (WebSocket connection to `claude server`, stable session keys); `agent_id`/`agent_type` in hook events; `blobSavedTo` on ReadMcpResourceToolOutput; reverted `'Agent'` back to `'Task'` tool name (breaking change fix); malformed `updatedPermissions` no longer blocks with ZodError |
+| 2.1.62 | 0.2.62 | Prompt suggestion cache regression fix |
+| 2.1.61 | 0.2.61 | Concurrent config write corruption fix (Windows) |
 | 2.1.59 | 0.2.59 | **Auto-memory** (persistent agent learnings, `/memory` command); **`/copy` command** (code block picker); smarter bash "always allow" prefix suggestions; **multi-agent memory optimization** (release completed subagent task state); MCP OAuth token refresh race fix; config file corruption fix (multiple instances); shell CWD-deleted error fix |
 | 2.1.58 | 0.2.58 | **Remote Control expanded** to more users |
 | 2.1.56 | 0.2.56 | VS Code Windows crash fix (another cause) |
@@ -89,6 +100,9 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Tool name revert** — `system:init` and `result` events emit `'Task'` again (was briefly `'Agent'` in v0.2.63, reverted in v0.2.64). If Buildd parses these events, ensure `'Task'` is the expected name.
+- **ZodError on malformed updatedPermissions** — SDK hosts returning invalid `updatedPermissions` in control responses no longer crash with ZodError; field is stripped with warning (v0.2.64).
+- **4+ memory leak fixes** — bridge polling, MCP OAuth, hooks config, MCP tool/resource caching (v2.1.63)
 - **10+ memory leak fixes** — Teammate tasks, AppState, LSP diagnostics, file history, CircularBuffer, TaskOutput, shell execution, UUID tracking — all fixed (v2.1.50–v2.1.51). Critical for long-running runner workers.
 - **Bun binary compatibility** — Fixed SDK crash (`ReferenceError`) in `bun build --compile` binaries (v0.2.51)
 - **`session.close()` persistence** — Fixed subprocess being killed before persisting session data, which broke `resumeSession()` (v0.2.51)
