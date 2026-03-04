@@ -102,6 +102,15 @@ export const TaskCategory = {
 
 export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
 
+export const ObjectiveStatus = {
+  ACTIVE: 'active',
+  PAUSED: 'paused',
+  COMPLETED: 'completed',
+  ARCHIVED: 'archived',
+} as const;
+
+export type ObjectiveStatusValue = typeof ObjectiveStatus[keyof typeof ObjectiveStatus];
+
 export const OutputRequirement = {
   PR_REQUIRED: 'pr_required',
   ARTIFACT_REQUIRED: 'artifact_required',
@@ -216,6 +225,31 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
+export interface Objective {
+  id: string;
+  teamId: string;
+  workspaceId: string | null;
+  title: string;
+  description: string | null;
+  status: ObjectiveStatusValue;
+  priority: number;
+  cronExpression: string | null;
+  scheduleId: string | null;
+  parentObjectiveId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  // Relations
+  workspace?: Workspace;
+  tasks?: Task[];
+  subObjectives?: Objective[];
+  parentObjective?: Objective;
+  // Computed
+  progress?: number;
+  totalTasks?: number;
+  completedTasks?: number;
+}
+
 export interface TaskResult {
   summary?: string;
   branch?: string;
@@ -254,12 +288,15 @@ export interface Task {
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
+  // Objective linking
+  objectiveId: string | null;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: string[];
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
+  objective?: Objective;
   worker?: Worker;
   account?: Account;
   // Creator tracking relations
@@ -505,8 +542,19 @@ export interface CreateTaskInput {
   outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
+  // Objective linking
+  objectiveId?: string;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn?: string[];
+}
+
+export interface CreateObjectiveInput {
+  title: string;
+  description?: string;
+  workspaceId?: string;
+  cronExpression?: string;
+  priority?: number;
+  parentObjectiveId?: string;
 }
 
 export interface CreateWorkerInput {

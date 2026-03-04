@@ -5,6 +5,20 @@ import { usePathname } from 'next/navigation';
 
 const tabs = [
   {
+    label: 'Objectives',
+    href: '/app/objectives',
+    icon: (active: boolean) => (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={active ? 2.5 : 2}
+          d="M13 10V3L4 14h7v7l9-11h-7z"
+        />
+      </svg>
+    ),
+  },
+  {
     label: 'Tasks',
     href: '/app/tasks',
     icon: (active: boolean) => (

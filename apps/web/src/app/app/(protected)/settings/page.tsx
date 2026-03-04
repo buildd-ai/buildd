@@ -12,7 +12,7 @@ import ApiKeysSection from './ApiKeysSection';
 import SkillsSection from './SkillsSection';
 import SlackSection from './SlackSection';
 import DiscordSection from './DiscordSection';
-import HeartbeatSection from './HeartbeatSection';
+
 
 export const dynamic = 'force-dynamic';
 
@@ -105,11 +105,6 @@ export default async function SettingsPage() {
 
           {/* API Keys */}
           <ApiKeysSection accounts={allAccounts} workspaces={userWorkspaces} />
-
-          <hr className="border-border-default" />
-
-          {/* Worker Goals */}
-          <HeartbeatSection workspaces={userWorkspaces} />
 
           <hr className="border-border-default" />
 

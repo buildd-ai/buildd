@@ -38,7 +38,10 @@ export async function GET(
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),
-      with: { workspace: true },
+      with: {
+        workspace: true,
+        objective: { columns: { id: true, title: true, status: true } },
+      },
     });
 
     if (!task) {
@@ -102,7 +105,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, dependsOn } = body;
+    const { title, description, priority, project, objectiveId, dependsOn } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -112,6 +115,7 @@ export async function PATCH(
     if (description !== undefined) updateData.description = description;
     if (priority !== undefined) updateData.priority = priority;
     if (project !== undefined) updateData.project = project;
+    if (objectiveId !== undefined) updateData.objectiveId = objectiveId || null;
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });

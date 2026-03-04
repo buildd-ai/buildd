@@ -57,6 +57,7 @@ export default async function TaskDetailPage({
     with: {
       workspace: true,
       account: true,
+      objective: { columns: { id: true, title: true, status: true } },
       parentTask: { columns: { id: true, title: true, status: true } },
       subTasks: { columns: { id: true, title: true, status: true } },
     },
@@ -213,6 +214,17 @@ export default async function TaskDetailPage({
                 <span className="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">
                   {task.project}
                 </span>
+              )}
+              {task.objective && (
+                <Link
+                  href={`/app/objectives/${task.objective.id}`}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  {task.objective.title}
+                </Link>
               )}
             </div>
             <p className="text-[14px] text-text-secondary">
