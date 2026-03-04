@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-import { verifyWebhookSignature, type GitHubInstallationEvent, type GitHubIssuesEvent } from '@/lib/github';
+import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
+import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 
 export async function POST(req: NextRequest) {
@@ -35,6 +35,10 @@ export async function POST(req: NextRequest) {
 
       case 'issues':
         await handleIssuesEvent(data as GitHubIssuesEvent);
+        break;
+
+      case 'check_suite':
+        await handleCheckSuiteEvent(data as GitHubCheckSuiteEvent);
         break;
 
       case 'ping':
@@ -207,6 +211,76 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
         })
         .where(eq(tasks.externalId, `issue-${issue.id}`));
       break;
+    }
+  }
+}
+
+async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
+  const { action, check_suite, repository, installation } = event;
+
+  // Only process completed, successful check suites
+  if (action !== 'completed' || check_suite.conclusion !== 'success') {
+    return;
+  }
+
+  if (!installation) {
+    return;
+  }
+
+  const headSha = check_suite.head_sha;
+
+  for (const pr of check_suite.pull_requests) {
+    try {
+      // Find workspaces linked to this repo with autoMergePR enabled
+      const linkedWorkspaces = await db.query.workspaces.findMany({
+        where: eq(workspaces.repo, repository.full_name),
+      });
+
+      for (const workspace of linkedWorkspaces) {
+        if (!workspace.gitConfig?.autoMergePR) {
+          continue;
+        }
+
+        // Ensure this PR was created by a Buildd worker
+        const worker = await db.query.workers.findFirst({
+          where: and(
+            eq(workers.workspaceId, workspace.id),
+            eq(workers.prNumber, pr.number),
+          ),
+        });
+
+        if (!worker) {
+          continue;
+        }
+
+        // Verify ALL check suites have passed (not just the triggering one)
+        const allPassed = await allCheckSuitesPassed(
+          installation.id,
+          repository.full_name,
+          headSha,
+        );
+
+        if (!allPassed) {
+          console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
+          continue;
+        }
+
+        // Merge the PR
+        const result = await mergePullRequest(
+          installation.id,
+          repository.full_name,
+          pr.number,
+          'squash',
+        );
+
+        if (result.merged) {
+          console.log(`Auto-merged PR #${pr.number} on ${repository.full_name} for worker ${worker.id}`);
+        } else {
+          console.warn(`Failed to auto-merge PR #${pr.number} on ${repository.full_name}: ${result.message}`);
+        }
+      }
+    } catch (error) {
+      console.error(`Error processing check_suite for PR #${pr.number} on ${repository.full_name}:`, error);
     }
   }
 }
