@@ -113,7 +113,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
       if (repoName) {
         const wsWithRepo = (data.tasks || []).find((t: any) => t.workspace?.repo === repoName);
         if (wsWithRepo?.workspaceId) {
-          resolvedWorkspaceId = wsWithRepo.workspaceId;
+          resolvedWorkspaceId = wsWithRepo.workspaceId ?? null;
           return resolvedWorkspaceId;
         }
       }
