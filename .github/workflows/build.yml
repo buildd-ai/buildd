@@ -105,7 +105,19 @@ jobs:
               "
             '
           SCRIPT
-          sleep 5
+          # Wait up to 30 seconds for runner to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://100.82.109.19:8767/api/config > /dev/null 2>&1; then
+              echo "Runner is ready after ${i}s"
+              break
+            fi
+            echo "Waiting for runner... (${i}/30)"
+            sleep 1
+          done
+          if ! curl -sf http://100.82.109.19:8767/api/config > /dev/null 2>&1; then
+            echo "::error::Runner did not start within 30 seconds"
+            exit 1
+          fi
 
       - name: Integration tests
         run: |
