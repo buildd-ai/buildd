@@ -83,7 +83,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const lines = actions
     .filter(a => descriptions[a])
     .map(a => `- ${a}: ${descriptions[a]}`);
-  return `Action-specific parameters. By action:\n${lines.join('\n')}`;
+  return `Action-specific parameters. By action:\n${lines.join('\n')}\n\nNote: workspaceId accepts a UUID, a repo name (e.g. "buildd"), or "owner/repo" (e.g. "buildd-ai/buildd"). Usually the repo folder name is enough — the org prefix is optional.`;
 }
 
 export function buildMemoryDescription(actions: readonly string[]): string {
@@ -109,6 +109,44 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+// UUID pattern for workspace IDs
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
+ * Falls back to context workspace ID if no param given.
+ */
+async function resolveWorkspaceId(
+  api: ApiFn,
+  param: unknown,
+  ctx: ActionContext,
+): Promise<string | null> {
+  const raw = (param as string) || ctx.workspaceId;
+  if (raw && UUID_RE.test(raw)) return raw;
+
+  // Try context fallback first
+  if (!raw) return ctx.getWorkspaceId();
+
+  // Not a UUID — resolve by repo name or workspace name
+  // Try by-repo first (handles "owner/repo" format)
+  if (raw.includes('/')) {
+    const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
+    if (data.workspace?.id) return data.workspace.id;
+  }
+
+  // Fall back to name match across accessible workspaces
+  const wsData = await api('/api/workspaces');
+  const workspaces = wsData.workspaces || [];
+  const match = workspaces.find((ws: any) =>
+    ws.name.toLowerCase() === raw.toLowerCase() ||
+    ws.repo?.toLowerCase() === raw.toLowerCase() ||
+    ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
+  );
+  if (match) return match.id;
+
+  return null;
+}
 
 export async function handleBuilddAction(
   api: ApiFn,
@@ -146,7 +184,7 @@ export async function handleBuilddAction(
     }
 
     case 'claim_task': {
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       const data = await api('/api/workers/claim', {
         method: 'POST',
         body: JSON.stringify({ maxTasks: params.maxTasks || 1, workspaceId: wsId, runner: 'mcp' }),
@@ -333,7 +371,7 @@ export async function handleBuilddAction(
     case 'create_task': {
       if (!params.title || !params.description) throw new Error('title and description are required');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
       const taskBody: Record<string, unknown> = {
@@ -366,7 +404,7 @@ export async function handleBuilddAction(
         throw new Error('name, cronExpression, and title are required');
       }
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
       const taskTemplate: Record<string, unknown> = {
@@ -414,7 +452,7 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.scheduleId) throw new Error('scheduleId is required');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace.');
 
       const updateBody: Record<string, unknown> = {};
@@ -453,19 +491,42 @@ export async function handleBuilddAction(
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
-      const data = await api(`/api/workspaces/${wsId}/schedules`);
-      const schedules = data.schedules || [];
+      // If workspace specified, list its schedules; otherwise aggregate across all workspaces
+      if (wsId) {
+        const data = await api(`/api/workspaces/${wsId}/schedules`);
+        const schedules = data.schedules || [];
 
-      if (schedules.length === 0) return text('No schedules configured for this workspace.');
+        if (schedules.length === 0) return text('No schedules configured for this workspace.');
 
-      const summary = schedules.map((s: any) =>
-        `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
+        const summary = schedules.map((s: any) =>
+          `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
+        ).join('\n\n');
+
+        return text(`${schedules.length} schedule(s):\n\n${summary}`);
+      }
+
+      // No workspace — list across all accessible workspaces
+      const wsData = await api('/api/workspaces');
+      const workspaces = wsData.workspaces || [];
+      if (workspaces.length === 0) return text('No workspaces found.');
+
+      const allSchedules: { workspace: string; schedule: any }[] = [];
+      for (const ws of workspaces) {
+        const data = await api(`/api/workspaces/${ws.id}/schedules`);
+        for (const s of (data.schedules || [])) {
+          allSchedules.push({ workspace: ws.name, schedule: s });
+        }
+      }
+
+      if (allSchedules.length === 0) return text('No schedules configured across any workspace.');
+
+      const summary = allSchedules.map(({ workspace, schedule: s }) =>
+        `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'} [${workspace}]\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
       ).join('\n\n');
 
-      return text(`${schedules.length} schedule(s):\n\n${summary}`);
+      return text(`${allSchedules.length} schedule(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
     }
 
     case 'register_skill': {
@@ -473,7 +534,7 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.content) throw new Error('name and content are required');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
       const data = await api(`/api/workspaces/${wsId}/skills`, {
@@ -519,27 +580,49 @@ export async function handleBuilddAction(
     }
 
     case 'list_artifacts': {
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
       const searchParams = new URLSearchParams();
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
       if (params.limit) searchParams.set('limit', String(params.limit));
 
-      const data = await api(`/api/workspaces/${wsId}/artifacts?${searchParams}`);
-      const artifactsList = data.artifacts || [];
+      const formatArtifact = (a: any, workspace?: string) => {
+        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
+        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})${workspace ? ` [${workspace}]` : ''}\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
+      };
 
-      if (artifactsList.length === 0) {
+      if (wsId) {
+        const data = await api(`/api/workspaces/${wsId}/artifacts?${searchParams}`);
+        const artifactsList = data.artifacts || [];
+
+        if (artifactsList.length === 0) {
+          return text(`No artifacts found${params.key ? ` with key "${params.key}"` : ''}.`);
+        }
+
+        const summary = artifactsList.map((a: any) => formatArtifact(a)).join('\n\n');
+        return text(`${artifactsList.length} artifact(s):\n\n${summary}`);
+      }
+
+      // No workspace — aggregate across all
+      const wsData = await api('/api/workspaces');
+      const workspaces = wsData.workspaces || [];
+      if (workspaces.length === 0) return text('No workspaces found.');
+
+      const allArtifacts: { workspace: string; artifact: any }[] = [];
+      for (const ws of workspaces) {
+        const data = await api(`/api/workspaces/${ws.id}/artifacts?${searchParams}`);
+        for (const a of (data.artifacts || [])) {
+          allArtifacts.push({ workspace: ws.name, artifact: a });
+        }
+      }
+
+      if (allArtifacts.length === 0) {
         return text(`No artifacts found${params.key ? ` with key "${params.key}"` : ''}.`);
       }
 
-      const summary = artifactsList.map((a: any) => {
-        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
-        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
-      }).join('\n\n');
-
-      return text(`${artifactsList.length} artifact(s):\n\n${summary}`);
+      const summary = allArtifacts.map(({ workspace, artifact: a }) => formatArtifact(a, workspace)).join('\n\n');
+      return text(`${allArtifacts.length} artifact(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
     }
 
     case 'update_artifact': {
@@ -730,19 +813,41 @@ export async function handleBuilddAction(
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
-      const data = await api(`/api/workspaces/${wsId}/recipes`);
-      const recipes = data.recipes || [];
+      if (wsId) {
+        const data = await api(`/api/workspaces/${wsId}/recipes`);
+        const recipes = data.recipes || [];
 
-      if (recipes.length === 0) return text('No recipes configured for this workspace.');
+        if (recipes.length === 0) return text('No recipes configured for this workspace.');
 
-      const summary = recipes.map((r: any) =>
-        `- **${r.name}**${r.category ? ` [${r.category}]` : ''}\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
+        const summary = recipes.map((r: any) =>
+          `- **${r.name}**${r.category ? ` [${r.category}]` : ''}\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
+        ).join('\n\n');
+
+        return text(`${recipes.length} recipe(s):\n\n${summary}`);
+      }
+
+      // No workspace — aggregate across all
+      const wsData = await api('/api/workspaces');
+      const workspaces = wsData.workspaces || [];
+      if (workspaces.length === 0) return text('No workspaces found.');
+
+      const allRecipes: { workspace: string; recipe: any }[] = [];
+      for (const ws of workspaces) {
+        const data = await api(`/api/workspaces/${ws.id}/recipes`);
+        for (const r of (data.recipes || [])) {
+          allRecipes.push({ workspace: ws.name, recipe: r });
+        }
+      }
+
+      if (allRecipes.length === 0) return text('No recipes configured across any workspace.');
+
+      const summary = allRecipes.map(({ workspace, recipe: r }) =>
+        `- **${r.name}**${r.category ? ` [${r.category}]` : ''} [${workspace}]\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
       ).join('\n\n');
 
-      return text(`${recipes.length} recipe(s):\n\n${summary}`);
+      return text(`${allRecipes.length} recipe(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
     }
 
     case 'create_recipe': {
@@ -750,7 +855,7 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.steps) throw new Error('name and steps are required');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
       const data = await api(`/api/workspaces/${wsId}/recipes`, {
@@ -774,7 +879,7 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.recipeId) throw new Error('recipeId is required');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
       const data = await api(`/api/workspaces/${wsId}/recipes/${params.recipeId}/run`, {
