@@ -96,6 +96,19 @@ beforeAll(async () => {
     throw new Error('Runner is not configured (no API key). Set up first.');
   }
 
+  // 4b. Abort any lingering workers from previous test runs to free concurrent slots
+  try {
+    const { workers: activeWorkers } = await localUI.listWorkers();
+    const lingering = activeWorkers.filter((w: any) =>
+      w.status === 'running' || w.status === 'claimed' || w.status === 'waiting_input',
+    );
+    if (lingering.length > 0) {
+      console.log(`  Aborting ${lingering.length} lingering worker(s) from previous runs...`);
+      await Promise.allSettled(lingering.map((w: any) => localUI.abortWorker(w.id)));
+      await Bun.sleep(2_000); // let aborts propagate to server
+    }
+  } catch { /* best effort */ }
+
   // 5. Sync runner's server URL to match this test's target
   originalServer = cfg.builddServer;
   if (cfg.builddServer !== BUILDD_SERVER) {
