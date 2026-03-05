@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-03-05
+
+### Added
+
+- Enrich objectives UI with create form, activity feed, and artifacts (#239)
+
+### Fixed
+
+- Sync main into dev before creating release PR (#238)
+
+### Tests
+
+- Handle flaky task completion assertion on preview deploys
+- Remove obsolete heartbeat checklist test and fix artifact race
+- Add missing beforeAll timeouts in integration tests
+- Retry claim with taskId in worker-state-machine beforeAll
+- Retry runner connection in integration-config beforeAll
+
+## [0.18.0] - 2026-03-05
+
+### Added
+
+- First-class objectives replacing heartbeat checklist (#236)
+- Replace GitHub native auto-merge with Buildd-managed merging (#235)
+- Workspace management improvements (#232)
+
+### Fixed
+
+- Exclude waiting_input workers from stale expiry (#234)
+- Auto-detect PRs on worker completion and validate before task update (#233)
+- Update banner overlapping header and auto-update not triggering in runner (#231)
+- Deduplicate heartbeat checklist and improve UX in settings (#227)
+- Remove erroneous `--` separator from MCP install commands (#230)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to >=0.2.68 (#229)
+
+### CI
+
+- Force-reset dev to main when ff-only fails (#225)
+
+### Documentation
+
+- Weekly SDK ecosystem research (Mar 4, 2026) (#228)
+
+## [0.17.0] - 2026-03-03
+
 ### Added
 
 - Planning mode UX, blocked task display, and runner indicators (#222)
@@ -21,10 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Display project roots in local-ui settings (was reading wrong field name)
 - Make migrations idempotent to prevent deploy failures (#220)
 - Remove duplicate migration files from Phase 5+6 merge (#219)
-
-### CI
-
-- Force-reset dev to main when ff-only fails (#225)
 
 ### Tests
 
@@ -268,7 +312,9 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/buildd-ai/buildd/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/buildd-ai/buildd/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/buildd-ai/buildd/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/buildd-ai/buildd/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/buildd-ai/buildd/compare/v0.14.0...v0.15.0
