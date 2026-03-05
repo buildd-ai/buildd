@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.68)
+## Buildd Integration Status (v0.2.69)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,7 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.68`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes | **P1** | **Done** |
+| **Bump SDK pin to `>=0.2.69`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes, `/claude-api` skill, `/reload-plugins`, git instructions toggle | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -48,6 +48,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.69`** — All packages now pin `>=0.2.69`
 - **SDK pin `>=0.2.68`** — All packages now pin `>=0.2.68`
 - **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
 - **SDK pin `>=0.2.47`** — All packages now pin `>=0.2.47` (#94)
@@ -71,6 +72,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.69 | 0.2.69 | **`/claude-api` skill**; **`/reload-plugins`** command; **`includeGitInstructions`** setting + `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` env var; **Remote Control naming** (`/remote-control <name>`); **Voice STT**: 10 new languages (20 total); effort level display in spinner; agent name in terminal title; **TLS proxy** `sandbox.enableWeakerNetworkIsolation` (macOS); `pluginTrustMessage` managed setting; numeric keypad support |
 | 2.1.68 | 0.2.68 | **Opus 4.6 defaults to medium effort** (Max/Team); "ultrathink" keyword re-introduced; **Opus 4.0/4.1 removed** from first-party API (auto-migrate to 4.6) |
 | 2.1.66 | 0.2.66 | Reduced spurious error logging |
 | 2.1.63 | 0.2.63 | **`/simplify` and `/batch` slash commands**; **HTTP hooks** (POST JSON to URLs); **Project configs shared across worktrees**; `supportedAgents()` method; MCP replacement tool fix in subagents; 4+ memory leak fixes (bridge polling, MCP OAuth, hooks config, MCP caching); MCP OAuth manual URL fallback; `/clear` skills reset fix; `/model` active model display |
