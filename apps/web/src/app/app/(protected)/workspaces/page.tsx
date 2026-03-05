@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -62,8 +62,42 @@ export default async function WorkspacesPage() {
         },
       }) : [];
 
+      // For open-access workspaces, also check recent worker activity
+      const openWsIds = rawWorkspaces
+        .filter((ws) => ws.accessMode === 'open')
+        .map((ws) => ws.id);
+
+      const activityByWorkspace = new Map<string, Set<string>>();
+      if (openWsIds.length > 0) {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const recentActivity = await db
+          .select({
+            workspaceId: workers.workspaceId,
+            accountType: accounts.type,
+          })
+          .from(workers)
+          .innerJoin(accounts, eq(workers.accountId, accounts.id))
+          .where(
+            and(
+              inArray(workers.workspaceId, openWsIds),
+              gte(workers.createdAt, thirtyDaysAgo),
+            ),
+          )
+          .groupBy(workers.workspaceId, accounts.type);
+
+        for (const row of recentActivity) {
+          if (!activityByWorkspace.has(row.workspaceId)) {
+            activityByWorkspace.set(row.workspaceId, new Set());
+          }
+          activityByWorkspace.get(row.workspaceId)!.add(row.accountType);
+        }
+      }
+
       allWorkspaces = rawWorkspaces.map((ws) => {
         const connectedAccounts = ws.accountWorkspaces || [];
+        const activeTypes = activityByWorkspace.get(ws.id);
         return {
           id: ws.id,
           name: ws.name,
@@ -72,9 +106,9 @@ export default async function WorkspacesPage() {
           createdAt: ws.createdAt,
           teamName: ws.team?.name || null,
           runners: {
-            action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim),
-            service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim),
-            user: connectedAccounts.some((aw) => aw.account?.type === 'user' && aw.canClaim),
+            action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim) || !!activeTypes?.has('action'),
+            service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim) || !!activeTypes?.has('service'),
+            user: connectedAccounts.some((aw) => aw.account?.type === 'user' && aw.canClaim) || !!activeTypes?.has('user'),
           },
         };
       });

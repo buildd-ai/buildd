@@ -62,7 +62,7 @@ describe('Concurrency Control', () => {
     if (!workspaces.length) throw new Error('No workspaces available for testing');
     workspaceId = workspaces[0].id;
     console.log(`  Using workspace: ${workspaceId}`);
-  });
+  }, TIMEOUT);
 
   // Cleanup after each test
   afterEach(async () => {

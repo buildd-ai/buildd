@@ -47,27 +47,33 @@ const KNOWN_GOOD_SERVER = process.env.BUILDD_TEST_SERVER || 'https://buildd.dev'
 let originalServer: string;
 
 beforeAll(async () => {
-  // Verify runner is running
-  try {
-    const config = await apiJson<{ builddServer: string; viewerToken?: string }>('/api/config');
-    originalServer = config.builddServer;
-    viewerToken = config.viewerToken || null;
-    console.log(`Original server URL: ${originalServer}`);
-    if (viewerToken) console.log(`Viewer token acquired`);
-
-    // Ensure we start with a valid server URL (previous run may have left bogus URL)
-    if (originalServer !== KNOWN_GOOD_SERVER) {
-      console.log(`Restoring to known-good server: ${KNOWN_GOOD_SERVER}`);
-      await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
-      originalServer = KNOWN_GOOD_SERVER;
+  // Wait up to 30 seconds for the runner to be ready
+  let config: { builddServer: string; viewerToken?: string } | null = null;
+  for (let attempt = 1; attempt <= 30; attempt++) {
+    try {
+      config = await apiJson<{ builddServer: string; viewerToken?: string }>('/api/config');
+      break;
+    } catch (err: any) {
+      if (attempt === 30) {
+        throw new Error(`Local-UI not running at ${BASE_URL} after 30s. Start with: bun run dev`);
+      }
+      console.log(`Waiting for runner... (${attempt}/30)`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-  } catch (err: any) {
-    if (err.message?.includes('fetch failed')) {
-      throw new Error(`Local-UI not running at ${BASE_URL}. Start with: bun run dev`);
-    }
-    throw err;
   }
-});
+
+  originalServer = config!.builddServer;
+  viewerToken = config!.viewerToken || null;
+  console.log(`Original server URL: ${originalServer}`);
+  if (viewerToken) console.log(`Viewer token acquired`);
+
+  // Ensure we start with a valid server URL (previous run may have left bogus URL)
+  if (originalServer !== KNOWN_GOOD_SERVER) {
+    console.log(`Restoring to known-good server: ${KNOWN_GOOD_SERVER}`);
+    await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
+    originalServer = KNOWN_GOOD_SERVER;
+  }
+}, 35000);
 
 afterAll(async () => {
   // Always restore to the known-good server

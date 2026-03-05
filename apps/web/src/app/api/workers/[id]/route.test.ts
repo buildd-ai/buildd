@@ -15,6 +15,11 @@ const mockTasksUpdate = mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+const mockTasksFindFirst = mock(() => Promise.resolve(null));
+const mockArtifactsFindMany = mock(() => Promise.resolve([]));
+const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
+const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
+const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
@@ -40,8 +45,10 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
-      tasks: { findFirst: mock(() => Promise.resolve(null)) },
-      artifacts: { findMany: mock(() => Promise.resolve([])) },
+      tasks: { findFirst: mockTasksFindFirst },
+      artifacts: { findMany: mockArtifactsFindMany },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
+      githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -58,6 +65,12 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
   artifacts: 'artifacts',
+  workspaces: 'workspaces',
+  githubRepos: 'githubRepos',
+}));
+
+mock.module('@/lib/github', () => ({
+  githubApi: mockGithubApi,
 }));
 
 mock.module('@/lib/task-dependencies', () => ({
@@ -162,7 +175,19 @@ describe('PATCH /api/workers/[id]', () => {
     mockWorkersFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockArtifactsFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubApi.mockReset();
     mockTriggerEvent.mockReset();
+
+    // Defaults
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockGithubReposFindFirst.mockResolvedValue(null);
+    mockGithubApi.mockResolvedValue([]);
 
     // Default update chain
     const updatedWorker = { id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' };
@@ -535,6 +560,267 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.phases[1].label).toBe('Running tests');
     expect(capturedTaskSet.result.phases[1].toolCount).toBe(2);
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
+  });
+
+  describe('output requirement validation ordering', () => {
+    it('returns 400 without updating task when commits exist but no PR (auto mode)', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 3,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.hint).toBe('create_pr or create_artifact');
+      // Task should NOT have been updated to completed
+      expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('returns 400 without updating task when pr_required and no PR', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+    });
+  });
+
+  describe('PR auto-detection from GitHub', () => {
+    const baseWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'feature/auto-pr',
+      commitCount: 2,
+      prUrl: null,
+      prNumber: null,
+      pendingInstructions: null,
+      milestones: null,
+      waitingFor: null,
+    };
+
+    it('auto-detects PR from GitHub and allows completion', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      // First call: initial worker lookup. Subsequent calls: freshWorker re-read
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 });
+
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockResolvedValue([
+        { html_url: 'https://github.com/org/repo/pull/42', number: 42, state: 'open' },
+      ]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Verify GitHub API was called with correct branch
+      expect(mockGithubApi).toHaveBeenCalledWith(
+        123,
+        '/repos/org/repo/pulls?head=org%3Afeature%2Fauto-pr&state=open',
+      );
+      // Verify task result includes auto-detected PR
+      expect(capturedTaskSet).not.toBeNull();
+      expect(capturedTaskSet.result.prUrl).toBe('https://github.com/org/repo/pull/42');
+      expect(capturedTaskSet.result.prNumber).toBe(42);
+    });
+
+    it('returns 400 when no PR found on GitHub either', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockResolvedValue([]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.hint).toBe('create_pr or create_artifact');
+    });
+
+    it('falls through gracefully when GitHub API fails', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockRejectedValue(new Error('GitHub API error'));
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('skips auto-detect when worker has no branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, branch: null });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('skips auto-detect when workspace has no GitHub repo', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('auto-detects PR for pr_required output requirement', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({ ...baseWorker, commitCount: 0 })
+        .mockResolvedValueOnce({ ...baseWorker, commitCount: 0, prUrl: 'https://github.com/org/repo/pull/10', prNumber: 10 });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockResolvedValue([
+        { html_url: 'https://github.com/org/repo/pull/10', number: 10, state: 'open' },
+      ]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   it('omits phases from task.result when there are no phase milestones', async () => {

@@ -230,33 +230,68 @@ export async function githubGraphQL(
   return data;
 }
 
-// Enable auto-merge on a PR (requires branch protection rules + auto-merge enabled on repo)
-export async function enableAutoMerge(
+// Merge a pull request via REST API
+export async function mergePullRequest(
   installationId: number,
-  pullRequestNodeId: string,
-  mergeMethod: 'SQUASH' | 'MERGE' | 'REBASE' = 'SQUASH'
+  repoFullName: string,
+  prNumber: number,
+  mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash'
+): Promise<{ merged: boolean; message: string }> {
+  try {
+    const token = await getInstallationToken(installationId);
+    const response = await fetch(
+      `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}/merge`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ merge_method: mergeMethod }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (response.ok) {
+      return { merged: true, message: data.message || 'Pull request merged' };
+    }
+
+    return { merged: false, message: data.message || `Merge failed: ${response.status}` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.warn(`Failed to merge PR #${prNumber} on ${repoFullName}:`, message);
+    return { merged: false, message };
+  }
+}
+
+// Check if all check suites on a commit have passed
+export async function allCheckSuitesPassed(
+  installationId: number,
+  repoFullName: string,
+  headSha: string
 ): Promise<boolean> {
   try {
-    await githubGraphQL(installationId, `
-      mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
-        enablePullRequestAutoMerge(input: {
-          pullRequestId: $pullRequestId
-          mergeMethod: $mergeMethod
-        }) {
-          pullRequest {
-            autoMergeRequest {
-              enabledAt
-            }
-          }
-        }
-      }
-    `, {
-      pullRequestId: pullRequestNodeId,
-      mergeMethod,
-    });
-    return true;
+    const data = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/commits/${headSha}/check-suites`
+    );
+
+    const suites = data.check_suites as Array<{ status: string; conclusion: string | null }>;
+
+    if (!suites || suites.length === 0) {
+      return false;
+    }
+
+    return suites.every(
+      (suite) =>
+        suite.status === 'completed' &&
+        (suite.conclusion === 'success' || suite.conclusion === 'skipped' || suite.conclusion === 'neutral')
+    );
   } catch (error) {
-    console.warn('Failed to enable auto-merge (repo may not have it enabled):', error);
+    console.warn(`Failed to check suites for ${repoFullName}@${headSha}:`, error);
     return false;
   }
 }
@@ -281,6 +316,28 @@ export interface GitHubInstallationEvent {
     name: string;
     private: boolean;
   }>;
+}
+
+export interface GitHubCheckSuiteEvent {
+  action: 'completed' | 'requested' | 'rerequested';
+  check_suite: {
+    id: number;
+    head_sha: string;
+    status: string;
+    conclusion: string | null;
+    pull_requests: Array<{
+      number: number;
+      head: { sha: string; ref: string };
+      base: { sha: string; ref: string };
+    }>;
+  };
+  repository: {
+    id: number;
+    full_name: string;
+  };
+  installation?: {
+    id: number;
+  };
 }
 
 export interface GitHubIssuesEvent {

@@ -12,7 +12,7 @@
  *   bun test apps/web/tests/integration/worker-state-machine.test.ts
  */
 
-import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
@@ -41,15 +41,24 @@ describe('Worker State Machine', () => {
     });
     cleanup.trackTask(task.id);
 
-    const { workers } = await api('/api/workers/claim', {
-      method: 'POST',
-      body: JSON.stringify({ maxTasks: 1, workspaceId, runner: 'test' }),
-    });
-    if (!workers.length) throw new Error('Failed to claim a worker');
-    workerId = workers[0].id;
+    // Retry claiming in case transient state from previous tests causes a brief delay
+    let claimedWorkers: any[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await api('/api/workers/claim', {
+        method: 'POST',
+        body: JSON.stringify({ maxTasks: 1, workspaceId, taskId: task.id, runner: 'test' }),
+      });
+      if (res.workers.length > 0) {
+        claimedWorkers = res.workers;
+        break;
+      }
+      if (attempt < 2) await sleep(2_000);
+    }
+    if (!claimedWorkers.length) throw new Error('Failed to claim a worker');
+    workerId = claimedWorkers[0].id;
     cleanup.trackWorker(workerId);
     console.log(`  Worker: ${workerId}`);
-  });
+  }, TIMEOUT);
 
   afterAll(async () => {
     await cleanup.runCleanup();

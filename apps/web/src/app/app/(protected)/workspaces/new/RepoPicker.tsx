@@ -17,13 +17,15 @@ interface Repo {
 
 interface RepoPickerProps {
   repos: Repo[];
-  selectedRepo: Repo | null;
-  onSelect: (repo: Repo | null) => void;
+  selectedRepos: Repo[];
+  onToggle: (repo: Repo) => void;
   loading?: boolean;
 }
 
-export default function RepoPicker({ repos, selectedRepo, onSelect, loading }: RepoPickerProps) {
+export default function RepoPicker({ repos, selectedRepos, onToggle, loading }: RepoPickerProps) {
   const [search, setSearch] = useState('');
+
+  const selectedIds = useMemo(() => new Set(selectedRepos.map((r) => r.id)), [selectedRepos]);
 
   const filteredRepos = useMemo(() => {
     if (!search) return repos;
@@ -65,62 +67,85 @@ export default function RepoPicker({ repos, selectedRepo, onSelect, loading }: R
 
   return (
     <div className="space-y-3">
-      {/* Search */}
-      <input
-        type="text"
-        placeholder="Search repositories..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="w-full px-3 py-2 text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-      />
+      {/* Search and selected count */}
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="Search repositories..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 px-3 py-2 text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+        />
+        {selectedRepos.length > 0 && (
+          <span className="text-sm text-primary font-medium whitespace-nowrap">
+            {selectedRepos.length} selected
+          </span>
+        )}
+      </div>
 
       {/* Repo list */}
       <div className="max-h-64 overflow-y-auto space-y-2">
-        {sortedRepos.map((repo) => (
-          <button
-            key={repo.id}
-            type="button"
-            disabled={repo.hasWorkspace}
-            onClick={() => onSelect(selectedRepo?.id === repo.id ? null : repo)}
-            className={`w-full text-left p-3 rounded-lg border transition-all ${
-              selectedRepo?.id === repo.id
-                ? 'border-primary bg-primary/10'
-                : repo.hasWorkspace
-                ? 'border-border-default bg-surface-3 opacity-50 cursor-not-allowed'
-                : 'border-border-default hover:border-primary/50'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{repo.name}</span>
-                  {repo.private && (
-                    <span className="px-1.5 py-0.5 text-xs bg-surface-4 rounded">
-                      private
-                    </span>
-                  )}
+        {sortedRepos.map((repo) => {
+          const isSelected = selectedIds.has(repo.id);
+          return (
+            <button
+              key={repo.id}
+              type="button"
+              disabled={repo.hasWorkspace}
+              onClick={() => onToggle(repo)}
+              className={`w-full text-left p-3 rounded-lg border transition-all ${
+                isSelected
+                  ? 'border-primary bg-primary/10'
+                  : repo.hasWorkspace
+                  ? 'border-border-default bg-surface-3 opacity-50 cursor-not-allowed'
+                  : 'border-border-default hover:border-primary/50'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {/* Checkbox */}
+                  <div
+                    className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center ${
+                      isSelected
+                        ? 'bg-primary border-primary'
+                        : repo.hasWorkspace
+                        ? 'border-border-default bg-surface-3'
+                        : 'border-border-default'
+                    }`}
+                  >
+                    {isSelected && (
+                      <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate">{repo.name}</span>
+                      {repo.private && (
+                        <span className="px-1.5 py-0.5 text-xs bg-surface-4 rounded">
+                          private
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-text-muted truncate">{repo.owner}</div>
+                    {repo.description && (
+                      <p className="text-xs text-text-muted mt-1 line-clamp-2">{repo.description}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="text-xs text-text-muted truncate">{repo.owner}</div>
-                {repo.description && (
-                  <p className="text-xs text-text-muted mt-1 line-clamp-2">{repo.description}</p>
+                {repo.hasWorkspace && (
+                  <span className="text-xs text-text-muted whitespace-nowrap">already linked</span>
                 )}
               </div>
-              {repo.hasWorkspace && (
-                <span className="text-xs text-text-muted whitespace-nowrap">already linked</span>
-              )}
-              {selectedRepo?.id === repo.id && (
-                <svg className="w-5 h-5 text-primary flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              )}
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
 
       {filteredRepos.length === 0 && search && (
         <p className="text-sm text-text-muted text-center py-4">
-          No repos matching "{search}"
+          No repos matching &quot;{search}&quot;
         </p>
       )}
     </div>

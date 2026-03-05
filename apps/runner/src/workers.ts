@@ -2861,7 +2861,18 @@ export class WorkerManager {
   }
 
   async sendMessage(workerId: string, message: string): Promise<boolean> {
-    const worker = this.workers.get(workerId);
+    let worker = this.workers.get(workerId);
+
+    // If evicted from memory, try loading from disk (24h TTL) for resume
+    if (!worker) {
+      const diskWorker = storeLoadWorker(workerId);
+      if (diskWorker && (diskWorker.status === 'done' || diskWorker.status === 'error')) {
+        this.workers.set(workerId, diskWorker);
+        worker = diskWorker;
+        console.log(`[Worker ${workerId}] Restored from disk for follow-up (status: ${diskWorker.status})`);
+      }
+    }
+
     if (!worker) {
       return false;
     }

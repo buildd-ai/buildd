@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, objectives } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
@@ -262,6 +262,12 @@ export async function GET(req: NextRequest) {
           ? `schedule-${schedule.id}-${triggerResult.currentValue}`
           : undefined;
 
+        // Check if this schedule is linked to an objective
+        const linkedObjective = await db.query.objectives.findFirst({
+          where: eq(objectives.scheduleId, schedule.id),
+          columns: { id: true },
+        });
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -277,6 +283,7 @@ export async function GET(req: NextRequest) {
             context: taskContext,
             creationSource: 'schedule',
             ...(externalId ? { externalId } : {}),
+            ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
           })
           .returning();
 

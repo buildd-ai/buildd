@@ -76,6 +76,16 @@ if [ "${1:-}" = "--cleanup" ]; then
   exit 0
 fi
 
+# Ensure dev is up-to-date with main to avoid PR conflicts
+echo "Syncing main into dev..."
+git fetch origin
+if ! git merge origin/main --no-edit 2>/dev/null; then
+  echo "❌ Merge conflicts when syncing main into dev."
+  echo "   Resolve conflicts, commit, then re-run: bun run release"
+  exit 1
+fi
+echo "  ✅ dev is up-to-date with main"
+
 # Get the latest version tag, default to v0.0.0
 LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
 if [ -z "$LATEST_TAG" ]; then

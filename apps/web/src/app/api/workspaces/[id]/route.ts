@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
 
 export async function GET(
   req: NextRequest,
@@ -68,11 +68,19 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, accessMode, discordConfig } = body;
+    const { name, accessMode, discordConfig, teamId } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
+
+    if (teamId !== undefined) {
+      const userTeamIds = await getUserTeamIds(user.id);
+      if (!userTeamIds.includes(teamId)) {
+        return NextResponse.json({ error: 'You do not belong to the target team' }, { status: 403 });
+      }
+      updates.teamId = teamId;
+    }
 
     if (name !== undefined) updates.name = name;
     if (accessMode !== undefined) updates.accessMode = accessMode;

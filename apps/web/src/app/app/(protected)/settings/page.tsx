@@ -12,7 +12,8 @@ import ApiKeysSection from './ApiKeysSection';
 import SkillsSection from './SkillsSection';
 import SlackSection from './SlackSection';
 import DiscordSection from './DiscordSection';
-import HeartbeatSection from './HeartbeatSection';
+
+
 
 export const dynamic = 'force-dynamic';
 
@@ -190,15 +191,6 @@ export default async function SettingsPage() {
           {/* Skills */}
           <SkillsSection workspaces={userWorkspaces} />
 
-          {/* Heartbeat Checklist — one per workspace */}
-          {userWorkspaces.length > 0 && (
-            <>
-              <hr className="border-border-default" />
-              {userWorkspaces.map((ws) => (
-                <HeartbeatSection key={ws.id} workspaceId={ws.id} />
-              ))}
-            </>
-          )}
         </div>
       </div>
     </main>

@@ -35,7 +35,7 @@ export const workerActions = [
 export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
   'approve_plan', 'reject_plan',
-  'manage_heartbeat', 'create_heartbeat',
+  'manage_objectives',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -70,8 +70,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_heartbeat: '{ workspaceId?, action: "get" | "set", checklist?: string[] } — get or update workspace heartbeat checklist [admin]',
-    create_heartbeat: '{ workspaceId?, cronExpression? (default "*/30 * * * *"), name? } — create a heartbeat schedule that checks workspace checklist [admin]',
+    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId? } — manage team objectives [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -643,65 +642,86 @@ export async function handleBuilddAction(
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
-    case 'manage_heartbeat': {
+    case 'manage_objectives': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+      const objAction = params.action as string;
+      if (!objAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
 
-      const hbAction = params.action as string;
-      if (hbAction === 'get') {
-        const data = await api(`/api/workspaces/${wsId}/heartbeat`);
-        const checklist = data.checklist || [];
-        if (checklist.length === 0) return text('Heartbeat checklist is empty. Use action="set" to configure items to monitor.');
-        const items = checklist.map((item: string, i: number) => `${i + 1}. ${item}`).join('\n');
-        return text(`Heartbeat checklist (${checklist.length} item(s)):\n\n${items}`);
-      }
-
-      if (hbAction === 'set') {
-        if (!params.checklist || !Array.isArray(params.checklist)) {
-          throw new Error('checklist (string array) is required for action="set"');
+      switch (objAction) {
+        case 'list': {
+          const qs = new URLSearchParams();
+          if (params.workspaceId) qs.set('workspaceId', params.workspaceId as string);
+          if (params.status) qs.set('status', params.status as string);
+          const data = await api(`/api/objectives?${qs}`);
+          const objs = data.objectives || [];
+          if (objs.length === 0) return text('No objectives found.');
+          const summary = objs.map((o: any) =>
+            `- **${o.title}** [${o.status}] — ${o.progress}% (${o.completedTasks}/${o.totalTasks} tasks)\n  ID: ${o.id}${o.workspace ? `\n  Workspace: ${o.workspace.name}` : ''}`
+          ).join('\n\n');
+          return text(`${objs.length} objective(s):\n\n${summary}`);
         }
-        const data = await api(`/api/workspaces/${wsId}/heartbeat`, {
-          method: 'PATCH',
-          body: JSON.stringify({ checklist: params.checklist }),
-        });
-        const updated = data.checklist || [];
-        const items = updated.map((item: string, i: number) => `${i + 1}. ${item}`).join('\n');
-        return text(`Heartbeat checklist updated (${updated.length} item(s)):\n\n${items}`);
+        case 'create': {
+          if (!params.title) throw new Error('title is required');
+          const body: Record<string, unknown> = { title: params.title };
+          if (params.description) body.description = params.description;
+          if (params.workspaceId) body.workspaceId = params.workspaceId;
+          if (params.cronExpression) body.cronExpression = params.cronExpression;
+          if (params.priority !== undefined) body.priority = params.priority;
+          const data = await api('/api/objectives', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          return text(`Objective created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}`);
+        }
+        case 'get': {
+          if (!params.objectiveId) throw new Error('objectiveId is required');
+          const data = await api(`/api/objectives/${params.objectiveId}`);
+          const taskList = (data.tasks || []).map((t: any) =>
+            `  - [${t.status}] ${t.title} (${t.id})`
+          ).join('\n');
+          return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+        }
+        case 'update': {
+          if (!params.objectiveId) throw new Error('objectiveId is required');
+          const body: Record<string, unknown> = {};
+          if (params.title !== undefined) body.title = params.title;
+          if (params.description !== undefined) body.description = params.description;
+          if (params.status !== undefined) body.status = params.status;
+          if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
+          if (params.priority !== undefined) body.priority = params.priority;
+          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
+          const data = await api(`/api/objectives/${params.objectiveId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          return text(`Objective updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+        }
+        case 'delete': {
+          if (!params.objectiveId) throw new Error('objectiveId is required');
+          await api(`/api/objectives/${params.objectiveId}`, { method: 'DELETE' });
+          return text(`Objective deleted: ${params.objectiveId}`);
+        }
+        case 'link_task': {
+          if (!params.objectiveId || !params.taskId) throw new Error('objectiveId and taskId are required');
+          await api(`/api/tasks/${params.taskId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ objectiveId: params.objectiveId }),
+          });
+          return text(`Task ${params.taskId} linked to objective ${params.objectiveId}`);
+        }
+        case 'unlink_task': {
+          if (!params.taskId) throw new Error('taskId is required');
+          await api(`/api/tasks/${params.taskId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ objectiveId: null }),
+          });
+          return text(`Task ${params.taskId} unlinked from objective`);
+        }
+        default:
+          throw new Error(`Unknown objectives action: ${objAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
       }
-
-      throw new Error('action must be "get" or "set"');
-    }
-
-    case 'create_heartbeat': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-
-      const wsId = (params.workspaceId as string) || ctx.workspaceId || await ctx.getWorkspaceId();
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const cronExpression = (params.cronExpression as string) || '*/30 * * * *';
-      const name = (params.name as string) || 'Heartbeat';
-
-      const schedule = await api(`/api/workspaces/${wsId}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name,
-          cronExpression,
-          timezone: 'UTC',
-          maxConcurrentFromSchedule: 1,
-          taskTemplate: {
-            title: 'Heartbeat: check monitored items',
-            mode: 'planning',
-            priority: 3,
-          },
-        }),
-      });
-
-      const sched = schedule.schedule;
-      return text(`Heartbeat schedule created: "${sched.name}" (ID: ${sched.id})\nCron: ${sched.cronExpression} (${sched.timezone})\nNext run: ${sched.nextRunAt || 'not scheduled'}\nTask: "${sched.taskTemplate.title}" (mode: planning, priority: 3)`);
     }
 
     // ── Recipes ───────────────────────────────────────────────────────────

@@ -311,7 +311,7 @@ function showUpdateBanner(currentCommit, latestCommit) {
 
   banner = document.createElement('div');
   banner.id = 'updateBanner';
-  banner.className = 'fixed top-0 left-0 right-0 z-[9998] bg-brand/90 text-white text-center py-2 text-xs font-mono font-medium backdrop-blur-sm flex items-center justify-center gap-3';
+  banner.className = 'bg-brand/90 text-white text-center py-2 text-xs font-mono font-medium backdrop-blur-sm flex items-center justify-center gap-3';
 
   const shortCurrent = currentCommit ? currentCommit.slice(0, 7) : '?';
   const shortLatest = latestCommit ? latestCommit.slice(0, 7) : '?';
@@ -321,7 +321,13 @@ function showUpdateBanner(currentCommit, latestCommit) {
     <button onclick="applyUpdate()" id="updateBtn" class="bg-white/20 hover:bg-white/30 text-white text-xs font-semibold py-0.5 px-3 rounded transition-colors">Update now</button>
     <button onclick="dismissUpdateBanner()" class="text-white/60 hover:text-white text-xs ml-1">\u2715</button>
   `;
-  document.body.prepend(banner);
+  // Insert before the header so it flows naturally above it (no overlap)
+  const header = document.querySelector('header');
+  if (header) {
+    header.parentNode.insertBefore(banner, header);
+  } else {
+    document.body.prepend(banner);
+  }
 }
 
 function hideUpdateBanner() {

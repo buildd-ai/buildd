@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { githubApi } from '@/lib/github';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -143,65 +144,8 @@ export async function PATCH(
         .where(eq(tasks.id, worker.taskId));
     }
   }
-  if (status === 'completed' || status === 'failed') {
-    updates.completedAt = new Date();
-
-    // Update task status + snapshot deliverables
-    if (worker.taskId) {
-      const taskUpdate: Record<string, unknown> = {
-        status: status === 'completed' ? 'completed' : 'failed',
-        updatedAt: new Date(),
-      };
-
-      // Snapshot worker stats into task.result on completion
-      if (status === 'completed') {
-        // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
-        let summary = body.summary || undefined;
-        if (typeof summary === 'string') {
-          summary = summary
-            .replace(/\$\(cat\s*<<'?EOF'?\n?/g, '')
-            .replace(/\nEOF\n?\)\s*"?\s*$/g, '')
-            .replace(/\s*Co-Authored-By:.*$/gm, '')
-            .trim() || undefined;
-        }
-        // Extract phase timeline from milestones for result snapshot
-        const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
-        const phases = finalMilestones
-          .filter((m: any) => m.type === 'phase')
-          .map((m: any) => ({ label: m.label, toolCount: m.toolCount }));
-
-        // Capture last question if worker was in waiting state
-        const waitingForData = worker.waitingFor as { prompt?: string } | null;
-        const lastQuestion = waitingForData?.prompt || undefined;
-
-        taskUpdate.result = {
-          summary,
-          branch: worker.branch,
-          commits: commitCount ?? worker.commitCount ?? 0,
-          sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,
-          files: filesChanged ?? worker.filesChanged ?? 0,
-          added: linesAdded ?? worker.linesAdded ?? 0,
-          removed: linesRemoved ?? worker.linesRemoved ?? 0,
-          prUrl: worker.prUrl ?? undefined,
-          prNumber: worker.prNumber ?? undefined,
-          ...(phases.length > 0 && { phases }),
-          ...(lastQuestion && { lastQuestion }),
-          // Structured output from SDK (validated JSON matching task.outputSchema)
-          ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
-        };
-      }
-
-      await db
-        .update(tasks)
-        .set(taskUpdate)
-        .where(eq(tasks.id, worker.taskId));
-
-      // Resolve dependencies (check if parent's children all completed)
-      await resolveCompletedTask(worker.taskId, worker.workspaceId);
-    }
-  }
-
   // Enforce output requirement based on task.outputRequirement
+  // (Must run BEFORE task status update to prevent marking task completed on validation failure)
   if (status === 'completed') {
     // Fetch task to check outputRequirement
     const task = worker.taskId
@@ -211,7 +155,38 @@ export async function PATCH(
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
-      const hasPR = !!worker.prUrl;
+      let hasPR = !!worker.prUrl;
+
+      // Auto-detect: if no PR on worker but branch exists, check GitHub for PRs
+      if (!hasPR && worker.branch) {
+        const workspace = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, worker.workspaceId),
+        });
+        if (workspace?.githubRepoId) {
+          const repo = await db.query.githubRepos.findFirst({
+            where: eq(githubRepos.id, workspace.githubRepoId),
+            with: { installation: true },
+          });
+          if (repo?.installation) {
+            try {
+              const owner = repo.fullName.split('/')[0];
+              const prs = await githubApi(
+                repo.installation.installationId,
+                `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
+              );
+              if (Array.isArray(prs) && prs.length > 0) {
+                // Found PR — update worker and let validation pass
+                await db.update(workers).set({
+                  prUrl: prs[0].html_url,
+                  prNumber: prs[0].number,
+                  updatedAt: new Date(),
+                }).where(eq(workers.id, id));
+                hasPR = true;
+              }
+            } catch { /* non-fatal — fall through to normal validation */ }
+          }
+        }
+      }
 
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR) {
@@ -246,6 +221,69 @@ export async function PATCH(
           }, { status: 400 });
         }
       }
+    }
+  }
+
+  if (status === 'completed' || status === 'failed') {
+    updates.completedAt = new Date();
+
+    // Update task status + snapshot deliverables
+    if (worker.taskId) {
+      const taskUpdate: Record<string, unknown> = {
+        status: status === 'completed' ? 'completed' : 'failed',
+        updatedAt: new Date(),
+      };
+
+      // Snapshot worker stats into task.result on completion
+      if (status === 'completed') {
+        // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
+        let summary = body.summary || undefined;
+        if (typeof summary === 'string') {
+          summary = summary
+            .replace(/\$\(cat\s*<<'?EOF'?\n?/g, '')
+            .replace(/\nEOF\n?\)\s*"?\s*$/g, '')
+            .replace(/\s*Co-Authored-By:.*$/gm, '')
+            .trim() || undefined;
+        }
+        // Extract phase timeline from milestones for result snapshot
+        const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
+        const phases = finalMilestones
+          .filter((m: any) => m.type === 'phase')
+          .map((m: any) => ({ label: m.label, toolCount: m.toolCount }));
+
+        // Capture last question if worker was in waiting state
+        const waitingForData = worker.waitingFor as { prompt?: string } | null;
+        const lastQuestion = waitingForData?.prompt || undefined;
+
+        // Re-read worker to pick up auto-detected PR fields
+        const freshWorker = await db.query.workers.findFirst({
+          where: eq(workers.id, id),
+        });
+
+        taskUpdate.result = {
+          summary,
+          branch: worker.branch,
+          commits: commitCount ?? worker.commitCount ?? 0,
+          sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,
+          files: filesChanged ?? worker.filesChanged ?? 0,
+          added: linesAdded ?? worker.linesAdded ?? 0,
+          removed: linesRemoved ?? worker.linesRemoved ?? 0,
+          prUrl: freshWorker?.prUrl ?? worker.prUrl ?? undefined,
+          prNumber: freshWorker?.prNumber ?? worker.prNumber ?? undefined,
+          ...(phases.length > 0 && { phases }),
+          ...(lastQuestion && { lastQuestion }),
+          // Structured output from SDK (validated JSON matching task.outputSchema)
+          ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
+        };
+      }
+
+      await db
+        .update(tasks)
+        .set(taskUpdate)
+        .where(eq(tasks.id, worker.taskId));
+
+      // Resolve dependencies (check if parent's children all completed)
+      await resolveCompletedTask(worker.taskId, worker.workspaceId);
     }
   }
 

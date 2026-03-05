@@ -21,14 +21,22 @@ jobs:
       - name: Ensure dev exists and matches main
         run: |
           if git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
-            echo "dev exists, fast-forwarding to main..."
+            echo "dev exists, syncing to main..."
             git fetch origin dev
             git checkout dev
-            git merge --ff-only origin/main || {
-              echo "::warning::Cannot fast-forward dev to main. Manual merge required."
-              exit 0
-            }
-            git push origin dev
+
+            # Try fast-forward first (clean case)
+            if git merge --ff-only origin/main 2>/dev/null; then
+              echo "Fast-forwarded dev to main"
+              git push origin dev
+            else
+              # dev has diverged — force-reset to main
+              # Safe because dev→main PRs mean all dev commits are already in main
+              echo "dev has diverged from main, force-resetting..."
+              git reset --hard origin/main
+              git push --force origin dev
+              echo "✅ dev force-reset to main"
+            fi
           else
             echo "dev branch missing, recreating from main..."
             git checkout -b dev

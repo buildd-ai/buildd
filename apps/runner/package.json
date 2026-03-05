@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
@@ -14,7 +14,7 @@
     "test:integration-config": "bun test __tests__/integration-config.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.68",
     "@buildd/shared": "workspace:*",
     "marked": "^17.0.3",
     "pusher-js": "^8.4.0",
