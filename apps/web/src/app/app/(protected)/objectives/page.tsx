@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { objectives } from '@buildd/core/db/schema';
-import { eq, inArray, desc } from 'drizzle-orm';
+import { objectives, workspaces } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -28,19 +28,26 @@ export default async function ObjectivesPage({
 
   const { status: statusFilter } = await searchParams;
 
-  let where = inArray(objectives.teamId, teamIds);
+  let where: any = inArray(objectives.teamId, teamIds);
   if (statusFilter && statusFilter !== 'all') {
-    where = require('drizzle-orm').and(where, eq(objectives.status, statusFilter as any));
+    where = and(where, eq(objectives.status, statusFilter as any));
   }
 
-  const allObjectives = await db.query.objectives.findMany({
-    where,
-    orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-    with: {
-      workspace: { columns: { id: true, name: true } },
-      tasks: { columns: { id: true, status: true } },
-    },
-  });
+  const [allObjectives, teamWorkspaces] = await Promise.all([
+    db.query.objectives.findMany({
+      where,
+      orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+      with: {
+        workspace: { columns: { id: true, name: true } },
+        tasks: { columns: { id: true, status: true } },
+      },
+    }),
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true, name: true },
+      orderBy: [desc(workspaces.createdAt)],
+    }),
+  ]);
 
   const objectivesWithProgress = allObjectives.map(obj => {
     const totalTasks = obj.tasks?.length || 0;
@@ -78,6 +85,7 @@ export default async function ObjectivesPage({
       <ObjectivesList
         objectives={objectivesWithProgress}
         teamId={teamIds[0]}
+        workspaces={teamWorkspaces}
       />
     </div>
   );
