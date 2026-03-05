@@ -23,7 +23,7 @@ import {
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
 import { workspaces } from "@buildd/core/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -91,9 +91,42 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
     ? [...allActionsList]
     : [...workerActions];
 
+  // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
+  let resolvedWorkspaceId = workspaceId;
+  const getWorkspaceId = async (): Promise<string | null> => {
+    if (resolvedWorkspaceId) return resolvedWorkspaceId;
+
+    // Fallback: query account's accessible workspaces via API
+    try {
+      const data = await api('/api/tasks');
+      const taskWorkspaces = (data.tasks || [])
+        .map((t: any) => t.workspaceId)
+        .filter(Boolean);
+      const uniqueIds = Array.from(new Set(taskWorkspaces)) as string[];
+
+      if (uniqueIds.length === 1) {
+        resolvedWorkspaceId = uniqueIds[0];
+        return resolvedWorkspaceId;
+      }
+
+      // If repo hint provided, try matching workspace by repo name from task data
+      if (repoName) {
+        const wsWithRepo = (data.tasks || []).find((t: any) => t.workspace?.repo === repoName);
+        if (wsWithRepo?.workspaceId) {
+          resolvedWorkspaceId = wsWithRepo.workspaceId;
+          return resolvedWorkspaceId;
+        }
+      }
+    } catch {
+      // API call failed, can't resolve
+    }
+
+    return null;
+  };
+
   const ctx: ActionContext = {
-    workspaceId: workspaceId || undefined,
-    getWorkspaceId: async () => workspaceId || null,
+    workspaceId: resolvedWorkspaceId || undefined,
+    getWorkspaceId,
     getLevel: async () => accountLevel,
   };
 
@@ -327,11 +360,25 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   if (workspaceParam) {
     workspaceId = workspaceParam;
   } else if (repoParam) {
+    // Try exact match first, then case-insensitive
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.repo, repoParam),
       columns: { id: true },
     });
-    workspaceId = workspace?.id;
+    if (workspace) {
+      workspaceId = workspace.id;
+    } else {
+      // Case-insensitive fallback
+      const [wsRow] = await db
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(sql`LOWER(${workspaces.repo}) = LOWER(${repoParam})`)
+        .limit(1);
+      workspaceId = wsRow?.id;
+      if (!workspaceId) {
+        console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
+      }
+    }
   }
 
   // Create per-request API wrapper, server, and transport
