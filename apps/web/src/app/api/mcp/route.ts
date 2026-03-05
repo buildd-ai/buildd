@@ -92,7 +92,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
     : [...workerActions];
 
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
-  let resolvedWorkspaceId = workspaceId;
+  let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
     if (resolvedWorkspaceId) return resolvedWorkspaceId;
 
@@ -125,7 +125,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
   };
 
   const ctx: ActionContext = {
-    workspaceId: resolvedWorkspaceId || undefined,
+    workspaceId: resolvedWorkspaceId ?? undefined,
     getWorkspaceId,
     getLevel: async () => accountLevel,
   };
