@@ -144,10 +144,16 @@ describe('Artifact Lifecycle', () => {
   }, TIMEOUT);
 
   test('completed task has result captured', async () => {
-    const task = await api(`/api/tasks/${taskId}`).catch(async () => {
-      const { tasks } = await api('/api/tasks');
-      return tasks?.find((t: any) => t.id === taskId);
-    });
+    // Task completion propagates asynchronously after worker completes — retry briefly
+    let task: any;
+    for (let i = 0; i < 5; i++) {
+      task = await api(`/api/tasks/${taskId}`).catch(async () => {
+        const { tasks } = await api('/api/tasks');
+        return tasks?.find((t: any) => t.id === taskId);
+      });
+      if (task.status === 'completed') break;
+      await new Promise(r => setTimeout(r, 500));
+    }
     expect(task.status).toBe('completed');
     expect(task.result).toBeTruthy();
   }, TIMEOUT);
