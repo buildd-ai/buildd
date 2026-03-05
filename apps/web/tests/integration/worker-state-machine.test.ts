@@ -49,7 +49,7 @@ describe('Worker State Machine', () => {
     workerId = workers[0].id;
     cleanup.trackWorker(workerId);
     console.log(`  Worker: ${workerId}`);
-  });
+  }, TIMEOUT);
 
   afterAll(async () => {
     await cleanup.runCleanup();
