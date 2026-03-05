@@ -4,7 +4,7 @@
 
 - **Monorepo**: Turborepo with `apps/` and `packages/`
 - **Stack**: Next.js 16 (app router), Drizzle ORM, Postgres (Neon), Pusher
-- **Routing**: `proxy.ts` handles subdomain routing (Next.js 16 feature)
+- **Routing**: `proxy.ts` is the Next.js 16 middleware (replaces `middleware.ts`). Handles install script redirects and subdomain routing. File extensions like `.sh` require proxy-level handling — `next.config` redirects skip them.
 - **Key paths**:
   - Web dashboard: `apps/web/src/app/`
   - API routes: `apps/web/src/app/api/`
