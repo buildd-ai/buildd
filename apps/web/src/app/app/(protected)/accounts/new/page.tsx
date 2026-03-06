@@ -13,6 +13,12 @@ interface Team {
   role: string;
 }
 
+interface Workspace {
+  id: string;
+  name: string;
+  repo: string | null;
+}
+
 const DEFAULTS = {
   type: 'user',
   authType: 'api',
@@ -27,6 +33,8 @@ export default function NewAccountPage() {
   const [createdAccount, setCreatedAccount] = useState<{ name: string; apiKey: string } | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [accountType, setAccountType] = useState(DEFAULTS.type);
   const [authType, setAuthType] = useState(DEFAULTS.authType);
   const [tokenLevel, setTokenLevel] = useState(DEFAULTS.level);
@@ -57,7 +65,19 @@ export default function NewAccountPage() {
         // Teams not available
       }
     }
+    async function loadWorkspaces() {
+      try {
+        const res = await fetch('/api/workspaces');
+        if (res.ok) {
+          const data = await res.json();
+          setWorkspaces(data.workspaces || []);
+        }
+      } catch {
+        // Workspaces not available
+      }
+    }
     loadTeams();
+    loadWorkspaces();
   }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -75,6 +95,9 @@ export default function NewAccountPage() {
     };
     if (selectedTeamId) {
       data.teamId = selectedTeamId;
+    }
+    if (selectedWorkspaceId) {
+      data.workspaceId = selectedWorkspaceId;
     }
 
     try {
@@ -147,6 +170,29 @@ export default function NewAccountPage() {
             />
           </div>
 
+          {workspaces.length > 0 && (
+            <div>
+              <label htmlFor="workspace" className="block text-sm font-medium mb-2">
+                Workspace
+              </label>
+              <Select
+                id="workspace"
+                value={selectedWorkspaceId}
+                onChange={setSelectedWorkspaceId}
+                options={[
+                  { value: '', label: 'None — link later' },
+                  ...workspaces.map((ws) => ({
+                    value: ws.id,
+                    label: ws.name + (ws.repo ? ` (${ws.repo})` : ''),
+                  })),
+                ]}
+              />
+              <p className="text-xs text-text-secondary mt-1">
+                Auto-link this account to a workspace so the API key works immediately
+              </p>
+            </div>
+          )}
+
           {/* Advanced Options */}
           <div>
             <button
@@ -214,6 +260,7 @@ export default function NewAccountPage() {
                     value={tokenLevel}
                     onChange={setTokenLevel}
                     options={[
+                      { value: 'trigger', label: 'Trigger - Can create tasks and artifacts only' },
                       { value: 'worker', label: 'Worker - Can claim and execute tasks' },
                       { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
                     ]}

@@ -296,15 +296,9 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'skill_install' | 'rollback';
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback';
   text?: string;
   timestamp: number;
-  // skill_install fields
-  bundle?: { slug: string; name: string; content: string; contentHash?: string; files?: any[] };
-  installerCommand?: string;
-  requestId?: string;
-  skillSlug?: string;
-  targetLocalUiUrl?: string | null;
   // rollback fields
   checkpointUuid?: string;
 }
@@ -341,8 +335,6 @@ export interface LocalUIConfig {
   acceptRemoteTasks?: boolean;
   // Bypass permission prompts for bash commands (dangerous commands still blocked)
   bypassPermissions?: boolean;
-  // Remote skill installation
-  rejectRemoteInstallers?: boolean;
   // Maximum budget in USD per worker session (local fallback; workspace gitConfig.maxBudgetUsd takes priority)
   maxBudgetUsd?: number;
   // Maximum turns per worker session (default: no limit)

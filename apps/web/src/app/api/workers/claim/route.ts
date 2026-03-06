@@ -18,6 +18,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
 
+  // Trigger-level tokens cannot claim tasks
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot claim tasks. Use a worker or admin token.' }, { status: 403 });
+  }
+
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
 

@@ -1,6 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
-import type { WorkspaceSkill, SyncWorkspaceSkillsInput, SkillInstallResult, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 
 export class BuilddClient {
   private config: LocalUIConfig;
@@ -373,13 +373,6 @@ export class BuilddClient {
     }
   }
 
-  async syncWorkspaceSkills(workspaceId: string, skills: SyncWorkspaceSkillsInput['skills']): Promise<any> {
-    return this.fetch(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({ skills }),
-    });
-  }
-
   async listWorkspaceSkills(workspaceId: string, enabled?: boolean): Promise<WorkspaceSkill[]> {
     const params = new URLSearchParams();
     if (enabled !== undefined) params.set('enabled', String(enabled));
@@ -405,13 +398,6 @@ export class BuilddClient {
   async deleteWorkspaceSkill(workspaceId: string, skillId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/skills/${skillId}`, {
       method: 'DELETE',
-    });
-  }
-
-  async reportSkillInstallResult(workspaceId: string, result: SkillInstallResult) {
-    return this.fetch(`/api/workspaces/${workspaceId}/skills/install/result`, {
-      method: 'POST',
-      body: JSON.stringify(result),
     });
   }
 

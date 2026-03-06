@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const clientName = body.clientName || 'CLI';
-    const level = body.level === 'worker' ? 'worker' : 'admin';
+    const level = body.level === 'worker' ? 'worker' : body.level === 'trigger' ? 'trigger' : 'admin';
 
     const userCode = generateUserCode();
     const deviceToken = generateDeviceToken();

@@ -48,7 +48,7 @@ export const users = pgTable('users', {
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
-  level: text('level').default('worker').notNull().$type<'worker' | 'admin'>(),
+  level: text('level').default('worker').notNull().$type<'trigger' | 'worker' | 'admin'>(),
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
@@ -628,7 +628,7 @@ export const deviceCodes = pgTable('device_codes', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   apiKey: text('api_key'), // Plaintext key stored temporarily until CLI retrieves it
   clientName: text('client_name').default('CLI').notNull(),
-  level: text('level').default('admin').notNull().$type<'admin' | 'worker'>(),
+  level: text('level').default('admin').notNull().$type<'trigger' | 'worker' | 'admin'>(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

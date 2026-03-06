@@ -133,7 +133,7 @@ beforeAll(async () => {
   }
 
   console.log('=== Setup complete ===\n');
-});
+}, 60_000);
 
 afterAll(async () => {
   console.log('\n=== E2E Cleanup ===');

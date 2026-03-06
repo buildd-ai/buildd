@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId } = body;
+    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId } = body;
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
       .values({
         name,
         type: type as 'user' | 'service' | 'action',
-        level: level as 'worker' | 'admin' || 'worker',
+        level: level as 'trigger' | 'worker' | 'admin' || 'worker',
         authType: authType as 'api' | 'oauth' || 'oauth',
         apiKey: hashApiKey(plaintextKey),
         apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
@@ -89,6 +89,16 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // Auto-create workspace binding if workspaceId provided
+    if (workspaceId) {
+      await db.insert(accountWorkspaces).values({
+        accountId: account.id,
+        workspaceId,
+        canClaim: true,
+        canCreate: true,
+      });
+    }
 
     // Return plaintext key once - it won't be retrievable after this
     return NextResponse.json({ ...account, apiKey: plaintextKey });
