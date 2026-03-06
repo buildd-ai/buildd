@@ -90,8 +90,10 @@ describe('Concurrency Control', () => {
     const maxConcurrent = account.maxConcurrentWorkers || 5;
 
     // Check how many workers are already active (stale from prior runs)
-    const { activeLocalUis } = await api('/api/workers/active');
-    const currentActive = activeLocalUis.reduce((sum: number, ui: any) => sum + (ui.activeWorkers || 0), 0);
+    // Use /api/workers/mine with the same status filter as the claim route
+    // to get an accurate count that matches server-side enforcement.
+    const { workers: activeWorkerList } = await api('/api/workers/mine?status=idle,running,starting,waiting_input');
+    const currentActive = activeWorkerList.length;
     const availableSlots = maxConcurrent - currentActive;
     console.log(`  Account max concurrent: ${maxConcurrent}, currently active: ${currentActive}, available: ${availableSlots}`);
 
