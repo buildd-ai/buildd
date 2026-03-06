@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 
@@ -39,6 +39,10 @@ export async function POST(req: NextRequest) {
 
       case 'check_suite':
         await handleCheckSuiteEvent(data as GitHubCheckSuiteEvent);
+        break;
+
+      case 'pull_request':
+        await handlePullRequestEvent(data);
         break;
 
       case 'ping':
@@ -281,6 +285,59 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       }
     } catch (error) {
       console.error(`Error processing check_suite for PR #${pr.number} on ${repository.full_name}:`, error);
+    }
+  }
+}
+
+async function handlePullRequestEvent(event: {
+  action: string;
+  pull_request: {
+    number: number;
+    merged: boolean;
+    head: { ref: string };
+    html_url: string;
+  };
+  repository: { full_name: string };
+}) {
+  // Only handle merged PRs
+  if (event.action !== 'closed' || !event.pull_request.merged) {
+    return;
+  }
+
+  const { pull_request: pr, repository } = event;
+
+  // Strategy 1: Match by prNumber on workers table (agent-created PRs)
+  const worker = await db.query.workers.findFirst({
+    where: and(
+      eq(workers.prNumber, pr.number),
+    ),
+    with: { task: true },
+  });
+
+  if (worker?.task && worker.task.status !== 'completed') {
+    await db
+      .update(tasks)
+      .set({ status: 'completed', updatedAt: new Date() })
+      .where(eq(tasks.id, worker.task.id));
+    console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+    return;
+  }
+
+  // Strategy 2: Match by branch name pattern buildd/<taskId-prefix>-*
+  const branchMatch = pr.head.ref.match(/^buildd\/([0-9a-f]{8})-/);
+  if (branchMatch) {
+    const taskIdPrefix = branchMatch[1];
+    // Find task by ID prefix (first 8 chars of UUID)
+    const matchingTask = await db.query.tasks.findFirst({
+      where: sql`${tasks.id}::text LIKE ${taskIdPrefix + '%'}`,
+    });
+
+    if (matchingTask && matchingTask.status !== 'completed') {
+      await db
+        .update(tasks)
+        .set({ status: 'completed', updatedAt: new Date() })
+        .where(eq(tasks.id, matchingTask.id));
+      console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
     }
   }
 }
