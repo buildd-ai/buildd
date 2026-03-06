@@ -72,12 +72,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
-    update_progress: '{ workerId (required), progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? }',
-    complete_task: '{ workerId (required), summary?, error?, structuredOutput? } — if error present, marks task as failed',
-    create_pr: '{ workerId (required), title (required), head (required), body?, base?, draft? }',
+    update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
+    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project? }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping) }',
-    create_artifact: '{ workerId (required), type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? }',
+    create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -90,8 +90,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
-    emit_event: '{ workerId (required), type (required), label (required), metadata? }',
-    query_events: '{ workerId (required), type? }',
+    emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
+    query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
@@ -128,6 +128,16 @@ const errorResult = (t: string): ToolResult => ({
 
 // UUID pattern for workspace IDs
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve worker ID from params, falling back to context worker ID.
+ * Throws if neither is available.
+ */
+function resolveWorkerId(param: unknown, ctx: ActionContext): string {
+  const workerId = (param as string) || ctx.workerId;
+  if (!workerId) throw new Error('workerId is required — pass it explicitly or ensure the MCP server has worker context');
+  return workerId;
+}
 
 /**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
@@ -254,11 +264,11 @@ export async function handleBuilddAction(
     }
 
     case 'update_progress': {
-      if (!params.workerId) throw new Error('workerId is required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
 
       // Plan submission
       if (params.plan) {
-        await api(`/api/workers/${params.workerId}/plan`, {
+        await api(`/api/workers/${workerId}/plan`, {
           method: 'POST',
           body: JSON.stringify({ plan: params.plan }),
         });
@@ -290,7 +300,7 @@ export async function handleBuilddAction(
         if (typeof params.linesAdded === 'number') progressBody.linesAdded = params.linesAdded;
         if (typeof params.linesRemoved === 'number') progressBody.linesRemoved = params.linesRemoved;
 
-        response = await api(`/api/workers/${params.workerId}`, {
+        response = await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
           body: JSON.stringify(progressBody),
         });
@@ -313,10 +323,10 @@ export async function handleBuilddAction(
     }
 
     case 'complete_task': {
-      if (!params.workerId) throw new Error('workerId is required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
 
       if (params.error) {
-        await api(`/api/workers/${params.workerId}`, {
+        await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
           body: JSON.stringify({ status: 'failed', error: params.error }),
         });
@@ -324,7 +334,7 @@ export async function handleBuilddAction(
       }
 
       try {
-        await api(`/api/workers/${params.workerId}`, {
+        await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
@@ -357,14 +367,15 @@ export async function handleBuilddAction(
     }
 
     case 'create_pr': {
-      if (!params.workerId || !params.title || !params.head) {
-        throw new Error('workerId, title, and head branch are required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.title || !params.head) {
+        throw new Error('title and head branch are required');
       }
 
       const data = await api('/api/github/pr', {
         method: 'POST',
         body: JSON.stringify({
-          workerId: params.workerId,
+          workerId,
           title: params.title,
           body: params.body,
           head: params.head,
@@ -581,7 +592,7 @@ export async function handleBuilddAction(
     }
 
     case 'create_artifact': {
-      if (!params.workerId) throw new Error('workerId is required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.type || !params.title) throw new Error('type and title are required');
 
       const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event'];
@@ -598,7 +609,7 @@ export async function handleBuilddAction(
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
 
-      const artifactData = await api(`/api/workers/${params.workerId}/artifacts`, {
+      const artifactData = await api(`/api/workers/${workerId}/artifacts`, {
         method: 'POST',
         body: JSON.stringify(artifactBody),
       });
@@ -686,11 +697,11 @@ export async function handleBuilddAction(
     // ── Observability (Phase 5) ────────────────────────────────────────────
 
     case 'emit_event': {
-      if (!params.workerId) throw new Error('workerId is required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.type) throw new Error('type is required');
       if (!params.label) throw new Error('label is required');
 
-      await api(`/api/workers/${params.workerId}`, {
+      await api(`/api/workers/${workerId}`, {
         method: 'PATCH',
         body: JSON.stringify({
           appendMilestones: [{
@@ -706,9 +717,9 @@ export async function handleBuilddAction(
     }
 
     case 'query_events': {
-      if (!params.workerId) throw new Error('workerId is required');
+      const workerId = resolveWorkerId(params.workerId, ctx);
 
-      const data = await api(`/api/workers/${params.workerId}`);
+      const data = await api(`/api/workers/${workerId}`);
       const milestones = data.milestones || [];
 
       let filtered = milestones;
