@@ -1,13 +1,13 @@
 ## Agent SDK Usage (@anthropic-ai/claude-agent-sdk)
 
-**Version documented**: 0.2.68 (CLI parity: v2.1.68, Mar 4 2026)
+**Version documented**: 0.2.70 (CLI parity: v2.1.70, Mar 6 2026)
 
 ### Monorepo SDK Versions
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `packages/core` | `>=0.2.68` | Current |
-| `apps/runner` | `^0.2.68` | Current |
+| `packages/core` | `>=0.2.70` | Current |
+| `apps/runner` | `^0.2.70` | Current |
 
 ---
 
