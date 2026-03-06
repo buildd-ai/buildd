@@ -54,6 +54,7 @@ export default async function SettingsPage() {
         orderBy: desc(accounts.createdAt),
         with: {
           team: { columns: { name: true } },
+          accountWorkspaces: { columns: { workspaceId: true } },
         },
       });
     }

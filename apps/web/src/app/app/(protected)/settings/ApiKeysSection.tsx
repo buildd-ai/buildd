@@ -20,6 +20,7 @@ interface Account {
   activeSessions: number | null;
   maxConcurrentSessions: number | null;
   team: { name: string } | null;
+  accountWorkspaces?: { workspaceId: string }[];
 }
 
 const typeColors: Record<string, string> = {
@@ -104,9 +105,16 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
                       <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">{account.team.name}</span>
                     )}
                   </div>
-                  <span className={`inline-block px-2 py-0.5 text-xs rounded-full mt-1 ${typeColors[account.type]}`}>
-                    {account.type}
-                  </span>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${typeColors[account.type]}`}>
+                      {account.type}
+                    </span>
+                    {account.accountWorkspaces && account.accountWorkspaces.length === 0 && (
+                      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-status-warning/10 text-status-warning" title="This account has no workspace links. API key won't be able to claim tasks or create tasks in any workspace.">
+                        No workspace linked
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="text-right text-sm text-text-secondary">
                   <div>Workers: {account.maxConcurrentWorkers}</div>
