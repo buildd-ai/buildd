@@ -57,6 +57,14 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+// Mock workspace-resolver
+const mockResolveWorkspace = mock(() => null as any);
+const mockAutoResolveAccountWorkspace = mock(() => Promise.resolve({ workspaceId: 'ws-1' } as any));
+mock.module('@/lib/workspace-resolver', () => ({
+  resolveWorkspace: mockResolveWorkspace,
+  autoResolveAccountWorkspace: mockAutoResolveAccountWorkspace,
+}));
+
 // Mock pusher
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
@@ -253,9 +261,13 @@ describe('POST /api/tasks', () => {
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDispatchNewTask.mockReset();
+    mockResolveWorkspace.mockReset();
+    mockAutoResolveAccountWorkspace.mockReset();
 
     // Default: API key auth has workspace access
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    // Default: resolveWorkspace returns workspace with matching id
+    mockResolveWorkspace.mockImplementation(async (raw: string) => ({ id: raw }));
 
     // Default mock for resolveCreatorContext
     mockResolveCreatorContext.mockResolvedValue({
@@ -292,7 +304,7 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toContain('Workspace and title are required');
+    expect(data.error).toContain('workspaceId is required');
   });
 
   it('returns 400 when title missing', async () => {
@@ -306,12 +318,12 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toContain('Workspace and title are required');
+    expect(data.error).toContain('Title is required');
   });
 
   it('returns 400 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockResolveWorkspace.mockResolvedValue(null);
 
     const request = createMockRequest({
       method: 'POST',
@@ -321,7 +333,7 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toContain('Workspace not found');
+    expect(data.error).toContain('No workspace found matching');
   });
 
   it('creates task with API key auth', async () => {
