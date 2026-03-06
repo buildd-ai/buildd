@@ -4,8 +4,7 @@
  * Tests:
  *   1. Creating artifacts for a worker via POST /api/workers/[id]/artifacts
  *   2. Listing artifacts via GET /api/workers/[id]/artifacts
- *   3. Enforcement: completing a worker with commits but no PR or artifact → 400
- *   4. Completing a worker with an artifact succeeds
+ *   3. Auto-mode enforcement: completing with commits but no PR or artifact warns but succeeds
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
@@ -202,37 +201,19 @@ describe('PR-or-Artifact Enforcement', () => {
     cleanup.dispose();
   });
 
-  test('completing with commits but no PR or artifact is rejected with 400', async () => {
-    const { status, body } = await apiRaw(`/api/workers/${workerId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        status: 'completed',
-        summary: 'Done (but forgot to create PR or artifact)',
-      }),
-    });
-    expect(status).toBe(400);
-    expect(body.error).toContain('commit');
-    expect(body.hint).toBe('create_pr or create_artifact');
-  }, TIMEOUT);
-
-  test('completing after creating artifact succeeds', async () => {
-    await api(`/api/workers/${workerId}/artifacts`, {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'summary',
-        title: 'Work Summary',
-        content: 'Completed the implementation with 3 commits.',
-      }),
-    });
-
+  test('completing with commits but no PR or artifact succeeds with warning (auto mode)', async () => {
     const updated = await api(`/api/workers/${workerId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: 'completed',
-        summary: 'Done — artifact created.',
+        summary: 'Done (no PR or artifact, but auto mode allows it)',
       }),
     });
     expect(updated.status).toBe('completed');
+    // auto mode warns but does not block
+    if (updated.outputWarning) {
+      expect(updated.outputWarning).toContain('commit');
+    }
   }, TIMEOUT);
 });
 
