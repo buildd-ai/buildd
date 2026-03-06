@@ -58,7 +58,6 @@ const mockCreateObservation = mock(async () => ({}));
 const mockListWorkspaces = mock(async () => []);
 const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
-const mockReportSkillInstallResult = mock(async () => ({}));
 
 mock.module('../../src/buildd', () => ({
   BuilddClient: class {
@@ -72,7 +71,6 @@ mock.module('../../src/buildd', () => ({
     listWorkspaces = mockListWorkspaces;
     sendHeartbeat = mockSendHeartbeat;
     runCleanup = mockRunCleanup;
-    reportSkillInstallResult = mockReportSkillInstallResult;
   },
 }));
 
@@ -202,7 +200,6 @@ function clearAllMocks() {
   mockStreamInputFn.mockClear();
   mockStoreSaveWorker.mockClear();
   mockStoreDeleteWorker.mockClear();
-  mockReportSkillInstallResult.mockClear();
   mockSendHeartbeat.mockReset();
   mockSendHeartbeat.mockImplementation(async () => ({}));
   mockListWorkspaces.mockReset();

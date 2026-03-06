@@ -1,8 +1,7 @@
 /**
  * Integration Tests: Skills API
  *
- * Tests the full skills CRUD lifecycle, sync, and install
- * endpoints against a real server with a real database.
+ * Tests the skills CRUD lifecycle against a real server with a real database.
  *
  * Covers:
  *   1. List skills (GET /api/workspaces/[id]/skills)
@@ -10,11 +9,8 @@
  *   3. Get skill by ID (GET /api/workspaces/[id]/skills/[skillId])
  *   4. Update skill (PATCH /api/workspaces/[id]/skills/[skillId])
  *   5. Delete skill (DELETE /api/workspaces/[id]/skills/[skillId])
- *   6. Install skill (POST /api/workspaces/[id]/skills/install)
- *   7. Sync skills (POST /api/workspaces/[id]/skills/sync)
- *   8. Workspace access control
- *   9. Skill content validation
- *  10. Skill deduplication on sync
+ *   6. Workspace access control
+ *   7. Skill content validation
  *
  * Prerequisites:
  *   - BUILDD_TEST_SERVER set (preview or local URL)
@@ -374,200 +370,6 @@ describe('Skills upsert (POST deduplication)', () => {
     expect(upsertBody.skill.name).toBe(name2);
     expect(upsertBody.skill.content).toBe(content2);
     expect(upsertBody.skill.contentHash).toBe(computeContentHash(content2));
-  }, TIMEOUT);
-});
-
-describe('Skills sync', () => {
-  test('sync creates new skills', async () => {
-    const slug1 = uniqueSlug('sync-a');
-    const slug2 = uniqueSlug('sync-b');
-    const content1 = 'Sync skill A content';
-    const content2 = 'Sync skill B content';
-
-    const { results } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [
-          {
-            slug: slug1,
-            name: 'Sync Skill A',
-            content: content1,
-            contentHash: computeContentHash(content1),
-          },
-          {
-            slug: slug2,
-            name: 'Sync Skill B',
-            content: content2,
-            contentHash: computeContentHash(content2),
-            description: 'A synced skill',
-          },
-        ],
-      }),
-    });
-
-    expect(results).toHaveLength(2);
-    expect(results[0].slug).toBe(slug1);
-    expect(results[0].action).toBe('created');
-    expect(results[0].skill).toBeTruthy();
-    expect(results[1].slug).toBe(slug2);
-    expect(results[1].action).toBe('created');
-
-    // Track for cleanup
-    createdSkillIds.push(results[0].skill.id);
-    createdSkillIds.push(results[1].skill.id);
-  }, TIMEOUT);
-
-  test('sync deduplication: unchanged content returns unchanged', async () => {
-    const slug = uniqueSlug('sync-dedup');
-    const content = 'Dedup test content';
-    const contentHash = computeContentHash(content);
-
-    // First sync — creates
-    const { results: first } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [{ slug, name: 'Dedup Skill', content, contentHash }],
-      }),
-    });
-    expect(first[0].action).toBe('created');
-    createdSkillIds.push(first[0].skill.id);
-
-    // Second sync with same content — unchanged
-    const { results: second } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [{ slug, name: 'Dedup Skill', content, contentHash }],
-      }),
-    });
-    expect(second[0].action).toBe('unchanged');
-    expect(second[0].skill).toBeUndefined();
-  }, TIMEOUT);
-
-  test('sync updates when content changes', async () => {
-    const slug = uniqueSlug('sync-update');
-    const content1 = 'Original sync content';
-    const content2 = 'Updated sync content';
-
-    // Create
-    const { results: first } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [{
-          slug,
-          name: 'Sync Update Skill',
-          content: content1,
-          contentHash: computeContentHash(content1),
-        }],
-      }),
-    });
-    expect(first[0].action).toBe('created');
-    createdSkillIds.push(first[0].skill.id);
-
-    // Sync with different content
-    const { results: second } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [{
-          slug,
-          name: 'Sync Update Skill v2',
-          content: content2,
-          contentHash: computeContentHash(content2),
-        }],
-      }),
-    });
-    expect(second[0].action).toBe('updated');
-    expect(second[0].skill).toBeTruthy();
-    expect(second[0].skill.content).toBe(content2);
-    expect(second[0].skill.origin).toBe('scan');
-  }, TIMEOUT);
-
-  test('sync skips invalid entries', async () => {
-    const validSlug = uniqueSlug('sync-valid');
-    const validContent = 'Valid content';
-
-    const { results } = await api(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skills: [
-          // Invalid: missing slug
-          { name: 'No Slug', content: 'x', contentHash: 'abc' },
-          // Invalid: bad slug format
-          { slug: 'BAD SLUG!', name: 'Bad', content: 'x', contentHash: 'abc' },
-          // Valid
-          {
-            slug: validSlug,
-            name: 'Valid Skill',
-            content: validContent,
-            contentHash: computeContentHash(validContent),
-          },
-        ],
-      }),
-    });
-
-    // Only the valid entry should be in results
-    expect(results).toHaveLength(1);
-    expect(results[0].slug).toBe(validSlug);
-    expect(results[0].action).toBe('created');
-    createdSkillIds.push(results[0].skill.id);
-  }, TIMEOUT);
-
-  test('sync rejects empty skills array', async () => {
-    const { status, body } = await apiRaw(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({ skills: [] }),
-    });
-
-    expect(status).toBe(400);
-    expect(body.error).toContain('skills array is required');
-  }, TIMEOUT);
-});
-
-describe('Skills install', () => {
-  test('install by skillId returns requestId', async () => {
-    const skill = await createSkill();
-
-    const { status, body } = await apiRaw(`/api/workspaces/${workspaceId}/skills/install`, {
-      method: 'POST',
-      body: JSON.stringify({ skillId: skill.id }),
-    });
-
-    expect(status).toBe(200);
-    expect(body.ok).toBe(true);
-    expect(body.requestId).toBeTruthy();
-    expect(typeof body.requestId).toBe('string');
-  }, TIMEOUT);
-
-  test('install rejects when neither skillId nor installerCommand provided', async () => {
-    const { status, body } = await apiRaw(`/api/workspaces/${workspaceId}/skills/install`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-
-    expect(status).toBe(400);
-    expect(body.error).toContain('Either skillId or installerCommand is required');
-  }, TIMEOUT);
-
-  test('install rejects when both skillId and installerCommand provided', async () => {
-    const { status, body } = await apiRaw(`/api/workspaces/${workspaceId}/skills/install`, {
-      method: 'POST',
-      body: JSON.stringify({
-        skillId: '00000000-0000-0000-0000-000000000000',
-        installerCommand: 'buildd skill install test',
-      }),
-    });
-
-    expect(status).toBe(400);
-    expect(body.error).toContain('not both');
-  }, TIMEOUT);
-
-  test('install with non-existent skillId returns 404', async () => {
-    const { status, body } = await apiRaw(`/api/workspaces/${workspaceId}/skills/install`, {
-      method: 'POST',
-      body: JSON.stringify({ skillId: '00000000-0000-0000-0000-000000000000' }),
-    });
-
-    expect(status).toBe(404);
-    expect(body.error).toContain('Skill not found');
   }, TIMEOUT);
 });
 
