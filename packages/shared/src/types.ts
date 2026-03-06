@@ -729,7 +729,7 @@ export interface SSEEvent<T = unknown> {
 export const DANGEROUS_PATTERNS = [
   /rm\s+-rf\s+[\/~]/,
   /sudo\s+/,
-  />\s*\/dev\//,
+  />\s*\/dev\/(?!null)/,
   /mkfs\./,
   /dd\s+if=/,
   /:(){.*};:/,

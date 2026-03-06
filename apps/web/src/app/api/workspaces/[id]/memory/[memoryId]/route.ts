@@ -8,18 +8,30 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
+import { accounts, workspaces, teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { MemoryClient } from '@buildd/core/memory-client';
 
-function getMemoryClient(): MemoryClient | null {
+async function getMemoryClientForWorkspace(workspaceId: string): Promise<MemoryClient | null> {
   const url = process.env.MEMORY_API_URL;
-  const key = process.env.MEMORY_API_KEY;
-  if (!url || !key) return null;
-  return new MemoryClient(url, key);
+  if (!url) return null;
+
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return null;
+
+  const team = await db.query.teams.findFirst({
+    where: eq(teams.id, ws.teamId),
+    columns: { memoryApiKey: true },
+  });
+
+  if (!team?.memoryApiKey) return null;
+  return new MemoryClient(url, team.memoryApiKey);
 }
 
 async function authenticateRequest(req: NextRequest) {
@@ -66,7 +78,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = getMemoryClient();
+  const memClient = await getMemoryClientForWorkspace(id);
   if (!memClient) {
     return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
   }
@@ -103,7 +115,7 @@ export async function DELETE(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = getMemoryClient();
+  const memClient = await getMemoryClientForWorkspace(id);
   if (!memClient) {
     return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
   }

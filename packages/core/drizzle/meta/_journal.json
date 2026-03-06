@@ -64,6 +64,13 @@
       "when": 1772631192999,
       "tag": "0008_milky_sage",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1772806578214,
+      "tag": "0009_awesome_yellowjacket",
+      "breakpoints": true
     }
   ]
 }
