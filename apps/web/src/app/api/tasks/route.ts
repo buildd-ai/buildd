@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
     } = body;
 
     if (!title) {
-      return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
+      return NextResponse.json({ error: 'Title is required' }, { status: 400 });
     }
 
     // Resolve workspace: explicit param → auto-resolve for API accounts
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
       const resolved = await resolveWorkspace(rawWorkspaceId);
       if (!resolved) {
         return NextResponse.json(
-          { error: `Workspace not found: no workspace matching "${rawWorkspaceId}"` },
+          { error: `No workspace found matching "${rawWorkspaceId}"` },
           { status: 400 }
         );
       }
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) {
-      return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
+      return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
 
     // Validate workspace exists and fetch webhook config in one query
