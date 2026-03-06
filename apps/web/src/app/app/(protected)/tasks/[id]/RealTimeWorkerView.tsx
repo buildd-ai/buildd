@@ -149,6 +149,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
+  const answeredPromptRef = useRef<string | null>(null);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
   const [interruptMode, setInterruptMode] = useState(false);
@@ -165,6 +166,12 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     if (channel) {
       const handleUpdate = (data: { worker: Worker; taskProgress?: TaskProgressEntry[] }) => {
         console.log('[RealTimeWorkerView] Received update:', data.worker?.status);
+        // Clear answerSent when the worker's prompt changes or waitingFor clears
+        const newPrompt = data.worker?.waitingFor?.prompt ?? null;
+        if (answeredPromptRef.current && newPrompt !== answeredPromptRef.current) {
+          answeredPromptRef.current = null;
+          setAnswerSent(false);
+        }
         setWorker(data.worker);
         if (data.taskProgress) {
           setTaskProgress(data.taskProgress);
@@ -195,8 +202,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       // Try direct connection first (instant delivery via Tailscale/LAN)
       const directOk = await sendDirect(worker.id, option);
       if (directOk) {
+        answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
         setAnswerSent(true);
-        setTimeout(() => setAnswerSent(false), 3000);
         return;
       }
 
@@ -210,8 +217,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         const data = await res.json();
         throw new Error(data.error || 'Failed to send answer');
       }
+      answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
       setAnswerSent(true);
-      setTimeout(() => setAnswerSent(false), 3000);
     } catch (err) {
       console.error('Failed to send answer:', err);
     } finally {
