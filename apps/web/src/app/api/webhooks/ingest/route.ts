@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces } from '@buildd/core/db/schema';
+import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { resolveWorkspace } from '@/lib/workspace-resolver';
 
 interface WebhookSourceConfig {
   webhookSecret: string;
@@ -86,14 +87,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  // 2. Look up workspace by project.repo
+  // 2. Look up workspace by project.repo (supports exact, suffix, and name match)
   if (!data.project?.repo) {
     return NextResponse.json({ error: 'project.repo is required' }, { status: 400 });
   }
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.repo, data.project.repo),
-  });
+  const workspace = await resolveWorkspace(data.project.repo);
 
   if (!workspace) {
     return NextResponse.json({ error: `No workspace found for repo: ${data.project.repo}` }, { status: 404 });

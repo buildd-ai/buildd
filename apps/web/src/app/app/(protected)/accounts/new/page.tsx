@@ -38,6 +38,15 @@ export default function NewAccountPage() {
   const [accountType, setAccountType] = useState(DEFAULTS.type);
   const [authType, setAuthType] = useState(DEFAULTS.authType);
   const [tokenLevel, setTokenLevel] = useState(DEFAULTS.level);
+
+  // When trigger is selected, force sensible defaults
+  function handleTokenLevelChange(level: string) {
+    setTokenLevel(level);
+    if (level === 'trigger') {
+      setAccountType('service');
+      setAuthType('api');
+    }
+  }
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULTS.maxConcurrentWorkers.toString());
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -217,39 +226,43 @@ export default function NewAccountPage() {
 
             {showAdvanced && (
               <div className="mt-4 space-y-5 pl-5 border-l-2 border-border-default">
-                <div>
-                  <label htmlFor="type" className="block text-sm font-medium mb-2">
-                    Account Type
-                  </label>
-                  <Select
-                    id="type"
-                    value={accountType}
-                    onChange={setAccountType}
-                    options={[
-                      { value: 'user', label: 'User - Personal laptop/workstation' },
-                      { value: 'service', label: 'Service - Always-on server/VM' },
-                      { value: 'action', label: 'Action - GitHub Actions runner' },
-                    ]}
-                  />
-                  <p className="text-xs text-text-secondary mt-1">
-                    Affects task routing with runnerPreference
-                  </p>
-                </div>
+                {tokenLevel !== 'trigger' && (
+                  <div>
+                    <label htmlFor="type" className="block text-sm font-medium mb-2">
+                      Account Type
+                    </label>
+                    <Select
+                      id="type"
+                      value={accountType}
+                      onChange={setAccountType}
+                      options={[
+                        { value: 'user', label: 'User - Personal laptop/workstation' },
+                        { value: 'service', label: 'Service - Always-on server/VM' },
+                        { value: 'action', label: 'Action - GitHub Actions runner' },
+                      ]}
+                    />
+                    <p className="text-xs text-text-secondary mt-1">
+                      Affects task routing with runnerPreference
+                    </p>
+                  </div>
+                )}
 
-                <div>
-                  <label htmlFor="authType" className="block text-sm font-medium mb-2">
-                    Auth Type
-                  </label>
-                  <Select
-                    id="authType"
-                    value={authType}
-                    onChange={setAuthType}
-                    options={[
-                      { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
-                      { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
-                    ]}
-                  />
-                </div>
+                {tokenLevel !== 'trigger' && (
+                  <div>
+                    <label htmlFor="authType" className="block text-sm font-medium mb-2">
+                      Auth Type
+                    </label>
+                    <Select
+                      id="authType"
+                      value={authType}
+                      onChange={setAuthType}
+                      options={[
+                        { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
+                        { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
+                      ]}
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label htmlFor="level" className="block text-sm font-medium mb-2">
@@ -258,7 +271,7 @@ export default function NewAccountPage() {
                   <Select
                     id="level"
                     value={tokenLevel}
-                    onChange={setTokenLevel}
+                    onChange={handleTokenLevelChange}
                     options={[
                       { value: 'trigger', label: 'Trigger - Can create tasks and artifacts only' },
                       { value: 'worker', label: 'Worker - Can claim and execute tasks' },
@@ -270,21 +283,23 @@ export default function NewAccountPage() {
                   </p>
                 </div>
 
-                <div>
-                  <label htmlFor="maxConcurrentWorkers" className="block text-sm font-medium mb-2">
-                    Max Concurrent Workers
-                  </label>
-                  <input
-                    type="number"
-                    id="maxConcurrentWorkers"
-                    name="maxConcurrentWorkers"
-                    min="1"
-                    max="10"
-                    value={maxConcurrent}
-                    onChange={(e) => setMaxConcurrent(e.target.value)}
-                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
-                  />
-                </div>
+                {tokenLevel !== 'trigger' && (
+                  <div>
+                    <label htmlFor="maxConcurrentWorkers" className="block text-sm font-medium mb-2">
+                      Max Concurrent Workers
+                    </label>
+                    <input
+                      type="number"
+                      id="maxConcurrentWorkers"
+                      name="maxConcurrentWorkers"
+                      min="1"
+                      max="10"
+                      value={maxConcurrent}
+                      onChange={(e) => setMaxConcurrent(e.target.value)}
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>
