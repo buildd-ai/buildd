@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { objectives, workers, artifacts } from '@buildd/core/db/schema';
-import { eq, inArray, desc } from 'drizzle-orm';
+import { objectives } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -41,7 +41,7 @@ export default async function ObjectiveDetailPage({
 }) {
   const { id } = await params;
   const user = await getCurrentUser();
-  if (!user) redirect('/login');
+  if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
 
@@ -114,8 +114,10 @@ export default async function ObjectiveDetailPage({
       }))
     )
     .sort((a, b) => {
-      const aTime = a.completedAt || a.startedAt || '';
-      const bTime = b.completedAt || b.startedAt || '';
+      const aTime = a.completedAt || a.startedAt;
+      const bTime = b.completedAt || b.startedAt;
+      if (!bTime) return -1;
+      if (!aTime) return 1;
       return new Date(bTime).getTime() - new Date(aTime).getTime();
     })
     .slice(0, 8) || [];

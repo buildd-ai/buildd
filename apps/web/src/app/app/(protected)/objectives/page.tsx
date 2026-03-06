@@ -15,7 +15,7 @@ export default async function ObjectivesPage({
   searchParams: Promise<{ status?: string }>;
 }) {
   const user = await getCurrentUser();
-  if (!user) redirect('/login');
+  if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
@@ -27,10 +27,11 @@ export default async function ObjectivesPage({
   }
 
   const { status: statusFilter } = await searchParams;
+  const effectiveFilter = statusFilter || 'active';
 
   let where: any = inArray(objectives.teamId, teamIds);
-  if (statusFilter && statusFilter !== 'all') {
-    where = and(where, eq(objectives.status, statusFilter as any));
+  if (effectiveFilter !== 'all') {
+    where = and(where, eq(objectives.status, effectiveFilter as any));
   }
 
   const [allObjectives, teamWorkspaces] = await Promise.all([
@@ -65,7 +66,7 @@ export default async function ObjectivesPage({
       {/* Status filter tabs */}
       <div className="flex gap-2 mb-6 border-b border-border-default">
         {['active', 'paused', 'completed', 'all'].map(tab => {
-          const isActive = (statusFilter || 'active') === tab;
+          const isActive = effectiveFilter === tab;
           return (
             <Link
               key={tab}
