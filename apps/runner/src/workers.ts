@@ -280,8 +280,10 @@ export class WorkerManager {
     try {
       const restored = loadAllWorkers();
       for (const worker of restored) {
-        // Workers with active status can't be resumed (no SDK session/inputStream)
-        if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
+        // Workers with active status can't be resumed (no SDK session/inputStream).
+        // Exception: 'waiting' workers keep their status so the user can still answer —
+        // sendMessage() will detect waiting+no-session and restart via resumeSession().
+        if (worker.status === 'working' || worker.status === 'stale') {
           worker.status = 'error';
           worker.error = 'Process restarted';
           worker.completedAt = worker.completedAt || Date.now();
@@ -2211,10 +2213,10 @@ export class WorkerManager {
       if (session) {
         session.inputStream.end();
 
-        // Only clean up worktree immediately on error/abort — completed workers
-        // keep worktree alive for session resume (follow-up messages).
-        // Worktrees for completed workers get cleaned up during eviction.
-        if (worker.worktreePath && worker.status !== 'done') {
+        // Only clean up worktree immediately on error/abort — completed and waiting
+        // workers keep worktree alive for session resume (follow-up messages / user answers).
+        // Worktrees for these workers get cleaned up during eviction.
+        if (worker.worktreePath && worker.status !== 'done' && worker.status !== 'waiting') {
           await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
@@ -2879,10 +2881,13 @@ export class WorkerManager {
 
     const session = this.sessions.get(workerId);
 
-    // If worker is done, errored, or stale — restart with a new session.
+    // If worker is done, errored, stale, or waiting with no session — restart with a new session.
     // Handle both cases: session already cleaned up (!session) or still lingering
     // during the completion window (race between status='done' and finally-block cleanup).
-    if (worker.status === 'done' || worker.status === 'error' || (worker.status === 'stale' && !session)) {
+    // 'waiting' without a session happens when AskUserQuestion causes the SDK to send a result
+    // (ending the for-await loop) but the worker stays in waiting status — the finally block
+    // cleans up the session, so the user's late answer needs a fresh resume.
+    if (worker.status === 'done' || worker.status === 'error' || (worker.status === 'stale' && !session) || (worker.status === 'waiting' && !session)) {
       // If old session is still lingering (race condition), clean it up first
       if (session) {
         session.abortController.abort();
