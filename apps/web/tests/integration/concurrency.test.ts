@@ -88,10 +88,20 @@ describe('Concurrency Control', () => {
     // Get account info (maxConcurrentWorkers)
     const account = await api('/api/accounts/me');
     const maxConcurrent = account.maxConcurrentWorkers || 5;
-    console.log(`  Account max concurrent: ${maxConcurrent}`);
 
-    // Create tasks (more than limit)
-    const taskCount = maxConcurrent + 2;
+    // Check how many workers are already active (stale from prior runs)
+    const { activeLocalUis } = await api('/api/workers/active');
+    const currentActive = activeLocalUis.reduce((sum: number, ui: any) => sum + (ui.activeWorkers || 0), 0);
+    const availableSlots = maxConcurrent - currentActive;
+    console.log(`  Account max concurrent: ${maxConcurrent}, currently active: ${currentActive}, available: ${availableSlots}`);
+
+    if (availableSlots < 2) {
+      console.log('  Skipping: not enough capacity slots available (need at least 2 free)');
+      return;
+    }
+
+    // Create tasks (more than available slots)
+    const taskCount = availableSlots + 2;
     const taskIds: string[] = [];
 
     for (let i = 0; i < taskCount; i++) {
@@ -109,7 +119,7 @@ describe('Concurrency Control', () => {
 
     assert(taskIds.length === taskCount, `Created ${taskCount} tasks`);
 
-    // Try to claim all tasks (should only succeed up to maxConcurrent)
+    // Try to claim all tasks (should only succeed up to available slots)
     const claimedWorkerIds: string[] = [];
 
     for (const taskId of taskIds) {
@@ -119,9 +129,9 @@ describe('Concurrency Control', () => {
         cleanupWorkerIds.push(worker.id);
         cleanup.trackWorker(worker.id);
       } catch (err: any) {
-        // Expected to fail after maxConcurrent claims
-        if (claimedWorkerIds.length >= maxConcurrent) {
-          console.log(`  ✓ Claim rejected after ${maxConcurrent} workers (expected)`);
+        // Expected to fail after filling available slots
+        if (claimedWorkerIds.length >= availableSlots) {
+          console.log(`  ✓ Claim rejected after filling ${availableSlots} available slots (expected)`);
         } else {
           throw err;
         }
@@ -129,8 +139,8 @@ describe('Concurrency Control', () => {
     }
 
     assert(
-      claimedWorkerIds.length <= maxConcurrent,
-      `Claimed workers (${claimedWorkerIds.length}) <= maxConcurrent (${maxConcurrent})`
+      claimedWorkerIds.length <= availableSlots,
+      `Claimed workers (${claimedWorkerIds.length}) <= available slots (${availableSlots})`
     );
   }, TIMEOUT);
 
