@@ -212,7 +212,19 @@ let localUIProc: Subprocess | null = null;
  */
 export async function startLocalUI(localUIUrl: string): Promise<void> {
   if (process.env.SKIP_LOCAL_UI_START === '1') {
-    console.log('  SKIP_LOCAL_UI_START=1 → assuming runner is already running');
+    console.log('  SKIP_LOCAL_UI_START=1 → waiting for runner to be reachable...');
+    await pollUntil(
+      async () => {
+        try {
+          const res = await fetch(`${localUIUrl}/api/config`);
+          return res.ok || null;
+        } catch {
+          return null;
+        }
+      },
+      { timeout: 30_000, interval: 1_000, label: 'runner reachability' },
+    );
+    console.log('  Runner is reachable');
     return;
   }
 

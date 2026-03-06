@@ -8,18 +8,56 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, accounts } from '@buildd/core/db/schema';
+import { workspaces, accounts, teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { MemoryClient } from '@buildd/core/memory-client';
 
-function getMemoryClient(): MemoryClient | null {
+async function getMemoryClientForWorkspace(workspaceId: string): Promise<MemoryClient | null> {
   const url = process.env.MEMORY_API_URL;
-  const key = process.env.MEMORY_API_KEY;
-  if (!url || !key) return null;
-  return new MemoryClient(url, key);
+  if (!url) return null;
+
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return null;
+
+  const team = await db.query.teams.findFirst({
+    where: eq(teams.id, ws.teamId),
+    columns: { id: true, memoryApiKey: true },
+  });
+
+  if (team?.memoryApiKey) {
+    return new MemoryClient(url, team.memoryApiKey);
+  }
+
+  // Auto-provision: create a memory team + key for this Buildd team
+  const rootKey = process.env.MEMORY_ROOT_KEY;
+  if (team && rootKey) {
+    try {
+      const res = await fetch(`${url}/api/keys`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${rootKey}`,
+        },
+        body: JSON.stringify({ teamId: team.id, name: 'buildd-auto' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const newKey = data.key as string;
+        await db.update(teams).set({ memoryApiKey: newKey }).where(eq(teams.id, team.id));
+        return new MemoryClient(url, newKey);
+      }
+    } catch (err) {
+      console.error('Failed to auto-provision memory key:', err);
+    }
+  }
+
+  return null;
 }
 
 async function authenticateRequest(req: NextRequest) {
@@ -74,7 +112,7 @@ export async function GET(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = getMemoryClient();
+  const memClient = await getMemoryClientForWorkspace(id);
   if (!memClient) {
     return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
   }
@@ -119,7 +157,7 @@ export async function POST(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = getMemoryClient();
+  const memClient = await getMemoryClientForWorkspace(id);
   if (!memClient) {
     return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
   }

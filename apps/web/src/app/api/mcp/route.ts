@@ -22,7 +22,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
-import { workspaces } from "@buildd/core/db/schema";
+import { workspaces, teams } from "@buildd/core/db/schema";
 import { eq, sql } from "drizzle-orm";
 import {
   handleBuilddAction,
@@ -82,6 +82,54 @@ async function getAccountLevel(api: ApiFn): Promise<'worker' | 'admin'> {
   } catch {
     return 'worker';
   }
+}
+
+// ── Memory Helper ────────────────────────────────────────────────────────────
+
+async function getMemoryClientForTeam(workspaceId: string | null | undefined): Promise<MemoryClient | null> {
+  const url = process.env.MEMORY_API_URL;
+  if (!url) return null;
+
+  if (workspaceId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { teamId: true },
+    });
+    if (ws) {
+      const team = await db.query.teams.findFirst({
+        where: eq(teams.id, ws.teamId),
+        columns: { id: true, memoryApiKey: true },
+      });
+      if (team?.memoryApiKey) {
+        return new MemoryClient(url, team.memoryApiKey);
+      }
+
+      // Auto-provision: create a memory team + key for this Buildd team
+      const rootKey = process.env.MEMORY_ROOT_KEY;
+      if (team && rootKey) {
+        try {
+          const res = await fetch(`${url}/api/keys`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${rootKey}`,
+            },
+            body: JSON.stringify({ teamId: team.id, name: 'buildd-auto' }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const newKey = data.key as string;
+            await db.update(teams).set({ memoryApiKey: newKey }).where(eq(teams.id, team.id));
+            return new MemoryClient(url, newKey);
+          }
+        } catch (err) {
+          console.error('Failed to auto-provision memory key:', err);
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 // ── Server Factory ───────────────────────────────────────────────────────────
@@ -226,15 +274,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
-        const memUrl = process.env.MEMORY_API_URL;
-        const memKey = process.env.MEMORY_API_KEY;
-        if (!memUrl || !memKey) {
+        const wsId = await getWorkspaceId();
+        const memClient = await getMemoryClientForTeam(wsId);
+        if (!memClient) {
           return {
             content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
             isError: true,
           };
         }
-        const memClient = new MemoryClient(memUrl, memKey);
         return await handleMemoryAction(memClient, action, params, { project: repoName });
       } else {
         throw new Error(`Unknown tool: ${name}`);
@@ -297,10 +344,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspace
 
       case "buildd://workspace/memory": {
         try {
-          const memUrl = process.env.MEMORY_API_URL;
-          const memKey = process.env.MEMORY_API_KEY;
-          if (memUrl && memKey) {
-            const memClient = new MemoryClient(memUrl, memKey);
+          const wsId = await getWorkspaceId();
+          const memClient = await getMemoryClientForTeam(wsId);
+          if (memClient) {
             const data = await memClient.getContext(repoName);
             return {
               contents: [{ uri, mimeType: "text/plain", text: data.markdown || "No memories yet." }],

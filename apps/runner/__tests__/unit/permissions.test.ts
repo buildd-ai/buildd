@@ -84,13 +84,19 @@ describe('DANGEROUS_PATTERNS', () => {
       expect(isDangerousCommand('cat file > /dev/sda')).toBe(true);
     });
 
-    test('blocks redirect to /dev/null (edge case)', () => {
-      // This might be overly restrictive but is included for safety
-      expect(isDangerousCommand('echo "test" > /dev/null')).toBe(true);
+    test('allows redirect to /dev/null (common stderr suppression)', () => {
+      expect(isDangerousCommand('echo "test" > /dev/null')).toBe(false);
+      expect(isDangerousCommand('cat file 2>/dev/null')).toBe(false);
+      expect(isDangerousCommand('npm view foo 2>/dev/null')).toBe(false);
+      expect(isDangerousCommand('find . -name x 2>/dev/null')).toBe(false);
     });
 
     test('blocks redirect to /dev/zero', () => {
       expect(isDangerousCommand('dd if=/dev/zero > /dev/sda')).toBe(true);
+    });
+
+    test('blocks redirect to /dev/mem', () => {
+      expect(isDangerousCommand('cat foo > /dev/mem')).toBe(true);
     });
   });
 
