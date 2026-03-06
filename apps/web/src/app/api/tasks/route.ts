@@ -9,6 +9,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
+import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      workspaceId,
+      workspaceId: rawWorkspaceId,
       title,
       description,
       priority,
@@ -120,8 +121,34 @@ export async function POST(req: NextRequest) {
       dependsOn,
     } = body;
 
-    if (!workspaceId || !title) {
-      return NextResponse.json({ error: 'Workspace and title are required' }, { status: 400 });
+    if (!title) {
+      return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    // Resolve workspace: explicit param → auto-resolve for API accounts
+    let workspaceId: string | undefined;
+
+    if (rawWorkspaceId) {
+      // Resolve by UUID, repo name, or workspace name
+      const resolved = await resolveWorkspace(rawWorkspaceId);
+      if (!resolved) {
+        return NextResponse.json(
+          { error: `No workspace found matching "${rawWorkspaceId}"` },
+          { status: 400 }
+        );
+      }
+      workspaceId = resolved.id;
+    } else if (apiAccount) {
+      // Auto-resolve: if account linked to exactly one workspace, use it
+      const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
+      if ('error' in result) {
+        return NextResponse.json({ error: result.error }, { status: result.status });
+      }
+      workspaceId = result.workspaceId;
+    }
+
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
 
     // Validate workspace exists and fetch webhook config in one query
@@ -132,11 +159,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
     }
 
-    // Verify workspace access
+    // Verify workspace access with actionable errors
     if (apiAccount) {
       const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId, 'canCreate');
       if (!hasAccess) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        return NextResponse.json(
+          { error: `Account "${apiAccount.name}" does not have permission to create tasks in this workspace.` },
+          { status: 403 }
+        );
       }
     }
 
