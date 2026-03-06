@@ -664,16 +664,6 @@ export interface CreateWorkspaceSkillInput {
   enabled?: boolean;
 }
 
-export interface SyncWorkspaceSkillsInput {
-  skills: Array<{
-    slug: string;
-    name: string;
-    description?: string;
-    content: string;
-    contentHash: string;
-    source?: string;
-  }>;
-}
 
 export interface UpdateScheduleInput {
   name?: string;
@@ -747,54 +737,3 @@ export const SENSITIVE_PATHS = [
   /id_rsa/,
 ] as const;
 
-// ============================================================================
-// REMOTE SKILL INSTALLATION
-// ============================================================================
-
-export const DEFAULT_SKILL_INSTALLER_ALLOWLIST = [
-  'buildd skill install',
-] as const;
-
-export interface SkillInstallPayload {
-  requestId: string;
-  skillSlug: string;
-  /** Content push — mutually exclusive with installerCommand */
-  bundle?: SkillBundle;
-  /** Command execution — mutually exclusive with bundle */
-  installerCommand?: string;
-  /** Targeting (optional) — only the matching runner handles the install */
-  targetLocalUiUrl?: string | null;
-}
-
-export interface SkillInstallResult {
-  requestId: string;
-  skillSlug: string;
-  localUiUrl?: string;
-  success: boolean;
-  method: 'content_push' | 'installer_command';
-  output?: string;
-  error?: string;
-  timestamp: number;
-}
-
-export function validateInstallerCommand(
-  command: string,
-  config: {
-    rejectAll?: boolean;
-  }
-): { allowed: boolean; reason?: string } {
-  if (config.rejectAll) {
-    return { allowed: false, reason: 'Worker rejects remote installer commands' };
-  }
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) {
-      return { allowed: false, reason: 'Blocked by dangerous pattern' };
-    }
-  }
-  const allowlist = [...DEFAULT_SKILL_INSTALLER_ALLOWLIST];
-  const trimmed = command.trim();
-  if (!allowlist.some(prefix => trimmed.startsWith(prefix))) {
-    return { allowed: false, reason: `No matching allowlist prefix. Allowed: ${allowlist.join(', ')}` };
-  }
-  return { allowed: true };
-}

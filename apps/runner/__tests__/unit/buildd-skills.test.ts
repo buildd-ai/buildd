@@ -35,13 +35,6 @@ class TestableBuilddClient {
     return res.json();
   }
 
-  async syncWorkspaceSkills(workspaceId: string, skills: any[]): Promise<any> {
-    return this.fetch(`/api/workspaces/${workspaceId}/skills/sync`, {
-      method: 'POST',
-      body: JSON.stringify({ skills }),
-    });
-  }
-
   async listWorkspaceSkills(workspaceId: string, enabled?: boolean): Promise<any[]> {
     const params = new URLSearchParams();
     if (enabled !== undefined) params.set('enabled', String(enabled));
@@ -203,54 +196,6 @@ describe('BuilddClient skill methods', () => {
         'Authorization': 'Bearer bld_test123',
         'Content-Type': 'application/json',
       });
-    });
-  });
-
-  describe('syncWorkspaceSkills', () => {
-    test('sends POST with skills body', async () => {
-      const skills = [
-        { name: 'Skill 1', content: 'content 1', source: 'local' },
-        { name: 'Skill 2', content: 'content 2', source: 'local' },
-      ];
-
-      const client = new TestableBuilddClient(testConfig);
-      await client.syncWorkspaceSkills('workspace-1', skills);
-
-      const [url, options] = mockFetch.mock.calls[0];
-      expect(url).toBe('https://test.buildd.dev/api/workspaces/workspace-1/skills/sync');
-      expect(options.method).toBe('POST');
-      expect(JSON.parse(options.body)).toEqual({ skills });
-    });
-
-    test('sends to correct URL', async () => {
-      const client = new TestableBuilddClient(testConfig);
-      await client.syncWorkspaceSkills('ws-789', []);
-
-      const [url] = mockFetch.mock.calls[0];
-      expect(url).toBe('https://test.buildd.dev/api/workspaces/ws-789/skills/sync');
-    });
-
-    test('sends correct headers', async () => {
-      const client = new TestableBuilddClient(testConfig);
-      await client.syncWorkspaceSkills('workspace-1', []);
-
-      const [, options] = mockFetch.mock.calls[0];
-      expect(options.headers).toMatchObject({
-        'Authorization': 'Bearer bld_test123',
-        'Content-Type': 'application/json',
-      });
-    });
-
-    test('returns response from server', async () => {
-      const mockResponse = { created: 2, updated: 1, deleted: 0 };
-      mockFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(mockResponse), { status: 200 }))
-      );
-      globalThis.fetch = mockFetch as any;
-
-      const client = new TestableBuilddClient(testConfig);
-      const result = await client.syncWorkspaceSkills('workspace-1', []);
-      expect(result).toEqual(mockResponse);
     });
   });
 });

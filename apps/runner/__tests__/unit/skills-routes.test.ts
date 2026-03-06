@@ -6,9 +6,6 @@ describe('Skills Routes', () => {
   let baseUrl: string;
 
   // Mocked dependencies
-  const mockScanSkills = mock(() => [
-    { slug: 'test-skill', name: 'Test Skill', content: 'test', contentHash: 'abc123' },
-  ]);
   const mockListWorkspaceSkills = mock(() => Promise.resolve([
     { id: 'sk1', slug: 'skill1', name: 'Skill 1', enabled: true },
   ]));
@@ -16,14 +13,12 @@ describe('Skills Routes', () => {
     Promise.resolve({ id: skillId, enabled: data.enabled })
   );
   const mockDeleteWorkspaceSkill = mock(() => Promise.resolve());
-  const mockSyncWorkspaceSkills = mock(() => Promise.resolve({ synced: 1, created: 1, updated: 0 }));
 
   // Mock BuilddClient
   const mockBuilddClient = {
     listWorkspaceSkills: mockListWorkspaceSkills,
     patchWorkspaceSkill: mockPatchWorkspaceSkill,
     deleteWorkspaceSkill: mockDeleteWorkspaceSkill,
-    syncWorkspaceSkills: mockSyncWorkspaceSkills,
   };
 
   beforeAll(() => {
@@ -57,19 +52,6 @@ describe('Skills Routes', () => {
           } catch {
             return {};
           }
-        }
-
-        // POST /api/skills/scan
-        if (path === '/api/skills/scan' && req.method === 'POST') {
-          const body = await parseBody(req);
-          const localPath = body.localPath || '/default/path';
-
-          if (!localPath || typeof localPath !== 'string') {
-            return Response.json({ error: 'Invalid or missing localPath' }, { status: 400, headers: corsHeaders });
-          }
-
-          const skills = mockScanSkills(localPath);
-          return Response.json({ skills }, { headers: corsHeaders });
         }
 
         // POST /api/skills/list
@@ -117,31 +99,6 @@ describe('Skills Routes', () => {
           return Response.json({ success: true }, { headers: corsHeaders });
         }
 
-        // POST /api/skills/register
-        if (path === '/api/skills/register' && req.method === 'POST') {
-          const body = await parseBody(req);
-          const { workspaceId, skill } = body;
-
-          if (!workspaceId || !skill?.slug || !skill?.name || !skill?.content || !skill?.contentHash) {
-            return Response.json(
-              { error: 'workspaceId and skill (slug, name, content, contentHash) required' },
-              { status: 400, headers: corsHeaders }
-            );
-          }
-
-          const result = await mockBuilddClient.syncWorkspaceSkills(workspaceId, [
-            {
-              slug: skill.slug,
-              name: skill.name,
-              description: skill.description,
-              content: skill.content,
-              contentHash: skill.contentHash,
-              source: skill.source || 'local-scan',
-            },
-          ]);
-          return Response.json(result, { headers: corsHeaders });
-        }
-
         return new Response('Not found', { status: 404 });
       },
     });
@@ -149,47 +106,6 @@ describe('Skills Routes', () => {
 
   afterAll(() => {
     server.stop();
-  });
-
-  describe('POST /api/skills/scan', () => {
-    test('returns skills from scanSkills()', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ localPath: '/test/path' }),
-      });
-
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.skills).toEqual([
-        { slug: 'test-skill', name: 'Test Skill', content: 'test', contentHash: 'abc123' },
-      ]);
-      expect(mockScanSkills).toHaveBeenCalled();
-    });
-
-    test('uses default path when localPath not provided', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.skills).toBeDefined();
-    });
-
-    test('returns 400 for invalid localPath type', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ localPath: 123 }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('Invalid or missing localPath');
-    });
   });
 
   describe('POST /api/skills/list', () => {
@@ -412,199 +328,12 @@ describe('Skills Routes', () => {
     });
   });
 
-  describe('POST /api/skills/register', () => {
-    test('registers skill with all required fields', async () => {
-      mockSyncWorkspaceSkills.mockClear();
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: 'new-skill',
-            name: 'New Skill',
-            description: 'A new skill',
-            content: 'skill content',
-            contentHash: 'hash123',
-            source: 'local-scan',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data).toEqual({ synced: 1, created: 1, updated: 0 });
-      expect(mockSyncWorkspaceSkills).toHaveBeenCalledWith('ws1', [
-        {
-          slug: 'new-skill',
-          name: 'New Skill',
-          description: 'A new skill',
-          content: 'skill content',
-          contentHash: 'hash123',
-          source: 'local-scan',
-        },
-      ]);
-    });
-
-    test('uses default source when not provided', async () => {
-      mockSyncWorkspaceSkills.mockClear();
-      await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: 'new-skill',
-            name: 'New Skill',
-            content: 'skill content',
-            contentHash: 'hash123',
-          },
-        }),
-      });
-
-      expect(mockSyncWorkspaceSkills).toHaveBeenCalledWith('ws1', [
-        expect.objectContaining({
-          source: 'local-scan',
-        }),
-      ]);
-    });
-
-    test('returns 400 without workspaceId', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          skill: {
-            slug: 'new-skill',
-            name: 'New Skill',
-            content: 'content',
-            contentHash: 'hash',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 without skill object', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws1' }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 without skill.slug', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            name: 'New Skill',
-            content: 'content',
-            contentHash: 'hash',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 without skill.name', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: 'new-skill',
-            content: 'content',
-            contentHash: 'hash',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 without skill.content', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: 'new-skill',
-            name: 'New Skill',
-            contentHash: 'hash',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 without skill.contentHash', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: 'new-skill',
-            name: 'New Skill',
-            content: 'content',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-
-    test('returns 400 with empty skill.slug', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws1',
-          skill: {
-            slug: '',
-            name: 'New Skill',
-            content: 'content',
-            contentHash: 'hash',
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe('workspaceId and skill (slug, name, content, contentHash) required');
-    });
-  });
-
   describe('CORS headers', () => {
     test('all routes return CORS headers', async () => {
       const endpoints = [
-        { path: '/api/skills/scan', method: 'POST', body: { localPath: '/test' } },
         { path: '/api/skills/list', method: 'POST', body: { workspaceId: 'ws1' } },
         { path: '/api/skills/toggle', method: 'POST', body: { workspaceId: 'ws1', skillId: 'sk1', enabled: true } },
         { path: '/api/skills/delete', method: 'DELETE', body: { workspaceId: 'ws1', skillId: 'sk1' } },
-        { path: '/api/skills/register', method: 'POST', body: { workspaceId: 'ws1', skill: { slug: 's', name: 'n', content: 'c', contentHash: 'h' } } },
       ];
 
       for (const endpoint of endpoints) {
@@ -619,7 +348,7 @@ describe('Skills Routes', () => {
     });
 
     test('OPTIONS requests return CORS headers', async () => {
-      const response = await fetch(`${baseUrl}/api/skills/scan`, {
+      const response = await fetch(`${baseUrl}/api/skills/list`, {
         method: 'OPTIONS',
       });
 

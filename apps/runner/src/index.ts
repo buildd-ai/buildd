@@ -6,7 +6,6 @@ import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots } from './workspace';
 import { Outbox } from './outbox';
-import { scanSkills } from './skills';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 
@@ -113,8 +112,6 @@ interface SavedConfig {
   llmProvider?: LLMProvider; // 'anthropic' or 'openrouter'
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
-  // Remote skill installation
-  rejectRemoteInstallers?: boolean; // Block all remote installer commands
   maxTurns?: number; // Max turns per worker session (default: no limit)
 }
 
@@ -137,7 +134,6 @@ function loadSavedConfig(): SavedConfig {
         llmProvider: data.llmProvider,
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
-        rejectRemoteInstallers: data.rejectRemoteInstallers,
         maxTurns: data.maxTurns,
       };
     }
@@ -374,8 +370,6 @@ const config: LocalUIConfig = {
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
   // Bypass permission prompts (default: false)
   bypassPermissions: savedConfig.bypassPermissions || false,
-  // Remote skill installation
-  rejectRemoteInstallers: savedConfig.rejectRemoteInstallers,
   // Max turns per worker session
   maxTurns: savedConfig.maxTurns,
 };
@@ -1841,19 +1835,6 @@ const server = Bun.serve({
       }
     }
 
-    // Scan local skills from a project path
-    if (path === '/api/skills/scan' && req.method === 'POST') {
-      const body = await parseBody(req);
-      const localPath = body.localPath || config.projectRoots[0];
-
-      if (!localPath || !existsSync(localPath)) {
-        return Response.json({ error: 'Invalid or missing localPath' }, { status: 400, headers: corsHeaders });
-      }
-
-      const skills = scanSkills(localPath);
-      return Response.json({ skills }, { headers: corsHeaders });
-    }
-
     // List workspace skills
     if (path === '/api/skills/list' && req.method === 'POST') {
       if (!buildd) {
@@ -1914,62 +1895,6 @@ const server = Bun.serve({
         return Response.json({ success: true }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to delete skill' }, { status: 502, headers: corsHeaders });
-      }
-    }
-
-    // Register a discovered skill to a workspace
-    if (path === '/api/skills/register' && req.method === 'POST') {
-      if (!buildd) {
-        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
-      }
-
-      const body = await parseBody(req);
-      const { workspaceId, skill } = body;
-
-      if (!workspaceId || !skill?.slug || !skill?.name || !skill?.content || !skill?.contentHash) {
-        return Response.json({ error: 'workspaceId and skill (slug, name, content, contentHash) required' }, { status: 400, headers: corsHeaders });
-      }
-
-      try {
-        const result = await buildd.syncWorkspaceSkills(workspaceId, [{
-          slug: skill.slug,
-          name: skill.name,
-          description: skill.description,
-          content: skill.content,
-          contentHash: skill.contentHash,
-          source: skill.source || 'local-scan',
-        }]);
-        return Response.json(result, { headers: corsHeaders });
-      } catch (err: any) {
-        return Response.json({ error: err.message || 'Failed to register skill' }, { status: 502, headers: corsHeaders });
-      }
-    }
-
-    // Install a skill locally by running buildd skill install <source>
-    if (path === '/api/skills/install' && req.method === 'POST') {
-      const body = await parseBody(req);
-      const { source } = body;
-
-      if (!source || typeof source !== 'string' || !source.trim()) {
-        return Response.json({ error: 'source required' }, { status: 400, headers: corsHeaders });
-      }
-
-      // Reject shell metacharacters to prevent injection
-      if (/[;&|`$<>()\n\r]/.test(source)) {
-        return Response.json({ error: 'Invalid source format' }, { status: 400, headers: corsHeaders });
-      }
-
-      try {
-        const skillScriptPath = join(import.meta.dir, 'skill.ts');
-        const result = Bun.spawnSync(['bun', skillScriptPath, 'install', source.trim()], {
-          env: { ...process.env, HOME: homedir() },
-        });
-        const stdout = result.stdout ? new TextDecoder().decode(result.stdout) : '';
-        const stderr = result.stderr ? new TextDecoder().decode(result.stderr) : '';
-        const success = result.exitCode === 0;
-        return Response.json({ success, output: stdout || stderr }, { headers: corsHeaders });
-      } catch (err: any) {
-        return Response.json({ error: err.message || 'Install failed' }, { status: 500, headers: corsHeaders });
       }
     }
 
