@@ -146,6 +146,10 @@ export async function PATCH(
   }
   // Enforce output requirement based on task.outputRequirement
   // (Must run BEFORE task status update to prevent marking task completed on validation failure)
+  // Note: only pr_required and artifact_required are hard blockers (400).
+  // auto mode logs a warning but allows completion — agents may create PRs via
+  // gh pr create without using the buildd create_pr action.
+  let outputWarning: string | undefined;
   if (status === 'completed') {
     // Fetch task to check outputRequirement
     const task = worker.taskId
@@ -209,16 +213,13 @@ export async function PATCH(
         }
       }
 
-      // auto (default): only enforce if commits were made
+      // auto (default): warn but allow completion — agent may have created PR via git CLI
       if (outputReq === 'auto' && effectiveCommits > 0 && !hasPR) {
         const workerArtifacts = await db.query.artifacts.findMany({
           where: eq(artifacts.workerId, id),
         });
         if (workerArtifacts.length === 0) {
-          return NextResponse.json({
-            error: `Task has ${effectiveCommits} commit(s) but no PR or artifact was created. Use create_pr to open a pull request, or create_artifact to publish your output before completing.`,
-            hint: 'create_pr or create_artifact',
-          }, { status: 400 });
+          outputWarning = `Task has ${effectiveCommits} commit(s) but no tracked PR or artifact. Use create_pr next time for better tracking.`;
         }
       }
     }
@@ -325,9 +326,10 @@ export async function PATCH(
     );
   }
 
-  // Return worker with any pending instructions
+  // Return worker with any pending instructions and output warnings
   return NextResponse.json({
     ...updated,
     instructions: pendingInstructions || undefined,
+    ...(outputWarning ? { outputWarning } : {}),
   });
 }

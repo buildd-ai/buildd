@@ -321,6 +321,19 @@ export async function handleBuilddAction(
         if (errMsg.includes('409')) {
           return errorResult('**WARNING: Worker was already terminated.** The task may have been reassigned. Your work may have been superseded by another worker.');
         }
+        // Handle output requirement validation errors (400) — return hint so agent can fix
+        if (errMsg.includes('400')) {
+          try {
+            const jsonMatch = errMsg.match(/\{.*\}/s);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              if (parsed.hint) {
+                return errorResult(`**Cannot complete task:** ${parsed.error}\n\nPlease use \`${parsed.hint}\` before calling complete_task again.`);
+              }
+            }
+          } catch { /* fall through to generic error */ }
+          return errorResult(`**Cannot complete task:** ${errMsg}\n\nIf you created a PR using \`gh pr create\`, use \`create_pr\` instead so Buildd can track it.`);
+        }
         throw err;
       }
 
