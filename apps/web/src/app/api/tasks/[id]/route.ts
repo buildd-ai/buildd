@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -105,7 +105,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, objectiveId, dependsOn } = body;
+    const { title, description, priority, project, objectiveId, dependsOn, status } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -121,6 +121,32 @@ export async function PATCH(
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
+    }
+
+    if (status !== undefined) {
+      const allowedStatuses = ['pending', 'completed', 'failed'];
+      if (!allowedStatuses.includes(status)) {
+        return NextResponse.json(
+          { error: `Invalid status. Allowed: ${allowedStatuses.join(', ')}` },
+          { status: 400 }
+        );
+      }
+      // Only allow completing/failing tasks that don't have active workers
+      if (status === 'completed' || status === 'failed') {
+        const activeWorker = await db.query.workers.findFirst({
+          where: and(
+            eq(workers.taskId, id),
+            inArray(workers.status, ['running', 'waiting_input']),
+          ),
+        });
+        if (activeWorker) {
+          return NextResponse.json(
+            { error: 'Cannot change status directly — task has an active worker. Use complete_task via the worker instead.' },
+            { status: 409 }
+          );
+        }
+      }
+      updateData.status = status;
     }
 
     const [updated] = await db

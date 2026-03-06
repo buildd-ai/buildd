@@ -82,7 +82,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
-    update_task: '{ taskId (required), title?, description?, priority?, project? }',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
@@ -420,9 +420,10 @@ export async function handleBuilddAction(
       if (params.description !== undefined) updateFields.description = params.description;
       if (params.priority !== undefined) updateFields.priority = normalizePriority(params.priority);
       if (params.project !== undefined) updateFields.project = params.project;
+      if (params.status !== undefined) updateFields.status = params.status;
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority, project) must be provided');
+        throw new Error('At least one field (title, description, priority, project, status) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
