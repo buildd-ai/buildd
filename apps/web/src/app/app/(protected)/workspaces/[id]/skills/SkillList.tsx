@@ -10,10 +10,8 @@ interface Skill {
   content: string;
   source: string | null;
   enabled: boolean;
-  origin: 'scan' | 'manual';
+  origin: string;
   createdAt: string;
-  recentRuns?: number;
-  totalRuns?: number;
 }
 
 interface Props {
@@ -22,7 +20,6 @@ interface Props {
 }
 
 const originBadge: Record<string, { bg: string; text: string }> = {
-  scan: { bg: 'bg-status-warning/10', text: 'text-status-warning' },
   manual: { bg: 'bg-primary/10', text: 'text-primary' },
 };
 
@@ -43,8 +40,6 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   const [editForm, setEditForm] = useState({ name: '', description: '', content: '', source: '' });
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-
-  const isEditable = (skill: Skill) => skill.origin !== 'scan';
 
   // Separate pipeline skills from regular skills
   const pipelineSkills = skills.filter(s => PIPELINE_SLUGS.includes(s.slug));
@@ -144,19 +139,15 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   if (skills.length === 0) {
     return (
       <div className="text-center py-12 text-text-muted">
-        <p className="text-lg mb-2">No skills registered</p>
-        <p className="text-sm mb-3">Register a skill to make reusable agent instructions available to workers.</p>
-        <p className="text-sm mb-1">
-          Install skills locally with{' '}
-          <code className="bg-surface-3 px-1.5 py-0.5 rounded text-xs">buildd skill install</code>
-        </p>
+        <p className="text-lg mb-2">No skills yet</p>
+        <p className="text-sm mb-3">Create reusable agent instructions that workers receive automatically when claiming tasks.</p>
         <a
           href="https://docs.buildd.dev/docs/features/skills"
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-primary hover:underline"
         >
-          Learn how to create and install skills &rarr;
+          Learn more about skills &rarr;
         </a>
       </div>
     );
@@ -215,7 +206,6 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
           const badge = originBadge[skill.origin] || originBadge.manual;
           const isExpanded = expandedId === skill.id;
           const isEditing = editingId === skill.id;
-          const editable = isEditable(skill);
 
           return (
             <div key={skill.id} className="p-4">
@@ -249,34 +239,22 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                     <p className="text-sm text-text-muted mt-0.5 ml-5 line-clamp-1">{skill.description}</p>
                   )}
                   <div className="flex items-center gap-3 mt-1 ml-5 text-xs text-text-muted flex-wrap">
-                    {(skill.recentRuns ?? 0) > 0 && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-status-success/10 text-status-success rounded">
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                        {skill.recentRuns} run{skill.recentRuns === 1 ? '' : 's'} (30d)
-                      </span>
-                    )}
-                    {(skill.totalRuns ?? 0) > 0 && (skill.recentRuns ?? 0) !== (skill.totalRuns ?? 0) && (
-                      <span>{skill.totalRuns} total</span>
-                    )}
                     {skill.source && <span>Source: {skill.source}</span>}
                     <span>{new Date(skill.createdAt).toLocaleDateString()}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 ml-4">
-                  {/* Edit button — only for server-managed skills */}
-                  {editable && (
-                    <button
-                      onClick={() => isEditing ? cancelEditing() : startEditing(skill)}
-                      className={`p-1.5 ${isEditing ? 'text-primary' : 'text-text-muted hover:text-primary'}`}
-                      title={isEditing ? 'Cancel edit' : 'Edit'}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                      </svg>
-                    </button>
-                  )}
+                  <button
+                    onClick={() => isEditing ? cancelEditing() : startEditing(skill)}
+                    className={`p-1.5 ${isEditing ? 'text-primary' : 'text-text-muted hover:text-primary'}`}
+                    title={isEditing ? 'Cancel edit' : 'Edit'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
 
                   {/* Enable/Disable toggle */}
                   <button
@@ -366,16 +344,9 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                       </div>
                     </div>
                   ) : (
-                    <div>
-                      {!editable && (
-                        <p className="text-xs text-text-muted mb-2 italic">
-                          Read-only — this skill was discovered from the filesystem
-                        </p>
-                      )}
-                      <pre className="text-sm bg-surface-2 border border-border-default rounded-md p-3 overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
-                        {skill.content}
-                      </pre>
-                    </div>
+                    <pre className="text-sm bg-surface-2 border border-border-default rounded-md p-3 overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
+                      {skill.content}
+                    </pre>
                   )}
                 </div>
               )}
