@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
       .values({
         name,
         type: type as 'user' | 'service' | 'action',
-        level: level as 'worker' | 'admin' || 'worker',
+        level: level as 'trigger' | 'worker' | 'admin' || 'worker',
         authType: authType as 'api' | 'oauth' || 'oauth',
         apiKey: hashApiKey(plaintextKey),
         apiKeyPrefix: extractApiKeyPrefix(plaintextKey),

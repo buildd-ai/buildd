@@ -27,6 +27,7 @@ import { eq, sql } from "drizzle-orm";
 import {
   handleBuilddAction,
   handleMemoryAction,
+  triggerActions,
   workerActions,
   adminActions,
   allActions as allActionsList,
@@ -75,7 +76,7 @@ function createApi(apiKey: string): ApiFn {
 
 // ── Account Level ────────────────────────────────────────────────────────────
 
-async function getAccountLevel(api: ApiFn): Promise<'worker' | 'admin'> {
+async function getAccountLevel(api: ApiFn): Promise<'trigger' | 'worker' | 'admin'> {
   try {
     const data = await api('/api/accounts/me');
     return data.level || 'worker';
@@ -134,9 +135,11 @@ async function getMemoryClientForTeam(workspaceId: string | null | undefined): P
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'worker' | 'admin', workspaceId?: string, repoName?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
+    : accountLevel === 'trigger'
+    ? [...triggerActions]
     : [...workerActions];
 
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
@@ -429,7 +432,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
 
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
-  const accountLevel = account.level as 'worker' | 'admin' || 'worker';
+  const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
   const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
