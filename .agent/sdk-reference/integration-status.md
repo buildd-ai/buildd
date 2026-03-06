@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.69)
+## Buildd Integration Status (v0.2.70)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,6 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.70`** | API gateway compat, MCP cache fix, ToolSearch fix, compaction image preservation, reduced subagent token usage | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.69`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes, `/claude-api` skill, `/reload-plugins`, git instructions toggle | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
@@ -48,6 +49,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.70`** — All packages now pin `>=0.2.70`
 - **SDK pin `>=0.2.69`** — All packages now pin `>=0.2.69`
 - **SDK pin `>=0.2.68`** — All packages now pin `>=0.2.68`
 - **SDK pin `>=0.2.49`** — All packages now pin `>=0.2.49`
@@ -68,10 +70,11 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.68 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.70 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.70 | 0.2.70 | **API gateway compat** (`ANTHROPIC_BASE_URL` proxy fix); **ToolSearch fix** (empty model responses after tool search); **MCP server cache fix** (prompt-cache bust with `instructions`); **Compaction image preservation** for prompt cache reuse; **Reduced subagent token usage** (more concise reports); **Remote Control poll rate** reduced ~300× (10min vs 1-2s); **Startup memory** reduced ~426KB; **Prompt input re-renders** reduced ~74%; VS Code spark icon + MCP management dialog; clipboard fix for CJK/emoji on Windows/WSL; Enter-over-SSH fix |
 | 2.1.69 | 0.2.69 | **`/claude-api` skill**; **`/reload-plugins`** command; **`includeGitInstructions`** setting + `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` env var; **Remote Control naming** (`/remote-control <name>`); **Voice STT**: 10 new languages (20 total); effort level display in spinner; agent name in terminal title; **TLS proxy** `sandbox.enableWeakerNetworkIsolation` (macOS); `pluginTrustMessage` managed setting; numeric keypad support |
 | 2.1.68 | 0.2.68 | **Opus 4.6 defaults to medium effort** (Max/Team); "ultrathink" keyword re-introduced; **Opus 4.0/4.1 removed** from first-party API (auto-migrate to 4.6) |
 | 2.1.66 | 0.2.66 | Reduced spurious error logging |
@@ -103,6 +106,10 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **ToolSearch empty response fix** — System-prompt-style tags in tool search results no longer confuse models into stopping early (v0.2.70). Critical for workers using ToolSearch/deferred tools.
+- **MCP prompt-cache bust fix** — MCP servers with `instructions` connecting after first turn no longer bust the prompt cache (v0.2.70). Improves token efficiency for workers with late-connecting MCP servers.
+- **Compaction image preservation** — Images now preserved during compaction for prompt cache reuse (v0.2.70). Benefits long-running workers with image context.
+- **Reduced subagent token usage** — More concise subagent reports reduce token usage on multi-agent tasks (v0.2.70). Direct benefit for Buildd agent teams.
 - **Tool name revert** — `system:init` and `result` events emit `'Task'` again (was briefly `'Agent'` in v0.2.63, reverted in v0.2.64). If Buildd parses these events, ensure `'Task'` is the expected name.
 - **ZodError on malformed updatedPermissions** — SDK hosts returning invalid `updatedPermissions` in control responses no longer crash with ZodError; field is stripped with warning (v0.2.64).
 - **4+ memory leak fixes** — bridge polling, MCP OAuth, hooks config, MCP tool/resource caching (v2.1.63)
