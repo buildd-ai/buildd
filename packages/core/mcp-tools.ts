@@ -6,6 +6,22 @@
  * - apps/web/src/app/api/mcp/route.ts (HTTP server)
  */
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const PRIORITY_NAMES: Record<string, number> = {
+  lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
+};
+
+/** Convert named priority levels (e.g. "medium") to integer 0-10. */
+function normalizePriority(val: unknown, fallback = 5): number {
+  if (val === undefined || val === null) return fallback;
+  if (typeof val === 'number') return Math.max(0, Math.min(10, Math.round(val)));
+  const s = String(val).toLowerCase().trim();
+  const parsed = Number(s);
+  if (!isNaN(parsed)) return Math.max(0, Math.min(10, Math.round(parsed)));
+  return PRIORITY_NAMES[s] ?? fallback;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
@@ -366,7 +382,7 @@ export async function handleBuilddAction(
       const updateFields: Record<string, unknown> = {};
       if (params.title !== undefined) updateFields.title = params.title;
       if (params.description !== undefined) updateFields.description = params.description;
-      if (params.priority !== undefined) updateFields.priority = params.priority;
+      if (params.priority !== undefined) updateFields.priority = normalizePriority(params.priority);
       if (params.project !== undefined) updateFields.project = params.project;
 
       if (Object.keys(updateFields).length === 0) {
@@ -391,7 +407,7 @@ export async function handleBuilddAction(
         workspaceId: wsId,
         title: params.title,
         description: params.description,
-        priority: params.priority || 5,
+        priority: normalizePriority(params.priority),
         creationSource: 'mcp',
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
@@ -423,7 +439,7 @@ export async function handleBuilddAction(
       const taskTemplate: Record<string, unknown> = {
         title: params.title,
         description: params.description,
-        priority: params.priority || 5,
+        priority: normalizePriority(params.priority),
         mode: params.mode || 'execution',
       };
 
@@ -764,7 +780,7 @@ export async function handleBuilddAction(
           if (params.description) body.description = params.description;
           if (params.workspaceId) body.workspaceId = params.workspaceId;
           if (params.cronExpression) body.cronExpression = params.cronExpression;
-          if (params.priority !== undefined) body.priority = params.priority;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           const data = await api('/api/objectives', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -786,7 +802,7 @@ export async function handleBuilddAction(
           if (params.description !== undefined) body.description = params.description;
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
-          if (params.priority !== undefined) body.priority = params.priority;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/objectives/${params.objectiveId}`, {
             method: 'PATCH',
