@@ -10,6 +10,7 @@ import { z } from 'zod/v4';
 import {
   handleBuilddAction,
   handleMemoryAction,
+  triggerActions,
   workerActions,
   adminActions,
   allActions as allActionsList,
@@ -53,7 +54,7 @@ function apiCall(serverUrl: string, apiKey: string, endpoint: string, options: R
   });
 }
 
-async function getAccountLevel(serverUrl: string, apiKey: string): Promise<'worker' | 'admin'> {
+async function getAccountLevel(serverUrl: string, apiKey: string): Promise<'trigger' | 'worker' | 'admin'> {
   try {
     const data = await apiCall(serverUrl, apiKey, '/api/accounts/me');
     return data.level || 'worker';
@@ -81,6 +82,8 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
   const level = await getAccountLevel(serverUrl, apiKey);
   const filteredActions = level === 'admin'
     ? [...allActionsList]
+    : level === 'trigger'
+    ? [...triggerActions]
     : [...workerActions];
   const filteredMemoryActions = [...memoryActions];
 

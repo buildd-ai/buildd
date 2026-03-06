@@ -30,7 +30,7 @@ export interface ActionContext {
   workerId?: string;
   workspaceId?: string;
   getWorkspaceId: () => Promise<string | null>;
-  getLevel: () => Promise<'worker' | 'admin'>;
+  getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
 }
 
 export type ToolResult = {
@@ -39,6 +39,13 @@ export type ToolResult = {
 };
 
 // ── Action Lists ─────────────────────────────────────────────────────────────
+
+// Trigger level: can create tasks and artifacts, but cannot claim or execute
+export const triggerActions = [
+  'list_tasks', 'create_task', 'create_artifact',
+  'list_artifacts', 'emit_event',
+  'list_artifact_templates',
+] as const;
 
 export const workerActions = [
   'list_tasks', 'claim_task', 'update_progress', 'complete_task',
@@ -164,12 +171,30 @@ async function resolveWorkspaceId(
   return null;
 }
 
+// Actions that require at least worker level (trigger tokens cannot use these)
+const workerOnlyActions = new Set(
+  (workerActions as readonly string[]).filter(a => !(triggerActions as readonly string[]).includes(a))
+);
+
+async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<ToolResult | null> {
+  if (!workerOnlyActions.has(action)) return null;
+  const level = await ctx.getLevel();
+  if (level === 'trigger') {
+    return errorResult(`Action '${action}' requires a worker or admin token. Trigger tokens can only use: ${triggerActions.join(', ')}`);
+  }
+  return null;
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
   params: Record<string, unknown>,
   ctx: ActionContext,
 ): Promise<ToolResult> {
+  // Check trigger-level restrictions before processing
+  const levelErr = await requireWorkerLevel(ctx, action);
+  if (levelErr) return levelErr;
+
   switch (action) {
     case 'list_tasks': {
       const data = await api('/api/tasks');

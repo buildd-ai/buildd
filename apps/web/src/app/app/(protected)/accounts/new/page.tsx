@@ -214,6 +214,7 @@ export default function NewAccountPage() {
                     value={tokenLevel}
                     onChange={setTokenLevel}
                     options={[
+                      { value: 'trigger', label: 'Trigger - Can create tasks and artifacts only' },
                       { value: 'worker', label: 'Worker - Can claim and execute tasks' },
                       { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
                     ]}
