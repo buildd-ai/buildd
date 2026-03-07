@@ -62,6 +62,8 @@ function checkForUpdate(current: string | null, latest: string | null): boolean 
 // Get changelog between two commits (for release notes)
 async function getChangelog(fromCommit: string, toCommit: string): Promise<string[]> {
   try {
+    // Fetch first so the target commit exists locally
+    await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000).catch(() => {});
     const log = await gitAsync(['log', '--oneline', '--no-merges', `${fromCommit}..${toCommit}`], BUILDD_DIR, 5000);
     return log.split('\n').filter(Boolean).slice(0, 15); // Cap at 15 entries
   } catch { return []; }
