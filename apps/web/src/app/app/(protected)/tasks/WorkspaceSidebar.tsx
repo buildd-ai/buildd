@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import QuickCreateModal from './QuickCreateModal';
@@ -22,6 +22,17 @@ interface Task {
   dependsOn?: string[];
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
+  objectiveId?: string | null;
+}
+
+interface ObjectiveItem {
+  id: string;
+  title: string;
+  status: string;
+  priority: number;
+  totalTasks: number;
+  completedTasks: number;
+  progress: number;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -53,6 +64,7 @@ interface Workspace {
 
 interface Props {
   workspaces: Workspace[];
+  objectives?: ObjectiveItem[];
 }
 
 function getStatusIndicator(status: string): React.ReactNode {
@@ -110,7 +122,9 @@ interface TaskCreated {
   };
 }
 
-export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Props) {
+const OBJECTIVES_COLLAPSED_KEY = 'buildd:objectivesCollapsed';
+
+export default function WorkspaceSidebar({ workspaces: initialWorkspaces, objectives = [] }: Props) {
   const pathname = usePathname();
   const router = useRouter();
   const [workspaces, setWorkspaces] = useState<Workspace[]>(initialWorkspaces);
@@ -124,18 +138,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const [projectRegistry, setProjectRegistry] = useState<Record<string, { name: string; color?: string }[]>>({});
-  const [createDropdownOpen, setCreateDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setCreateDropdownOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  const [objectivesCollapsed, setObjectivesCollapsed] = useState(false);
 
   // Update workspaces when props change (e.g., after navigation)
   useEffect(() => {
@@ -256,9 +259,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         .then(data => {
           setProjectRegistry(prev => ({ ...prev, [ws.id]: data.projects || [] }));
         })
-        .catch(() => { });
+        .catch(() => {});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceIdsKey]);
 
   // Load collapsed state from localStorage
@@ -272,6 +275,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       if (savedCompletedCollapsed) setCompletedCollapsed(JSON.parse(savedCompletedCollapsed));
       const savedHidden = localStorage.getItem(HIDDEN_WORKSPACES_KEY);
       if (savedHidden) setHiddenWorkspaces(JSON.parse(savedHidden));
+      const savedObjCollapsed = localStorage.getItem(OBJECTIVES_COLLAPSED_KEY);
+      if (savedObjCollapsed) setObjectivesCollapsed(JSON.parse(savedObjCollapsed));
     } catch {
       // ignore
     }
@@ -336,7 +341,6 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
       case 'waiting_input':
         return 0; // Highest priority
       case 'pending':
-        return 1;
       case 'failed':
         return 2;
       case 'completed':
@@ -345,6 +349,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
         return 4;
     }
   };
+
+  // Build objective title lookup for task badges
+  const objectiveTitleMap = new Map(objectives.map(o => [o.id, o.title]));
 
   // Collect all distinct projects across all tasks for the filter
   const allProjects = new Map<string, string | undefined>();
@@ -395,50 +402,19 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
   return (
     <>
-      <aside className="w-full md:w-64 lg:w-72 xl:w-80 border-r border-border-default bg-surface-2 flex flex-col h-full shrink-0 max-w-[85vw]">
+      <aside className="w-64 border-r border-border-default bg-surface-2 flex flex-col h-full">
         {/* Header */}
         <div className="p-4 border-b border-border-default">
           <div className="flex items-center justify-between">
             <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary">
               &larr; Dashboard
             </Link>
-            <div className="relative" ref={dropdownRef}>
-              <button
-                onClick={() => setCreateDropdownOpen(!createDropdownOpen)}
-                className="text-xs px-2 py-1 bg-primary text-white rounded hover:bg-primary-hover flex items-center gap-1"
-              >
-                + New
-              </button>
-              {createDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-48 bg-surface-2 border border-border-default rounded-md shadow-lg z-50 overflow-hidden">
-                  <Link
-                    href="/app/tasks/new"
-                    onClick={() => setCreateDropdownOpen(false)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
-                  >
-                    ✨ New Task
-                  </Link>
-                  <Link
-                    href="/app/tasks/new?recurring=true"
-                    onClick={() => setCreateDropdownOpen(false)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
-                  >
-                    🔁 New Schedule
-                  </Link>
-                  <Link
-                    href={workspaces.length > 0 ? `/app/workspaces/${workspaces[0].id}/recipes` : "#"}
-                    onClick={(e) => {
-                      setCreateDropdownOpen(false);
-                      if (workspaces.length === 0) e.preventDefault();
-                    }}
-                    className={`flex items-center gap-2 px-3 py-2 text-sm ${workspaces.length > 0 ? 'text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors' : 'text-text-muted cursor-not-allowed'}`}
-                    title={workspaces.length === 0 ? "You need a workspace to create a recipe" : ""}
-                  >
-                    📋 New Recipe
-                  </Link>
-                </div>
-              )}
-            </div>
+            <Link
+              href="/app/tasks/new"
+              className="text-xs px-2 py-1 bg-primary text-white rounded hover:bg-primary-hover"
+            >
+              + New
+            </Link>
           </div>
           <h1 className="text-lg font-semibold mt-2">Tasks</h1>
         </div>
@@ -459,10 +435,11 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
           <div className="px-3 pb-2 flex flex-wrap gap-1">
             <button
               onClick={() => setProjectFilter(null)}
-              className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors ${!projectFilter
-                ? 'bg-primary/15 text-primary'
-                : 'bg-surface-3 text-text-muted hover:text-text-secondary'
-                }`}
+              className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors ${
+                !projectFilter
+                  ? 'bg-primary/15 text-primary'
+                  : 'bg-surface-3 text-text-muted hover:text-text-secondary'
+              }`}
             >
               All
             </button>
@@ -470,10 +447,11 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
               <button
                 key={name}
                 onClick={() => setProjectFilter(projectFilter === name ? null : name)}
-                className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors flex items-center gap-1 ${projectFilter === name
-                  ? 'bg-primary/15 text-primary'
-                  : 'bg-surface-3 text-text-muted hover:text-text-secondary'
-                  }`}
+                className={`px-2 py-0.5 text-[10px] font-medium rounded-full transition-colors flex items-center gap-1 ${
+                  projectFilter === name
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-surface-3 text-text-muted hover:text-text-secondary'
+                }`}
               >
                 {color && (
                   <span
@@ -484,6 +462,67 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                 {name}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Objectives section */}
+        {objectives.length > 0 && (
+          <div className="px-2 pb-1 border-b border-border-default">
+            <button
+              onClick={() => {
+                const next = !objectivesCollapsed;
+                setObjectivesCollapsed(next);
+                localStorage.setItem(OBJECTIVES_COLLAPSED_KEY, JSON.stringify(next));
+              }}
+              aria-expanded={!objectivesCollapsed}
+              className="flex items-center gap-1.5 w-full px-1 py-1.5 text-xs font-semibold text-text-secondary uppercase tracking-wider hover:text-text-primary"
+            >
+              <span className="text-[10px]">{objectivesCollapsed ? '›' : '▼'}</span>
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Objectives
+              <span className="ml-auto text-[10px] font-mono text-text-muted normal-case">{objectives.length}</span>
+            </button>
+            {!objectivesCollapsed && (
+              <div className="space-y-1 pb-2">
+                {objectives.map(obj => (
+                  <Link
+                    key={obj.id}
+                    href={`/app/objectives/${obj.id}`}
+                    className="block px-2 py-1.5 rounded hover:bg-surface-3 transition-colors group"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        obj.status === 'active' ? 'bg-status-success' : 'bg-status-warning'
+                      }`} />
+                      <span className="text-sm text-text-secondary group-hover:text-text-primary truncate flex-1">
+                        {obj.title}
+                      </span>
+                      {obj.totalTasks > 0 && (
+                        <span className="text-[10px] font-mono text-text-muted shrink-0">
+                          {obj.completedTasks}/{obj.totalTasks}
+                        </span>
+                      )}
+                    </div>
+                    {obj.totalTasks > 0 && (
+                      <div className="mt-1 ml-3 h-1 bg-surface-3 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all"
+                          style={{ width: `${obj.progress}%` }}
+                        />
+                      </div>
+                    )}
+                  </Link>
+                ))}
+                <Link
+                  href="/app/objectives"
+                  className="block px-2 py-1 text-xs text-text-muted hover:text-primary transition-colors"
+                >
+                  View all objectives
+                </Link>
+              </div>
+            )}
           </div>
         )}
 
@@ -533,22 +572,14 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       >
                         +
                       </button>
-                      <Link
-                        href={`/app/workspaces/${ws.id}`}
-                        onClick={() => {
-                          if (window.innerWidth < 768) {
-                            // Let regular navigation happen
-                          }
-                        }}
-                        className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
-                        title="Workspace Settings"
-                        aria-label={`Settings for ${ws.name}`}
+                      <button
+                        onClick={() => toggleHideWorkspace(ws.id)}
+                        className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                        title="Hide workspace"
+                        aria-label={`Hide ${ws.name}`}
                       >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                      </Link>
+                        hide
+                      </button>
                     </div>
 
                     {/* Tasks */}
@@ -591,47 +622,57 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                               {allActiveTasks.map((task) => {
                                 const isBlocked = hasUnresolvedDeps(task);
                                 return (
-                                  <Link
-                                    key={task.id}
-                                    href={`/app/tasks/${task.id}`}
-                                    data-testid="sidebar-task-item"
-                                    data-task-id={task.id}
-                                    data-status={task.status}
-                                    className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors ${selectedTaskId === task.id
+                                <Link
+                                  key={task.id}
+                                  href={`/app/tasks/${task.id}`}
+                                  data-testid="sidebar-task-item"
+                                  data-task-id={task.id}
+                                  data-status={task.status}
+                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
                                       ? 'bg-primary-subtle text-text-primary'
                                       : 'text-text-secondary hover:bg-surface-3'
-                                      }`}
-                                  >
-                                    <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
-                                    <span className="flex-1 min-w-0">
-                                      <span className="flex items-center gap-1.5">
-                                        <span className="truncate">{task.title}</span>
-                                        {isBlocked && (
-                                          <svg className="w-3 h-3 text-text-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Blocked by dependencies">
-                                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    }`}
+                                >
+                                  <span className="mt-1 shrink-0">{getStatusIndicator(task.status)}</span>
+                                  <span className="flex-1 min-w-0">
+                                    <span className="flex items-center gap-1.5">
+                                      <span className="truncate">{task.title}</span>
+                                      {isBlocked && (
+                                        <svg className="w-3 h-3 text-text-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Blocked by dependencies">
+                                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                        </svg>
+                                      )}
+                                      {task.objectiveId && objectiveTitleMap.has(task.objectiveId) && (
+                                        <span
+                                          className="shrink-0"
+                                          title={objectiveTitleMap.get(task.objectiveId)}
+                                        >
+                                          <svg className="w-3 h-3 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                                           </svg>
-                                        )}
-                                        {task.category && <CategoryBadge category={task.category} />}
-                                        {task.project && (
-                                          <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0 flex items-center gap-0.5">
-                                            {(() => {
-                                              const reg = (projectRegistry[ws.id] || []).find(p => p.name === task.project);
-                                              return reg?.color ? <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: reg.color }} /> : null;
-                                            })()}
-                                            {task.project}
-                                          </span>
-                                        )}
-                                      </span>
-                                      {task.waitingFor?.prompt && (
-                                        <span data-testid="sidebar-task-question" className="text-xs text-status-warning truncate block">
-                                          {task.waitingFor.prompt.length > 60
-                                            ? task.waitingFor.prompt.slice(0, 60) + '...'
-                                            : task.waitingFor.prompt}
+                                        </span>
+                                      )}
+                                      {task.category && <CategoryBadge category={task.category} />}
+                                      {task.project && (
+                                        <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0 flex items-center gap-0.5">
+                                          {(() => {
+                                            const reg = (projectRegistry[ws.id] || []).find(p => p.name === task.project);
+                                            return reg?.color ? <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: reg.color }} /> : null;
+                                          })()}
+                                          {task.project}
                                         </span>
                                       )}
                                     </span>
-                                  </Link>
+                                    {task.waitingFor?.prompt && (
+                                      <span data-testid="sidebar-task-question" className="text-xs text-status-warning truncate block">
+                                        {task.waitingFor.prompt.length > 60
+                                          ? task.waitingFor.prompt.slice(0, 60) + '...'
+                                          : task.waitingFor.prompt}
+                                      </span>
+                                    )}
+                                  </span>
+                                </Link>
                                 );
                               })}
 
@@ -652,9 +693,9 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                         <Link
                                           key={task.id}
                                           href={`/app/tasks/${task.id}`}
-                                          className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors group/task ${selectedTaskId === task.id
-                                            ? 'bg-primary-subtle text-text-primary'
-                                            : 'text-text-secondary hover:bg-surface-3'
+                                          className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded group/task ${selectedTaskId === task.id
+                                              ? 'bg-primary-subtle text-text-primary'
+                                              : 'text-text-secondary hover:bg-surface-3'
                                             }`}
                                         >
                                           {getStatusIndicator(task.status)}
@@ -709,8 +750,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                           )}
                         </div>
                       );
-                    })()
-                    }
+                    })()}
                   </div>
                 );
               })}
@@ -750,23 +790,21 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             </div>
           )}
         </nav>
-      </aside >
+      </aside>
 
       {/* Quick Create Modal */}
-      {
-        quickCreateWorkspaceId && (
-          <QuickCreateModal
-            workspaceId={quickCreateWorkspaceId}
-            workspaceName={workspaces.find(w => w.id === quickCreateWorkspaceId)?.name || ''}
-            targetBranch={(() => {
-              const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
-              return ws?.gitConfig?.targetBranch || ws?.gitConfig?.defaultBranch || null;
-            })()}
-            onClose={() => setQuickCreateWorkspaceId(null)}
-            onCreated={handleQuickCreateComplete}
-          />
-        )
-      }
+      {quickCreateWorkspaceId && (
+        <QuickCreateModal
+          workspaceId={quickCreateWorkspaceId}
+          workspaceName={workspaces.find(w => w.id === quickCreateWorkspaceId)?.name || ''}
+          targetBranch={(() => {
+            const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
+            return ws?.gitConfig?.targetBranch || ws?.gitConfig?.defaultBranch || null;
+          })()}
+          onClose={() => setQuickCreateWorkspaceId(null)}
+          onCreated={handleQuickCreateComplete}
+        />
+      )}
     </>
   );
 }

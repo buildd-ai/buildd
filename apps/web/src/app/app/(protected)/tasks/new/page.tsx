@@ -7,7 +7,7 @@ import { uploadImagesToR2 } from '@/lib/upload';
 import { Select } from '@/components/ui/Select';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
-
+import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
 import type { TaskCategoryValue, TaskModeValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
@@ -78,6 +78,9 @@ export default function NewTaskPage() {
   const [showDescription, setShowDescription] = useState(false);
   const [descriptionValue, setDescriptionValue] = useState('');
 
+  // Workflow state
+  const [workflowType, setWorkflowType] = useState<WorkflowType>('single');
+
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
@@ -85,6 +88,10 @@ export default function NewTaskPage() {
 
   // Mode state (planning vs execution)
   const [mode, setMode] = useState<TaskModeValue>('execution');
+
+  // Objective linking
+  const [objectiveId, setObjectiveId] = useState('');
+  const [availableObjectives, setAvailableObjectives] = useState<{ id: string; title: string; status: string }[]>([]);
 
   // Dependencies
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
@@ -137,10 +144,6 @@ export default function NewTaskPage() {
   }, []);
 
   useEffect(() => {
-    if (searchParams.get('recurring') === 'true') {
-      setRecurring(true);
-    }
-
     fetch('/api/workspaces')
       .then(res => res.json())
       .then(data => {
@@ -170,6 +173,17 @@ export default function NewTaskPage() {
       })
       .catch(() => setWorkspaces([]))
       .finally(() => setLoadingWorkspaces(false));
+  }, []);
+
+  // Fetch objectives (team-level, not workspace-specific)
+  useEffect(() => {
+    fetch('/api/objectives')
+      .then(res => res.json())
+      .then(data => {
+        const objs = (data.objectives || []).filter((o: any) => o.status === 'active' || o.status === 'paused');
+        setAvailableObjectives(objs.map((o: any) => ({ id: o.id, title: o.title, status: o.status })));
+      })
+      .catch(() => setAvailableObjectives([]));
   }, []);
 
   // Fetch projects when workspace changes
@@ -228,6 +242,13 @@ export default function NewTaskPage() {
 
     return () => clearTimeout(timer);
   }, [recurring, cronExpression, timezone, selectedWorkspaceId]);
+
+  // Map workflow type to pipeline skill slug
+  const workflowToSkillSlug: Record<string, string> = {
+    'fan-out': 'pipeline-fan-out-merge',
+    'sequential': 'pipeline-sequential',
+    'release': 'pipeline-release',
+  };
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -300,9 +321,18 @@ export default function NewTaskPage() {
         // Build context — merge skills, workflow, and target branch override
         const taskContext: Record<string, unknown> = {};
 
-        if (selectedSkillSlugs.length > 0) {
-          taskContext.skillSlugs = selectedSkillSlugs;
+        // Combine selected skills + workflow pipeline skill
+        const allSkillSlugs = [...selectedSkillSlugs];
+        const pipelineSlug = workflowToSkillSlug[workflowType];
+        if (pipelineSlug && !allSkillSlugs.includes(pipelineSlug)) {
+          allSkillSlugs.push(pipelineSlug);
+        }
+        if (allSkillSlugs.length > 0) {
+          taskContext.skillSlugs = allSkillSlugs;
           if (useSkillAgents) taskContext.useSkillAgents = true;
+        }
+        if (workflowType !== 'single') {
+          taskContext.workflow = workflowType;
         }
         if (taskTargetBranch) {
           taskContext.targetBranch = taskTargetBranch;
@@ -322,6 +352,7 @@ export default function NewTaskPage() {
             ...(project.trim() && { project: project.trim() }),
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
+            ...(objectiveId && { objectiveId }),
             ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
             ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
           }),
@@ -390,20 +421,22 @@ export default function NewTaskPage() {
                 <button
                   type="button"
                   onClick={() => setRecurring(false)}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors ${!recurring
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                    !recurring
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
-                    }`}
+                  }`}
                 >
                   Run once
                 </button>
                 <button
                   type="button"
                   onClick={() => setRecurring(true)}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${recurring
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                    recurring
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
-                    }`}
+                  }`}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -417,10 +450,11 @@ export default function NewTaskPage() {
                     setMode(mode === 'planning' ? 'execution' : 'planning');
                     if (mode !== 'planning') setUseOutputSchema(true);
                   }}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${mode === 'planning'
+                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                    mode === 'planning'
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
-                    }`}
+                  }`}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
@@ -480,6 +514,11 @@ export default function NewTaskPage() {
               })()}
             </div>
 
+            {/* Workflow selector (one-time tasks only) */}
+            {!recurring && (
+              <WorkflowSelector value={workflowType} onChange={setWorkflowType} />
+            )}
+
             {/* Schedule name (recurring only) */}
             {recurring && (
               <div>
@@ -538,16 +577,39 @@ export default function NewTaskPage() {
                     key={opt.value}
                     type="button"
                     onClick={() => setSelectedCategory(selectedCategory === opt.value ? null : opt.value)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${selectedCategory === opt.value
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                      selectedCategory === opt.value
                         ? opt.color + ' border-current'
                         : 'bg-surface-3 text-text-secondary border-transparent hover:bg-surface-4'
-                      }`}
+                    }`}
                   >
                     {opt.label}
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* Objective picker */}
+            {availableObjectives.length > 0 && (
+              <div>
+                <label htmlFor="objectiveId" className="block text-sm font-medium mb-2">
+                  Objective <span className="text-text-muted font-normal">(optional)</span>
+                </label>
+                <Select
+                  id="objectiveId"
+                  value={objectiveId}
+                  onChange={setObjectiveId}
+                  placeholder="Link to an objective..."
+                  options={[
+                    { value: '', label: 'None' },
+                    ...availableObjectives.map(o => ({
+                      value: o.id,
+                      label: `${o.status === 'paused' ? '⏸ ' : ''}${o.title}`,
+                    })),
+                  ]}
+                />
+              </div>
+            )}
 
             {/* Project typeahead */}
             <div>
@@ -781,7 +843,6 @@ export default function NewTaskPage() {
                       disabled={loading}
                     />
                   )}
-
                 </div>
               )}
             </div>

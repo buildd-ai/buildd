@@ -1,9 +1,9 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, objectives } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import WorkspaceSidebar from './WorkspaceSidebar';
 import MobileTasksLayout from './MobileTasksLayout';
 
@@ -32,7 +32,18 @@ export default async function TasksLayout({
       dependsOn?: string[];
       updatedAt: Date;
       waitingFor?: { type: string; prompt: string; options?: string[] } | null;
+      objectiveId?: string | null;
     }>;
+  }> = [];
+
+  let sidebarObjectives: Array<{
+    id: string;
+    title: string;
+    status: string;
+    priority: number;
+    totalTasks: number;
+    completedTasks: number;
+    progress: number;
   }> = [];
 
   if (!isDev && user) {
@@ -57,6 +68,7 @@ export default async function TasksLayout({
             workspaceId: true,
             updatedAt: true,
             priority: true,
+            objectiveId: true,
           },
           orderBy: [desc(tasks.priority), desc(tasks.updatedAt)],
         });
@@ -74,7 +86,7 @@ export default async function TasksLayout({
         }
 
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null };
+        type TaskSummary = { id: string; title: string; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           // Only override status with waiting_input if the task isn't already completed/failed
@@ -87,6 +99,7 @@ export default async function TasksLayout({
             dependsOn: (task.dependsOn as string[]) || [],
             updatedAt: task.updatedAt,
             waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
+            objectiveId: task.objectiveId,
           });
           return acc;
         }, {} as Record<string, TaskSummary[]>);
@@ -101,6 +114,28 @@ export default async function TasksLayout({
           tasks: tasksByWorkspace[ws.id] || [],
         }));
       }
+
+      // Fetch active objectives for sidebar
+      const teamIds = await getUserTeamIds(user.id);
+      if (teamIds.length > 0) {
+        const activeObjectives = await db.query.objectives.findMany({
+          where: inArray(objectives.teamId, teamIds),
+          columns: { id: true, title: true, status: true, priority: true },
+          orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+          with: {
+            tasks: { columns: { id: true, status: true } },
+          },
+        });
+
+        sidebarObjectives = activeObjectives
+          .filter(obj => obj.status === 'active' || obj.status === 'paused')
+          .map(obj => {
+            const totalTasks = obj.tasks?.length || 0;
+            const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
+            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            return { id: obj.id, title: obj.title, status: obj.status, priority: obj.priority, totalTasks, completedTasks, progress };
+          });
+      }
     } catch (error) {
       console.error('Tasks layout query error:', error);
     }
@@ -108,7 +143,7 @@ export default async function TasksLayout({
 
   return (
     <MobileTasksLayout
-      sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} />}
+      sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} objectives={sidebarObjectives} />}
       workspaces={workspacesWithTasks.map(w => ({ id: w.id, name: w.name }))}
     >
       {children}
