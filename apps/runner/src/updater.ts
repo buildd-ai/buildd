@@ -11,6 +11,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 const INSTALL_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+const BRANCH = process.env.BUILDD_BRANCH || 'main';
 
 /** Returns the current HEAD commit SHA of the local installation. */
 export function getCurrentCommit(): string | null {
@@ -46,13 +47,13 @@ export interface UpdateResult {
 export function applyUpdate(): UpdateResult {
   const previousCommit = getCurrentCommit();
   try {
-    // Ensure we're on main before resetting
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+    // Ensure we're on the correct branch before resetting
+    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
       cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
     }).trim();
     execSync(
-      (branch !== 'main' ? 'git checkout -f main && ' : '') +
-      'git fetch origin main && git reset --hard origin/main',
+      (currentBranch !== BRANCH ? `git checkout -f ${BRANCH} && ` : '') +
+      `git fetch origin ${BRANCH} && git reset --hard origin/${BRANCH}`,
       { cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 30_000, stdio: 'pipe' },
     );
 

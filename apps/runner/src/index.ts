@@ -14,6 +14,7 @@ const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json');
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
+const BRANCH = process.env.BUILDD_BRANCH || 'main';
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
@@ -63,7 +64,7 @@ function checkForUpdate(current: string | null, latest: string | null): boolean 
 async function getChangelog(fromCommit: string, toCommit: string): Promise<string[]> {
   try {
     // Fetch first so the target commit exists locally
-    await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000).catch(() => {});
+    await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000).catch(() => {});
     const log = await gitAsync(['log', '--oneline', '--no-merges', `${fromCommit}..${toCommit}`], BUILDD_DIR, 5000);
     return log.split('\n').filter(Boolean).slice(0, 15); // Cap at 15 entries
   } catch { return []; }
@@ -758,12 +759,12 @@ const server = Bun.serve({
       broadcast({ type: 'update_started' });
 
       try {
-        // Fetch latest and ensure we're on main
-        await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
-        if (branch !== 'main') {
-          await gitAsync(['checkout', 'main'], BUILDD_DIR, 10_000);
+        // Fetch latest and ensure we're on the tracked branch
+        await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000);
+        if (branch !== BRANCH) {
+          await gitAsync(['checkout', BRANCH], BUILDD_DIR, 10_000);
         }
-        await gitAsync(['reset', '--hard', 'origin/main'], BUILDD_DIR, 10_000);
+        await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
 
         // Install dependencies
         const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
@@ -2250,11 +2251,11 @@ setInterval(async () => {
     broadcast({ type: 'update_started' });
 
     try {
-      await gitAsync(['fetch', 'origin', 'main'], BUILDD_DIR, 30_000);
-      if (prevBranch !== 'main') {
-        await gitAsync(['checkout', '-f', 'main'], BUILDD_DIR, 10_000);
+      await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000);
+      if (prevBranch !== BRANCH) {
+        await gitAsync(['checkout', '-f', BRANCH], BUILDD_DIR, 10_000);
       }
-      await gitAsync(['reset', '--hard', 'origin/main'], BUILDD_DIR, 10_000);
+      await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
       const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
       await installProc.exited;
       await initCurrentCommit();
