@@ -1276,6 +1276,11 @@ const server = Bun.serve({
       return Response.json({ workers: workerManager!.getWorkers() }, { headers: corsHeaders });
     }
 
+    if (path === '/api/workers/purge' && req.method === 'POST') {
+      const count = workerManager!.purgeCompleted();
+      return Response.json({ purged: count }, { headers: corsHeaders });
+    }
+
     if (path === '/api/claim' && req.method === 'POST') {
       const body = await parseBody(req);
       const { taskId } = body;
