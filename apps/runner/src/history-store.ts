@@ -10,7 +10,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import type { LocalWorker, ResultMeta } from './types';
 
-const BUILDD_DIR = join(homedir(), '.buildd');
+const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const DB_PATH = join(BUILDD_DIR, 'history.db');
 const ARCHIVE_DIR = join(BUILDD_DIR, 'archive');
 const WORKERS_DIR = join(BUILDD_DIR, 'workers');

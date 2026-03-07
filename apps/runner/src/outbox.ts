@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const CONFIG_DIR = join(homedir(), '.buildd');
+const CONFIG_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const OUTBOX_FILE = join(CONFIG_DIR, 'outbox.json');
 
 export interface OutboxEntry {

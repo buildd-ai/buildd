@@ -4,7 +4,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import type { LocalWorker, CheckpointEventType } from './types';
 
-const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
+const WORKERS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
