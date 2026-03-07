@@ -665,6 +665,28 @@ export class WorkerManager {
     }
   }
 
+  /** Remove completed/errored workers from memory and disk. Returns count purged. */
+  purgeCompleted(): number {
+    let count = 0;
+    // Remove from memory
+    for (const [id, worker] of this.workers.entries()) {
+      if (worker.status === 'done' || worker.status === 'error') {
+        this.workers.delete(id);
+        this.sessions.delete(id);
+        storeDeleteWorker(id);
+        count++;
+      }
+    }
+    // Remove from disk (workers not in memory)
+    for (const worker of loadAllWorkers()) {
+      if (worker.status === 'done' || worker.status === 'error') {
+        storeDeleteWorker(worker.id);
+        count++;
+      }
+    }
+    return count;
+  }
+
   getWorkers(): LocalWorker[] {
     // Merge in-memory workers with completed workers persisted on disk (24h history)
     const inMemory = Array.from(this.workers.values());
