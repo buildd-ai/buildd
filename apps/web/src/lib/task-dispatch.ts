@@ -115,11 +115,14 @@ export async function dispatchNewTask(
   }
 
   // Try GitHub Actions dispatch if workspace has a linked GitHub repo
+  // (supplementary — does NOT prevent Pusher broadcast to local runners)
   if (!dispatched) {
-    dispatched = await tryGitHubActionsDispatch(workspace, task);
+    tryGitHubActionsDispatch(workspace, task).catch(() => {});
   }
 
-  // If nothing handled it, broadcast TASK_ASSIGNED so any connected worker can claim
+  // Always broadcast TASK_ASSIGNED so any connected local worker can claim.
+  // Webhook dispatch is the only exclusive handler — GitHub Actions and
+  // local runners can both pick up the same task (claim is atomic).
   if (!dispatched) {
     await triggerEvent(
       channels.workspace(task.workspaceId),
