@@ -97,15 +97,25 @@ beforeAll(async () => {
   }
 
   // 4b. Abort any lingering workers from previous test runs to free concurrent slots
+  // First, terminate stale workers on the server (covers workers from any prior runner)
+  try {
+    const { workers: serverWorkers } = await server.listMyWorkers('idle,running,starting,waiting_input');
+    if (serverWorkers.length > 0) {
+      console.log(`  Terminating ${serverWorkers.length} stale server-side worker(s) from previous runs...`);
+      await Promise.allSettled(serverWorkers.map((w: any) => server.terminateWorker(w.id)));
+      await Bun.sleep(1_000); // let terminations settle
+    }
+  } catch { /* best effort */ }
+  // Then abort any still-running local workers
   try {
     const { workers: activeWorkers } = await localUI.listWorkers();
     const lingering = activeWorkers.filter((w: any) =>
       w.status === 'running' || w.status === 'claimed' || w.status === 'waiting_input',
     );
     if (lingering.length > 0) {
-      console.log(`  Aborting ${lingering.length} lingering worker(s) from previous runs...`);
+      console.log(`  Aborting ${lingering.length} lingering local worker(s) from previous runs...`);
       await Promise.allSettled(lingering.map((w: any) => localUI.abortWorker(w.id)));
-      await Bun.sleep(2_000); // let aborts propagate to server
+      await Bun.sleep(1_000); // let aborts propagate to server
     }
   } catch { /* best effort */ }
 

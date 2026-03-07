@@ -88,6 +88,18 @@ export class ServerClient {
   deleteTask(id: string) {
     return this.fetch<any>(`/api/tasks/${id}`, { method: 'DELETE' });
   }
+
+  listMyWorkers(status?: string) {
+    const qs = status ? `?status=${status}` : '';
+    return this.fetch<{ workers: any[] }>(`/api/workers/mine${qs}`);
+  }
+
+  terminateWorker(id: string) {
+    return this.fetch<any>(`/api/workers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'failed', error: 'Terminated by E2E test setup cleanup' }),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
