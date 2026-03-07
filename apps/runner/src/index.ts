@@ -458,19 +458,24 @@ async function setLatestCommit(sha: string) {
   if (updateState.latestCommit === sha) return;
   updateState.latestCommit = sha;
   const wasAvailable = updateState.updateAvailable;
-  updateState.updateAvailable = checkForUpdate(updateState.currentCommit, sha);
-  if (updateState.updateAvailable && !wasAvailable) {
+  if (checkForUpdate(updateState.currentCommit, sha)) {
     // Fetch changelog for release notes
     if (updateState.currentCommit) {
       updateState.changelog = await getChangelog(updateState.currentCommit, sha);
     }
-    console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
-    broadcast({
-      type: 'update_available',
-      currentCommit: updateState.currentCommit,
-      latestCommit: sha,
-      changelog: updateState.changelog,
-    });
+    // Only show update if there are actual code changes (skip empty releases)
+    updateState.updateAvailable = updateState.changelog.length > 0;
+    if (updateState.updateAvailable && !wasAvailable) {
+      console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
+      broadcast({
+        type: 'update_available',
+        currentCommit: updateState.currentCommit,
+        latestCommit: sha,
+        changelog: updateState.changelog,
+      });
+    } else if (!updateState.updateAvailable) {
+      console.log(`New commit ${sha.slice(0, 7)} has no runner changes, skipping update`);
+    }
   }
 }
 
