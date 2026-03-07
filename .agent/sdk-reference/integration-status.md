@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.70)
+## Buildd Integration Status (v0.2.71)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,6 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.71`** | `SDKTaskStartedMessage.prompt` field, CLI binary size reduction | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.70`** | API gateway compat, MCP cache fix, ToolSearch fix, compaction image preservation, reduced subagent token usage | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.69`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes, `/claude-api` skill, `/reload-plugins`, git instructions toggle | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
@@ -49,6 +50,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.71`** — All packages now pin `>=0.2.71`
 - **SDK pin `>=0.2.70`** — All packages now pin `>=0.2.70`
 - **SDK pin `>=0.2.69`** — All packages now pin `>=0.2.69`
 - **SDK pin `>=0.2.68`** — All packages now pin `>=0.2.68`
@@ -74,6 +76,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.71 | 0.2.71 | **`SDKTaskStartedMessage.prompt`** field — exposes the prompt sent to subagents; **CLI binary size reduction** (~3-5% smaller across all platforms) |
 | 2.1.70 | 0.2.70 | **API gateway compat** (`ANTHROPIC_BASE_URL` proxy fix); **ToolSearch fix** (empty model responses after tool search); **MCP server cache fix** (prompt-cache bust with `instructions`); **Compaction image preservation** for prompt cache reuse; **Reduced subagent token usage** (more concise reports); **Remote Control poll rate** reduced ~300× (10min vs 1-2s); **Startup memory** reduced ~426KB; **Prompt input re-renders** reduced ~74%; VS Code spark icon + MCP management dialog; clipboard fix for CJK/emoji on Windows/WSL; Enter-over-SSH fix |
 | 2.1.69 | 0.2.69 | **`/claude-api` skill**; **`/reload-plugins`** command; **`includeGitInstructions`** setting + `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` env var; **Remote Control naming** (`/remote-control <name>`); **Voice STT**: 10 new languages (20 total); effort level display in spinner; agent name in terminal title; **TLS proxy** `sandbox.enableWeakerNetworkIsolation` (macOS); `pluginTrustMessage` managed setting; numeric keypad support |
 | 2.1.68 | 0.2.68 | **Opus 4.6 defaults to medium effort** (Max/Team); "ultrathink" keyword re-introduced; **Opus 4.0/4.1 removed** from first-party API (auto-migrate to 4.6) |
