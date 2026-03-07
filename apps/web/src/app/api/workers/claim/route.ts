@@ -155,6 +155,25 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Exclude tasks whose dependencies haven't completed yet.
+  // We filter with a SQL subquery so the LIMIT applies to actually-claimable tasks.
+  claimableConditions.push(
+    or(
+      // No dependencies
+      isNull(tasks.dependsOn),
+      sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
+      // All dependencies are in a terminal state
+      sql`NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ${tasks} t2
+          WHERE t2.id = dep_id::uuid
+          AND t2.status IN ('completed', 'failed')
+        )
+      )`
+    )
+  );
+
   const claimableTasks = await db.query.tasks.findMany({
     where: and(...claimableConditions),
     orderBy: (tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)],
@@ -172,39 +191,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Filter out tasks with unresolved dependencies
-  const allDepIds = [...new Set(
-    claimableTasks.flatMap(t => (t.dependsOn as string[] | null) ?? [])
-  )];
-
-  let tasksAfterDeps = claimableTasks;
-  if (allDepIds.length > 0) {
-    const depTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, allDepIds),
-      columns: { id: true, status: true },
-    });
-    const depStatusMap = new Map(depTasks.map(t => [t.id, t.status]));
-    const terminalStatuses = new Set(['completed', 'failed']);
-
-    tasksAfterDeps = claimableTasks.filter(task => {
-      const deps = (task.dependsOn as string[] | null) ?? [];
-      if (deps.length === 0) return true;
-      return deps.every(depId => terminalStatuses.has(depStatusMap.get(depId) ?? ''));
-    });
-  }
-
-  if (tasksAfterDeps.length === 0) {
-    return NextResponse.json({
-      workers: [],
-      diagnostics: {
-        reason: 'no_pending_tasks',
-        availableSlots,
-      } satisfies ClaimDiagnostics,
-    });
-  }
-
   // Filter by capabilities
-  const filteredTasks = tasksAfterDeps.filter((task) => {
+  const filteredTasks = claimableTasks.filter((task) => {
     if (capabilities.length === 0) return true;
     const reqCaps = task.requiredCapabilities || [];
     if (reqCaps.length === 0) return true;
