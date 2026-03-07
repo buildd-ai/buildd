@@ -29,6 +29,11 @@ export class BuilddClient {
       });
 
       if (!res.ok && !allowedErrors.includes(res.status)) {
+        // Queue server errors (5xx) via outbox before throwing
+        if (res.status >= 500 && this.outbox && this.outbox.shouldQueue(method, endpoint)) {
+          this.outbox.enqueue(method, endpoint, options.body as string | undefined);
+          return {};
+        }
         const error = await res.text();
         throw new Error(`API error: ${res.status} - ${error}`);
       }
