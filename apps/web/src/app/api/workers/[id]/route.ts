@@ -68,9 +68,14 @@ export async function PATCH(
   const body = await req.json();
 
   // Check if worker was already terminated (reassigned/failed)
-  // Allow reactivation with 'running' status for follow-up messages from runner
+  // Allow reactivation with 'running' status for follow-up messages from runner,
+  // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
   if (worker.status === 'failed' || worker.status === 'completed') {
-    if (body.status !== 'running') {
+    const isCleanupExpiry = worker.error?.includes('expired') ||
+      worker.error?.includes('timed out') ||
+      worker.error?.includes('went offline') ||
+      worker.error?.includes('runner restarted');
+    if (body.status !== 'running' || isCleanupExpiry) {
       return NextResponse.json({
         error: worker.status === 'failed'
           ? 'Worker was terminated - task may have been reassigned'

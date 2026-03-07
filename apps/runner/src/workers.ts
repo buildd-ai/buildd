@@ -288,6 +288,12 @@ export class WorkerManager {
           worker.error = 'Process restarted';
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
+
+          // Notify server so it doesn't stay "running" forever
+          this.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: 'Worker runner restarted',
+          }).catch(() => {});
         }
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
@@ -517,6 +523,17 @@ export class WorkerManager {
       }
       const response = await this.buildd.updateWorker(worker.id, update);
 
+      // Server says worker was already terminated — abort locally
+      if (response?.abort) {
+        console.log(`[Worker ${worker.id}] Server says worker terminated: ${response.reason}`);
+        worker.status = 'error';
+        worker.error = response.reason || 'Terminated by server';
+        worker.completedAt = worker.completedAt || Date.now();
+        this.emit({ type: 'worker_update', worker });
+        await this.abort(worker.id);
+        return;
+      }
+
       // Process any pending instructions from sync response
       if (response?.instructions) {
         await this.sendMessage(worker.id, response.instructions);
@@ -590,8 +607,8 @@ export class WorkerManager {
   private async runCleanup() {
     try {
       await this.buildd.runCleanup();
-    } catch {
-      // Non-fatal - cleanup is best-effort
+    } catch (err) {
+      console.warn('[Cleanup] Failed to run server cleanup:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -705,6 +722,11 @@ export class WorkerManager {
 
         if (!workspacePath) {
           console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+          // Fail the worker on the server so it doesn't stay "running" forever
+          this.buildd.updateWorker(claimedWorker.id, {
+            status: 'failed',
+            error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+          }).catch(() => {});
           continue;
         }
 
