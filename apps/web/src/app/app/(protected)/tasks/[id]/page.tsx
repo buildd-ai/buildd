@@ -704,7 +704,9 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
-                        <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                        {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                          <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                        )}
                         {(worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
                           <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
                         )}

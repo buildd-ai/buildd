@@ -479,13 +479,16 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       {/* Stats row */}
       <div className="flex items-center gap-4 mt-3 font-mono text-xs text-text-muted">
         <span>Turns: {worker.turns}</span>
-        {worker.account?.authType === 'oauth' ? (
-          <span>
-            {((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens
-          </span>
-        ) : (
-          <span>Cost: ${parseFloat(worker.costUsd || '0').toFixed(4)}</span>
-        )}
+        {worker.account?.authType === 'oauth'
+          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+              <span>
+                {((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens
+              </span>
+            )
+          : parseFloat(worker.costUsd || '0') > 0 && (
+              <span>Cost: ${parseFloat(worker.costUsd || '0').toFixed(4)}</span>
+            )
+        }
         {worker.startedAt && (
           <span title={`Started: ${new Date(worker.startedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })}`}>
             {Math.round((Date.now() - new Date(worker.startedAt).getTime()) / 60000)}m elapsed

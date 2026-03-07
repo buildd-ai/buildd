@@ -340,6 +340,10 @@ function dismissUpdateBanner() {
   hideUpdateBanner();
 }
 
+function triggerUpdate() {
+  applyUpdate();
+}
+
 async function applyUpdate() {
   const btn = document.getElementById('updateBtn');
   if (btn) {
