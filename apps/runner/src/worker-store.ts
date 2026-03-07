@@ -13,6 +13,7 @@ const PERSISTED_FIELDS = [
   'waitingFor',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  'pendingCompletionPayload',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -162,6 +163,7 @@ export function loadAllWorkers(): LocalWorker[] {
         worktreePath: data.worktreePath as string | undefined,
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+        pendingCompletionPayload: data.pendingCompletionPayload as Record<string, unknown> | undefined,
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
@@ -227,6 +229,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       worktreePath: data.worktreePath as string | undefined,
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+      pendingCompletionPayload: data.pendingCompletionPayload as Record<string, unknown> | undefined,
       hasNewActivity: false,
       currentAction: '',
       subagentTasks: [],

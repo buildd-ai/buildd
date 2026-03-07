@@ -190,7 +190,7 @@ export class WorkerManager {
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
 
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
-    this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
+    this.syncInterval = setInterval(() => { this.syncToServer(); this.sweepPendingCompletions(); }, 10_000);
 
     // Run cleanup every 30 minutes (includes session logs)
     this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
@@ -545,6 +545,21 @@ export class WorkerManager {
       }
     } catch {
       // Silently ignore sync errors - server may be temporarily unreachable
+    }
+  }
+
+  // Retry reporting completion for workers that finished but failed to notify the server
+  private async sweepPendingCompletions() {
+    for (const worker of this.workers.values()) {
+      if (!worker.pendingCompletionPayload) continue;
+      try {
+        await this.buildd.updateWorker(worker.id, worker.pendingCompletionPayload as any);
+        worker.pendingCompletionPayload = undefined;
+        storeSaveWorker(worker);
+        console.log(`[Worker ${worker.id}] Completion sweep: successfully reported to server`);
+      } catch {
+        // Will retry on next sweep cycle
+      }
     }
   }
 
@@ -2047,20 +2062,39 @@ export class WorkerManager {
           if (totalOut > 0) outputTokens = totalOut;
         }
 
-        await this.buildd.updateWorker(worker.id, {
-          status: 'completed',
+        // Build completion payload and persist it so it survives restarts
+        const completionPayload = {
+          status: 'completed' as const,
           milestones: worker.milestones,
           ...gitStats,
           ...(resultMeta && { resultMeta }),
           ...(inputTokens && { inputTokens }),
           ...(outputTokens && { outputTokens }),
-          // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
-          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
           ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
-        });
+        };
+        worker.pendingCompletionPayload = completionPayload;
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
+
+        // Retry completion update up to 3 times with backoff
+        let reported = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await this.buildd.updateWorker(worker.id, completionPayload);
+            reported = true;
+            break;
+          } catch (err) {
+            console.error(`[Worker ${worker.id}] Completion report attempt ${attempt + 1}/3 failed:`, err);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+          }
+        }
+        if (reported) {
+          worker.pendingCompletionPayload = undefined;
+          storeSaveWorker(worker);
+        } else {
+          console.error(`[Worker ${worker.id}] Completion report failed after 3 attempts — will retry via sweep`);
+        }
 
         // Capture summary observation (non-fatal)
         try {
@@ -2108,10 +2142,12 @@ export class WorkerManager {
         worker.status = 'error';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        await this.buildd.updateWorker(worker.id, {
-          status: 'failed',
-          error: worker.error || 'Session aborted'
-        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
+        const failPayload = { status: 'failed' as const, error: worker.error || 'Session aborted' };
+        worker.pendingCompletionPayload = failPayload;
+        storeSaveWorker(worker);
+        await this.buildd.updateWorker(worker.id, failPayload)
+          .then(() => { worker.pendingCompletionPayload = undefined; storeSaveWorker(worker); })
+          .catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status (will retry via sweep):`, err));
       } else {
         // Unexpected error
         const errMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -2122,10 +2158,12 @@ export class WorkerManager {
         worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        await this.buildd.updateWorker(worker.id, {
-          status: 'failed',
-          error: worker.error
-        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
+        const failPayload = { status: 'failed' as const, error: worker.error };
+        worker.pendingCompletionPayload = failPayload;
+        storeSaveWorker(worker);
+        await this.buildd.updateWorker(worker.id, failPayload)
+          .then(() => { worker.pendingCompletionPayload = undefined; storeSaveWorker(worker); })
+          .catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status (will retry via sweep):`, err));
       }
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);

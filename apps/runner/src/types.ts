@@ -159,6 +159,9 @@ export interface LocalWorker {
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
   lastAssistantMessage?: string;
+  // Pending completion payload — set when task finishes, cleared once server confirms.
+  // Used by sweep to retry if the initial report failed or runner restarted.
+  pendingCompletionPayload?: Record<string, unknown>;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;
