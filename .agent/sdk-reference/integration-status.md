@@ -22,7 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
-| **Bump SDK pin to `>=0.2.71`** | `SDKTaskStartedMessage.prompt` field, CLI binary size reduction | **P1** | **Done** |
+| **Bump SDK pin to `>=0.2.71`** | `/loop` command, cron scheduling, `SDKTaskStartedMessage.prompt` field, stdin freeze fix, background agent notification fix, `--print` hang fix, plugin fixes, CLI binary size reduction | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.70`** | API gateway compat, MCP cache fix, ToolSearch fix, compaction image preservation, reduced subagent token usage | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.69`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes, `/claude-api` skill, `/reload-plugins`, git instructions toggle | **P1** | **Done** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
@@ -72,11 +72,11 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ---
 
-## CLI v2.1.32–2.1.70 Changelog (SDK-Relevant)
+## CLI v2.1.32–2.1.71 Changelog (SDK-Relevant)
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
-| 2.1.71 | 0.2.71 | **`SDKTaskStartedMessage.prompt`** field — exposes the prompt sent to subagents; **CLI binary size reduction** (~3-5% smaller across all platforms) |
+| 2.1.71 | 0.2.71 | **`/loop` command** (recurring prompt interval); **cron scheduling tools**; **`SDKTaskStartedMessage.prompt`** field (subagent prompt exposure); **rebindable voice push-to-talk key**; **CLI binary size reduction** (~3-5%); stdin freeze fix in long sessions; 5-8s startup freeze fix (CoreAudio); OAuth token refresh startup freeze fix; forked conversation plan isolation fix; Read tool oversized image fix; background agent completion notification fix (missing output path); `--print` hang fix with team agents; plugin installation persistence fix; claude.ai connector reconnection fix; improved bridge session reconnection after wake; deferred native image processor loading |
 | 2.1.70 | 0.2.70 | **API gateway compat** (`ANTHROPIC_BASE_URL` proxy fix); **ToolSearch fix** (empty model responses after tool search); **MCP server cache fix** (prompt-cache bust with `instructions`); **Compaction image preservation** for prompt cache reuse; **Reduced subagent token usage** (more concise reports); **Remote Control poll rate** reduced ~300× (10min vs 1-2s); **Startup memory** reduced ~426KB; **Prompt input re-renders** reduced ~74%; VS Code spark icon + MCP management dialog; clipboard fix for CJK/emoji on Windows/WSL; Enter-over-SSH fix |
 | 2.1.69 | 0.2.69 | **`/claude-api` skill**; **`/reload-plugins`** command; **`includeGitInstructions`** setting + `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` env var; **Remote Control naming** (`/remote-control <name>`); **Voice STT**: 10 new languages (20 total); effort level display in spinner; agent name in terminal title; **TLS proxy** `sandbox.enableWeakerNetworkIsolation` (macOS); `pluginTrustMessage` managed setting; numeric keypad support |
 | 2.1.68 | 0.2.68 | **Opus 4.6 defaults to medium effort** (Max/Team); "ultrathink" keyword re-introduced; **Opus 4.0/4.1 removed** from first-party API (auto-migrate to 4.6) |
@@ -109,6 +109,11 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Background agent notification fix** — Background agent completion notifications now include the output file path (v0.2.71). Critical for parent agents recovering subagent results after context compaction in Buildd workers.
+- **`--print` hang fix** — `--print` mode no longer hangs forever when team agents are configured (v0.2.71). Exit loop no longer waits on long-lived `in_process_teammate` tasks.
+- **Stdin freeze fix** — Long-running sessions no longer freeze on keystroke processing (v0.2.71). Important for interactive runner workers.
+- **Plugin installation persistence** — Plugin installations no longer lost when running multiple Claude Code instances (v0.2.71).
+- **Bridge reconnection improvement** — Bridge sessions reconnect within seconds after laptop wake instead of up to 10 minutes (v0.2.71).
 - **ToolSearch empty response fix** — System-prompt-style tags in tool search results no longer confuse models into stopping early (v0.2.70). Critical for workers using ToolSearch/deferred tools.
 - **MCP prompt-cache bust fix** — MCP servers with `instructions` connecting after first turn no longer bust the prompt cache (v0.2.70). Improves token efficiency for workers with late-connecting MCP servers.
 - **Compaction image preservation** — Images now preserved during compaction for prompt cache reuse (v0.2.70). Benefits long-running workers with image context.
