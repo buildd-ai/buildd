@@ -7,7 +7,7 @@ import { uploadImagesToR2 } from '@/lib/upload';
 import { Select } from '@/components/ui/Select';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
-import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
+
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
 import type { TaskCategoryValue, TaskModeValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
@@ -77,9 +77,6 @@ export default function NewTaskPage() {
   // Description state (expandable)
   const [showDescription, setShowDescription] = useState(false);
   const [descriptionValue, setDescriptionValue] = useState('');
-
-  // Workflow state
-  const [workflowType, setWorkflowType] = useState<WorkflowType>('single');
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
@@ -232,13 +229,6 @@ export default function NewTaskPage() {
     return () => clearTimeout(timer);
   }, [recurring, cronExpression, timezone, selectedWorkspaceId]);
 
-  // Map workflow type to pipeline skill slug
-  const workflowToSkillSlug: Record<string, string> = {
-    'fan-out': 'pipeline-fan-out-merge',
-    'sequential': 'pipeline-sequential',
-    'release': 'pipeline-release',
-  };
-
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setLoading(true);
@@ -310,18 +300,9 @@ export default function NewTaskPage() {
         // Build context — merge skills, workflow, and target branch override
         const taskContext: Record<string, unknown> = {};
 
-        // Combine selected skills + workflow pipeline skill
-        const allSkillSlugs = [...selectedSkillSlugs];
-        const pipelineSlug = workflowToSkillSlug[workflowType];
-        if (pipelineSlug && !allSkillSlugs.includes(pipelineSlug)) {
-          allSkillSlugs.push(pipelineSlug);
-        }
-        if (allSkillSlugs.length > 0) {
-          taskContext.skillSlugs = allSkillSlugs;
+        if (selectedSkillSlugs.length > 0) {
+          taskContext.skillSlugs = selectedSkillSlugs;
           if (useSkillAgents) taskContext.useSkillAgents = true;
-        }
-        if (workflowType !== 'single') {
-          taskContext.workflow = workflowType;
         }
         if (taskTargetBranch) {
           taskContext.targetBranch = taskTargetBranch;
@@ -696,7 +677,7 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || workflowType !== 'single') && (
+                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning') && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -801,10 +782,6 @@ export default function NewTaskPage() {
                     />
                   )}
 
-                  {/* Workflow (one-time tasks only) */}
-                  {!recurring && (
-                    <WorkflowSelector value={workflowType} onChange={setWorkflowType} />
-                  )}
                 </div>
               )}
             </div>
