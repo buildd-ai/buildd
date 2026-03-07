@@ -3,7 +3,7 @@ const { existsSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync
 import { join } from 'path';
 import { homedir } from 'os';
 
-const LOGS_DIR = join(homedir(), '.buildd', 'logs');
+const LOGS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'logs');
 const MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48 hours
 
 export type SessionLogLevel = 'info' | 'warn' | 'error';

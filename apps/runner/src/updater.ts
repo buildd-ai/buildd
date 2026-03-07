@@ -10,7 +10,7 @@ import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const INSTALL_DIR = join(homedir(), '.buildd');
+const INSTALL_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 
 /** Returns the current HEAD commit SHA of the local installation. */
 export function getCurrentCommit(): string | null {

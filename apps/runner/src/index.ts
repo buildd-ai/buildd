@@ -10,10 +10,10 @@ import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 
 const PORT = parseInt(process.env.PORT || '8766');
-const CONFIG_FILE = process.env.BUILDD_CONFIG || join(homedir(), '.buildd', 'config.json');
-const REPOS_CACHE_FILE = join(homedir(), '.buildd', 'repos-cache.json');
-const BROWSER_OPEN_FILE = join(homedir(), '.buildd', '.last-browser-open');
-const BUILDD_DIR = join(homedir(), '.buildd');
+const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json');
+const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
+const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
@@ -178,7 +178,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 function saveConfig(data: Partial<SavedConfig>) {
   try {
-    const dir = join(homedir(), '.buildd');
+    const dir = BUILDD_DIR;
     if (!existsSync(dir)) {
       const { mkdirSync } = require('fs');
       mkdirSync(dir, { recursive: true });
@@ -256,7 +256,7 @@ function loadReposCache(): CachedRepo[] | null {
 
 function saveReposCache(repos: CachedRepo[]) {
   try {
-    const dir = join(homedir(), '.buildd');
+    const dir = BUILDD_DIR;
     if (!existsSync(dir)) {
       const { mkdirSync } = require('fs');
       mkdirSync(dir, { recursive: true });
