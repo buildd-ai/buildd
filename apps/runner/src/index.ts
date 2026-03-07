@@ -824,10 +824,10 @@ const server = Bun.serve({
             try { controller.close(); } catch { /* ignore */ }
           }
           sseClients.clear();
-          // Give connections a moment to close, then exit
+          // Give connections a moment to close, then exit with 75 for launcher restart
           setTimeout(() => {
             console.log('Restarting...');
-            process.exit(0);
+            process.exit(75);
           }, 500);
         }, 1000);
 
@@ -2290,11 +2290,11 @@ setInterval(async () => {
       console.log(`Auto-updated to ${newCommit?.slice(0, 7)}`);
       broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
 
-      // Graceful restart
+      // Graceful restart (exit 75 for launcher restart loop)
       setTimeout(() => {
         for (const c of sseClients) { try { c.close(); } catch {} }
         sseClients.clear();
-        setTimeout(() => process.exit(0), 500);
+        setTimeout(() => process.exit(75), 500);
       }, 1000);
     } catch (err: any) {
       if (prevCommit) {
