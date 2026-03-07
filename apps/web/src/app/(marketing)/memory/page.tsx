@@ -408,7 +408,7 @@ export default function MemoryPage() {
                     className="flex items-start gap-2 text-sm text-gray-300"
                   >
                     <svg
-                      className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0"
+                      className="w-4 h-4 text-status-success mt-0.5 flex-shrink-0"
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"

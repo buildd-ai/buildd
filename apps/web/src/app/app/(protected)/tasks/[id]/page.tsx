@@ -295,7 +295,7 @@ export default async function TaskDetailPage({
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Description
             </div>
-            <div className="p-4 bg-surface-2 rounded-[10px]">
+            <div className="card p-4">
               <MarkdownContent content={task.description} />
             </div>
           </div>
@@ -307,7 +307,7 @@ export default async function TaskDetailPage({
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Output Schema
             </div>
-            <pre className="p-4 bg-surface-2 rounded-[10px] overflow-x-auto text-sm font-mono text-text-primary">
+            <pre className="card p-4 overflow-x-auto text-sm font-mono text-text-primary">
               {JSON.stringify(task.outputSchema, null, 2)}
             </pre>
           </div>
@@ -319,7 +319,7 @@ export default async function TaskDetailPage({
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
             </div>
-            <div className="p-4 bg-surface-2 rounded-[10px] space-y-3">
+            <div className="card p-4 space-y-3">
               {task.parentTask && (
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Parent:</span>
@@ -366,7 +366,7 @@ export default async function TaskDetailPage({
               <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                 Dependencies
               </div>
-              <div className="p-4 bg-surface-2 rounded-[10px] space-y-2">
+              <div className="card p-4 space-y-2">
                 {depTasks.map((dep) => (
                   <div key={dep.id} className="flex items-center gap-2">
                     <Link

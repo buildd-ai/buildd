@@ -74,7 +74,7 @@ export default async function SharePage({
               href={artifactUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-400 hover:underline break-all"
+              className="text-primary-400 hover:underline break-all"
             >
               {artifactUrl}
             </a>
