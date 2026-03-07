@@ -547,7 +547,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                   data-testid="sidebar-task-item"
                                   data-task-id={task.id}
                                   data-status={task.status}
-                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded ${selectedTaskId === task.id
+                                  className={`flex items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors ${selectedTaskId === task.id
                                       ? 'bg-primary-subtle text-text-primary'
                                       : 'text-text-secondary hover:bg-surface-3'
                                     }`}
@@ -602,7 +602,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                         <Link
                                           key={task.id}
                                           href={`/app/tasks/${task.id}`}
-                                          className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded group/task ${selectedTaskId === task.id
+                                          className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors group/task ${selectedTaskId === task.id
                                               ? 'bg-primary-subtle text-text-primary'
                                               : 'text-text-secondary hover:bg-surface-3'
                                             }`}

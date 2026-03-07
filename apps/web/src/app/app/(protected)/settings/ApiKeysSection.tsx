@@ -202,7 +202,7 @@ function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; w
 
       {reposWithWorkspaces.length > 0 ? (
         reposWithWorkspaces.map(w => (
-          <div key={w.id} className="p-4 bg-surface-2 rounded-lg space-y-3">
+          <div key={w.id} className="card p-4 space-y-3">
             <div className="flex items-center gap-2">
               <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
               <span className="text-xs text-text-secondary">· {w.repo}</span>
@@ -211,13 +211,13 @@ function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; w
           </div>
         ))
       ) : (
-        <div className="p-4 bg-surface-2 rounded-lg space-y-3">
+        <div className="card p-4 space-y-3">
           <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
           <CopyBlock text={mcpCommand()} />
         </div>
       )}
 
-      <details className="p-4 bg-surface-2 rounded-lg">
+      <details className="card p-4">
         <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer">REST API</summary>
         <div className="mt-3">
           <CopyBlock text={`curl -X POST https://buildd.dev/api/workers/claim \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"maxTasks": 1}'`} />

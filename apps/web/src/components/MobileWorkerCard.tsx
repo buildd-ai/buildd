@@ -57,7 +57,7 @@ export default function MobileWorkerCard({
   return (
     <Link href={`/app/tasks/${taskId}`} className="block">
       <div
-        className={`rounded-md bg-surface-2 p-4 border border-border-default animate-card-enter ${
+        className={`card card-interactive p-4 animate-card-enter ${
           isWaiting ? 'animate-pulse-border' : ''
         }`}
       >
