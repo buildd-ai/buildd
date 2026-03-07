@@ -5,7 +5,7 @@
  */
 
 const GITHUB_REPO = 'buildd-ai/buildd';
-const GITHUB_BRANCH = 'dev';
+const GITHUB_BRANCH = 'main';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 interface VersionInfo {
