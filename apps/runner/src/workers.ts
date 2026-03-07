@@ -179,6 +179,8 @@ export class WorkerManager {
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
   }>();
+  // Tasks whose workspace couldn't be resolved — skip on future Pusher retries
+  private unresolvableTaskIds = new Set<string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -288,6 +290,11 @@ export class WorkerManager {
           worker.error = 'Process restarted';
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
+          // Notify server so it doesn't show worker as still running
+          this.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: 'Process restarted',
+          }).catch(() => {});
         }
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
@@ -373,6 +380,11 @@ export class WorkerManager {
     }
 
     const { task, targetLocalUiUrl } = data;
+
+    // Skip tasks we already know can't be resolved
+    if (this.unresolvableTaskIds.has(task.id)) {
+      return;
+    }
 
     // Check if this assignment is targeted at this runner instance
     // If targetLocalUiUrl is set, only accept if it matches our URL
@@ -705,6 +717,11 @@ export class WorkerManager {
 
         if (!workspacePath) {
           console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+          // Fail the worker on server so it doesn't stay "running" forever
+          this.buildd.updateWorker(claimedWorker.id, {
+            status: 'failed',
+            error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+          }).catch(err => console.error(`Failed to report workspace resolution failure for worker ${claimedWorker.id}:`, err));
           continue;
         }
 
@@ -732,7 +749,10 @@ export class WorkerManager {
     });
 
     if (!workspacePath) {
-      console.error(`Cannot resolve workspace for task: ${task.title}`);
+      if (!this.unresolvableTaskIds.has(task.id)) {
+        console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
+        this.unresolvableTaskIds.add(task.id);
+      }
       return null;
     }
 
