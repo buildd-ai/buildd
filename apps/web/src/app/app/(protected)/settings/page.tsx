@@ -87,7 +87,7 @@ export default async function SettingsPage() {
         <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Dashboard
         </Link>
-        <h1 className="text-2xl font-semibold mb-8">Settings</h1>
+        <h1 className="text-2xl font-semibold tracking-tight mb-8">Settings</h1>
 
         <div className="space-y-10">
           {/* Team Switcher (mobile only) */}

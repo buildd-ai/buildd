@@ -31,10 +31,10 @@ export interface Recipe {
 }
 
 const CATEGORY_STYLES: Record<string, string> = {
-  content: 'bg-blue-500/10 text-blue-400',
-  research: 'bg-purple-500/10 text-purple-400',
-  code: 'bg-green-500/10 text-green-400',
-  ops: 'bg-orange-500/10 text-orange-400',
+  content: 'bg-cat-feature/10 text-cat-feature',
+  research: 'bg-cat-refactor/10 text-cat-refactor',
+  code: 'bg-cat-docs/10 text-cat-docs',
+  ops: 'bg-cat-infra/10 text-cat-infra',
   custom: 'bg-surface-3 text-text-secondary',
 };
 

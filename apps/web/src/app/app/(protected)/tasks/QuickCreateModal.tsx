@@ -52,12 +52,6 @@ export default function QuickCreateModal({
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
 
-  // Mode (planning vs execution)
-  const [planningMode, setPlanningMode] = useState(false);
-
-  // Recurring schedule
-  const [recurring, setRecurring] = useState(false);
-  const [cronExpression, setCronExpression] = useState('0 9 * * *');
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -183,34 +177,6 @@ export default function QuickCreateModal({
     setAssignmentStatus('idle');
 
     try {
-      if (recurring) {
-        // Create schedule instead of task
-        const res = await fetch(`/api/workspaces/${workspaceId}/schedules`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: title.trim(),
-            cronExpression,
-            timezone: 'UTC',
-            taskTemplate: {
-              title: title.trim(),
-              description: description.trim() || undefined,
-              priority: 5,
-              ...(planningMode && { mode: 'planning' }),
-            },
-          }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || 'Failed to create schedule');
-        }
-
-        // Navigate to schedules page
-        window.location.href = `/app/workspaces/${workspaceId}/schedules`;
-        return;
-      }
-
       // Upload images to R2 if available, fall back to inline base64
       let attachments: any[] | undefined;
       if (pastedImages.length > 0) {
@@ -236,7 +202,6 @@ export default function QuickCreateModal({
           description: description.trim() || null,
           priority: 5,
           creationSource: 'dashboard',
-          ...(planningMode && { mode: 'planning' }),
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
           ...(Object.keys(context).length > 0 && { context }),
@@ -292,7 +257,6 @@ export default function QuickCreateModal({
     setSelectedSkillSlugs([]);
     setSelectedDeps([]);
     setShowDeps(false);
-    setPlanningMode(false);
     setError('');
     setAssignmentStatus('idle');
     setCreatedTaskId(null);
@@ -477,46 +441,7 @@ export default function QuickCreateModal({
                 disabled={loading}
               />
 
-              {/* Mode + Recurring toggles */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setPlanningMode(!planningMode)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                    planningMode
-                      ? 'border-purple-500/30 bg-purple-500/10 text-purple-400'
-                      : 'border-border-default text-text-muted hover:text-text-secondary'
-                  }`}
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                  </svg>
-                  Planning
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRecurring(!recurring)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                    recurring
-                      ? 'border-primary/30 bg-primary-subtle text-primary'
-                      : 'border-border-default text-text-muted hover:text-text-secondary'
-                  }`}
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Recurring
-                </button>
-                {recurring && (
-                  <input
-                    type="text"
-                    value={cronExpression}
-                    onChange={(e) => setCronExpression(e.target.value)}
-                    className="flex-1 px-2 py-1 text-xs font-mono border border-border-default rounded-md bg-surface-1"
-                    placeholder="0 9 * * *"
-                  />
-                )}
-              </div>
+
 
               {showDescription ? (
                 <SkillSlashTypeahead
@@ -616,11 +541,10 @@ export default function QuickCreateModal({
                       type="button"
                       onClick={() => setSelectedLocalUi('')}
                       disabled={loading}
-                      className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
-                        selectedLocalUi === ''
+                      className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${selectedLocalUi === ''
                           ? 'border-primary bg-primary-subtle'
                           : 'border-border-default hover:border-text-muted'
-                      }`}
+                        }`}
                     >
                       <span className="font-medium">Queue for any worker</span>
                     </button>
@@ -630,11 +554,10 @@ export default function QuickCreateModal({
                         type="button"
                         onClick={() => setSelectedLocalUi(ui.localUiUrl)}
                         disabled={loading}
-                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
-                          selectedLocalUi === ui.localUiUrl
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${selectedLocalUi === ui.localUiUrl
                             ? 'border-primary bg-primary-subtle'
                             : 'border-border-default hover:border-text-muted'
-                        }`}
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-medium">{ui.accountName}</span>
@@ -673,11 +596,9 @@ export default function QuickCreateModal({
               >
                 {loading
                   ? 'Creating...'
-                  : recurring
-                    ? 'Create Schedule'
-                    : selectedLocalUi
-                      ? 'Create & Send'
-                      : 'Create'
+                  : selectedLocalUi
+                    ? 'Create & Send'
+                    : 'Create'
                 }
               </button>
             </div>

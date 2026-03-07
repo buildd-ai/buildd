@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, and, inArray, lt, gt } from 'drizzle-orm';
+import { eq, and, or, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 /**
@@ -14,15 +14,21 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
  * claiming is removed and claim is called less frequently.
  */
 export async function cleanupStaleWorkers(accountId: string) {
-  // 1. Auto-expire stale workers (no update in 15+ minutes)
+  // 1. Auto-expire stale workers:
+  //    - 'running'/'starting': no update in 15+ minutes
+  //    - 'idle': no update in 5+ minutes (should transition almost immediately; lingering idle = runner crashed before starting)
   const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+  const IDLE_STALE_THRESHOLD_MS = 5 * 60 * 1000;
   const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
+  const idleStaleThreshold = new Date(Date.now() - IDLE_STALE_THRESHOLD_MS);
 
   const staleWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, accountId),
-      inArray(workers.status, ['running', 'starting']),
-      lt(workers.updatedAt, staleThreshold)
+      or(
+        and(inArray(workers.status, ['running', 'starting']), lt(workers.updatedAt, staleThreshold)),
+        and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
+      ),
     ),
     columns: { id: true, taskId: true },
   });

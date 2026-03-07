@@ -74,7 +74,7 @@ export default function MobileTasksLayout({ sidebar, workspaces, children }: Pro
       {/* Sidebar - hidden on mobile by default, overlay when open */}
       <div
         className={`
-          fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-200 ease-in-out
+          fixed inset-y-0 left-0 z-40 w-[85vw] md:w-auto transform transition-transform duration-200 ease-in-out
           md:relative md:translate-x-0 md:transition-none
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}

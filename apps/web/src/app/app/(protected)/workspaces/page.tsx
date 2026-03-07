@@ -4,7 +4,8 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamsWithDetails } from '@/lib/team-access';
+import WorkspaceList from './WorkspaceList';
 
 interface WorkspaceWithRunners {
   id: string;
@@ -13,6 +14,7 @@ interface WorkspaceWithRunners {
   localPath: string | null;
   createdAt: Date;
   teamName: string | null;
+  teamId: string | null;
   runners: {
     action: boolean;
     service: boolean;
@@ -41,6 +43,7 @@ export default async function WorkspacesPage() {
   const user = await getCurrentUser();
 
   let allWorkspaces: WorkspaceWithRunners[] = [];
+  let userTeams: any[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -53,7 +56,7 @@ export default async function WorkspacesPage() {
         where: inArray(workspaces.id, wsIds),
         orderBy: desc(workspaces.createdAt),
         with: {
-          team: { columns: { name: true } },
+          team: { columns: { id: true, name: true } },
           accountWorkspaces: {
             with: {
               account: true,
@@ -105,6 +108,7 @@ export default async function WorkspacesPage() {
           localPath: ws.localPath,
           createdAt: ws.createdAt,
           teamName: ws.team?.name || null,
+          teamId: ws.team?.id || null,
           runners: {
             action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim) || !!activeTypes?.has('action'),
             service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim) || !!activeTypes?.has('service'),
@@ -112,6 +116,8 @@ export default async function WorkspacesPage() {
           },
         };
       });
+
+      userTeams = await getUserTeamsWithDetails(user.id);
     } catch (error) {
       console.error('Workspaces query error:', error);
     }
@@ -135,67 +141,7 @@ export default async function WorkspacesPage() {
           </Link>
         </div>
 
-        {allWorkspaces.length === 0 ? (
-          <div className="border border-dashed border-border-default rounded-[10px] p-8">
-            <div className="flex flex-col items-center text-center max-w-sm mx-auto">
-              <div className="w-12 h-12 rounded-[10px] bg-surface-3 flex items-center justify-center mb-4">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  <line x1="12" y1="11" x2="12" y2="17" />
-                  <line x1="9" y1="14" x2="15" y2="14" />
-                </svg>
-              </div>
-              <h2 className="text-[15px] font-semibold mb-1">No workspaces yet</h2>
-              <p className="text-[13px] text-text-muted mb-5">
-                Workspaces map to repositories. Create one to organize tasks and let agents know where to work.
-              </p>
-              <Link
-                href="/app/workspaces/new"
-                className="px-5 py-2 bg-primary text-white hover:bg-primary-hover rounded-[6px] text-[13px] font-medium"
-              >
-                Create Workspace
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <div className="border border-border-default rounded-lg divide-y divide-border-default">
-            {allWorkspaces.map((workspace) => (
-              <Link
-                key={workspace.id}
-                href={`/app/workspaces/${workspace.id}`}
-                className="block p-4 hover:bg-surface-3"
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-medium">{workspace.name}</h3>
-                      {workspace.teamName && (
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">{workspace.teamName}</span>
-                      )}
-                    </div>
-                    {workspace.repo && (
-                      <p className="text-sm text-text-muted">{workspace.repo}</p>
-                    )}
-                  </div>
-                  <div className="flex gap-3 items-center text-xs">
-                    <div className={`flex items-center gap-1 ${workspace.runners.action ? 'text-status-success' : 'text-text-muted'}`} title="GitHub Actions">
-                      {workspace.runners.action ? <CheckIcon /> : <XIcon />}
-                      <span>GH Action</span>
-                    </div>
-                    <div className={`flex items-center gap-1 ${workspace.runners.service ? 'text-status-success' : 'text-text-muted'}`} title="Service Worker">
-                      {workspace.runners.service ? <CheckIcon /> : <XIcon />}
-                      <span>Service</span>
-                    </div>
-                    <div className={`flex items-center gap-1 ${workspace.runners.user ? 'text-status-success' : 'text-text-muted'}`} title="User Worker">
-                      {workspace.runners.user ? <CheckIcon /> : <XIcon />}
-                      <span>User</span>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
+        <WorkspaceList workspaces={allWorkspaces} teams={userTeams} />
       </div>
     </main>
   );

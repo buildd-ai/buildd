@@ -30,15 +30,15 @@ export default function OnboardingChecklist({
   const steps = [
     ...(githubConfigured
       ? [
-          {
-            id: 'github',
-            label: 'Connect GitHub',
-            description: 'Link your GitHub org to auto-discover repos',
-            done: hasGithub,
-            href: '/api/github/install',
-            external: true,
-          },
-        ]
+        {
+          id: 'github',
+          label: 'Connect GitHub',
+          description: 'Link your GitHub org to auto-discover repos',
+          done: hasGithub,
+          href: '/api/github/install',
+          external: true,
+        },
+      ]
       : []),
     {
       id: 'workspace',
@@ -59,8 +59,8 @@ export default function OnboardingChecklist({
     },
     {
       id: 'task',
-      label: 'Create your first task',
-      description: 'Assign work for agents to pick up and execute',
+      label: 'Create your first task or recipe',
+      description: 'Assign work to an agent, or build a reusable Recipe template',
       done: hasCompletedTask,
       href: '/app/tasks/new',
       external: false,

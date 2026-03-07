@@ -157,6 +157,45 @@ body {
   }
 }
 
+/* ── Cards & Elevation ──
+ * Subtle depth for interactive containers. Hover lifts cards slightly.
+ */
+@layer components {
+  .card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+    transition: box-shadow 150ms ease, transform 150ms ease;
+  }
+  .card-interactive:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  @layer components {
+    .card {
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+    .card-interactive:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
+  }
+}
+
+@media (max-width: 767px) {
+  @layer components {
+    .card {
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+    .card-interactive:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
+  }
+}
+
 /* ── Section Labels ──
  * JetBrains Mono uppercase micro-labels for sidebar sections and panels.
  */

@@ -394,20 +394,9 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
-    // Call 1: claimable tasks with an unresolved dependency
-    // Call 2: dependency status lookup
-    mockTasksFindMany
-      .mockResolvedValueOnce([
-        {
-          id: 'task-1',
-          workspaceId: 'ws-1',
-          dependsOn: ['dep-1'],
-          workspace: { id: 'ws-1' },
-        },
-      ])
-      .mockResolvedValueOnce([
-        { id: 'dep-1', status: 'pending' },
-      ]);
+    // Dependency filtering now happens in SQL, so the query returns no tasks
+    // when deps are unresolved
+    mockTasksFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -434,19 +423,16 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
-    mockTasksFindMany
-      .mockResolvedValueOnce([
-        {
-          id: 'task-1',
-          workspaceId: 'ws-1',
-          title: 'Test task',
-          dependsOn: ['dep-1'],
-          workspace: { id: 'ws-1', gitConfig: null },
-        },
-      ])
-      .mockResolvedValueOnce([
-        { id: 'dep-1', status: 'completed' },
-      ]);
+    // SQL subquery now handles dep filtering — tasks with resolved deps are returned directly
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: ['dep-1'],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
 
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({
@@ -492,19 +478,16 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
-    mockTasksFindMany
-      .mockResolvedValueOnce([
-        {
-          id: 'task-1',
-          workspaceId: 'ws-1',
-          title: 'Test task',
-          dependsOn: ['dep-1'],
-          workspace: { id: 'ws-1', gitConfig: null },
-        },
-      ])
-      .mockResolvedValueOnce([
-        { id: 'dep-1', status: 'failed' },
-      ]);
+    // SQL subquery handles dep filtering — failed deps are terminal, so task is returned
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: ['dep-1'],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
 
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({
@@ -550,19 +533,8 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
-    mockTasksFindMany
-      .mockResolvedValueOnce([
-        {
-          id: 'task-1',
-          workspaceId: 'ws-1',
-          dependsOn: ['dep-1', 'dep-2'],
-          workspace: { id: 'ws-1' },
-        },
-      ])
-      .mockResolvedValueOnce([
-        { id: 'dep-1', status: 'completed' },
-        { id: 'dep-2', status: 'in_progress' },
-      ]);
+    // SQL subquery filters out tasks with partially resolved deps — returns empty
+    mockTasksFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },

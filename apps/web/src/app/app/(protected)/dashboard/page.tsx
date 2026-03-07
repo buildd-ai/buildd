@@ -293,26 +293,26 @@ export default async function DashboardPage() {
         <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
           <Link
             href="/app/workspaces"
-            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
+            className="card card-interactive p-4"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workspaces</div>
             <div className="text-2xl font-semibold">{userWorkspaces.length}</div>
           </Link>
           <Link
             href="/app/tasks"
-            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
+            className="card card-interactive p-4"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Completed (7d)</div>
             <div className={`text-2xl font-semibold ${completedRecentCount > 0 ? 'text-status-success' : ''}`}>{completedRecentCount}</div>
           </Link>
           <Link
             href="/app/workers"
-            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
+            className="card card-interactive p-4"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Active</div>
             <div className="text-2xl font-semibold">{activeWorkers.length}</div>
           </Link>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+          <div className="card p-4">
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Connected</div>
             <div className={`text-2xl font-semibold ${connectedAgents.length > 0 ? 'text-status-success' : ''}`}>
               {connectedAgents.length}
@@ -356,13 +356,13 @@ export default async function DashboardPage() {
             </div>
 
             {/* Desktop: task-item rows */}
-            <div className="hidden md:block border border-border-default rounded-[10px] overflow-hidden">
+            <div className="hidden md:block card overflow-hidden">
               {activeWorkers.map((worker) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   <div
                     key={worker.id}
-                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
+                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3 transition-colors"
                   >
                     <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}
