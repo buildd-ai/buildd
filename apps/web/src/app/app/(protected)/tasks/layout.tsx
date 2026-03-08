@@ -27,12 +27,14 @@ export default async function TasksLayout({
     tasks: Array<{
       id: string;
       title: string;
+      description?: string | null;
       status: string;
       category?: string | null;
       dependsOn?: string[];
       updatedAt: Date;
       waitingFor?: { type: string; prompt: string; options?: string[] } | null;
       objectiveId?: string | null;
+      resultSummary?: string | null;
     }>;
   }> = [];
 
@@ -62,6 +64,7 @@ export default async function TasksLayout({
           columns: {
             id: true,
             title: true,
+            description: true,
             status: true,
             category: true,
             dependsOn: true,
@@ -69,6 +72,7 @@ export default async function TasksLayout({
             updatedAt: true,
             priority: true,
             objectiveId: true,
+            result: true,
           },
           orderBy: [desc(tasks.priority), desc(tasks.updatedAt)],
         });
@@ -86,20 +90,23 @@ export default async function TasksLayout({
         }
 
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null };
+        type TaskSummary = { id: string; title: string; description?: string | null; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null; resultSummary?: string | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           // Only override status with waiting_input if the task isn't already completed/failed
           const isTerminal = task.status === 'completed' || task.status === 'failed';
+          const taskResult = task.result as { summary?: string; prUrl?: string } | null;
           acc[task.workspaceId].push({
             id: task.id,
             title: task.title,
+            description: task.description || null,
             status: !isTerminal && waitingForByTaskId.has(task.id) ? 'waiting_input' : task.status,
             category: task.category,
             dependsOn: (task.dependsOn as string[]) || [],
             updatedAt: task.updatedAt,
             waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
             objectiveId: task.objectiveId,
+            resultSummary: taskResult?.summary || null,
           });
           return acc;
         }, {} as Record<string, TaskSummary[]>);
