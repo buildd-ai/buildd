@@ -1045,12 +1045,25 @@ export class WorkerManager {
   // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
   // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
   // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
-  private createPermissionHook(worker: LocalWorker): HookCallback {
+  private createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
 
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
+      // Prompt-level instruction alone is unreliable — enforce at hook level.
+      if (toolName === 'AskUserQuestion' && (opts?.inputPolicy || 'autonomous') === 'autonomous') {
+        console.log(`[Worker ${worker.id}] Blocked AskUserQuestion (inputPolicy=autonomous)`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'deny' as const,
+            permissionDecisionReason: 'AskUserQuestion is not allowed in autonomous mode. Complete the task independently without asking the user questions. Make reasonable decisions and proceed.',
+          },
+        };
+      }
 
       // Block dangerous bash commands
       if (toolName === 'Bash') {
@@ -2065,7 +2078,7 @@ export class WorkerManager {
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
+        PreToolUse: [{ hooks: [this.createPermissionHook(worker, { inputPolicy })] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
