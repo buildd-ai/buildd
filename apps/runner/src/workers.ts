@@ -820,17 +820,26 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
 
-    // Redeem server-managed secret if provided and no local credentials
+    // Redeem server-managed secrets if provided and no local credentials
     let serverApiKey: string | undefined;
-    if (claimedWorker.secretRef && !this.hasCredentials) {
-      serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
-      if (serverApiKey) {
-        console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+    let serverOauthToken: string | undefined;
+    if (!this.hasCredentials) {
+      if (claimedWorker.secretRef) {
+        serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
+        if (serverApiKey) {
+          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+        }
+      }
+      if (claimedWorker.oauthSecretRef) {
+        serverOauthToken = await this.buildd.redeemSecret(claimedWorker.oauthSecretRef, claimedWorker.id) || undefined;
+        if (serverOauthToken) {
+          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed OAuth token`);
+        }
       }
     }
 
@@ -862,9 +871,12 @@ export class WorkerManager {
       phaseTools: [],
     };
 
-    // Attach server-managed API key if redeemed
+    // Attach server-managed credentials if redeemed
     if (serverApiKey) {
       worker.serverApiKey = serverApiKey;
+    }
+    if (serverOauthToken) {
+      worker.serverOauthToken = serverOauthToken;
     }
 
     this.workers.set(worker.id, worker);
@@ -1807,6 +1819,12 @@ export class WorkerManager {
       if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
         cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
         console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
+      }
+
+      // Inject server-managed OAuth token (redeemed from oauthSecretRef during claim)
+      if (worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+        cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
+        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)

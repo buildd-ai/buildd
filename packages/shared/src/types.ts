@@ -626,8 +626,10 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /** Single-use secret reference for server-managed credentials (redeem via GET /api/workers/secret/:ref) */
+    /** Single-use secret reference for server-managed API key (redeem via GET /api/workers/secret/:ref) */
     secretRef?: string;
+    /** Single-use secret reference for server-managed OAuth token (redeem via GET /api/workers/secret/:ref) */
+    oauthSecretRef?: string;
   }>;
   diagnostics?: ClaimDiagnostics;
 }
