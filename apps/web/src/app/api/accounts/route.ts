@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId } = body;
+    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, oauthToken } = body;
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
@@ -76,18 +76,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
     }
 
+    const insertValues: Record<string, unknown> = {
+      name,
+      type: type as 'user' | 'service' | 'action',
+      level: level as 'trigger' | 'worker' | 'admin' || 'worker',
+      authType: authType as 'api' | 'oauth' || 'oauth',
+      apiKey: hashApiKey(plaintextKey),
+      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+      maxConcurrentWorkers: maxConcurrentWorkers || 3,
+      teamId,
+    };
+
+    // Store OAuth token if provided for oauth auth type
+    if (authType === 'oauth' && oauthToken) {
+      insertValues.oauthToken = oauthToken;
+    }
+
     const [account] = await db
       .insert(accounts)
-      .values({
-        name,
-        type: type as 'user' | 'service' | 'action',
-        level: level as 'trigger' | 'worker' | 'admin' || 'worker',
-        authType: authType as 'api' | 'oauth' || 'oauth',
-        apiKey: hashApiKey(plaintextKey),
-        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-        maxConcurrentWorkers: maxConcurrentWorkers || 3,
-        teamId,
-      })
+      .values(insertValues as typeof accounts.$inferInsert)
       .returning();
 
     // Auto-create workspace binding if workspaceId provided

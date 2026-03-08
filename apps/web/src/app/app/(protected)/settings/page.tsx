@@ -106,7 +106,10 @@ export default async function SettingsPage() {
           <hr className="border-border-default" />
 
           {/* API Keys */}
-          <ApiKeysSection accounts={allAccounts} workspaces={userWorkspaces} />
+          <ApiKeysSection
+            accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
+            workspaces={userWorkspaces}
+          />
 
           <hr className="border-border-default" />
 

@@ -47,6 +47,7 @@ export default function NewAccountPage() {
       setAuthType('api');
     }
   }
+  const [oauthToken, setOauthToken] = useState('');
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULTS.maxConcurrentWorkers.toString());
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -107,6 +108,9 @@ export default function NewAccountPage() {
     }
     if (selectedWorkspaceId) {
       data.workspaceId = selectedWorkspaceId;
+    }
+    if (authType === 'oauth' && oauthToken) {
+      data.oauthToken = oauthToken;
     }
 
     try {
@@ -264,6 +268,25 @@ export default function NewAccountPage() {
                   </div>
                 )}
 
+                {authType === 'oauth' && (
+                  <div>
+                    <label htmlFor="oauthToken" className="block text-sm font-medium mb-2">
+                      OAuth Token
+                    </label>
+                    <input
+                      type="password"
+                      id="oauthToken"
+                      value={oauthToken}
+                      onChange={(e) => setOauthToken(e.target.value)}
+                      placeholder="CLAUDE_CODE_OAUTH_TOKEN value"
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                    />
+                    <p className="text-xs text-text-secondary mt-1">
+                      The OAuth token used for seat-based Claude Code authentication. Can also be added later in settings.
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label htmlFor="level" className="block text-sm font-medium mb-2">
                     Token Level
@@ -310,7 +333,7 @@ export default function NewAccountPage() {
               disabled={loading}
               className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
-              {loading ? 'Creating...' : 'Create API Key'}
+              {loading ? 'Creating...' : 'Create Account'}
             </button>
             <Link
               href="/app/settings"
