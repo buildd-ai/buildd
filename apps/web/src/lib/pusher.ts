@@ -44,11 +44,14 @@ export async function triggerEvent(
   }
 }
 
+// Optional channel prefix for environment isolation (e.g. "preview-")
+const CHANNEL_PREFIX = process.env.PUSHER_CHANNEL_PREFIX || '';
+
 // Channel names
 export const channels = {
-  workspace: (id: string) => `workspace-${id}`,
-  task: (id: string) => `task-${id}`,
-  worker: (id: string) => `worker-${id}`,
+  workspace: (id: string) => `${CHANNEL_PREFIX}workspace-${id}`,
+  task: (id: string) => `${CHANNEL_PREFIX}task-${id}`,
+  worker: (id: string) => `${CHANNEL_PREFIX}worker-${id}`,
 } as const;
 
 // Event names
