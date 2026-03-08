@@ -6,6 +6,7 @@ import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { setOAuthToken } from '@buildd/core/secrets';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -53,7 +54,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId } = body;
+    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, oauthToken } = body;
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
@@ -89,6 +90,11 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // Store OAuth token encrypted in secrets table (not in plaintext accounts column)
+    if (oauthToken && process.env.ENCRYPTION_KEY) {
+      await setOAuthToken({ accountId: account.id, teamId, token: oauthToken });
+    }
 
     // Auto-create workspace binding if workspaceId provided
     if (workspaceId) {

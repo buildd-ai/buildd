@@ -179,10 +179,13 @@ export interface Account {
   totalCost: number;
 
   // For OAuth-based auth (seat-based)
+  /** @deprecated OAuth tokens are now stored encrypted in the secrets table. */
   oauthToken: string | null;
   seatId: string | null;
   maxConcurrentSessions: number | null;
   activeSessions: number;
+  /** Single-use ref for retrieving the encrypted OAuth token (set during claim). */
+  oauthSecretRef?: string;
 
   // Common
   maxConcurrentWorkers: number;
@@ -588,6 +591,7 @@ export interface CreateAccountInput {
   maxCostPerDay?: number;
 
   // For OAuth auth
+  /** @deprecated Use the secrets API (purpose='oauth_token') instead. */
   oauthToken?: string;
   seatId?: string;
   maxConcurrentSessions?: number;
@@ -626,8 +630,10 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /** Single-use secret reference for server-managed credentials (redeem via GET /api/workers/secret/:ref) */
+    /** Single-use secret reference for server-managed API key (redeem via GET /api/workers/secret/:ref) */
     secretRef?: string;
+    /** Single-use secret reference for server-managed OAuth token (redeem via GET /api/workers/secret/:ref) */
+    oauthSecretRef?: string;
   }>;
   diagnostics?: ClaimDiagnostics;
 }
