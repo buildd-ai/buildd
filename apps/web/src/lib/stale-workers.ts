@@ -3,6 +3,9 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 
+/** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
+const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Clean up stale workers for a specific account.
  *
@@ -120,4 +123,98 @@ export async function cleanupStaleWorkers(accountId: string) {
       }
     }
   }
+}
+
+/**
+ * Clean up workers stuck in waiting_input for 24+ hours.
+ *
+ * Instead of just resetting to pending, this creates a new retry task
+ * with instructions to complete without asking for user input, since
+ * the original task stalled waiting for a response that never came.
+ */
+export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: number; retriedTasks: number }> {
+  const cutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
+
+  const stuckWorkers = await db.query.workers.findMany({
+    where: and(
+      eq(workers.status, 'waiting_input'),
+      lt(workers.updatedAt, cutoff),
+    ),
+    columns: { id: true, taskId: true, waitingFor: true },
+  });
+
+  if (stuckWorkers.length === 0) {
+    return { failedWorkers: 0, retriedTasks: 0 };
+  }
+
+  let failedWorkers = 0;
+  let retriedTasks = 0;
+
+  for (const worker of stuckWorkers) {
+    // Fail the worker
+    await db
+      .update(workers)
+      .set({
+        status: 'failed',
+        error: 'Worker timed out waiting for user input (24+ hours)',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(workers.id, worker.id));
+    failedWorkers++;
+
+    if (!worker.taskId) continue;
+
+    // Fetch original task to clone
+    const originalTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+    });
+
+    if (!originalTask) continue;
+
+    // Build retry description with context about what was asked
+    const waitingFor = worker.waitingFor as { type?: string; prompt?: string; options?: string[] } | null;
+    const waitingContext = waitingFor?.prompt
+      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${waitingFor.options ? ` (options: ${waitingFor.options.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
+      : '\n\n---\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.';
+
+    const retryDescription = (originalTask.description || '') + waitingContext;
+
+    // Fail the original task
+    await db
+      .update(tasks)
+      .set({
+        status: 'failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, originalTask.id));
+
+    // Create retry task
+    await db
+      .insert(tasks)
+      .values({
+        workspaceId: originalTask.workspaceId,
+        title: originalTask.title,
+        description: retryDescription,
+        context: originalTask.context,
+        priority: originalTask.priority,
+        category: originalTask.category,
+        project: originalTask.project,
+        requiredCapabilities: originalTask.requiredCapabilities,
+        objectiveId: originalTask.objectiveId,
+        runnerPreference: originalTask.runnerPreference,
+        mode: originalTask.mode,
+        outputRequirement: originalTask.outputRequirement,
+        outputSchema: originalTask.outputSchema,
+        parentTaskId: originalTask.parentTaskId,
+      })
+      .returning({ id: tasks.id });
+
+    retriedTasks++;
+
+    // Resolve dependencies for the failed task
+    await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
+  }
+
+  return { failedWorkers, retriedTasks };
 }
