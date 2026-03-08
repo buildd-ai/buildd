@@ -1,13 +1,14 @@
 name: Preview Integration Tests
 
+# Disabled: preview deploys are skipped to save Vercel build minutes.
+# Tests moved to build.yml integration job.
+# Re-enable if preview deploys are restored.
 on:
   deployment_status
 
 jobs:
   test:
-    if: |
-      github.event.deployment_status.state == 'success' &&
-      github.event.deployment_status.environment == 'Preview'
+    if: false  # Disabled — preview deploys skipped, tests moved to build.yml
     runs-on: ubuntu-latest
 
     steps:
