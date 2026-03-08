@@ -58,7 +58,7 @@ function CategoryBadge({ category }: { category: string }) {
 interface Workspace {
   id: string;
   name: string;
-  gitConfig?: { targetBranch?: string; defaultBranch?: string } | null;
+  gitConfig?: { targetBranch?: string; defaultBranch?: string; defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action' } | null;
   tasks: Task[];
 }
 
@@ -800,6 +800,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
           targetBranch={(() => {
             const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
             return ws?.gitConfig?.targetBranch || ws?.gitConfig?.defaultBranch || null;
+          })()}
+          defaultRunnerPreference={(() => {
+            const ws = workspaces.find(w => w.id === quickCreateWorkspaceId);
+            return ws?.gitConfig?.defaultRunnerPreference || 'any';
           })()}
           onClose={() => setQuickCreateWorkspaceId(null)}
           onCreated={handleQuickCreateComplete}

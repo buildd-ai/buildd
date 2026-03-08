@@ -18,6 +18,7 @@ interface Props {
   workspaceId: string;
   workspaceName: string;
   targetBranch?: string | null;
+  defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
   onClose: () => void;
   onCreated: (taskId: string) => void;
 }
@@ -28,6 +29,7 @@ export default function QuickCreateModal({
   workspaceId,
   workspaceName,
   targetBranch,
+  defaultRunnerPreference = 'any',
   onClose,
   onCreated,
 }: Props) {
@@ -202,6 +204,7 @@ export default function QuickCreateModal({
           description: description.trim() || null,
           priority: 5,
           creationSource: 'dashboard',
+          ...(defaultRunnerPreference !== 'any' && { runnerPreference: defaultRunnerPreference }),
           ...(selectedLocalUi && { assignToLocalUiUrl: selectedLocalUi }),
           ...(attachments && { attachments }),
           ...(Object.keys(context).length > 0 && { context }),
