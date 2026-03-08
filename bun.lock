@@ -17,7 +17,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.25.0",
+      "version": "0.29.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.71",
         "@buildd/shared": "workspace:*",
@@ -32,10 +32,11 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.25.0",
+      "version": "0.29.0",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
+        "@axiomhq/js": "^1.4.0",
         "@buildd/core": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.26.0",
@@ -69,7 +70,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.25.0",
+      "version": "0.29.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.2.71",
         "@buildd/shared": "workspace:*",
@@ -96,7 +97,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.25.0",
+      "version": "0.29.0",
       "devDependencies": {
         "typescript": "^5.4.0",
       },
@@ -197,6 +198,8 @@
     "@aws-sdk/xml-builder": ["@aws-sdk/xml-builder@3.972.4", "", { "dependencies": { "@smithy/types": "^4.12.0", "fast-xml-parser": "5.3.4", "tslib": "^2.6.2" } }, "sha512-0zJ05ANfYqI6+rGqj8samZBFod0dPPousBjLEqg8WdxSgbMAkRgLyn81lP215Do0rFJ/17LIXwr7q0yK24mP6Q=="],
 
     "@aws/lambda-invoke-store": ["@aws/lambda-invoke-store@0.2.3", "", {}, "sha512-oLvsaPMTBejkkmHhjf09xTgk71mOqyr/409NKhRIL08If7AhVfUsJhVsx386uJaqNd42v9kWamQ9lFbkoC2dYw=="],
+
+    "@axiomhq/js": ["@axiomhq/js@1.4.0", "", { "dependencies": { "fetch-retry": "^6.0.0" } }, "sha512-wC5x1ud/QJMstrjpicATkyY8+ZVWEl4WlXMtA5EZf7hkj0+b191yv4yynLxLEfr/MveXora9m6CWdJq4DsbcAg=="],
 
     "@buildd/core": ["@buildd/core@workspace:packages/core"],
 
@@ -707,6 +710,8 @@
     "fastq": ["fastq@1.20.1", "", { "dependencies": { "reusify": "^1.0.4" } }, "sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw=="],
 
     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
+
+    "fetch-retry": ["fetch-retry@6.0.0", "", {}, "sha512-BUFj1aMubgib37I3v4q78fYo63Po7t4HUPTpQ6/QE6yK6cIQrP+W43FYToeTEyg5m2Y7eFUtijUuAv/PDlWuag=="],
 
     "fill-range": ["fill-range@7.1.1", "", { "dependencies": { "to-regex-range": "^5.0.1" } }, "sha512-YsGpe3WHLK8ZYi4tWDg2Jy3ebRz2rXowDxnld4bkQB00cc/1Zw9AWnC0i9ztDJitivtQvaI9KaLyKrc+hBW0yg=="],
 
