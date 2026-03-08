@@ -7,6 +7,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-03-08
+
+### Added
+
+- Active objective planning loop with model routing (#299)
+- Objectives UI — inline cron editor and bottom nav (#300)
+
+## [0.26.0] - 2026-03-08
+
+### Added
+
+- Runner workspace header button and replace native selects with custom dropdowns (#297)
+
+### Fixed
+
+- Runner: normalize GitHub slugs to full URLs when cloning workspaces
+
+### Tests
+
+- Gracefully handle 429 when server count exceeds pre-flight check in concurrency test
+- Skip remaining tests gracefully if runner becomes unavailable mid-test
+
+## [0.25.0] - 2026-03-07
+
+### Added
+
+- Integrate objectives as core UI element across dashboard, sidebar, and task creation (#290)
+- Pusher channel prefix and workspace info in task payload (#293)
+- Buildd-workflow skill for agent task lifecycle (#292)
+- Pushover notifications for task lifecycle and split apps
+- Alert via Pushover on large API payloads (>100KB)
+- Vercel OpenTelemetry instrumentation with payload size tracking
+
+### Fixed
+
+- Reduce GET /api/tasks payload from ~1MB to ~few KB (#295)
+- Fetch single task instead of full list for claim/reassign (#296)
+- Improve claim error message with workspace/task context
+- Add missing WorkflowSelector component
+- Resolve Drizzle relation ambiguity breaking objectives detail page (#291)
+- Runner: use -B flag for branch checkout in shallow clones
+
+### CI
+
+- Pass secrets via env instead of relying on container env vars
+- Run branch code instead of stale global binary for E2E tests
+- Remove buildd-preview kill (no longer runs on Coder)
+
+## [0.24.0] - 2026-03-07
+
+### Added
+
+- Runner: support BUILDD_BRANCH env var for tracking non-main branches (#288)
+- Runner: support custom BUILDD_HOME directory (#287)
+
+### Fixed
+
+- Runner: exit with code 75 after update so launcher restarts (#286)
+
+## [0.23.0] - 2026-03-07
+
+### Added
+
+- Runner: add POST /api/workers/purge to clear completed workers (#283)
+
+### Fixed
+
+- Runner: fetch before changelog check so auto-update works (#281)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to >=0.2.71
+- Remove workflow UI, expose as MCP resource for agents (#284)
+
+## [0.22.1] - 2026-03-07
+
+### Fixed
+
+- Runner: queue server 5xx errors in outbox for retry
+- Runner: prevent ghost workers and log spam from unresolvable workspaces
+- Always broadcast TASK_ASSIGNED to local runners
+- Prevent ghost workers stuck in "running" state on server
+
+## [0.22.0] - 2026-03-06
+
+### Added
+
+- Refine creation flows and UI/UX improvements (#272)
+
+### Fixed
+
+- Move dependency filtering into SQL query in claim endpoint (#273)
+- Improve visual polish and color consistency (#271)
+
+## [0.21.1] - 2026-03-06
+
+### Fixed
+
+- Resolve MCP memory client via account teamId fallback (#269)
+- Remove runner detail tabs and hide zero cost
+
+## [0.21.0] - 2026-03-06
+
+### Added
+
+- Auto-close tasks on PR merge — new pull_request webhook handler (#265)
+- MCP update_task status updates for tasks without active workers (#265)
+- Hide worker-only fields for trigger token accounts (#267)
+
+### Fixed
+
+- Flaky concurrency test — account for existing active workers (#265)
+
+## [0.20.0] - 2026-03-06
+
+### Added
+
+- Auto-resolve workspace for API task creation (#264)
+- Trigger token level for service accounts (#262)
+- Allow workspace binding during account creation (#263)
+
+### Fixed
+
+- Resolve workerId from context when not passed explicitly (#259)
+- Normalize priority strings to integers in MCP tools
+
+### Changed
+
+- Simplify skills feature — remove scan/sync, CLI, and Pusher install (#260)
+
+## [0.19.0] - 2026-03-06
+
+### Added
+
+- MCP workspace resolution by repo name and aggregate list tools (#247)
+
+### Fixed
+
+- Prevent auto-mode output validation from blocking task completion
+- Objectives page error handling and status filter
+- Prevent waiting_input options from reappearing after answer sent
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to >=0.2.70
+
+## [0.18.2] - 2026-03-05
+
+### Fixed
+
+- Resolve MCP workspace for create_task (#245)
+
 ## [0.18.1] - 2026-03-05
 
 ### Added
@@ -312,7 +464,19 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/buildd-ai/buildd/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/buildd-ai/buildd/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/buildd-ai/buildd/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/buildd-ai/buildd/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/buildd-ai/buildd/compare/v0.22.1...v0.23.0
+[0.22.1]: https://github.com/buildd-ai/buildd/compare/v0.22.0...v0.22.1
+[0.22.0]: https://github.com/buildd-ai/buildd/compare/v0.21.1...v0.22.0
+[0.21.1]: https://github.com/buildd-ai/buildd/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/buildd-ai/buildd/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/buildd-ai/buildd/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/buildd-ai/buildd/compare/v0.18.2...v0.19.0
+[0.18.2]: https://github.com/buildd-ai/buildd/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/buildd-ai/buildd/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/buildd-ai/buildd/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/buildd-ai/buildd/compare/v0.16.0...v0.17.0
