@@ -166,6 +166,7 @@ export class WorkerManager {
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
+  private reconcileInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -227,6 +228,17 @@ export class WorkerManager {
     if (!config.serverless) {
       this.sendHeartbeat();
       this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 5 * 60_000); // Every 5 minutes
+
+      // Reconcile local workers against remote state on startup and every 10 minutes.
+      // Prevents ghost workers (e.g. 23 stale files across 12 tasks) from accumulating.
+      this.reconcileLocalWorkers().catch(err => {
+        console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
+      });
+      this.reconcileInterval = setInterval(() => {
+        this.reconcileLocalWorkers().catch(err => {
+          console.warn('[Reconcile] Periodic reconciliation failed:', err instanceof Error ? err.message : err);
+        });
+      }, 10 * 60_000); // Every 10 minutes
     }
 
     // Initialize Pusher if configured
@@ -695,6 +707,82 @@ export class WorkerManager {
       }
     }
     return count;
+  }
+
+  /**
+   * Reconcile local worker state against remote server.
+   * Checks all non-terminal local workers and cleans up those whose
+   * remote worker/task is 404, completed, or failed.
+   * Runs on startup and every 10 minutes to prevent ghost worker buildup.
+   */
+  async reconcileLocalWorkers(): Promise<{ checked: number; cleaned: number }> {
+    const allWorkers = this.getWorkers();
+    const nonTerminal = allWorkers.filter(
+      w => w.status !== 'done' && w.status !== 'error'
+    );
+
+    if (nonTerminal.length === 0) {
+      return { checked: 0, cleaned: 0 };
+    }
+
+    console.log(`[Reconcile] Checking ${nonTerminal.length} non-terminal local worker(s) against remote state`);
+
+    let cleaned = 0;
+
+    for (const worker of nonTerminal) {
+      try {
+        const remote = await this.buildd.getWorkerRemote(worker.id);
+
+        if (!remote) {
+          // Worker not found remotely (404) — mark as error
+          console.log(`[Reconcile] Worker ${worker.id} (task: ${worker.taskTitle}) not found remotely, marking as error`);
+          worker.status = 'error';
+          worker.error = 'Worker no longer exists on remote server';
+          worker.completedAt = worker.completedAt || Date.now();
+          this.dirtyForDisk.add(worker.id);
+          this.emit({ type: 'worker_update', worker });
+          cleaned++;
+          continue;
+        }
+
+        const remoteTerminal = remote.status === 'completed' || remote.status === 'failed';
+        const taskTerminal = remote.task && (remote.task.status === 'completed' || remote.task.status === 'failed');
+
+        if (remoteTerminal || taskTerminal) {
+          const isSuccess = remote.status === 'completed' || remote.task?.status === 'completed';
+          console.log(`[Reconcile] Worker ${worker.id} (task: ${worker.taskTitle}) is ${remote.status} remotely, cleaning up locally`);
+
+          if (isSuccess) {
+            worker.status = 'done';
+          } else {
+            worker.status = 'error';
+            worker.error = 'Task failed or was cancelled on remote server';
+          }
+          worker.completedAt = worker.completedAt || Date.now();
+          this.dirtyForDisk.add(worker.id);
+          this.emit({ type: 'worker_update', worker });
+
+          // Abort any active SDK session for this worker
+          const session = this.sessions.get(worker.id);
+          if (session) {
+            session.abortController.abort();
+            session.inputStream.end();
+            this.sessions.delete(worker.id);
+          }
+
+          cleaned++;
+        }
+      } catch (err) {
+        // Non-fatal — skip this worker and try the rest
+        console.warn(`[Reconcile] Error checking worker ${worker.id}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[Reconcile] Cleaned up ${cleaned}/${nonTerminal.length} stale local worker(s)`);
+    }
+
+    return { checked: nonTerminal.length, cleaned };
   }
 
   getWorkers(): LocalWorker[] {
@@ -3439,6 +3527,9 @@ export class WorkerManager {
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);
+    }
+    if (this.reconcileInterval) {
+      clearInterval(this.reconcileInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {
