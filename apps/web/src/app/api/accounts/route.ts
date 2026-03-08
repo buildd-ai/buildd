@@ -6,6 +6,7 @@ import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { setOAuthToken } from '@buildd/core/secrets';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -96,6 +97,11 @@ export async function POST(req: NextRequest) {
       .insert(accounts)
       .values(insertValues as typeof accounts.$inferInsert)
       .returning();
+
+    // Store OAuth token encrypted in secrets table (not in plaintext accounts column)
+    if (oauthToken && process.env.ENCRYPTION_KEY) {
+      await setOAuthToken({ accountId: account.id, teamId, token: oauthToken });
+    }
 
     // Auto-create workspace binding if workspaceId provided
     if (workspaceId) {
