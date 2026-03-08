@@ -17,8 +17,14 @@
     "@aws-sdk/s3-request-presigner": "^3.985.0",
     "@buildd/core": "workspace:*",
     "@buildd/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@neondatabase/serverless": "^0.9.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.213.0",
+    "@opentelemetry/instrumentation": "^0.213.0",
+    "@opentelemetry/sdk-logs": "^0.213.0",
     "@upstash/redis": "^1.36.2",
+    "@vercel/otel": "^2.1.1",
     "croner": "^10.0.1",
     "drizzle-orm": "^0.30.0",
     "next": "^16.1.6",
@@ -27,8 +33,7 @@
     "pusher-js": "^8.4.0-rc2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-markdown": "^10.1.0",
-    "@modelcontextprotocol/sdk": "^1.26.0"
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

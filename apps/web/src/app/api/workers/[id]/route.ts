@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { jsonResponse } from '@/lib/api-response';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -332,7 +333,7 @@ export async function PATCH(
   }
 
   // Return worker with any pending instructions and output warnings
-  return NextResponse.json({
+  return jsonResponse({
     ...updated,
     instructions: pendingInstructions || undefined,
     ...(outputWarning ? { outputWarning } : {}),
