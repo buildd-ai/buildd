@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, cronExpression, priority, parentObjectiveId } = body;
+    const { title, description, workspaceId, cronExpression, priority, parentObjectiveId, skillSlugs, recipeId, outputSchema, model } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -139,6 +139,12 @@ export async function POST(req: NextRequest) {
     // Auto-create schedule if cronExpression provided and workspaceId is set
     if (cronExpression && workspaceId) {
       const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
+      const templateContext: Record<string, unknown> = {};
+      if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
+      if (recipeId) templateContext.recipeId = recipeId;
+      if (outputSchema) templateContext.outputSchema = outputSchema;
+      if (model) templateContext.model = model;
+
       const [schedule] = await db
         .insert(taskSchedules)
         .values({
@@ -150,6 +156,7 @@ export async function POST(req: NextRequest) {
             title: `Objective: ${title}`,
             mode: 'planning',
             priority: priority || 0,
+            ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
           },
           nextRunAt,
           createdByUserId: user?.id || null,

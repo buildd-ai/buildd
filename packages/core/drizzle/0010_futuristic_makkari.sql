@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS "system_cache" (
+	"key" text PRIMARY KEY NOT NULL,
+	"value" jsonb NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone
+);

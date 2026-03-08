@@ -10,11 +10,11 @@ import ObjectiveActions from './ObjectiveActions';
 
 export const dynamic = 'force-dynamic';
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-status-success/15 text-status-success',
-  paused: 'bg-status-warning/15 text-status-warning',
-  completed: 'bg-primary/15 text-primary',
-  archived: 'bg-surface-3 text-text-muted',
+const STATUS_STYLES: Record<string, { bg: string; dot: string }> = {
+  active: { bg: 'bg-status-success/10 text-status-success border border-status-success/20', dot: 'bg-status-success animate-pulse' },
+  paused: { bg: 'bg-status-warning/10 text-status-warning border border-status-warning/20', dot: 'bg-status-warning' },
+  completed: { bg: 'bg-primary/10 text-primary border border-primary/20', dot: 'bg-primary' },
+  archived: { bg: 'bg-surface-3 text-text-muted border border-border-default', dot: 'bg-text-muted' },
 };
 
 const PRIORITY_LABELS: Record<number, string> = {
@@ -50,7 +50,7 @@ export default async function ObjectiveDetailPage({
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true },
+        columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, mode: true },
         orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
         with: {
           workers: {
@@ -85,6 +85,24 @@ export default async function ObjectiveDetailPage({
 
   const activeTasks = objective.tasks?.filter(t => !['completed', 'failed'].includes(t.status)) || [];
   const doneTasks = objective.tasks?.filter(t => ['completed', 'failed'].includes(t.status)) || [];
+
+  // Planning history — completed planning tasks
+  const planningHistory = objective.tasks?.filter(t => t.mode === 'planning' && t.status === 'completed') || [];
+
+  // Insights — structured outputs from completed execution tasks
+  const insights = objective.tasks
+    ?.filter(t => t.mode !== 'planning' && t.status === 'completed' && (t.result as any)?.structuredOutput)
+    .map(t => ({
+      taskId: t.id,
+      title: t.title,
+      structuredOutput: (t.result as any).structuredOutput,
+      createdAt: t.createdAt,
+    })) || [];
+
+  // Configuration from schedule template
+  const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+  const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
+  const recipeId = templateContext?.recipeId as string | undefined;
 
   // Collect all artifacts across all workers
   const allArtifacts = objective.tasks?.flatMap(t =>
@@ -138,7 +156,8 @@ export default async function ObjectiveDetailPage({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
             <h1 className="text-2xl font-bold text-text-primary truncate">{objective.title}</h1>
-            <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[objective.status] || ''}`}>
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_STYLES[objective.status]?.bg || ''}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[objective.status]?.dot || ''}`} />
               {objective.status}
             </span>
           </div>
@@ -153,7 +172,12 @@ export default async function ObjectiveDetailPage({
             )}
           </div>
         </div>
-        <ObjectiveActions objectiveId={objective.id} status={objective.status} />
+        <ObjectiveActions
+          objectiveId={objective.id}
+          status={objective.status}
+          cronExpression={objective.cronExpression}
+          hasWorkspace={!!objective.workspaceId}
+        />
       </div>
 
       {/* Progress */}
@@ -181,6 +205,23 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
+      {/* Setup hint — no schedule configured */}
+      {!objective.cronExpression && totalTasks === 0 && (
+        <div className="mb-6 p-4 bg-status-warning/5 border border-status-warning/20 rounded-lg">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-status-warning shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-text-primary">No schedule configured</p>
+              <p className="text-xs text-text-secondary mt-1">
+                This objective won&apos;t create tasks automatically. Add a <strong>cron schedule</strong> (e.g. <code className="bg-surface-3 px-1 rounded text-text-primary">0 9 * * 1</code> for every Monday at 9am) to enable recurring task creation, or create tasks manually and link them to this objective.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Schedule */}
       {objective.cronExpression && (
         <div className="mb-6 p-3 bg-surface-2 rounded-lg border border-border-default">
@@ -195,6 +236,111 @@ export default async function ObjectiveDetailPage({
                 Next: {new Date(objective.schedule.nextRunAt).toLocaleString()}
               </span>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Configuration */}
+      {(skillSlugs.length > 0 || recipeId || objective.cronExpression) && (
+        <div className="mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">Configuration</h2>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            {objective.cronExpression && (
+              <div>
+                <span className="text-text-muted">Schedule</span>
+                <code className="block text-xs bg-surface-3 px-1.5 py-0.5 rounded mt-1">{objective.cronExpression}</code>
+              </div>
+            )}
+            {objective.workspace && (
+              <div>
+                <span className="text-text-muted">Workspace</span>
+                <p className="text-text-primary mt-1">{objective.workspace.name}</p>
+              </div>
+            )}
+            {skillSlugs.length > 0 && (
+              <div>
+                <span className="text-text-muted">Skills</span>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {skillSlugs.map(slug => (
+                    <span key={slug} className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">{slug}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {recipeId && (
+              <div>
+                <span className="text-text-muted">Recipe</span>
+                <p className="text-xs text-text-primary mt-1 font-mono">{recipeId}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Planning History */}
+      {planningHistory.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
+            Planning History ({planningHistory.length})
+          </h2>
+          <div className="space-y-2">
+            {planningHistory.map(task => {
+              const result = task.result as Record<string, unknown> | null;
+              const summary = result?.summary as string | undefined;
+              const structured = result?.structuredOutput as Record<string, unknown> | undefined;
+              const tasksCreated = structured?.tasksCreated as number | undefined;
+              return (
+                <Link
+                  key={task.id}
+                  href={`/app/tasks/${task.id}`}
+                  className="block p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <svg className="w-4 h-4 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      <span className="text-sm text-text-primary">{timeAgo(task.createdAt)}</span>
+                      {tasksCreated !== undefined && (
+                        <span className="text-xs text-text-muted">({tasksCreated} task{tasksCreated !== 1 ? 's' : ''} created)</span>
+                      )}
+                    </div>
+                    {!!structured?.objectiveComplete && (
+                      <span className="text-xs bg-status-success/10 text-status-success px-2 py-0.5 rounded-full">Complete</span>
+                    )}
+                  </div>
+                  {summary && (
+                    <p className="text-xs text-text-muted mt-2 line-clamp-3">{summary}</p>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Insights — Structured Outputs */}
+      {insights.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
+            Insights ({insights.length})
+          </h2>
+          <div className="space-y-2">
+            {insights.map(insight => (
+              <Link
+                key={insight.taskId}
+                href={`/app/tasks/${insight.taskId}`}
+                className="block p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-text-primary truncate">{insight.title}</span>
+                  <span className="text-xs text-text-muted shrink-0">{timeAgo(insight.createdAt)}</span>
+                </div>
+                <pre className="text-xs text-text-secondary bg-surface-3 p-2 rounded overflow-x-auto max-h-32">
+                  {JSON.stringify(insight.structuredOutput, null, 2)}
+                </pre>
+              </Link>
+            ))}
           </div>
         </div>
       )}
@@ -389,7 +535,8 @@ export default async function ObjectiveDetailPage({
                 href={`/app/objectives/${sub.id}`}
                 className="flex items-center gap-3 p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
               >
-                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[sub.status] || ''}`}>
+                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[sub.status]?.bg || ''}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[sub.status]?.dot || ''}`} />
                   {sub.status}
                 </span>
                 <span className="flex-1 text-sm text-text-primary truncate">{sub.title}</span>

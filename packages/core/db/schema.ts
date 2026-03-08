@@ -790,3 +790,11 @@ export const fileReservationsRelations = relations(fileReservations, ({ one }) =
   workspace: one(workspaces, { fields: [fileReservations.workspaceId], references: [workspaces.id] }),
   worker: one(workers, { fields: [fileReservations.workerId], references: [workers.id] }),
 }));
+
+// System cache — generic key-value store for cached data (model lists, etc.)
+export const systemCache = pgTable('system_cache', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+});
