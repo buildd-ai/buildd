@@ -54,6 +54,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
+  not: (value: any) => ({ value, type: 'not' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
@@ -545,6 +546,94 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toEqual([]);
+  });
+
+  // --- Active worker guard tests ---
+
+  it('excludes tasks that already have an active worker (prevents duplicate claims)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])   // stale workers
+      .mockResolvedValueOnce([]);  // active workers for concurrency check
+
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // SQL NOT EXISTS subquery filters out tasks with active workers — returns empty
+    mockTasksFindMany.mockResolvedValueOnce([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toEqual([]);
+    expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  it('claims a task when its previous worker has already completed (no active worker)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])   // stale workers
+      .mockResolvedValueOnce([])   // active workers for concurrency check
+      .mockResolvedValueOnce([]);  // re-check in claim loop
+
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task is claimable because NOT EXISTS subquery passes (no active workers)
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-retry',
+        workspaceId: 'ws-1',
+        title: 'Retried task',
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-retry' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-new',
+          taskId: 'task-retry',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].taskId).toBe('task-retry');
   });
 
   it('passes through tasks with empty dependsOn', async () => {
