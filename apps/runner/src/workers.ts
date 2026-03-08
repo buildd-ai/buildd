@@ -2308,6 +2308,13 @@ export class WorkerManager {
       }
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);
+
+      // When this is a resume attempt, re-throw so the caller (resumeSession)
+      // can fall through to Layer 2 (reconstructed context). Without this,
+      // startSession swallows the error and Layer 2 never gets a chance.
+      if (resumeSessionId) {
+        throw error;
+      }
     } finally {
       // Clean up session
       const session = this.sessions.get(worker.id);
@@ -3139,6 +3146,11 @@ export class WorkerManager {
         const errMsg = err instanceof Error ? err.message : String(err);
         sessionLog(worker.id, 'warn', 'resume_layer1_failed', errMsg, worker.taskId);
         console.error(`[Worker ${worker.id}] Layer 1 failed, falling back to reconstruction:`, err);
+        // Reset worker state so Layer 2 can attempt a fresh session
+        // (startSession's catch block sets status='error' before re-throwing)
+        worker.status = 'working';
+        worker.error = undefined;
+        worker.completedAt = undefined;
         // Fall through to Layer 2
       }
     } else {
