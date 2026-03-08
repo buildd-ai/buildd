@@ -36,10 +36,11 @@ if [ "$FILE_COUNT" -gt 20 ]; then
   exit 0
 fi
 
-# Check if any shared/core files changed — run all tests if so
-if echo "$CHANGED" | grep -qE '^(packages/core/|packages/shared/|bunfig\.toml|package\.json|tests/setup\.ts)'; then
-  SHARED=$(echo "$CHANGED" | grep -E '^(packages/core/|packages/shared/|bunfig\.toml|package\.json|tests/setup\.ts)' | head -3)
-  log "Shared files changed — running all tests: $SHARED"
+# Check if any shared/core SOURCE files changed — run all tests if so
+# Exclude package.json version bumps (release commits) from triggering full test suite
+SHARED_CHANGES=$(echo "$CHANGED" | grep -E '^(packages/core/|packages/shared/|bunfig\.toml|tests/setup\.ts)' | grep -v 'package\.json$' || true)
+if [ -n "$SHARED_CHANGES" ]; then
+  log "Shared files changed — running all tests: $(echo "$SHARED_CHANGES" | head -3)"
   echo "ALL"
   exit 0
 fi
