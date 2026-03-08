@@ -1760,11 +1760,17 @@ const server = Bun.serve({
         return Response.json({ error: 'repoUrl required' }, { status: 400, headers: corsHeaders });
       }
 
-      const clonePath = targetPath || `${config.projectRoots[0]}/${repoUrl.split('/').pop()?.replace('.git', '')}`;
+      // Normalize GitHub-style slugs (e.g. "buildd-ai/buildd") to full URLs
+      let cloneUrl = repoUrl;
+      if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
+        cloneUrl = `https://github.com/${cloneUrl}.git`;
+      }
+
+      const clonePath = targetPath || `${config.projectRoots[0]}/${cloneUrl.split('/').pop()?.replace('.git', '')}`;
 
       try {
         const { execSync } = require('child_process');
-        execSync(`git clone ${repoUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+        execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
 
         return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
       } catch (err: any) {
