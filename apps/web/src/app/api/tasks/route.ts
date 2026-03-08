@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { desc, eq, and, or, inArray, notInArray, gte, sql } from 'drizzle-orm';
+import { desc, eq, and, or, inArray, notInArray, gte } from 'drizzle-orm';
+import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -114,7 +115,7 @@ export async function GET(req: NextRequest) {
         })
       : [];
 
-    return NextResponse.json({ tasks: allTasks });
+    return jsonResponse({ tasks: allTasks });
   } catch (error) {
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });

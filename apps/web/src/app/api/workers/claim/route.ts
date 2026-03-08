@@ -8,6 +8,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { jsonResponse } from '@/lib/api-response';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -490,5 +491,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ workers: claimedWorkers });
+  return jsonResponse({ workers: claimedWorkers });
 }
