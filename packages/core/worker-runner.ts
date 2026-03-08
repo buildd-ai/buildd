@@ -388,6 +388,13 @@ export class WorkerRunner extends EventEmitter {
     }
 
     if (msg.type === 'result') {
+      // If the worker is waiting for user input (AskUserQuestion), don't overwrite
+      // that state with completed/error. The session ended naturally but the worker
+      // needs human input before it can proceed.
+      if (this.status === 'waiting_input') {
+        return;
+      }
+
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
       const isBudgetExceeded = resultMsg.subtype === 'error_max_budget_usd';

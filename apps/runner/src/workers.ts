@@ -559,6 +559,14 @@ export class WorkerManager {
 
   // Sync only dirty worker states to server
   private async syncToServer() {
+    // Always sync waiting workers so they can pick up pendingInstructions
+    // (answers to AskUserQuestion) even if Pusher delivery fails.
+    for (const [id, worker] of this.workers) {
+      if (worker.status === 'waiting') {
+        this.dirtyWorkers.add(id);
+      }
+    }
+
     if (this.dirtyWorkers.size === 0) return;
     const toSync = new Set(this.dirtyWorkers);
     this.dirtyWorkers.clear();
