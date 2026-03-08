@@ -8,6 +8,7 @@ import { config } from '../config';
 import { createBuilddMcpServer } from './buildd-mcp-server';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
 import { checkReservation, acquireReservation, releaseWorkerReservations } from './file-reservations';
+import { resolveModelNameSync, updateModelAliases } from './model-aliases';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
@@ -113,9 +114,20 @@ export class WorkerRunner extends EventEmitter {
 
       // Extract outputSchema from task for structured output support
       // For planning mode tasks without an explicit schema, inject the default plan schema
+      // Objective planning tasks get a simpler schema since they create tasks via MCP
       const taskOutputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
       const isPlanningMode = (worker.task as any)?.mode === 'planning';
-      const outputSchema = taskOutputSchema || (isPlanningMode ? {
+      const isObjectivePlanning = !!(worker.task as any)?.context?.objectiveId;
+      const objectivePlanningSchema = {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'What was planned and why' },
+          tasksCreated: { type: 'number', description: 'Number of execution tasks created' },
+          objectiveComplete: { type: 'boolean', description: 'Whether the objective is fully complete' },
+        },
+        required: ['summary', 'tasksCreated', 'objectiveComplete'],
+      };
+      const defaultPlanSchema = {
         type: 'object',
         properties: {
           plan: {
@@ -137,7 +149,15 @@ export class WorkerRunner extends EventEmitter {
           summary: { type: 'string' },
         },
         required: ['plan', 'summary'],
-      } : null);
+      };
+      const outputSchema = taskOutputSchema || (isPlanningMode
+        ? (isObjectivePlanning ? objectivePlanningSchema : defaultPlanSchema)
+        : null);
+
+      // Resolve primary model: task-level override > runner default
+      // Accepts short names (haiku, sonnet, opus) or full model IDs
+      const taskModel = (worker.task as any)?.context?.model as string | undefined;
+      const effectiveModel = taskModel ? resolveModelNameSync(taskModel) : config.anthropicModel;
 
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (worker.task as any)?.context?.fallbackModel as string | undefined;
@@ -178,7 +198,7 @@ export class WorkerRunner extends EventEmitter {
         options: {
           sessionId: this.workerId,
           cwd: worker.workspace?.localPath || process.cwd(),
-          model: config.anthropicModel,
+          model: effectiveModel,
           ...(fallbackModel ? { fallbackModel } : {}),
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
@@ -226,7 +246,7 @@ export class WorkerRunner extends EventEmitter {
 
       // Discover model capabilities via SDK v0.2.49+ supportedModels()
       // This validates configured effort/thinking against actual model support
-      await this.discoverModelCapabilities(queryInstance, config.anthropicModel, {
+      await this.discoverModelCapabilities(queryInstance, effectiveModel, {
         effort: configuredEffort,
         thinking: configuredThinking,
         extendedContext,
@@ -505,6 +525,10 @@ export class WorkerRunner extends EventEmitter {
   ): Promise<void> {
     try {
       const models = await queryInstance.supportedModels();
+
+      // Update cached model aliases in DB (non-blocking)
+      updateModelAliases(models as Array<{ value: string; label?: string }>).catch(() => {});
+
       const currentModel = models.find((m: any) => m.value === modelId);
 
       if (!currentModel) {
@@ -872,7 +896,41 @@ export class WorkerRunner extends EventEmitter {
 
     // Add planning mode context when task mode is 'planning'
     if (isPlanning) {
-      parts.push(`
+      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
+      const objectiveId = taskContext?.objectiveId as string | undefined;
+      const objectiveTitle = taskContext?.objectiveTitle as string | undefined;
+
+      if (objectiveId) {
+        // Objective-aware planning mode
+        parts.push(`
+## Objective Planning
+
+You are the autonomous planner for: "${objectiveTitle || 'Untitled Objective'}"
+Objective ID: ${objectiveId}
+
+### Your Process
+1. Review the task history in the description above
+2. Search team memories (\`buildd_memory\` action: search) for relevant context
+3. Assess: what's been accomplished, what's in progress, what remains
+4. Create 1-3 execution tasks using \`buildd\` action: create_task
+   - Each task auto-links to this objective
+   - Set appropriate outputRequirement (artifact_required for research, none for lightweight)
+   - Set outputSchema on tasks when you need structured data back
+   - Write self-contained descriptions (execution workers don't have your context)
+5. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+
+### When Done
+- If all work is complete → update objective status to "completed" via manage_objectives
+- Otherwise → complete with a summary of what you planned and why
+
+### Guidelines
+- Prefer 1-2 focused tasks over many small ones
+- If a previous task failed, adjust approach rather than retry blindly
+- Use structured outputs (outputSchema) when tasks need to return data for future cycles
+- Don't duplicate work that's already in progress (check active tasks)`);
+      } else {
+        // Standard planning mode
+        parts.push(`
 ## Planning Mode
 
 You are in PLANNING mode. Do NOT execute code changes or create PRs.
@@ -906,6 +964,7 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
 - Include capability requirements so the right worker type claims each step
 - Keep steps small enough for a single worker session (under $5 budget)
 - Use \`dependsOn\` to express ordering constraints between steps`);
+      }
     }
 
     parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);

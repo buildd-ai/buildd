@@ -61,12 +61,14 @@ export default function ObjectivesList({
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(0);
   const [workspaceId, setWorkspaceId] = useState('');
+  const [cronExpression, setCronExpression] = useState('');
 
   function resetForm() {
     setTitle('');
     setDescription('');
     setPriority(0);
     setWorkspaceId('');
+    setCronExpression('');
     setShowForm(false);
   }
 
@@ -83,6 +85,7 @@ export default function ObjectivesList({
           description: description.trim() || undefined,
           priority,
           workspaceId: workspaceId || undefined,
+          cronExpression: cronExpression.trim() || undefined,
         }),
       });
       if (res.ok) {
@@ -162,6 +165,24 @@ export default function ObjectivesList({
                 placeholder="All workspaces"
                 size="sm"
               />
+            </div>
+          </div>
+
+          {/* Schedule */}
+          <div>
+            <label className="block text-xs text-text-muted mb-1">Schedule (optional)</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={cronExpression}
+                onChange={e => setCronExpression(e.target.value)}
+                placeholder="e.g. 0 9 * * 1 (Mon 9am)"
+                className="flex-1 px-3 py-1.5 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                disabled={creating}
+              />
+              {cronExpression && !workspaceId && (
+                <span className="text-xs text-status-warning shrink-0">Needs workspace</span>
+              )}
             </div>
           </div>
 

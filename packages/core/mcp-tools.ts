@@ -83,7 +83,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -93,7 +93,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId? } — manage team objectives [admin]',
+    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model? } — manage team objectives [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -455,12 +455,43 @@ export async function handleBuilddAction(
       }
       if (params.project) taskBody.project = params.project;
 
+      // Auto-link to objective: explicit param takes precedence, then inherit from caller's task
+      if (params.objectiveId) {
+        taskBody.objectiveId = params.objectiveId;
+      } else if (ctx.workerId) {
+        // Fetch caller worker's task to inherit objectiveId
+        try {
+          const workerData = await api(`/api/workers/${ctx.workerId}`);
+          const callerObjectiveId = workerData?.task?.objectiveId || workerData?.task?.context?.objectiveId;
+          if (callerObjectiveId) {
+            taskBody.objectiveId = callerObjectiveId;
+          }
+        } catch {
+          // Non-fatal — skip auto-linking if worker lookup fails
+        }
+      }
+
+      // Pass through context fields for worker configuration
+      const taskContext: Record<string, unknown> = (taskBody.context as Record<string, unknown>) || {};
+      if (params.skillSlugs && Array.isArray(params.skillSlugs)) {
+        taskContext.skillSlugs = params.skillSlugs;
+      }
+      if (params.model && typeof params.model === 'string') {
+        taskContext.model = params.model;
+      }
+      if (params.effort && typeof params.effort === 'string') {
+        taskContext.effort = params.effort;
+      }
+      if (Object.keys(taskContext).length > 0) {
+        taskBody.context = taskContext;
+      }
+
       const task = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.objectiveId ? `\nLinked to objective: ${taskBody.objectiveId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -818,6 +849,9 @@ export async function handleBuilddAction(
           if (params.workspaceId) body.workspaceId = params.workspaceId;
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
+          if (params.recipeId) body.recipeId = params.recipeId;
+          if (params.model) body.model = params.model;
           const data = await api('/api/objectives', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -840,6 +874,9 @@ export async function handleBuilddAction(
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
+          if (params.recipeId !== undefined) body.recipeId = params.recipeId;
+          if (params.model !== undefined) body.model = params.model;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/objectives/${params.objectiveId}`, {
             method: 'PATCH',
