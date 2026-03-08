@@ -49,7 +49,7 @@ export async function autoResolveAccountWorkspace(
 
   if (linked.length === 0) {
     return {
-      error: `Account "${accountName}" has no workspace links. Link a workspace at app.buildd.dev/settings.`,
+      error: `Account "${accountName}" has no workspace links. Link a workspace at buildd.dev/settings.`,
       status: 400,
     };
   }

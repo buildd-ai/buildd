@@ -4,6 +4,7 @@ import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkill
 import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
@@ -115,20 +116,28 @@ export async function POST(req: NextRequest) {
     ),
   });
 
-  const restrictedPermissions = await db.query.accountWorkspaces.findMany({
-    where: and(
-      eq(accountWorkspaces.accountId, account.id),
-      eq(accountWorkspaces.canClaim, true),
-      workspaceId ? eq(accountWorkspaces.workspaceId, workspaceId) : undefined
-    ),
-    with: { workspace: true },
-  });
+  // Get cached account→workspace permissions (avoids DB hit on every claim)
+  const allPermissions = await getAccountWorkspacePermissions(account.id);
+  const claimablePermissions = allPermissions
+    .filter((p) => p.canClaim)
+    .filter((p) => !workspaceId || p.workspaceId === workspaceId);
+
+  // Resolve which restricted workspaces this account can access
+  const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
+  let restrictedIds: string[] = [];
+  if (restrictedWsIds.length > 0) {
+    const restrictedWorkspaces = await db.query.workspaces.findMany({
+      where: and(
+        inArray(workspaces.id, restrictedWsIds),
+        eq(workspaces.accessMode, 'restricted'),
+      ),
+      columns: { id: true },
+    });
+    restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
+  }
 
   // Combine: open workspace IDs + restricted workspaces with permission
   const openIds = openWorkspaces.map((ws) => ws.id);
-  const restrictedIds = restrictedPermissions
-    .filter((p) => p.workspace?.accessMode === 'restricted')
-    .map((p) => p.workspaceId);
 
   const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
   if (workspaceIds.length === 0) {
@@ -156,6 +165,16 @@ export async function POST(req: NextRequest) {
       or(eq(tasks.runnerPreference, 'any'), eq(tasks.runnerPreference, account.type))
     );
   }
+
+  // Exclude tasks that already have an active worker (prevents duplicate claims
+  // when stale cleanup resets a task to pending while another worker is still active)
+  claimableConditions.push(
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${workers} w
+      WHERE w.task_id = ${tasks.id}
+      AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
+    )`
+  );
 
   // Exclude tasks whose dependencies haven't completed yet.
   // We filter with a SQL subquery so the LIMIT applies to actually-claimable tasks.
@@ -507,7 +526,7 @@ export async function POST(req: NextRequest) {
     notify({
       title: `Task claimed`,
       message: `${task?.title || cw.taskId}\n${task?.workspace?.name || 'unknown workspace'}`,
-      url: `https://app.buildd.dev/app/tasks/${cw.taskId}`,
+      url: `https://buildd.dev/app/tasks/${cw.taskId}`,
       urlTitle: 'View task',
     });
   }

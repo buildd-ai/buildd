@@ -29,6 +29,10 @@ Located in `scripts/seed/`, these scripts create reproducible test data.
 | Command | Description |
 |---------|-------------|
 | `bun run seed:waiting-input` | Creates a task with a worker in `waiting_input` state |
+| `bun run seed:error-worker` | Worker in error state (loop detected) |
+| `bun run seed:completed-tasks` | 10 completed tasks with memories |
+| `bun run seed:multi-user` | Tasks across multiple workspaces in various states |
+| `bun run seed:concurrent` | Account at maxConcurrent limit with active workers |
 | `bun run seed:reset` | Cleans up the most recently seeded data |
 
 ### Requirements
@@ -88,6 +92,8 @@ UI components have `data-testid` attributes for reliable E2E test selectors.
 | `worker-needs-input-label` | "Needs input" label | Banner |
 | `worker-needs-input-prompt` | Question text | Banner |
 | `worker-needs-input-options` | Options container | Banner |
+| `worker-interrupt-btn` | Interrupt button | Worker controls |
+| `worker-abort-btn` | Abort button | Worker controls |
 
 ### Data Attributes
 Some elements include additional data attributes:

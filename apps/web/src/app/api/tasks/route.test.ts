@@ -42,6 +42,11 @@ mock.module('@/lib/api-auth', () => ({
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
 }));
 
+const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
+}));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
@@ -157,6 +162,7 @@ describe('GET /api/tasks', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
     mockGetUserWorkspaceIds.mockReset();
@@ -165,6 +171,7 @@ describe('GET /api/tasks', () => {
     // Default: session auth gets workspace access
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
   });
 
   it('returns 401 when no auth', async () => {
@@ -187,8 +194,8 @@ describe('GET /api/tasks', () => {
 
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-1' },
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
     mockWorkspacesFindMany.mockResolvedValue([
       { id: 'ws-2' }, // Open workspace
@@ -242,7 +249,9 @@ describe('GET /api/tasks', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
     // Same workspace appears in both linked and open
-    mockAccountWorkspacesFindMany.mockResolvedValue([{ workspaceId: 'ws-1' }]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+    ]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockTasksFindMany.mockResolvedValue([
       { id: 'task-1', title: 'Task 1', workspaceId: 'ws-1' },

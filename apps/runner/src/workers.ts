@@ -166,6 +166,7 @@ export class WorkerManager {
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
+  private reconcileInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -227,6 +228,17 @@ export class WorkerManager {
     if (!config.serverless) {
       this.sendHeartbeat();
       this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 5 * 60_000); // Every 5 minutes
+
+      // Reconcile local workers against remote state on startup and every 10 minutes.
+      // Prevents ghost workers (e.g. 23 stale files across 12 tasks) from accumulating.
+      this.reconcileLocalWorkers().catch(err => {
+        console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
+      });
+      this.reconcileInterval = setInterval(() => {
+        this.reconcileLocalWorkers().catch(err => {
+          console.warn('[Reconcile] Periodic reconciliation failed:', err instanceof Error ? err.message : err);
+        });
+      }, 10 * 60_000); // Every 10 minutes
     }
 
     // Initialize Pusher if configured
@@ -697,6 +709,82 @@ export class WorkerManager {
     return count;
   }
 
+  /**
+   * Reconcile local worker state against remote server.
+   * Checks all non-terminal local workers and cleans up those whose
+   * remote worker/task is 404, completed, or failed.
+   * Runs on startup and every 10 minutes to prevent ghost worker buildup.
+   */
+  async reconcileLocalWorkers(): Promise<{ checked: number; cleaned: number }> {
+    const allWorkers = this.getWorkers();
+    const nonTerminal = allWorkers.filter(
+      w => w.status !== 'done' && w.status !== 'error'
+    );
+
+    if (nonTerminal.length === 0) {
+      return { checked: 0, cleaned: 0 };
+    }
+
+    console.log(`[Reconcile] Checking ${nonTerminal.length} non-terminal local worker(s) against remote state`);
+
+    let cleaned = 0;
+
+    for (const worker of nonTerminal) {
+      try {
+        const remote = await this.buildd.getWorkerRemote(worker.id);
+
+        if (!remote) {
+          // Worker not found remotely (404) — mark as error
+          console.log(`[Reconcile] Worker ${worker.id} (task: ${worker.taskTitle}) not found remotely, marking as error`);
+          worker.status = 'error';
+          worker.error = 'Worker no longer exists on remote server';
+          worker.completedAt = worker.completedAt || Date.now();
+          this.dirtyForDisk.add(worker.id);
+          this.emit({ type: 'worker_update', worker });
+          cleaned++;
+          continue;
+        }
+
+        const remoteTerminal = remote.status === 'completed' || remote.status === 'failed';
+        const taskTerminal = remote.task && (remote.task.status === 'completed' || remote.task.status === 'failed');
+
+        if (remoteTerminal || taskTerminal) {
+          const isSuccess = remote.status === 'completed' || remote.task?.status === 'completed';
+          console.log(`[Reconcile] Worker ${worker.id} (task: ${worker.taskTitle}) is ${remote.status} remotely, cleaning up locally`);
+
+          if (isSuccess) {
+            worker.status = 'done';
+          } else {
+            worker.status = 'error';
+            worker.error = 'Task failed or was cancelled on remote server';
+          }
+          worker.completedAt = worker.completedAt || Date.now();
+          this.dirtyForDisk.add(worker.id);
+          this.emit({ type: 'worker_update', worker });
+
+          // Abort any active SDK session for this worker
+          const session = this.sessions.get(worker.id);
+          if (session) {
+            session.abortController.abort();
+            session.inputStream.end();
+            this.sessions.delete(worker.id);
+          }
+
+          cleaned++;
+        }
+      } catch (err) {
+        // Non-fatal — skip this worker and try the rest
+        console.warn(`[Reconcile] Error checking worker ${worker.id}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[Reconcile] Cleaned up ${cleaned}/${nonTerminal.length} stale local worker(s)`);
+    }
+
+    return { checked: nonTerminal.length, cleaned };
+  }
+
   getWorkers(): LocalWorker[] {
     // Merge in-memory workers with completed workers persisted on disk (24h history)
     const inMemory = Array.from(this.workers.values());
@@ -957,12 +1045,25 @@ export class WorkerManager {
   // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
   // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
   // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
-  private createPermissionHook(worker: LocalWorker): HookCallback {
+  private createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
 
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
+      // Prompt-level instruction alone is unreliable — enforce at hook level.
+      if (toolName === 'AskUserQuestion' && (opts?.inputPolicy || 'autonomous') === 'autonomous') {
+        console.log(`[Worker ${worker.id}] Blocked AskUserQuestion (inputPolicy=autonomous)`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'deny' as const,
+            permissionDecisionReason: 'AskUserQuestion is not allowed in autonomous mode. Complete the task independently without asking the user questions. Make reasonable decisions and proceed.',
+          },
+        };
+      }
 
       // Block dangerous bash commands
       if (toolName === 'Bash') {
@@ -1784,8 +1885,17 @@ export class WorkerManager {
       }
       promptParts.push(`## Task\n${taskDescription}`);
 
-      // Add communication instruction (Layer 2: keep session alive via AskUserQuestion)
-      promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+      // Communication instruction: configurable input policy
+      // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
+      const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
+      if (inputPolicy === 'allow') {
+        promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+      } else if (inputPolicy === 'important-only') {
+        promptParts.push(`## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`);
+      } else {
+        // 'autonomous' — default until resume is fixed
+        promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
+      }
 
       // Add task metadata
       promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
@@ -1968,7 +2078,7 @@ export class WorkerManager {
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.createPermissionHook(worker)] }],
+        PreToolUse: [{ hooks: [this.createPermissionHook(worker, { inputPolicy })] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
@@ -2211,6 +2321,13 @@ export class WorkerManager {
       }
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);
+
+      // When this is a resume attempt, re-throw so the caller (resumeSession)
+      // can fall through to Layer 2 (reconstructed context). Without this,
+      // startSession swallows the error and Layer 2 never gets a chance.
+      if (resumeSessionId) {
+        throw error;
+      }
     } finally {
       // Clean up session
       const session = this.sessions.get(worker.id);
@@ -3042,6 +3159,11 @@ export class WorkerManager {
         const errMsg = err instanceof Error ? err.message : String(err);
         sessionLog(worker.id, 'warn', 'resume_layer1_failed', errMsg, worker.taskId);
         console.error(`[Worker ${worker.id}] Layer 1 failed, falling back to reconstruction:`, err);
+        // Reset worker state so Layer 2 can attempt a fresh session
+        // (startSession's catch block sets status='error' before re-throwing)
+        worker.status = 'working';
+        worker.error = undefined;
+        worker.completedAt = undefined;
         // Fall through to Layer 2
       }
     } else {
@@ -3430,6 +3552,9 @@ export class WorkerManager {
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);
+    }
+    if (this.reconcileInterval) {
+      clearInterval(this.reconcileInterval);
     }
     // Unsubscribe from all Pusher channels
     for (const workerId of this.pusherChannels.keys()) {

@@ -4,7 +4,7 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 
 function generateApiKey(): string {
@@ -48,6 +48,9 @@ export async function POST(
     const plaintextKey = generateApiKey();
     const hashedKey = hashApiKey(plaintextKey);
     const prefix = extractApiKeyPrefix(plaintextKey);
+
+    // Invalidate cache for the old key before updating
+    invalidateAccountCacheByHash(account.apiKey);
 
     // Update the account with the new key
     await db

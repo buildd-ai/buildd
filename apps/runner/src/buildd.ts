@@ -73,6 +73,17 @@ export class BuilddClient {
     }
   }
 
+  /** Fetch remote worker state (returns null if 404/error) */
+  async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
+    try {
+      const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
+      if (!data || data.error) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',

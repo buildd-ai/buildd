@@ -17,8 +17,14 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+const mockAuthenticateApiKey = mock(() => null as any);
 mock.module('@/lib/api-auth', () => ({
-  hashApiKey: (key: string) => `hashed_${key}`,
+  authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
 }));
 
 mock.module('@/lib/redis', () => ({
@@ -70,6 +76,8 @@ function createMockRequest(headers: Record<string, string> = {}): NextRequest {
 describe('GET /api/workers/active', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsFindMany.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
@@ -81,18 +89,18 @@ describe('GET /api/workers/active', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockGetUserTeamIds.mockReset();
 
-    // Default mocks for Redis
+    // Default mocks
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
     mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
-    // Default mocks for team access
     mockGetUserWorkspaceIds.mockResolvedValue([]);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    // Default: no active workers in DB
     mockWorkersFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no auth', async () => {
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue(null);
 
     const req = createMockRequest();
@@ -103,7 +111,6 @@ describe('GET /api/workers/active', () => {
 
   it('returns empty list when no workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue([]);
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockAccountsFindMany.mockResolvedValue([]);
@@ -118,7 +125,6 @@ describe('GET /api/workers/active', () => {
 
   it('returns active runner instances for session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     // Team workspaces query for names, then open workspaces in getWorkspaceIdsAndNames, then open workspaces during heartbeat filtering
     mockWorkspacesFindMany
@@ -126,9 +132,9 @@ describe('GET /api/workers/active', () => {
       .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
       .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);
-    // Mock accountWorkspaces for heartbeat filtering
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-1' },
+    // Mock cached permissions for heartbeat filtering
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -156,16 +162,15 @@ describe('GET /api/workers/active', () => {
 
   it('filters heartbeats with no overlapping workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkspacesFindMany
       .mockResolvedValueOnce([{ id: 'ws-1', name: 'Workspace 1' }]) // team workspace names
       .mockResolvedValueOnce([]) // open workspaces in getWorkspaceIdsAndNames
       .mockResolvedValueOnce([]); // open workspaces during heartbeat filtering
     mockAccountsFindMany.mockResolvedValue([]);
-    // Mock accountWorkspaces for heartbeat filtering - returns different workspace
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-other' },
+    // Mock cached permissions for heartbeat filtering - returns different workspace
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-other', canClaim: true, canCreate: false },
     ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -191,15 +196,14 @@ describe('GET /api/workers/active', () => {
 
   it('adjusts capacity using actual DB worker count when higher than heartbeat', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkspacesFindMany
       .mockResolvedValueOnce([{ id: 'ws-1', name: 'My Workspace' }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     mockAccountsFindMany.mockResolvedValue([]);
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-1' },
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -234,14 +238,13 @@ describe('GET /api/workers/active', () => {
 
   it('includes environment in response when present', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkspacesFindMany
       .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-1' },
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
 
     const environment = {
@@ -277,14 +280,13 @@ describe('GET /api/workers/active', () => {
 
   it('returns null environment when not set on heartbeat', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue(null);
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkspacesFindMany
       .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspaceId: 'ws-1' },
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
 
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -311,11 +313,11 @@ describe('GET /api/workers/active', () => {
 
   it('supports API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-1' });
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      { workspace: { id: 'ws-1', name: 'WS' } },
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
     ]);
-    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'WS' }]);
     mockHeartbeatsFindMany.mockResolvedValue([]);
 
     const req = createMockRequest({ Authorization: 'Bearer bld_test' });

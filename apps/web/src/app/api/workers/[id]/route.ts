@@ -310,7 +310,7 @@ export async function PATCH(
             app: isDone ? 'tasks' : 'alerts',
             title: isDone ? 'Task done' : 'Task failed',
             message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-            url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
+            url: `https://buildd.dev/app/tasks/${worker.taskId}`,
             urlTitle: 'View task',
             priority: isDone ? -1 : 0,
           });

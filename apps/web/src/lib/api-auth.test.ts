@@ -20,7 +20,14 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
 }));
 
-import { hashApiKey, extractApiKeyPrefix, authenticateApiKey } from './api-auth';
+import {
+  hashApiKey,
+  extractApiKeyPrefix,
+  authenticateApiKey,
+  invalidateAccountCache,
+  invalidateAccountCacheByHash,
+  clearAccountCache,
+} from './api-auth';
 
 describe('hashApiKey', () => {
   it('returns SHA-256 hex hash of the input', () => {
@@ -67,6 +74,7 @@ describe('extractApiKeyPrefix', () => {
 describe('authenticateApiKey', () => {
   beforeEach(() => {
     mockAccountsFindFirst.mockReset();
+    clearAccountCache();
   });
 
   it('returns null when apiKey is null', async () => {
@@ -114,5 +122,117 @@ describe('authenticateApiKey', () => {
         where: expect.anything(),
       })
     );
+  });
+
+  describe('caching', () => {
+    it('serves subsequent calls from cache (no additional DB query)', async () => {
+      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      const result1 = await authenticateApiKey('bld_cached_key');
+      const result2 = await authenticateApiKey('bld_cached_key');
+
+      expect(result1).toEqual(mockAccount);
+      expect(result2).toEqual(mockAccount);
+      // DB should only be queried once
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches null results (negative cache)', async () => {
+      mockAccountsFindFirst.mockResolvedValue(null);
+
+      await authenticateApiKey('bld_bad_key');
+      await authenticateApiKey('bld_bad_key');
+
+      // DB should only be queried once for the same invalid key
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it('different keys get separate cache entries', async () => {
+      const account1 = { id: 'acct-1', name: 'Account 1' };
+      const account2 = { id: 'acct-2', name: 'Account 2' };
+      mockAccountsFindFirst.mockResolvedValueOnce(account1);
+      mockAccountsFindFirst.mockResolvedValueOnce(account2);
+
+      const result1 = await authenticateApiKey('bld_key_1');
+      const result2 = await authenticateApiKey('bld_key_2');
+
+      expect(result1).toEqual(account1);
+      expect(result2).toEqual(account2);
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+
+      // Subsequent calls should be from cache
+      const result1b = await authenticateApiKey('bld_key_1');
+      const result2b = await authenticateApiKey('bld_key_2');
+      expect(result1b).toEqual(account1);
+      expect(result2b).toEqual(account2);
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2); // still 2
+    });
+  });
+
+  describe('cache invalidation', () => {
+    it('invalidateAccountCache forces a re-query for that account', async () => {
+      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      await authenticateApiKey('bld_key');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+
+      // Invalidate by account ID
+      invalidateAccountCache('account-123');
+
+      // Next call should re-query
+      await authenticateApiKey('bld_key');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidateAccountCacheByHash forces a re-query', async () => {
+      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      await authenticateApiKey('bld_key');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+
+      // Invalidate by hashed key
+      invalidateAccountCacheByHash(hashApiKey('bld_key'));
+
+      // Next call should re-query
+      await authenticateApiKey('bld_key');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidateAccountCacheByHash clears negative cache too', async () => {
+      mockAccountsFindFirst.mockResolvedValueOnce(null);
+
+      await authenticateApiKey('bld_new_key');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+
+      // Key was negative-cached. Now invalidate it (e.g., key was just created)
+      invalidateAccountCacheByHash(hashApiKey('bld_new_key'));
+
+      // Mock now returns an account (key exists in DB)
+      const mockAccount = { id: 'new-acct', name: 'New Account' };
+      mockAccountsFindFirst.mockResolvedValueOnce(mockAccount);
+
+      const result = await authenticateApiKey('bld_new_key');
+      expect(result).toEqual(mockAccount);
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+    });
+
+    it('clearAccountCache empties all caches', async () => {
+      const mockAccount = { id: 'acct-1', name: 'Account 1' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      await authenticateApiKey('bld_key_a');
+      await authenticateApiKey('bld_key_b');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+
+      clearAccountCache();
+
+      // Both should re-query
+      await authenticateApiKey('bld_key_a');
+      await authenticateApiKey('bld_key_b');
+      expect(mockAccountsFindFirst).toHaveBeenCalledTimes(4);
+    });
   });
 });
