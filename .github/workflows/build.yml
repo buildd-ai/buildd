@@ -89,19 +89,30 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
+      - name: Sync branch code to test machine
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          tailscale ssh ubuntu@100.82.109.19 << SCRIPT
+            docker exec coder-ai-run-my-claude-workspace bash -c "
+              export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
+              rm -rf /tmp/buildd-ci
+              git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
+              cd /tmp/buildd-ci && bun install 2>&1 | tail -3
+            "
+          SCRIPT
+
       - name: Start preview runner
         run: |
           tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
             docker exec coder-ai-run-my-claude-workspace bash -c '
               export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
-              # Kill any existing test instance
               screen -X -S buildd-test quit 2>/dev/null || true
               screen -dmS buildd-test bash -c "
                 export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER='"${BUILDD_TEST_SERVER}"'
-                buildd >> /tmp/buildd-test.log 2>&1
+                cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               "
             '
           SCRIPT
@@ -128,4 +139,5 @@ jobs:
 
       - name: Cleanup preview runner
         if: always()
-        run: tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace screen -X -S buildd-test quit' || true
+        run: |
+          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "screen -X -S buildd-test quit 2>/dev/null; rm -rf /tmp/buildd-ci"' || true
