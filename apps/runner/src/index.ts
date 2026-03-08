@@ -1289,9 +1289,8 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { taskId } = body;
 
-      // Get the task first
-      const tasks = await buildd!.listTasks();
-      const task = tasks.find((t: any) => t.id === taskId);
+      // Fetch the individual task (not the full list)
+      const task = await buildd!.getTask(taskId);
 
       if (!task) {
         return Response.json({ error: 'Task not found' }, { status: 404, headers: corsHeaders });
@@ -1300,7 +1299,11 @@ const server = Bun.serve({
       try {
         const worker = await workerManager!.claimAndStart(task);
         if (!worker) {
-          return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+          // claimAndStart returns null when workspace can't be resolved or server claim returns 0 workers
+          const wsName = task.workspace?.name || task.workspaceId;
+          return Response.json({
+            error: `Failed to claim task "${task.title}" — workspace "${wsName}" may not be cloned locally or server rejected the claim`,
+          }, { status: 400, headers: corsHeaders });
         }
         return Response.json({ worker }, { headers: corsHeaders });
       } catch (err: any) {
@@ -1388,9 +1391,8 @@ const server = Bun.serve({
           }, { status: 400, headers: corsHeaders });
         }
 
-        // Refetch task and claim it
-        const tasks = await buildd!.listTasks();
-        const task = tasks.find((t: any) => t.id === taskId);
+        // Fetch the individual task and claim it
+        const task = await buildd!.getTask(taskId);
 
         if (!task) {
           return Response.json({ error: 'Task not found after reassign' }, { status: 404, headers: corsHeaders });
