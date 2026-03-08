@@ -338,7 +338,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
   });
 
   describe('Layer 1 failure — resume error handling', () => {
-    test('sets error state when resume session iterator throws', async () => {
+    test('falls through to Layer 2 when resume session iterator throws', async () => {
       manager = new WorkerManager(makeConfig());
 
       const worker = makeWorker({
@@ -348,21 +348,21 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       });
       injectWorker(manager, worker);
 
-      // Layer 1 resume fails during iteration
+      // Layer 1 resume fails, Layer 2 (reconstruction) succeeds via default
       queryBehaviors = [
         { type: 'error', error: new Error('Session not found on disk') },
       ];
+      defaultQueryBehavior = { type: 'success', messages: successMessages() };
 
       const result = await manager.sendMessage('w-th-1', 'Continue the work');
       expect(result).toBe(true);
 
-      // Wait for startSession to catch the error
+      // Wait for both layers to attempt
       await new Promise(r => setTimeout(r, 500));
 
-      // startSession catches the error internally and sets worker to error state
-      expect(worker.status).toBe('error');
-      expect(worker.error).toBe('Session not found on disk');
-      expect(worker.completedAt).toBeDefined();
+      // Layer 2 should have recovered — worker is not stuck in error
+      expect(queryCallCount).toBeGreaterThanOrEqual(2);
+      expect(worker.status).toBe('done');
     });
 
     test('resume attempt uses the original sessionId', async () => {
@@ -388,8 +388,108 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
     });
   });
 
-  describe('Error propagation on failure', () => {
-    test('sets error state with error message from thrown error', async () => {
+  describe('Layer 1 → Layer 2 fallthrough', () => {
+    test('falls through to Layer 2 when Layer 1 SDK resume fails', async () => {
+      manager = new WorkerManager(makeConfig());
+
+      const worker = makeWorker({
+        status: 'done',
+        sessionId: 'sess-will-fail',
+        completedAt: Date.now(),
+        taskDescription: 'Original task description',
+        messages: [
+          { type: 'text', content: 'I finished the work.', timestamp: Date.now() },
+        ],
+      });
+      injectWorker(manager, worker);
+
+      // Layer 1 fails (exit code 1), Layer 2 succeeds
+      queryBehaviors = [
+        { type: 'error', error: new Error('Claude Code process exited with code 1') },
+        { type: 'success', messages: successMessages('sess-layer2') },
+      ];
+
+      const result = await manager.sendMessage('w-th-1', 'Please also add tests');
+      expect(result).toBe(true);
+
+      // Wait for both layers to attempt
+      await new Promise(r => setTimeout(r, 500));
+
+      // Should have called query twice: Layer 1 (resume) + Layer 2 (reconstruction)
+      expect(queryCallCount).toBeGreaterThanOrEqual(2);
+
+      // First call should have resume option (Layer 1)
+      const resumeCall = allQueryOpts.find(o => o.options?.resume === 'sess-will-fail');
+      expect(resumeCall).toBeDefined();
+
+      // Second call should NOT have resume option (Layer 2 reconstruction)
+      const reconstructionCall = allQueryOpts.find(o => !o.options?.resume);
+      expect(reconstructionCall).toBeDefined();
+
+      // Worker should end in done state (Layer 2 succeeded), not error
+      expect(worker.status).toBe('done');
+    });
+
+    test('waiting worker falls through to Layer 2 when SDK resume fails', async () => {
+      manager = new WorkerManager(makeConfig());
+
+      const worker = makeWorker({
+        status: 'waiting',
+        sessionId: 'sess-waiting-fail',
+        waitingFor: { type: 'question', prompt: 'What approach?', toolUseId: 'tu-123' },
+        taskDescription: 'Fix the bug',
+      });
+      injectWorker(manager, worker);
+
+      // Layer 1 fails, Layer 2 succeeds
+      queryBehaviors = [
+        { type: 'error', error: new Error('Claude Code process exited with code 1') },
+        { type: 'success', messages: successMessages('sess-layer2') },
+      ];
+
+      const result = await manager.sendMessage('w-th-1', 'Use approach B');
+      expect(result).toBe(true);
+
+      await new Promise(r => setTimeout(r, 500));
+
+      // Layer 2 should have been attempted after Layer 1 failed
+      expect(queryCallCount).toBeGreaterThanOrEqual(2);
+
+      // Worker should recover (not stuck in error)
+      expect(worker.status).not.toBe('error');
+    });
+
+    test('sets error only when both Layer 1 and Layer 2 fail', async () => {
+      manager = new WorkerManager(makeConfig());
+
+      const worker = makeWorker({
+        status: 'done',
+        sessionId: 'sess-both-fail',
+        completedAt: Date.now(),
+      });
+      injectWorker(manager, worker);
+
+      // Both layers fail
+      queryBehaviors = [
+        { type: 'error', error: new Error('Claude Code process exited with code 1') },
+        { type: 'error', error: new Error('Reconstruction also failed') },
+      ];
+
+      const result = await manager.sendMessage('w-th-1', 'Follow up');
+      expect(result).toBe(true);
+
+      await new Promise(r => setTimeout(r, 500));
+
+      // Both layers attempted
+      expect(queryCallCount).toBeGreaterThanOrEqual(2);
+
+      // Now worker should be in error state
+      expect(worker.status).toBe('error');
+    });
+  });
+
+  describe('Error propagation on failure (both layers fail)', () => {
+    test('sets error state when both Layer 1 and Layer 2 fail', async () => {
       manager = new WorkerManager(makeConfig());
 
       const worker = makeWorker({
@@ -399,8 +499,10 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       });
       injectWorker(manager, worker);
 
+      // Both layers fail
       queryBehaviors = [
         { type: 'error', error: new Error('API rate limit exceeded') },
+        { type: 'error', error: new Error('Reconstruction also failed') },
       ];
 
       const result = await manager.sendMessage('w-th-1', 'Follow up');
@@ -409,11 +511,11 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       await new Promise(r => setTimeout(r, 500));
 
       expect(worker.status).toBe('error');
-      expect(worker.error).toBe('API rate limit exceeded');
+      expect(worker.error).toBe('Reconstruction also failed');
       expect(worker.completedAt).toBeDefined();
     });
 
-    test('emits worker_update with error status on failure', async () => {
+    test('emits worker_update with error status when both layers fail', async () => {
       manager = new WorkerManager(makeConfig());
       const events: any[] = [];
       manager.onEvent((e: any) => {
@@ -429,6 +531,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
 
       queryBehaviors = [
         { type: 'error', error: new Error('Session crashed') },
+        { type: 'error', error: new Error('Reconstruction crashed') },
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
@@ -438,7 +541,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       expect(errorEvents.length).toBeGreaterThanOrEqual(1);
     });
 
-    test('reports failed status to server on error', async () => {
+    test('reports failed status to server when both layers fail', async () => {
       manager = new WorkerManager(makeConfig());
 
       const worker = makeWorker({
@@ -451,6 +554,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       mockUpdateWorker.mockClear();
       queryBehaviors = [
         { type: 'error', error: new Error('Query failed') },
+        { type: 'error', error: new Error('Reconstruction failed') },
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
@@ -581,7 +685,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       expect(statuses[statuses.length - 1]).toBe('done');
     });
 
-    test('done → working → error (resume fails)', async () => {
+    test('done → working → error (both resume layers fail)', async () => {
       manager = new WorkerManager(makeConfig());
       const statuses: string[] = [];
       manager.onEvent((e: any) => {
@@ -595,8 +699,10 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       });
       injectWorker(manager, worker);
 
+      // Both layers fail
       queryBehaviors = [
         { type: 'error', error: new Error('Resume failed') },
+        { type: 'error', error: new Error('Reconstruction failed') },
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
