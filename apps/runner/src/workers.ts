@@ -1784,8 +1784,17 @@ export class WorkerManager {
       }
       promptParts.push(`## Task\n${taskDescription}`);
 
-      // Add communication instruction (Layer 2: keep session alive via AskUserQuestion)
-      promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+      // Communication instruction: configurable input policy
+      // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
+      const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
+      if (inputPolicy === 'allow') {
+        promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+      } else if (inputPolicy === 'important-only') {
+        promptParts.push(`## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`);
+      } else {
+        // 'autonomous' — default until resume is fixed
+        promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
+      }
 
       // Add task metadata
       promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
