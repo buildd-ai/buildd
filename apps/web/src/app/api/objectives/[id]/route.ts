@@ -57,11 +57,18 @@ export async function GET(
     const completedTasks = objective.tasks?.filter(t => t.status === 'completed').length || 0;
     const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
+    // Extract skill/recipe config from schedule template
+    const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+
     return NextResponse.json({
       ...objective,
       totalTasks,
       completedTasks,
       progress,
+      skillSlugs: templateContext?.skillSlugs || [],
+      recipeId: templateContext?.recipeId || null,
+      outputSchema: templateContext?.outputSchema || null,
+      model: templateContext?.model || null,
     });
   } catch (error) {
     console.error('Get objective error:', error);
@@ -101,7 +108,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, cronExpression, workspaceId } = body;
+    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model } = body;
 
     const updateData: Partial<typeof objectives.$inferInsert> = {
       updatedAt: new Date(),
@@ -119,52 +126,83 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
 
-    // Handle cronExpression changes
-    if (cronExpression !== undefined) {
-      updateData.cronExpression = cronExpression || null;
+    // Handle cronExpression changes or skill/recipe updates on existing schedule
+    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined;
+    if (scheduleNeedsUpdate) {
+      if (cronExpression !== undefined) updateData.cronExpression = cronExpression || null;
 
       const effectiveWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
+      const effectiveCron = cronExpression !== undefined ? cronExpression : existing.cronExpression;
 
-      if (cronExpression && effectiveWorkspaceId) {
+      // Build template context with skill/recipe/schema
+      const templateContext: Record<string, unknown> = {};
+      // Preserve existing context from schedule if updating
+      if (existing.scheduleId) {
+        const existingSchedule = await db.query.taskSchedules.findFirst({
+          where: eq(taskSchedules.id, existing.scheduleId),
+          columns: { taskTemplate: true },
+        });
+        if (existingSchedule?.taskTemplate?.context) {
+          Object.assign(templateContext, existingSchedule.taskTemplate.context);
+        }
+      }
+      if (skillSlugs !== undefined) {
+        if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
+        else delete templateContext.skillSlugs;
+      }
+      if (recipeId !== undefined) {
+        if (recipeId) templateContext.recipeId = recipeId;
+        else delete templateContext.recipeId;
+      }
+      if (outputSchema !== undefined) {
+        if (outputSchema) templateContext.outputSchema = outputSchema;
+        else delete templateContext.outputSchema;
+      }
+      if (model !== undefined) {
+        if (model) templateContext.model = model;
+        else delete templateContext.model;
+      }
+
+      if (effectiveCron && effectiveWorkspaceId) {
+        const taskTemplate = {
+          title: `Objective: ${title || existing.title}`,
+          mode: 'planning' as const,
+          priority: priority !== undefined ? priority : existing.priority,
+          ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
+        };
+
         if (existing.scheduleId) {
           // Update existing schedule
-          const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
+          const nextRunAt = cronExpression !== undefined
+            ? computeNextRunAt(cronExpression, 'UTC')
+            : undefined;
           await db
             .update(taskSchedules)
             .set({
-              cronExpression,
-              nextRunAt,
+              ...(cronExpression !== undefined ? { cronExpression, nextRunAt } : {}),
               name: `Objective: ${title || existing.title}`,
-              taskTemplate: {
-                title: `Objective: ${title || existing.title}`,
-                mode: 'planning' as const,
-                priority: priority !== undefined ? priority : existing.priority,
-              },
+              taskTemplate,
               updatedAt: new Date(),
             })
             .where(eq(taskSchedules.id, existing.scheduleId));
         } else {
           // Create new schedule
-          const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
+          const nextRunAt = computeNextRunAt(effectiveCron, 'UTC');
           const [schedule] = await db
             .insert(taskSchedules)
             .values({
               workspaceId: effectiveWorkspaceId,
               name: `Objective: ${title || existing.title}`,
-              cronExpression,
+              cronExpression: effectiveCron,
               timezone: 'UTC',
-              taskTemplate: {
-                title: `Objective: ${title || existing.title}`,
-                mode: 'planning' as const,
-                priority: priority !== undefined ? priority : existing.priority,
-              },
+              taskTemplate,
               nextRunAt,
               createdByUserId: user?.id || null,
             })
             .returning();
           updateData.scheduleId = schedule.id;
         }
-      } else if (!cronExpression && existing.scheduleId) {
+      } else if (!effectiveCron && existing.scheduleId) {
         // Remove schedule when cron cleared
         await db.delete(taskSchedules).where(eq(taskSchedules.id, existing.scheduleId));
         updateData.scheduleId = null;
