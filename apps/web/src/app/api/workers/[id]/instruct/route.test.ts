@@ -12,6 +12,7 @@ const mockWorkersUpdate = mock(() => ({
   })),
 }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -23,6 +24,12 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+}));
+
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { worker: (id: string) => `private-worker-${id}` },
+  events: { WORKER_COMMAND: 'worker:command' },
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -75,6 +82,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockWorkersFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
+    mockTriggerEvent.mockReset();
 
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
@@ -239,6 +247,83 @@ describe('POST /api/workers/[id]/instruct', () => {
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(400);
+  });
+
+  // Regression tests for waiting_input instruction delivery (PR #307)
+  // Bug: instructions sent to waiting workers without priority:'urgent' were never
+  // delivered because no Pusher event fired and the worker had no activity to poll.
+
+  it('sends urgent priority via Pusher when priority is urgent', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'waiting_input',
+      workspace: { teamId: 'team-1' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({ message: 'Use JWT tokens', priority: 'urgent' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.message).toContain('instantly via Pusher');
+
+    // Verify Pusher was called with correct channel and event
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      `private-worker-worker-1`,
+      'worker:command',
+      expect.objectContaining({ action: 'message', text: 'Use JWT tokens' })
+    );
+  });
+
+  it('does not trigger Pusher when no priority is set', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'waiting_input',
+      workspace: { teamId: 'team-1' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.message).toContain('queued for delivery');
+
+    // Pusher should NOT be called for non-urgent instructions
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('allows instructing waiting_input workers', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'waiting_input',
+      workspace: { teamId: 'team-1' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({ message: 'Answer to your question' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
   });
 
 });
