@@ -175,8 +175,6 @@ export default async function ObjectiveDetailPage({
         <ObjectiveActions
           objectiveId={objective.id}
           status={objective.status}
-          cronExpression={objective.cronExpression}
-          hasWorkspace={!!objective.workspaceId}
         />
       </div>
 
