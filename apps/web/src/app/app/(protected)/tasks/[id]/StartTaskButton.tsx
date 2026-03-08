@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalUiHealth } from '../useLocalUiHealth';
-import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
 interface Props {
   taskId: string;
@@ -121,7 +121,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       const targetUrl = selectedLocalUi;
 
       // Subscribe to Pusher for instant claim notification
-      const channelName = `workspace-${workspaceId}`;
+      const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
       channelRef.current = channelName;
       const channel = subscribeToChannel(channelName);
       if (channel) {

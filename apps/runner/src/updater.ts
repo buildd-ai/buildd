@@ -52,8 +52,9 @@ export function applyUpdate(): UpdateResult {
       cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
     }).trim();
     execSync(
-      (currentBranch !== BRANCH ? `git checkout -f ${BRANCH} && ` : '') +
-      `git fetch origin ${BRANCH} && git reset --hard origin/${BRANCH}`,
+      `git fetch origin ${BRANCH}` +
+      (currentBranch !== BRANCH ? ` && git checkout -f -B ${BRANCH} origin/${BRANCH}` : '') +
+      ` && git reset --hard origin/${BRANCH}`,
       { cwd: INSTALL_DIR, encoding: 'utf-8', timeout: 30_000, stdio: 'pipe' },
     );
 

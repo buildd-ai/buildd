@@ -146,10 +146,11 @@ if (values.device) {
       });
 
       if (pollRes.status === 200) {
-        const tokenData = await pollRes.json() as { api_key: string; email?: string; pusherKey?: string; pusherCluster?: string };
+        const tokenData = await pollRes.json() as { api_key: string; email?: string; pusherKey?: string; pusherCluster?: string; pusherChannelPrefix?: string };
         const configData: Record<string, unknown> = { apiKey: tokenData.api_key, builddServer: serverUrl };
         if (tokenData.pusherKey) configData.pusherKey = tokenData.pusherKey;
         if (tokenData.pusherCluster) configData.pusherCluster = tokenData.pusherCluster;
+        if (tokenData.pusherChannelPrefix) configData.pusherChannelPrefix = tokenData.pusherChannelPrefix;
         saveConfig(configData);
         configureMcp(tokenData.api_key, serverUrl);
 
@@ -217,7 +218,8 @@ const tempServer = Bun.serve({
       if (token && token.startsWith('bld_')) {
         const pusherKey = url.searchParams.get('pusherKey') || '';
         const pusherCluster = url.searchParams.get('pusherCluster') || '';
-        if (pusherKey) saveConfig({ pusherKey, pusherCluster });
+        const pusherChannelPrefix = url.searchParams.get('pusherChannelPrefix') || '';
+        if (pusherKey) saveConfig({ pusherKey, pusherCluster, ...(pusherChannelPrefix && { pusherChannelPrefix }) });
         resolveCallback!(token, email);
         return new Response(`
           <!DOCTYPE html>

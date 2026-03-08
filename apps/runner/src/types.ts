@@ -331,6 +331,8 @@ export interface LocalUIConfig {
   // Pusher config (optional, for command relay)
   pusherKey?: string;
   pusherCluster?: string;
+  // Channel prefix for environment isolation (e.g. "preview-")
+  pusherChannelPrefix?: string;
   // Accept remote task assignments from dashboard (default: true)
   acceptRemoteTasks?: boolean;
   // Bypass permission prompts for bash commands (dangerous commands still blocked)

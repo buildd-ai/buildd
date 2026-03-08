@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { desc, eq, and, inArray } from 'drizzle-orm';
+import { desc, eq, and, or, inArray, notInArray, gte } from 'drizzle-orm';
+import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -55,16 +56,66 @@ export async function GET(req: NextRequest) {
       workspaceIds = await getUserWorkspaceIds(user!.id);
     }
 
-    // Get tasks from the resolved workspace IDs
+    // Get tasks from the resolved workspace IDs (lightweight list view)
+    // Returns: all active tasks + completed/failed from the last 24h
+    const terminalStatuses = ['completed', 'failed'];
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
     const allTasks = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
-          where: inArray(tasks.workspaceId, workspaceIds),
+          where: and(
+            inArray(tasks.workspaceId, workspaceIds),
+            or(
+              // Active tasks (pending, assigned, in_progress, etc.)
+              notInArray(tasks.status, terminalStatuses),
+              // Terminal tasks from the last 24h
+              and(
+                inArray(tasks.status, terminalStatuses),
+                gte(tasks.updatedAt, oneDayAgo),
+              ),
+            ),
+          ),
           orderBy: desc(tasks.createdAt),
-          with: { workspace: true },
+          limit: 200,
+          columns: {
+            id: true,
+            workspaceId: true,
+            externalId: true,
+            externalUrl: true,
+            title: true,
+            status: true,
+            priority: true,
+            mode: true,
+            runnerPreference: true,
+            requiredCapabilities: true,
+            claimedBy: true,
+            claimedAt: true,
+            expiresAt: true,
+            createdByAccountId: true,
+            createdByWorkerId: true,
+            creationSource: true,
+            parentTaskId: true,
+            category: true,
+            project: true,
+            outputRequirement: true,
+            objectiveId: true,
+            dependsOn: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          with: {
+            workspace: {
+              columns: {
+                id: true,
+                name: true,
+                repo: true,
+              },
+            },
+          },
         })
       : [];
 
-    return NextResponse.json({ tasks: allTasks });
+    return jsonResponse({ tasks: allTasks });
   } catch (error) {
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });

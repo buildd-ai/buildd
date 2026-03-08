@@ -64,6 +64,8 @@ export async function dispatchNewTask(
   task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number },
   workspace: {
     id?: string;
+    name?: string;
+    repo?: string | null;
     webhookConfig?: WorkspaceWebhookConfig | null;
     githubInstallationId?: string | null;
     githubRepoId?: string | null;
@@ -82,6 +84,8 @@ export async function dispatchNewTask(
     workspaceId: task.workspaceId,
     mode: task.mode,
     priority: task.priority,
+    // Include workspace info so runners can resolve workspace path before claiming
+    ...(workspace.name && { workspace: { name: workspace.name, repo: workspace.repo || null } }),
   };
 
   // Trigger realtime event

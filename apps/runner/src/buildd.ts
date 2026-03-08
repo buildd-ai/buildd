@@ -65,6 +65,14 @@ export class BuilddClient {
     return data.tasks || [];
   }
 
+  async getTask(id: string): Promise<BuilddTask | null> {
+    try {
+      return await this.fetch(`/api/tasks/${id}`);
+    } catch {
+      return null;
+    }
+  }
+
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',

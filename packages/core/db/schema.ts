@@ -665,9 +665,9 @@ export const usersRelations = relations(users, ({ many }) => ({
 export const accountsRelations = relations(accounts, ({ one, many }) => ({
   team: one(teams, { fields: [accounts.teamId], references: [teams.id] }),
   accountWorkspaces: many(accountWorkspaces),
-  tasks: many(tasks),
+  tasks: many(tasks, { relationName: 'claimedTasks' }),
   workers: many(workers),
-  createdTasks: many(tasks, { relationName: 'createdTasks' }),
+  createdTasks: many(tasks, { relationName: 'accountCreatedTasks' }),
   heartbeats: many(workerHeartbeats),
 }));
 
@@ -703,24 +703,24 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
-  account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id] }),
+  account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id], relationName: 'claimedTasks' }),
   objective: one(objectives, { fields: [tasks.objectiveId], references: [objectives.id] }),
-  workers: many(workers),
+  workers: many(workers, { relationName: 'taskWorkers' }),
 
   // Creator tracking relations
-  creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'createdTasks' }),
-  creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'createdTasks' }),
+  creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'accountCreatedTasks' }),
+  creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'workerCreatedTasks' }),
   parentTask: one(tasks, { fields: [tasks.parentTaskId], references: [tasks.id], relationName: 'subTasks' }),
   subTasks: many(tasks, { relationName: 'subTasks' }),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
-  task: one(tasks, { fields: [workers.taskId], references: [tasks.id] }),
+  task: one(tasks, { fields: [workers.taskId], references: [tasks.id], relationName: 'taskWorkers' }),
   workspace: one(workspaces, { fields: [workers.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [workers.accountId], references: [accounts.id] }),
   artifacts: many(artifacts),
 
-  createdTasks: many(tasks, { relationName: 'createdTasks' }),
+  createdTasks: many(tasks, { relationName: 'workerCreatedTasks' }),
 }));
 
 export const artifactsRelations = relations(artifacts, ({ one }) => ({

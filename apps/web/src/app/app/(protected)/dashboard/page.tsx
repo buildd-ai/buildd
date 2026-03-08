@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills } from '@buildd/core/db/schema';
+import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills, objectives } from '@buildd/core/db/schema';
 import { desc, inArray, eq, and, sql, gt, asc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -29,6 +29,7 @@ export default async function DashboardPage() {
   let completedRecentCount = 0;
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
   let dashboardSkills: any[] = [];
+  let dashboardObjectives: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -157,6 +158,26 @@ export default async function DashboardPage() {
           maxConcurrent: hb.maxConcurrentWorkers,
           lastHeartbeat: hb.lastHeartbeatAt,
         }));
+      }
+
+      // Get active objectives
+      if (teamIds.length > 0) {
+        const activeObjs = await db.query.objectives.findMany({
+          where: inArray(objectives.teamId, teamIds),
+          columns: { id: true, title: true, status: true, priority: true },
+          orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+          with: { tasks: { columns: { id: true, status: true } } },
+        });
+
+        dashboardObjectives = activeObjs
+          .filter(obj => obj.status === 'active' || obj.status === 'paused')
+          .slice(0, 5)
+          .map(obj => {
+            const totalTasks = obj.tasks?.length || 0;
+            const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
+            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            return { id: obj.id, title: obj.title, status: obj.status, priority: obj.priority, totalTasks, completedTasks, progress };
+          });
       }
 
       // Get GitHub installations
@@ -293,26 +314,26 @@ export default async function DashboardPage() {
         <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
           <Link
             href="/app/workspaces"
-            className="card card-interactive p-4"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workspaces</div>
             <div className="text-2xl font-semibold">{userWorkspaces.length}</div>
           </Link>
           <Link
             href="/app/tasks"
-            className="card card-interactive p-4"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Completed (7d)</div>
             <div className={`text-2xl font-semibold ${completedRecentCount > 0 ? 'text-status-success' : ''}`}>{completedRecentCount}</div>
           </Link>
           <Link
             href="/app/workers"
-            className="card card-interactive p-4"
+            className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Active</div>
             <div className="text-2xl font-semibold">{activeWorkers.length}</div>
           </Link>
-          <div className="card p-4">
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Connected</div>
             <div className={`text-2xl font-semibold ${connectedAgents.length > 0 ? 'text-status-success' : ''}`}>
               {connectedAgents.length}
@@ -328,6 +349,57 @@ export default async function DashboardPage() {
           hasConnectedAgent={connectedAgents.length > 0}
           githubConfigured={githubConfigured}
         />
+
+        {/* Objectives */}
+        {dashboardObjectives.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
+              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Objectives</span>
+              <Link
+                href="/app/objectives"
+                className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+              >
+                View All
+              </Link>
+            </div>
+            <div className="border border-border-default rounded-[10px] overflow-hidden">
+              {dashboardObjectives.map((obj) => (
+                <Link
+                  key={obj.id}
+                  href={`/app/objectives/${obj.id}`}
+                  className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
+                >
+                  <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center flex-shrink-0 ${
+                    obj.status === 'active' ? 'bg-status-success/12 text-status-success' : 'bg-status-warning/12 text-status-warning'
+                  }`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-medium text-text-primary truncate">{obj.title}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden max-w-[120px]">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all"
+                          style={{ width: `${obj.progress}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-[11px] text-text-muted">
+                        {obj.completedTasks}/{obj.totalTasks} tasks
+                      </span>
+                    </div>
+                  </div>
+                  <span className={`hidden sm:block px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                    obj.status === 'active' ? 'bg-status-success/15 text-status-success' : 'bg-status-warning/15 text-status-warning'
+                  }`}>
+                    {obj.status}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Active Workers */}
         {activeWorkers.length > 0 && (
@@ -356,13 +428,13 @@ export default async function DashboardPage() {
             </div>
 
             {/* Desktop: task-item rows */}
-            <div className="hidden md:block card overflow-hidden">
+            <div className="hidden md:block border border-border-default rounded-[10px] overflow-hidden">
               {activeWorkers.map((worker) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   <div
                     key={worker.id}
-                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3 transition-colors"
+                    className="flex items-center gap-4 px-4 py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
                   >
                     <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}

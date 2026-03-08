@@ -161,6 +161,7 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private workspaceChannels = new Map<string, any>();
+  private channelPrefix: string;
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
@@ -187,6 +188,7 @@ export class WorkerManager {
     this.buildd = new BuilddClient(config);
     this.resolver = resolver || createWorkspaceResolver(config.projectRoots);
     this.acceptRemoteTasks = config.acceptRemoteTasks !== false;
+    this.channelPrefix = config.pusherChannelPrefix || '';
 
     // Check for stale workers every 30s
     this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
@@ -349,7 +351,7 @@ export class WorkerManager {
 
       // Subscribe to each workspace for task:assigned events
       for (const ws of workspaces) {
-        const channelName = `workspace-${ws.id}`;
+        const channelName = `${this.channelPrefix}workspace-${ws.id}`;
         if (!this.workspaceChannels.has(channelName)) {
           const channel = this.pusher.subscribe(channelName);
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
@@ -445,7 +447,7 @@ export class WorkerManager {
   private subscribeToWorker(workerId: string) {
     if (!this.pusher || this.pusherChannels.has(workerId)) return;
 
-    const channel = this.pusher.subscribe(`worker-${workerId}`);
+    const channel = this.pusher.subscribe(`${this.channelPrefix}worker-${workerId}`);
     channel.bind('worker:command', (data: WorkerCommand) => {
       console.log(`Command received for worker ${workerId}:`, data);
       this.handleCommand(workerId, data);
@@ -456,7 +458,7 @@ export class WorkerManager {
   private unsubscribeFromWorker(workerId: string) {
     const channel = this.pusherChannels.get(workerId);
     if (channel) {
-      this.pusher?.unsubscribe(`worker-${workerId}`);
+      this.pusher?.unsubscribe(`${this.channelPrefix}worker-${workerId}`);
       this.pusherChannels.delete(workerId);
     }
   }
