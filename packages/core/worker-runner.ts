@@ -9,6 +9,7 @@ import { createBuilddMcpServer } from './buildd-mcp-server';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusType, type WaitingFor } from '@buildd/shared';
 import { checkReservation, acquireReservation, releaseWorkerReservations } from './file-reservations';
 import { resolveModelNameSync, updateModelAliases } from './model-aliases';
+import { artifactTemplates } from './artifact-templates';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
@@ -897,7 +898,14 @@ export class WorkerRunner extends EventEmitter {
       if (outputReq === 'pr_required') {
         outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
       } else if (outputReq === 'artifact_required') {
-        outputContext.push('This task **requires a deliverable** (PR or artifact). Create a PR for code changes, or an artifact for research/reports.');
+        outputContext.push('This task **requires you to create an artifact** as a deliverable. Use the `create_artifact` tool before completing the task.\n');
+        outputContext.push('Available artifact templates:');
+        for (const [name, tpl] of Object.entries(artifactTemplates)) {
+          const props = (tpl.schema as any).properties || {};
+          const fields = Object.keys(props).join(', ');
+          outputContext.push(`- **${name}** (${tpl.description}): { ${fields} }`);
+        }
+        outputContext.push('\nChoose the template that best fits your deliverable, or create a custom artifact with type and structured content.');
       } else if (outputReq === 'none') {
         outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
       } else {

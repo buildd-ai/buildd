@@ -125,10 +125,14 @@ jobs:
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
                apps/web/tests/integration/worker-state-machine.test.ts \
+               apps/web/tests/integration/schedule-triggers.test.ts \
+               apps/web/tests/integration/artifacts.test.ts \
+               apps/web/tests/integration/recipes.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
           BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
 
       - name: E2E dogfood tests

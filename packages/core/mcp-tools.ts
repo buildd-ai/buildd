@@ -83,7 +83,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -449,6 +449,8 @@ export async function handleBuilddAction(
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
       if (params.category) taskBody.category = params.category;
+      // outputRequirement inheritance from objective is handled by the API route;
+      // only pass through if explicitly provided by the caller.
       if (params.outputRequirement) taskBody.outputRequirement = params.outputRequirement;
       if (params.outputSchema && typeof params.outputSchema === 'object') {
         taskBody.outputSchema = params.outputSchema;
@@ -481,6 +483,17 @@ export async function handleBuilddAction(
       }
       if (params.effort && typeof params.effort === 'string') {
         taskContext.effort = params.effort;
+      }
+      if (params.callbackUrl && typeof params.callbackUrl === 'string') {
+        if (!params.callbackUrl.startsWith('https://')) {
+          throw new Error('callbackUrl must use HTTPS');
+        }
+        taskContext.callback = {
+          url: params.callbackUrl,
+          ...(params.callbackToken && typeof params.callbackToken === 'string'
+            ? { token: params.callbackToken }
+            : {}),
+        };
       }
       if (Object.keys(taskContext).length > 0) {
         taskBody.context = taskContext;

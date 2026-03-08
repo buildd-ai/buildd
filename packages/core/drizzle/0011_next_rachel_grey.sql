@@ -1,0 +1,1 @@
+ALTER TABLE "objectives" ADD COLUMN "default_output_requirement" text;
