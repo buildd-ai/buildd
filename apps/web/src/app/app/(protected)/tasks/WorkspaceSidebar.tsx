@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import QuickCreateModal from './QuickCreateModal';
@@ -145,6 +145,29 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
     setWorkspaces(initialWorkspaces);
   }, [initialWorkspaces]);
 
+  // Debounced workspace updates to batch rapid Pusher events
+  const pendingUpdateRef = useRef<((prev: Workspace[]) => Workspace[])[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleWorkspaceUpdate = useCallback((updater: (prev: Workspace[]) => Workspace[]) => {
+    pendingUpdateRef.current.push(updater);
+    if (flushTimerRef.current) return; // Already scheduled
+    flushTimerRef.current = setTimeout(() => {
+      flushTimerRef.current = null;
+      const updates = pendingUpdateRef.current;
+      pendingUpdateRef.current = [];
+      // Apply all batched updates in a single setState
+      setWorkspaces(prev => updates.reduce((ws, fn) => fn(ws), prev));
+    }, 500);
+  }, []);
+
+  // Cleanup flush timer on unmount
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    };
+  }, []);
+
   // Handler for worker updates from Pusher
   const handleWorkerUpdate = useCallback((data: { worker: WorkerUpdate }) => {
     const { worker } = data;
@@ -159,23 +182,31 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
 
     const waitingFor = worker.status === 'waiting_input' ? worker.waitingFor : null;
 
-    setWorkspaces(prev => prev.map(ws => ({
+    scheduleWorkspaceUpdate(prev => prev.map(ws => ({
       ...ws,
       tasks: ws.tasks.map(task => {
         if (task.id !== worker.taskId) return task;
         // Don't override terminal task states with active worker states
         const isTerminal = task.status === 'completed' || task.status === 'failed';
         if (isTerminal && taskStatus !== 'completed' && taskStatus !== 'failed') return task;
-        return { ...task, status: taskStatus, updatedAt: new Date(), waitingFor };
+        // Only update updatedAt when status actually changes to prevent re-sorting on every progress tick
+        const statusChanged = task.status !== taskStatus;
+        return {
+          ...task,
+          status: taskStatus,
+          updatedAt: statusChanged ? new Date() : task.updatedAt,
+          waitingFor,
+        };
       })
     })));
-  }, []);
+  }, [scheduleWorkspaceUpdate]);
 
   // Handler for new task creation from Pusher
   const handleTaskCreated = useCallback((data: TaskCreated) => {
     const { task } = data;
     if (!task) return;
 
+    // New tasks should appear immediately — don't debounce
     setWorkspaces(prev => prev.map(ws => {
       if (ws.id !== task.workspaceId) return ws;
       // Check if task already exists (avoid duplicates)
@@ -201,13 +232,13 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
     const { task } = data;
     if (!task) return;
 
-    setWorkspaces(prev => prev.map(ws => ({
+    scheduleWorkspaceUpdate(prev => prev.map(ws => ({
       ...ws,
       tasks: ws.tasks.map(t =>
         t.id === task.id ? { ...t, status: 'assigned', updatedAt: new Date() } : t
       ),
     })));
-  }, []);
+  }, [scheduleWorkspaceUpdate]);
 
   // Handler for task assigned (task start broadcast - update status)
   const handleTaskAssigned = useCallback((data: { task: { id: string; workspaceId: string } }) => {
@@ -215,13 +246,13 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
     if (!task) return;
 
     // Mark as assigned when start is triggered (will be updated again on claim)
-    setWorkspaces(prev => prev.map(ws => ({
+    scheduleWorkspaceUpdate(prev => prev.map(ws => ({
       ...ws,
       tasks: ws.tasks.map(t =>
         t.id === task.id && t.status === 'pending' ? { ...t, status: 'assigned', updatedAt: new Date() } : t
       ),
     })));
-  }, []);
+  }, [scheduleWorkspaceUpdate]);
 
   // Stable workspace IDs for dependency tracking
   const workspaceIds = workspaces.map(ws => ws.id);
