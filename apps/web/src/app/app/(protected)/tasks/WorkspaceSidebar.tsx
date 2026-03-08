@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import QuickCreateModal from './QuickCreateModal';
-import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
 const COLLAPSED_STATE_KEY = 'buildd:workspaceCollapsed';
 const SHOW_ALL_KEY = 'buildd:workspaceShowAll';
@@ -226,7 +226,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
 
   // Subscribe to Pusher channels for real-time updates
   useEffect(() => {
-    const channelNames = workspaceIds.map(id => `workspace-${id}`);
+    const channelNames = workspaceIds.map(id => `${CHANNEL_PREFIX}workspace-${id}`);
 
     for (const channelName of channelNames) {
       const channel = subscribeToChannel(channelName);

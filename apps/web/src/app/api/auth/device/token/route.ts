@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
         email,
         pusherKey: process.env.NEXT_PUBLIC_PUSHER_KEY,
         pusherCluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
+        pusherChannelPrefix: process.env.PUSHER_CHANNEL_PREFIX || '',
       });
     }
 

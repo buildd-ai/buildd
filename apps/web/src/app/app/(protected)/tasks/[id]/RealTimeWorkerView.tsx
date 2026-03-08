@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
@@ -159,7 +159,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
   // Subscribe to real-time updates
   useEffect(() => {
-    const channelName = `worker-${worker.id}`;
+    const channelName = `${CHANNEL_PREFIX}worker-${worker.id}`;
     console.log('[RealTimeWorkerView] Setting up subscription for:', channelName);
     const channel = subscribeToChannel(channelName);
 

@@ -74,3 +74,6 @@ export function unsubscribeFromChannel(channelName: string) {
 
   client.unsubscribe(channelName);
 }
+
+/** Channel prefix for environment isolation (matches server-side PUSHER_CHANNEL_PREFIX) */
+export const CHANNEL_PREFIX = process.env.NEXT_PUBLIC_PUSHER_CHANNEL_PREFIX || '';

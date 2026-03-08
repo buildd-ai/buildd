@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
 /**
  * Invisible component that subscribes to workspace Pusher events
@@ -41,7 +41,7 @@ export default function TaskAutoRefresh({
 
     if (isTerminalLeaf) return;
 
-    const channelName = `workspace-${workspaceId}`;
+    const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
     const channel = subscribeToChannel(channelName);
     if (!channel) return;
 

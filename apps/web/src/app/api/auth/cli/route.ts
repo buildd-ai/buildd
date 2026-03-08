@@ -128,6 +128,7 @@ export async function GET(req: NextRequest) {
     successUrl.searchParams.set('email', session.user.email || '');
     if (process.env.NEXT_PUBLIC_PUSHER_KEY) successUrl.searchParams.set('pusherKey', process.env.NEXT_PUBLIC_PUSHER_KEY);
     if (process.env.NEXT_PUBLIC_PUSHER_CLUSTER) successUrl.searchParams.set('pusherCluster', process.env.NEXT_PUBLIC_PUSHER_CLUSTER);
+    if (process.env.PUSHER_CHANNEL_PREFIX) successUrl.searchParams.set('pusherChannelPrefix', process.env.PUSHER_CHANNEL_PREFIX);
     return NextResponse.redirect(successUrl.toString());
 
   } catch (error) {

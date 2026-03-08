@@ -111,6 +111,7 @@ interface SavedConfig {
   localUiUrl?: string; // Direct access URL override (Tailscale IP, Coder subdomain, etc.)
   pusherKey?: string; // Pusher public key for realtime events
   pusherCluster?: string; // Pusher cluster (e.g. 'us2')
+  pusherChannelPrefix?: string; // Channel prefix for environment isolation
   // LLM provider settings
   llmProvider?: LLMProvider; // 'anthropic' or 'openrouter'
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
@@ -134,6 +135,7 @@ function loadSavedConfig(): SavedConfig {
         localUiUrl: data.localUiUrl,
         pusherKey: data.pusherKey,
         pusherCluster: data.pusherCluster,
+        pusherChannelPrefix: data.pusherChannelPrefix,
         llmProvider: data.llmProvider,
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
@@ -369,6 +371,7 @@ const config: LocalUIConfig = {
   // Pusher config for command relay from server
   pusherKey: process.env.PUSHER_KEY || process.env.NEXT_PUBLIC_PUSHER_KEY || savedConfig.pusherKey,
   pusherCluster: process.env.PUSHER_CLUSTER || process.env.NEXT_PUBLIC_PUSHER_CLUSTER || savedConfig.pusherCluster,
+  pusherChannelPrefix: process.env.PUSHER_CHANNEL_PREFIX || savedConfig.pusherChannelPrefix || '',
   // Accept remote task assignments (default: true)
   acceptRemoteTasks: savedConfig.acceptRemoteTasks !== false,
   // Bypass permission prompts (default: false)
