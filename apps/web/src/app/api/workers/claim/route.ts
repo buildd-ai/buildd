@@ -526,7 +526,7 @@ export async function POST(req: NextRequest) {
     notify({
       title: `Task claimed`,
       message: `${task?.title || cw.taskId}\n${task?.workspace?.name || 'unknown workspace'}`,
-      url: `https://app.buildd.dev/app/tasks/${cw.taskId}`,
+      url: `https://buildd.dev/app/tasks/${cw.taskId}`,
       urlTitle: 'View task',
     });
   }
