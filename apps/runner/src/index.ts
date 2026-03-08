@@ -1289,9 +1289,8 @@ const server = Bun.serve({
       const body = await parseBody(req);
       const { taskId } = body;
 
-      // Get the task first
-      const tasks = await buildd!.listTasks();
-      const task = tasks.find((t: any) => t.id === taskId);
+      // Fetch the individual task (not the full list)
+      const task = await buildd!.getTask(taskId);
 
       if (!task) {
         return Response.json({ error: 'Task not found' }, { status: 404, headers: corsHeaders });
@@ -1388,9 +1387,8 @@ const server = Bun.serve({
           }, { status: 400, headers: corsHeaders });
         }
 
-        // Refetch task and claim it
-        const tasks = await buildd!.listTasks();
-        const task = tasks.find((t: any) => t.id === taskId);
+        // Fetch the individual task and claim it
+        const task = await buildd!.getTask(taskId);
 
         if (!task) {
           return Response.json({ error: 'Task not found after reassign' }, { status: 404, headers: corsHeaders });
