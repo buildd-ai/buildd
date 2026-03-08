@@ -7,6 +7,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { jsonResponse } from '@/lib/api-response';
+import { notify } from '@/lib/pushover';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -291,6 +292,24 @@ export async function PATCH(
 
       // Resolve dependencies (check if parent's children all completed)
       await resolveCompletedTask(worker.taskId, worker.workspaceId);
+
+      // Notify on task completion/failure
+      const taskRecord = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { title: true },
+        with: { workspace: { columns: { name: true } } },
+      });
+      if (taskRecord) {
+        const isDone = status === 'completed';
+        notify({
+          app: isDone ? 'tasks' : 'alerts',
+          title: isDone ? 'Task done' : 'Task failed',
+          message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+          url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
+          urlTitle: 'View task',
+          priority: isDone ? -1 : 0,
+        });
+      }
     }
   }
 

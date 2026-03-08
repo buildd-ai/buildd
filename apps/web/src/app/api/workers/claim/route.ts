@@ -9,6 +9,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
+import { notify } from '@/lib/pushover';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -489,6 +490,17 @@ export async function POST(req: NextRequest) {
     } catch {
       // Non-fatal cleanup
     }
+  }
+
+  // Notify on task claims
+  for (const cw of claimedWorkers) {
+    const task = cw.task as any;
+    notify({
+      title: `Task claimed`,
+      message: `${task?.title || cw.taskId}\n${task?.workspace?.name || 'unknown workspace'}`,
+      url: `https://app.buildd.dev/app/tasks/${cw.taskId}`,
+      urlTitle: 'View task',
+    });
   }
 
   return jsonResponse({ workers: claimedWorkers });
