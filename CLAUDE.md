@@ -147,6 +147,14 @@ This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
 - **Dev (stable)**: `https://buildd-git-dev-maxs-projects-45386f31.vercel.app`
 - **PR previews**: `https://buildd-git-<branch-slug>-maxs-projects-45386f31.vercel.app`
 
+## Skills
+
+- **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
+- **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
+- **UI audit**: `.claude/skills/ui-audit/` — UX evaluation framework
+- **Competitive landscape**: `.claude/skills/competitive-landscape/` — Market analysis
+- **SDK changelog monitor**: `.claude/skills/sdk-changelog-monitor/` — Track SDK releases
+
 ## Docs
 
 - **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)

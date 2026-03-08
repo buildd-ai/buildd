@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, objectives, taskRecipes } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, objectives, taskRecipes, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
-import { eq, and, lte, sql, inArray, desc } from 'drizzle-orm';
+import { eq, and, lte, lt, sql, inArray, desc } from 'drizzle-orm';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -476,12 +476,60 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Lightweight stale-worker cleanup: mark workers as failed when their
+    // runner heartbeat expired (10+ min).  Runs every cron tick (~1 min)
+    // so stale workers are caught quickly instead of waiting 30 min for a
+    // runner to call /api/tasks/cleanup.
+    let heartbeatOrphans = 0;
+    try {
+      const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+      const staleHBs = await db.query.workerHeartbeats.findMany({
+        where: lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+        columns: { id: true, accountId: true },
+      });
+      if (staleHBs.length > 0) {
+        const staleAccountIds = staleHBs.map(hb => hb.accountId);
+        const orphanedWorkers = await db.query.workers.findMany({
+          where: and(
+            inArray(workers.accountId, staleAccountIds),
+            inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+          ),
+          columns: { id: true, taskId: true },
+        });
+        if (orphanedWorkers.length > 0) {
+          await db
+            .update(workers)
+            .set({
+              status: 'failed',
+              error: 'Worker runner went offline (heartbeat expired)',
+              completedAt: now,
+              updatedAt: now,
+            })
+            .where(inArray(workers.id, orphanedWorkers.map(w => w.id)));
+
+          const orphanTaskIds = orphanedWorkers.map(w => w.taskId).filter(Boolean) as string[];
+          if (orphanTaskIds.length > 0) {
+            await db
+              .update(tasks)
+              .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: now })
+              .where(inArray(tasks.id, orphanTaskIds));
+          }
+          heartbeatOrphans = orphanedWorkers.length;
+        }
+        // Delete stale heartbeat records
+        await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo));
+      }
+    } catch (cleanupErr) {
+      console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+    }
+
     return NextResponse.json({
       processed,
       created,
       skipped,
       errors,
       triggerChecks,
+      heartbeatOrphans,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);
