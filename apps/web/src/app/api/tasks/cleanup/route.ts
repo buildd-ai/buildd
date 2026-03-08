@@ -38,38 +38,86 @@ export async function POST(req: NextRequest) {
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, oneHourAgo)
     ),
+    columns: { id: true, taskId: true },
   });
 
-  for (const worker of stalledRunning) {
+  if (stalledRunning.length > 0) {
+    const stalledWorkerIds = stalledRunning.map(w => w.id);
+    const stalledTaskIds = stalledRunning.map(w => w.taskId).filter(Boolean) as string[];
+
     await db
       .update(workers)
       .set({
         status: 'failed',
         error: 'Worker timed out - no activity for over 1 hour',
+        completedAt: now,
         updatedAt: now,
       })
-      .where(eq(workers.id, worker.id));
-    stalledWorkers++;
+      .where(inArray(workers.id, stalledWorkerIds));
+
+    // Reset associated tasks to pending so they can be re-claimed
+    if (stalledTaskIds.length > 0) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          updatedAt: now,
+        })
+        .where(and(
+          inArray(tasks.id, stalledTaskIds),
+          eq(tasks.status, 'assigned'),
+        ));
+    }
+
+    stalledWorkers = stalledRunning.length;
   }
 
-  // 2. Tasks stuck in 'assigned' with no active workers for > 2 hours
+  // 2. Tasks stuck in 'assigned' with no active workers — reconcile with worker status
   const assignedTasks = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.status, 'assigned'),
-      lt(tasks.updatedAt, twoHoursAgo)
-    ),
+    where: eq(tasks.status, 'assigned'),
   });
 
   for (const task of assignedTasks) {
-    // Check if there are any active workers
-    const activeWorkers = await db.query.workers.findMany({
-      where: and(
-        eq(workers.taskId, task.id),
-        inArray(workers.status, ['running', 'starting', 'waiting_input'])
-      ),
+    const taskWorkers = await db.query.workers.findMany({
+      where: eq(workers.taskId, task.id),
+      columns: { id: true, status: true, prUrl: true, prNumber: true, commitCount: true, filesChanged: true, linesAdded: true, linesRemoved: true, lastCommitSha: true, branch: true },
     });
 
-    if (activeWorkers.length === 0) {
+    // Check for active workers
+    const hasActive = taskWorkers.some(w =>
+      ['running', 'starting', 'waiting_input', 'idle'].includes(w.status)
+    );
+
+    if (hasActive) continue;
+
+    // Check if any worker completed — promote task to completed
+    const completedWorker = taskWorkers.find(w => w.status === 'completed');
+    if (completedWorker) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'completed',
+          result: {
+            branch: completedWorker.branch,
+            commits: completedWorker.commitCount ?? 0,
+            sha: completedWorker.lastCommitSha ?? undefined,
+            files: completedWorker.filesChanged ?? 0,
+            added: completedWorker.linesAdded ?? 0,
+            removed: completedWorker.linesRemoved ?? 0,
+            prUrl: completedWorker.prUrl ?? undefined,
+            prNumber: completedWorker.prNumber ?? undefined,
+          },
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, task.id));
+      orphanedTasks++;
+      continue;
+    }
+
+    // No active workers, no completed workers — reset to pending if stale enough
+    if (task.updatedAt < twoHoursAgo) {
       await db
         .update(tasks)
         .set({
