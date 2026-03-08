@@ -4,7 +4,7 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { cleanupStaleWorkers } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
 
 // POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
 // Admin auth only (session or admin-level API key)
@@ -143,7 +143,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 4. Mark workers as failed when their local-UI heartbeat is stale
+  // 4. Clean up workers stuck in waiting_input for 24+ hours — retry without input
+  const waitingInputResult = await cleanupStuckWaitingInput();
+
+  // 5. Mark workers as failed when their local-UI heartbeat is stale
   // This catches workers that appear active but their runner machine is offline
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
   let heartbeatOrphans = 0;
@@ -196,7 +199,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6. Delete stale heartbeats (no ping for > 10 minutes)
+  // 7. Delete stale heartbeats (no ping for > 10 minutes)
   const deletedHeartbeats = await db
     .delete(workerHeartbeats)
     .where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo))
@@ -206,6 +209,8 @@ export async function POST(req: NextRequest) {
     cleaned: {
       stalledWorkers,
       orphanedTasks,
+      stuckWaitingInput: waitingInputResult.failedWorkers,
+      retriedTasks: waitingInputResult.retriedTasks,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

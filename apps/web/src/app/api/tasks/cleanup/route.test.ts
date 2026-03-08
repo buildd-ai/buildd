@@ -30,8 +30,10 @@ mock.module('@/lib/api-auth', () => ({
 }));
 
 const mockCleanupStaleWorkers = mock(() => Promise.resolve());
+const mockCleanupStuckWaitingInput = mock(() => Promise.resolve({ failedWorkers: 0, retriedTasks: 0 }));
 mock.module('@/lib/stale-workers', () => ({
   cleanupStaleWorkers: mockCleanupStaleWorkers,
+  cleanupStuckWaitingInput: mockCleanupStuckWaitingInput,
 }));
 
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
@@ -85,6 +87,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockHeartbeatsDelete.mockReset();
     mockCleanupStaleWorkers.mockReset();
     mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStuckWaitingInput.mockReset();
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
 
     // Default: no stale heartbeats
     mockHeartbeatsFindMany.mockResolvedValue([]);
@@ -191,6 +195,22 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.stalledWorkers).toBe(2);
+  });
+
+  it('includes stuck waiting_input counts in response', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 3, retriedTasks: 2 });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.cleaned.stuckWaitingInput).toBe(3);
+    expect(data.cleaned.retriedTasks).toBe(2);
   });
 
   it('fails workers when their heartbeat is stale (runner offline)', async () => {
