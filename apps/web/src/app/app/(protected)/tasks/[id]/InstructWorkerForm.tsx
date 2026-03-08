@@ -25,7 +25,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
       const res = await fetch(`/api/workers/${workerId}/instruct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message.trim() }),
+        body: JSON.stringify({ message: message.trim(), priority: 'urgent' }),
       });
 
       if (!res.ok) {

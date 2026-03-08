@@ -4,7 +4,7 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { cleanupStaleWorkers } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
 
 // POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
 // Admin auth only (session or admin-level API key)
@@ -38,42 +38,93 @@ export async function POST(req: NextRequest) {
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, oneHourAgo)
     ),
+    columns: { id: true, taskId: true },
   });
 
-  for (const worker of stalledRunning) {
+  if (stalledRunning.length > 0) {
+    const stalledWorkerIds = stalledRunning.map(w => w.id);
+    const stalledTaskIds = stalledRunning.map(w => w.taskId).filter(Boolean) as string[];
+
     await db
       .update(workers)
       .set({
         status: 'failed',
         error: 'Worker timed out - no activity for over 1 hour',
+        completedAt: now,
         updatedAt: now,
       })
-      .where(eq(workers.id, worker.id));
-    stalledWorkers++;
-  }
+      .where(inArray(workers.id, stalledWorkerIds));
 
-  // 2. Tasks stuck in 'assigned' with no active workers for > 2 hours
-  const assignedTasks = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.status, 'assigned'),
-      lt(tasks.updatedAt, twoHoursAgo)
-    ),
-  });
-
-  for (const task of assignedTasks) {
-    // Check if there are any active workers
-    const activeWorkers = await db.query.workers.findMany({
-      where: and(
-        eq(workers.taskId, task.id),
-        inArray(workers.status, ['running', 'starting', 'waiting_input'])
-      ),
-    });
-
-    if (activeWorkers.length === 0) {
+    // Reset associated tasks to pending so they can be re-claimed
+    if (stalledTaskIds.length > 0) {
       await db
         .update(tasks)
         .set({
           status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          updatedAt: now,
+        })
+        .where(and(
+          inArray(tasks.id, stalledTaskIds),
+          eq(tasks.status, 'assigned'),
+        ));
+    }
+
+    stalledWorkers = stalledRunning.length;
+  }
+
+  // 2. Tasks stuck in 'assigned' with no active workers — reconcile with worker status
+  const assignedTasks = await db.query.tasks.findMany({
+    where: eq(tasks.status, 'assigned'),
+  });
+
+  for (const task of assignedTasks) {
+    const taskWorkers = await db.query.workers.findMany({
+      where: eq(workers.taskId, task.id),
+      columns: { id: true, status: true, prUrl: true, prNumber: true, commitCount: true, filesChanged: true, linesAdded: true, linesRemoved: true, lastCommitSha: true, branch: true },
+    });
+
+    // Check for active workers
+    const hasActive = taskWorkers.some(w =>
+      ['running', 'starting', 'waiting_input', 'idle'].includes(w.status)
+    );
+
+    if (hasActive) continue;
+
+    // Check if any worker completed — promote task to completed
+    const completedWorker = taskWorkers.find(w => w.status === 'completed');
+    if (completedWorker) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'completed',
+          result: {
+            branch: completedWorker.branch,
+            commits: completedWorker.commitCount ?? 0,
+            sha: completedWorker.lastCommitSha ?? undefined,
+            files: completedWorker.filesChanged ?? 0,
+            added: completedWorker.linesAdded ?? 0,
+            removed: completedWorker.linesRemoved ?? 0,
+            prUrl: completedWorker.prUrl ?? undefined,
+            prNumber: completedWorker.prNumber ?? undefined,
+          },
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, task.id));
+      orphanedTasks++;
+      continue;
+    }
+
+    // No active workers, no completed workers — reset to pending if stale enough
+    if (task.updatedAt < twoHoursAgo) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
           updatedAt: now,
         })
         .where(eq(tasks.id, task.id));
@@ -95,7 +146,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 4. Mark workers as failed when their local-UI heartbeat is stale
+  // 4. Clean up workers stuck in waiting_input for 24+ hours — retry without input
+  const waitingInputResult = await cleanupStuckWaitingInput();
+
+  // 5. Mark workers as failed when their local-UI heartbeat is stale
   // This catches workers that appear active but their runner machine is offline
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
   let heartbeatOrphans = 0;
@@ -148,7 +202,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6. Delete stale heartbeats (no ping for > 10 minutes)
+  // 7. Delete stale heartbeats (no ping for > 10 minutes)
   const deletedHeartbeats = await db
     .delete(workerHeartbeats)
     .where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo))
@@ -158,6 +212,8 @@ export async function POST(req: NextRequest) {
     cleaned: {
       stalledWorkers,
       orphanedTasks,
+      stuckWaitingInput: waitingInputResult.failedWorkers,
+      retriedTasks: waitingInputResult.retriedTasks,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

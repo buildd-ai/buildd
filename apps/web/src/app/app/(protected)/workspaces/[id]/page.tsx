@@ -178,6 +178,12 @@ export default async function WorkspaceDetailPage({
             Skills{skillsCount > 0 ? ` (${skillsCount})` : ''}
           </Link>
           <Link
+            href={`/app/workspaces/${workspace.id}/runners`}
+            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+          >
+            Runners
+          </Link>
+          <Link
             href={`/app/workspaces/${workspace.id}/memory`}
             className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >

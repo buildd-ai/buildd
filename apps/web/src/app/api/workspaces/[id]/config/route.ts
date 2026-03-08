@@ -150,6 +150,11 @@ export async function POST(
                 ? { effort: body.effort }
                 : {}),
 
+            // Default runner preference for new tasks
+            ...(typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
+                ? { defaultRunnerPreference: body.defaultRunnerPreference }
+                : {}),
+
         };
 
         await db

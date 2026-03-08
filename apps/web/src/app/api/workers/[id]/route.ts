@@ -290,25 +290,30 @@ export async function PATCH(
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
 
-      // Resolve dependencies (check if parent's children all completed)
-      await resolveCompletedTask(worker.taskId, worker.workspaceId);
+      // Post-completion side effects (non-fatal — must not block worker update)
+      try {
+        // Resolve dependencies (check if parent's children all completed)
+        await resolveCompletedTask(worker.taskId, worker.workspaceId);
 
-      // Notify on task completion/failure
-      const taskRecord = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
-        columns: { title: true },
-        with: { workspace: { columns: { name: true } } },
-      });
-      if (taskRecord) {
-        const isDone = status === 'completed';
-        notify({
-          app: isDone ? 'tasks' : 'alerts',
-          title: isDone ? 'Task done' : 'Task failed',
-          message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-          url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
-          urlTitle: 'View task',
-          priority: isDone ? -1 : 0,
+        // Notify on task completion/failure
+        const taskRecord = await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+          columns: { title: true },
+          with: { workspace: { columns: { name: true } } },
         });
+        if (taskRecord) {
+          const isDone = status === 'completed';
+          notify({
+            app: isDone ? 'tasks' : 'alerts',
+            title: isDone ? 'Task done' : 'Task failed',
+            message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+            url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
+            urlTitle: 'View task',
+            priority: isDone ? -1 : 0,
+          });
+        }
+      } catch (sideEffectErr) {
+        console.error(`[Worker ${id}] Post-completion side effects failed:`, sideEffectErr);
       }
     }
   }

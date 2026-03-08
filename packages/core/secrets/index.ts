@@ -24,3 +24,4 @@ export function setSecretsProvider(provider: SecretsProvider): void {
 }
 
 export type { SecretsProvider, SecretMetadata, SecretRecord, SecretPurpose } from './types';
+export { setOAuthToken, getOAuthToken, deleteOAuthToken } from './oauth-token';

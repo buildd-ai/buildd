@@ -63,6 +63,8 @@ export const accounts = pgTable('accounts', {
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
 
   // For OAuth-based auth (seat-based)
+  // @deprecated — OAuth tokens are now stored encrypted in the `secrets` table (purpose='oauth_token').
+  // This column is kept for backward compatibility and will be removed in a future migration.
   oauthToken: text('oauth_token'),
   seatId: text('seat_id'),
   maxConcurrentSessions: integer('max_concurrent_sessions'),
@@ -172,6 +174,11 @@ export interface WorkspaceGitConfig {
   // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
+
+  // Default runner preference for new tasks created in this workspace
+  // Controls which type of runner (user/service/action) can claim tasks by default
+  // Can be overridden per-task at creation time
+  defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 
 }
 

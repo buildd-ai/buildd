@@ -28,6 +28,7 @@ export default async function DashboardPage() {
   let githubConfigured = false;
   let completedRecentCount = 0;
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
+  let connectedAccountIds = new Set<string>();
   let dashboardSkills: any[] = [];
   let dashboardObjectives: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
 
@@ -151,6 +152,7 @@ export default async function DashboardPage() {
           limit: 20,
         });
         const accountNameMap = new Map(userAccounts.map(a => [a.id, a.name]));
+        connectedAccountIds = new Set(heartbeats.map(hb => hb.accountId));
         connectedAgents = heartbeats.map(hb => ({
           localUiUrl: hb.localUiUrl,
           accountName: accountNameMap.get(hb.accountId) || 'Unknown',
@@ -466,16 +468,21 @@ export default async function DashboardPage() {
                           PR #{worker.prNumber}
                         </a>
                       )}
-                      {worker.localUiUrl && (
-                        <a
-                          href={`${worker.localUiUrl}/worker/${worker.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`px-3 py-[5px] text-xs bg-status-info/10 text-status-info rounded-[6px] hover:bg-status-info/20${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
-                        >
-                          Open Terminal
-                        </a>
-                      )}
+                      {worker.localUiUrl && (() => {
+                        const isOnline = worker.accountId ? connectedAccountIds.has(worker.accountId) : false;
+                        return (
+                          <a
+                            href={`${worker.localUiUrl}/worker/${worker.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={`px-3 py-[5px] text-xs rounded-[6px] ${isOnline ? 'bg-status-info/10 text-status-info hover:bg-status-info/20' : 'bg-surface-3 text-text-muted hover:bg-surface-4'}`}
+                            title={isOnline ? undefined : 'Runner may be offline'}
+                          >
+                            {!isOnline && <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-muted mr-1.5 align-middle" />}
+                            Open Terminal
+                          </a>
+                        );
+                      })()}
                     </div>
                   </div>
                 );
@@ -666,25 +673,14 @@ export default async function DashboardPage() {
                       ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
                       : 'At capacity'}
                   </span>
-                  {/^https?:\/\/(localhost|127\.0\.0\.1)/.test(agent.localUiUrl) ? (
-                    <a
-                      href={agent.localUiUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hidden sm:inline-block px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
-                    >
-                      Open
-                    </a>
-                  ) : (
-                    <a
-                      href={agent.localUiUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
-                    >
-                      Open
-                    </a>
-                  )}
+                  <a
+                    href={agent.localUiUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
+                  >
+                    Open
+                  </a>
                 </div>
               ))}
             </div>

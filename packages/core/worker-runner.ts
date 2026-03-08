@@ -388,6 +388,13 @@ export class WorkerRunner extends EventEmitter {
     }
 
     if (msg.type === 'result') {
+      // If the worker is waiting for user input (AskUserQuestion), don't overwrite
+      // that state with completed/error. The session ended naturally but the worker
+      // needs human input before it can proceed.
+      if (this.status === 'waiting_input') {
+        return;
+      }
+
       const resultMsg = msg as any;
       this.costUsd = resultMsg.total_cost_usd || 0;
       const isBudgetExceeded = resultMsg.subtype === 'error_max_budget_usd';
@@ -437,32 +444,37 @@ export class WorkerRunner extends EventEmitter {
       });
 
       if (worker?.taskId) {
-        const taskUpdate: Record<string, unknown> = {
-          status: resultMsg.is_error ? 'failed' : 'completed',
-          updatedAt: new Date(),
-        };
-
-        // Snapshot deliverables on completion
-        if (!resultMsg.is_error) {
-          taskUpdate.result = {
-            // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
-            ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
-            branch: worker.branch,
-            commits: worker.commitCount ?? 0,
-            sha: worker.lastCommitSha ?? undefined,
-            files: worker.filesChanged ?? 0,
-            added: worker.linesAdded ?? 0,
-            removed: worker.linesRemoved ?? 0,
-            prUrl: worker.prUrl ?? undefined,
-            prNumber: worker.prNumber ?? undefined,
-            // Include structured output from SDK if present
-            ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
-              ? { structuredOutput: resultMsg.structured_output }
-              : {}),
+        try {
+          const taskUpdate: Record<string, unknown> = {
+            status: resultMsg.is_error ? 'failed' : 'completed',
+            updatedAt: new Date(),
           };
-        }
 
-        await db.update(tasks).set(taskUpdate).where(eq(tasks.id, worker.taskId));
+          // Snapshot deliverables on completion
+          if (!resultMsg.is_error) {
+            taskUpdate.result = {
+              // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+              ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
+              branch: worker.branch,
+              commits: worker.commitCount ?? 0,
+              sha: worker.lastCommitSha ?? undefined,
+              files: worker.filesChanged ?? 0,
+              added: worker.linesAdded ?? 0,
+              removed: worker.linesRemoved ?? 0,
+              prUrl: worker.prUrl ?? undefined,
+              prNumber: worker.prNumber ?? undefined,
+              // Include structured output from SDK if present
+              ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
+                ? { structuredOutput: resultMsg.structured_output }
+                : {}),
+            };
+          }
+
+          await db.update(tasks).set(taskUpdate).where(eq(tasks.id, worker.taskId));
+        } catch (taskUpdateErr) {
+          // Non-fatal: worker is already marked completed, cleanup cron will reconcile
+          console.error(`[Worker ${this.workerId}] Failed to update task ${worker.taskId}:`, taskUpdateErr);
+        }
       }
 
       // Update account stats based on auth type

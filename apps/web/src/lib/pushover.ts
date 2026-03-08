@@ -4,8 +4,8 @@
  *
  * Env vars:
  *   PUSHOVER_USER          — your user key
- *   PUSHOVER_TOKEN_TASKS   — app token for task events (claimed, done)
- *   PUSHOVER_TOKEN_ALERTS  — app token for alerts (failures, large payloads)
+ *   PUSHOVER_TOKEN_TASK    — app token for task events (claimed, done)
+ *   PUSHOVER_TOKEN_ALERT   — app token for alerts (failures, large payloads)
  *   PUSHOVER_TOKEN         — fallback if per-app tokens aren't set
  */
 
@@ -22,8 +22,8 @@ interface PushoverOptions {
 }
 
 function getToken(app: PushoverApp): string | undefined {
-  if (app === 'tasks') return process.env.PUSHOVER_TOKEN_TASKS || process.env.PUSHOVER_TOKEN;
-  if (app === 'alerts') return process.env.PUSHOVER_TOKEN_ALERTS || process.env.PUSHOVER_TOKEN;
+  if (app === 'tasks') return process.env.PUSHOVER_TOKEN_TASK || process.env.PUSHOVER_TOKEN;
+  if (app === 'alerts') return process.env.PUSHOVER_TOKEN_ALERT || process.env.PUSHOVER_TOKEN;
   return process.env.PUSHOVER_TOKEN;
 }
 

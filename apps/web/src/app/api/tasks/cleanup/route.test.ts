@@ -30,8 +30,10 @@ mock.module('@/lib/api-auth', () => ({
 }));
 
 const mockCleanupStaleWorkers = mock(() => Promise.resolve());
+const mockCleanupStuckWaitingInput = mock(() => Promise.resolve({ failedWorkers: 0, retriedTasks: 0 }));
 mock.module('@/lib/stale-workers', () => ({
   cleanupStaleWorkers: mockCleanupStaleWorkers,
+  cleanupStuckWaitingInput: mockCleanupStuckWaitingInput,
 }));
 
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
@@ -85,6 +87,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockHeartbeatsDelete.mockReset();
     mockCleanupStaleWorkers.mockReset();
     mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStuckWaitingInput.mockReset();
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
 
     // Default: no stale heartbeats
     mockHeartbeatsFindMany.mockResolvedValue([]);
@@ -191,6 +195,72 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.stalledWorkers).toBe(2);
+  });
+
+  it('includes stuck waiting_input counts in response', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 3, retriedTasks: 2 });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.cleaned.stuckWaitingInput).toBe(3);
+    expect(data.cleaned.retriedTasks).toBe(2);
+  });
+
+  it('clears claimedBy, claimedAt, and expiresAt when resetting orphaned tasks to pending', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    // Call sequence for mockWorkersFindMany:
+    // 1. Stalled running workers → empty
+    // 2. Workers for orphan task → all failed (no active)
+    // 3. Active account IDs for per-account cleanup → empty
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // stalled running
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])  // task workers - all failed
+      .mockResolvedValueOnce([]);  // active account IDs
+
+    // Orphaned task: assigned, stale > 2 hours
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'orphan-task-1',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+
+    // Capture the set() argument for the task update
+    let capturedSetData: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSetData = data;
+        return {
+          where: mock(() => Promise.resolve()),
+        };
+      }),
+    });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    // Verify claim fields were cleared so task is claimable again
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.status).toBe('pending');
+    expect(capturedSetData.claimedBy).toBeNull();
+    expect(capturedSetData.claimedAt).toBeNull();
+    expect(capturedSetData.expiresAt).toBeNull();
   });
 
   it('fails workers when their heartbeat is stale (runner offline)', async () => {
