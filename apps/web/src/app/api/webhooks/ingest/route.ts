@@ -142,6 +142,12 @@ export async function POST(req: NextRequest) {
                 projectName: data.project.name,
                 repo: data.project.repo,
               },
+              ...(config.callbackUrl ? {
+                callback: {
+                  url: config.callbackUrl,
+                  ...(config.callbackToken ? { token: config.callbackToken } : {}),
+                },
+              } : {}),
             },
             creationSource: 'webhook',
             createdByAccountId: null,

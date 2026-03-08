@@ -8,6 +8,9 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
+import { notifySlack } from '@/lib/slack-notify';
+import { notifyDiscord } from '@/lib/discord-notify';
+import { sendTaskCallback } from '@/lib/task-callback';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -354,6 +357,62 @@ export async function PATCH(
       eventName,
       pusherPayload
     );
+  }
+
+  // Send Slack/Discord notifications and webhook callback on completion/failure
+  if ((status === 'completed' || status === 'failed') && worker.taskId) {
+    try {
+      const taskForNotify = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        with: { workspace: true },
+      });
+
+      if (taskForNotify?.workspace) {
+        const ws = taskForNotify.workspace;
+        const result = (taskForNotify as any).result as {
+          summary?: string;
+          prUrl?: string;
+          structuredOutput?: unknown;
+        } | null;
+        const summaryText = result?.summary
+          ? result.summary.slice(0, 200)
+          : undefined;
+
+        const emoji = status === 'completed' ? 'white_check_mark' : 'x';
+        const statusLabel = status === 'completed' ? 'completed' : 'failed';
+        const lines = [
+          `Task ${statusLabel}: "${taskForNotify.title}"`,
+          ...(summaryText ? [`Summary: ${summaryText}`] : []),
+          ...(result?.prUrl ? [`PR: ${result.prUrl}`] : []),
+          `Dashboard: https://buildd.dev/app/tasks/${taskForNotify.id}`,
+        ];
+        const message = lines.join('\n');
+
+        // Slack
+        notifySlack(ws as any, `:${emoji}: ${message}`).catch((err) =>
+          console.error('Slack notify error:', err)
+        );
+
+        // Discord
+        notifyDiscord(ws as any, message, {
+          title: `Task ${statusLabel}`,
+          description: lines.slice(1).join('\n'),
+          color: status === 'completed' ? 0x22c55e : 0xef4444,
+          url: `https://buildd.dev/app/tasks/${taskForNotify.id}`,
+        }).catch((err) => console.error('Discord notify error:', err));
+
+        // Webhook callback
+        sendTaskCallback(taskForNotify as any, {
+          status,
+          summary: result?.summary,
+          prUrl: result?.prUrl,
+          structuredOutput: (result as any)?.structuredOutput,
+        }).catch((err) => console.error('Task callback error:', err));
+      }
+    } catch (err) {
+      // Non-fatal — don't block the response
+      console.error('Notification dispatch error:', err);
+    }
   }
 
   // Return worker with any pending instructions and output warnings
