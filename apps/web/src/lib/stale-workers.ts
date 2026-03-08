@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, and, or, inArray, lt, gt } from 'drizzle-orm';
+import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 /** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
@@ -57,18 +57,31 @@ export async function cleanupStaleWorkers(accountId: string) {
         columns: { id: true, workspaceId: true },
       });
 
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          claimedBy: null,
-          claimedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(inArray(tasks.id, staleTaskIds));
-
-      // Resolve dependencies for expired tasks
+      // Only reset tasks that have NO other active workers (prevents duplicate claims)
+      const staleWorkerIds = staleWorkers.map(w => w.id);
       for (const t of staleTasks) {
+        const otherActiveWorkers = await db.query.workers.findMany({
+          where: and(
+            eq(workers.taskId, t.id),
+            inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
+            not(inArray(workers.id, staleWorkerIds)),
+          ),
+          columns: { id: true },
+          limit: 1,
+        });
+
+        if (otherActiveWorkers.length === 0) {
+          await db
+            .update(tasks)
+            .set({
+              status: 'pending',
+              claimedBy: null,
+              claimedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(tasks.id, t.id));
+        }
+
         await resolveCompletedTask(t.id, t.workspaceId);
       }
     }
@@ -111,15 +124,30 @@ export async function cleanupStaleWorkers(accountId: string) {
         .where(inArray(workers.id, orphanIds));
 
       if (orphanTaskIds.length > 0) {
-        await db
-          .update(tasks)
-          .set({
-            status: 'pending',
-            claimedBy: null,
-            claimedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(inArray(tasks.id, orphanTaskIds));
+        // Only reset tasks that have NO other active workers
+        for (const taskId of orphanTaskIds) {
+          const otherActiveWorkers = await db.query.workers.findMany({
+            where: and(
+              eq(workers.taskId, taskId),
+              inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
+              not(inArray(workers.id, orphanIds)),
+            ),
+            columns: { id: true },
+            limit: 1,
+          });
+
+          if (otherActiveWorkers.length === 0) {
+            await db
+              .update(tasks)
+              .set({
+                status: 'pending',
+                claimedBy: null,
+                claimedAt: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, taskId));
+          }
+        }
       }
     }
   }

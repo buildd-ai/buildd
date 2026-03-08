@@ -157,6 +157,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Exclude tasks that already have an active worker (prevents duplicate claims
+  // when stale cleanup resets a task to pending while another worker is still active)
+  claimableConditions.push(
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${workers} w
+      WHERE w.task_id = ${tasks.id}
+      AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
+    )`
+  );
+
   // Exclude tasks whose dependencies haven't completed yet.
   // We filter with a SQL subquery so the LIMIT applies to actually-claimable tasks.
   claimableConditions.push(
