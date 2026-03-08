@@ -1542,9 +1542,26 @@ function updateSettings() {
     serverSaveBtn.classList.toggle('hidden', !changed);
   };
 
-  const modelSelect = document.getElementById('settingsModel');
-  if (modelSelect) {
-    modelSelect.value = config.model || '';  // Empty string = "Default" option
+  // Initialize model custom select
+  if (!modelCustomSelect) {
+    modelCustomSelect = initCustomSelect('modelSelect', (value) => {
+      config.model = value;
+      handleModelChange();
+    });
+    // Set default options
+    modelCustomSelect.setOptions([
+      { value: '', label: 'Default (recommended)' },
+      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+      { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
+      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
+      { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+    ]);
+  }
+  if (modelCustomSelect) {
+    const modelVal = config.model || '';
+    const modelLabel = modelVal ? getModelDisplayName(modelVal) : 'Default (recommended)';
+    modelCustomSelect.setValue(modelVal, modelLabel);
     loadAvailableModels(); // Fetch dynamic models from SDK
   }
 
@@ -1719,8 +1736,7 @@ setInterval(async () => {
 
 // Handle model selection change
 async function handleModelChange() {
-  const modelSelect = document.getElementById('settingsModel');
-  const model = modelSelect.value; // Empty string = SDK default
+  const model = modelCustomSelect ? modelCustomSelect.getValue() : ''; // Empty string = SDK default
 
   try {
     const res = await fetch('./api/config/model', {
@@ -1893,29 +1909,26 @@ async function loadAvailableModels() {
     const models = data.models || [];
     if (models.length === 0) return; // No cached models yet
 
-    const modelSelect = document.getElementById('settingsModel');
-    if (!modelSelect) return;
-    const currentValue = modelSelect.value;
+    if (!modelCustomSelect) return;
+    const currentValue = modelCustomSelect.getValue();
 
     // Rebuild options: Default first, then models from SDK
-    modelSelect.innerHTML = '<option value="">Default (recommended)</option>';
+    const opts = [{ value: '', label: 'Default (recommended)' }];
     for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.name || getModelDisplayName(m.id);
-      modelSelect.appendChild(opt);
+      opts.push({ value: m.id, label: m.name || getModelDisplayName(m.id) });
     }
 
-    // Restore selected value (or add it if it's a custom model not in the list)
+    // If current value isn't in the list, add it
+    if (currentValue && !opts.some(o => o.value === currentValue)) {
+      opts.push({ value: currentValue, label: getModelDisplayName(currentValue) });
+    }
+
+    modelCustomSelect.setOptions(opts);
+
+    // Restore selected value
     if (currentValue) {
-      const exists = Array.from(modelSelect.options).some(o => o.value === currentValue);
-      if (!exists) {
-        const opt = document.createElement('option');
-        opt.value = currentValue;
-        opt.textContent = getModelDisplayName(currentValue);
-        modelSelect.appendChild(opt);
-      }
-      modelSelect.value = currentValue;
+      const label = opts.find(o => o.value === currentValue)?.label || getModelDisplayName(currentValue);
+      modelCustomSelect.setValue(currentValue, label);
     }
   } catch {
     // Non-fatal — keep hardcoded fallback options
@@ -2146,6 +2159,9 @@ document.addEventListener('click', closeAllDropdowns);
 
 // Workspace select
 let workspaceSelect = null;
+let modelCustomSelect = null;
+let skillsWorkspaceCustomSelect = null;
+let taskSkillCustomSelect = null;
 
 const LAST_WORKSPACE_KEY = 'buildd_last_workspace_id';
 
@@ -3110,10 +3126,7 @@ document.getElementById('inlineAddBtn').onclick = openTaskModal;
 
 document.getElementById('settingsModalBack').onclick = closeSettingsModal;
 
-const modelSelect = document.getElementById('settingsModel');
-if (modelSelect) {
-  modelSelect.onchange = handleModelChange;
-}
+// Model select is now a custom select initialized in openSettingsModal
 
 const bypassCheckbox = document.getElementById('settingsBypass');
 if (bypassCheckbox) {
@@ -3206,15 +3219,24 @@ let selectedTaskSkills = [];
 function openSkillsModal() {
   const modal = document.getElementById('skillsModal');
   modal.classList.remove('hidden');
-  // Populate workspace filter
-  const select = document.getElementById('skillsWorkspaceFilter');
-  select.innerHTML = '<option value="">Select workspace...</option>';
-  for (const ws of combinedWorkspaces.filter(w => w.id)) {
-    select.innerHTML += `<option value="${ws.id}">${escapeHtml(ws.name)}</option>`;
+  // Initialize custom select if not done
+  if (!skillsWorkspaceCustomSelect) {
+    skillsWorkspaceCustomSelect = initCustomSelect('skillsWorkspaceSelect', (value) => {
+      loadSkills();
+    });
   }
+  // Populate workspace filter
+  const wsWithId = combinedWorkspaces.filter(w => w.id);
+  skillsWorkspaceCustomSelect.setOptions(wsWithId.map(ws => ({
+    value: ws.id,
+    label: ws.name,
+  })));
+  // Reset to placeholder
+  skillsWorkspaceCustomSelect.setValue('', 'Select workspace...');
   // Auto-select if only one workspace
-  if (combinedWorkspaces.filter(w => w.id).length === 1) {
-    select.value = combinedWorkspaces.find(w => w.id)?.id || '';
+  if (wsWithId.length === 1) {
+    const ws = wsWithId[0];
+    skillsWorkspaceCustomSelect.setValue(ws.id, ws.name);
     loadSkills();
   }
 }
@@ -3224,7 +3246,7 @@ function closeSkillsModal() {
 }
 
 async function loadSkills() {
-  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  const workspaceId = skillsWorkspaceCustomSelect ? skillsWorkspaceCustomSelect.getValue() : '';
   if (!workspaceId) {
     document.getElementById('skillsList').innerHTML = '<p class="text-sm text-text-secondary">Select a workspace to view skills</p>';
     return;
@@ -3285,7 +3307,7 @@ function filterSkills() {
 }
 
 async function toggleSkill(skillId, enabled) {
-  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  const workspaceId = (skillsWorkspaceCustomSelect ? skillsWorkspaceCustomSelect.getValue() : '');
   try {
     await fetch('./api/skills/toggle', {
       method: 'POST',
@@ -3301,7 +3323,7 @@ async function toggleSkill(skillId, enabled) {
 }
 
 async function deleteSkill(skillId) {
-  const workspaceId = document.getElementById('skillsWorkspaceFilter').value;
+  const workspaceId = (skillsWorkspaceCustomSelect ? skillsWorkspaceCustomSelect.getValue() : '');
   const skill = workspaceSkills.find(s => s.id === skillId);
   if (!confirm(`Delete skill "${skill?.name || skillId}"?`)) return;
   try {
@@ -3322,8 +3344,17 @@ async function deleteSkill(skillId) {
 
 // Task skill picker
 async function loadTaskSkills(workspaceId) {
+  if (!taskSkillCustomSelect) {
+    taskSkillCustomSelect = initCustomSelect('taskSkillCustomSelect', (value) => {
+      if (value) {
+        addTaskSkill(value);
+        // Reset back to placeholder after selection
+        taskSkillCustomSelect.setValue('', '+ Add skill...');
+      }
+    });
+  }
   if (!workspaceId) {
-    document.getElementById('taskSkillSelect').innerHTML = '<option value="">+ Add skill...</option>';
+    taskSkillCustomSelect.setOptions([]);
     return;
   }
   try {
@@ -3334,11 +3365,10 @@ async function loadTaskSkills(workspaceId) {
     });
     const data = await res.json();
     const skills = data.skills || [];
-    const select = document.getElementById('taskSkillSelect');
-    select.innerHTML = '<option value="">+ Add skill...</option>';
-    for (const s of skills) {
-      select.innerHTML += `<option value="${escapeHtml(s.slug)}">${escapeHtml(s.name)}</option>`;
-    }
+    taskSkillCustomSelect.setOptions(skills.map(s => ({
+      value: s.slug,
+      label: s.name,
+    })));
   } catch {
     // Non-fatal
   }

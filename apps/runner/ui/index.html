@@ -129,6 +129,11 @@
             <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
           </svg>
         </button>
+        <button class="flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="workspacesHeaderBtn" title="Workspaces" aria-label="Workspaces" onclick="openWorkspaceModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
         <button class="flex w-10 h-10 border-none bg-surface rounded-md text-text-primary items-center justify-center cursor-pointer transition-colors duration-200 active:bg-surface-hover hover:bg-surface-hover" id="skillsBtn" title="Skills" aria-label="Skills" onclick="openSkillsModal()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5">
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
@@ -156,6 +161,10 @@
               <svg class="w-4 h-4 dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
               <svg class="w-4 h-4 hidden dark:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
               Toggle Theme
+            </button>
+            <button class="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-surface-hover transition-colors" onclick="openWorkspaceModal(); closeOverflow()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              Workspaces
             </button>
             <button class="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-surface-hover transition-colors" onclick="openSkillsModal(); closeOverflow()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
@@ -338,9 +347,17 @@
           <div class="mb-4" id="taskSkillsSection">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Skills</label>
             <div id="taskSkillsTags" class="flex flex-wrap gap-1.5 mb-2"></div>
-            <select id="taskSkillSelect" class="input w-full bg-surface border border-border-default rounded-md py-2 px-3 text-sm text-text-primary" onchange="addTaskSkill(this.value); this.value='';">
-              <option value="">+ Add skill...</option>
-            </select>
+            <div class="custom-select" id="taskSkillCustomSelect">
+              <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-surface border border-border-default rounded-md text-text-primary text-sm cursor-pointer transition-all duration-150 hover:border-border-hover" id="taskSkillSelectTrigger">
+                <span class="custom-select-value flex-1 text-left whitespace-nowrap overflow-hidden text-ellipsis placeholder text-text-secondary">+ Add skill...</span>
+                <svg class="custom-select-arrow shrink-0 ml-2 text-text-secondary transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              <div class="custom-select-dropdown hidden" id="taskSkillSelectDropdown">
+                <div class="custom-select-options p-2" id="taskSkillSelectOptions"></div>
+              </div>
+            </div>
           </div>
           <div class="mb-4">
             <label class="block text-[13px] font-medium text-text-secondary mb-2">Attachments</label>
@@ -389,14 +406,17 @@
           </div>
           <div class="mb-5">
             <label class="block text-sm font-medium text-text-primary mb-2">Model</label>
-            <select id="settingsModel" class="input w-full bg-surface border border-border-default rounded-md p-3 text-base text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring">
-              <option value="">Default (recommended)</option>
-              <option value="claude-opus-4-6">Claude Opus 4.6</option>
-              <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-              <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-            </select>
+            <div class="custom-select" id="modelSelect">
+              <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-surface border border-border-default rounded-md text-text-primary text-sm cursor-pointer transition-all duration-150 hover:border-border-hover" id="modelSelectTrigger">
+                <span class="custom-select-value flex-1 text-left whitespace-nowrap overflow-hidden text-ellipsis">Default (recommended)</span>
+                <svg class="custom-select-arrow shrink-0 ml-2 text-text-secondary transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              <div class="custom-select-dropdown hidden" id="modelSelectDropdown">
+                <div class="custom-select-options p-2" id="modelSelectOptions"></div>
+              </div>
+            </div>
             <p class="text-xs text-text-secondary mt-1.5">New workers will use the selected model. "Default" uses the latest available.</p>
           </div>
           <div class="mb-5">
@@ -498,9 +518,17 @@
             <input type="text" id="skillsSearch" class="input w-full bg-surface border border-border-default rounded-md py-2 px-3 text-sm text-text-primary outline-none transition-colors duration-200 focus:border-focus-ring" placeholder="Search skills..." oninput="filterSkills()">
           </div>
           <div class="mb-3">
-            <select id="skillsWorkspaceFilter" class="input w-full bg-surface border border-border-default rounded-md py-2 px-3 text-sm text-text-primary" onchange="loadSkills()">
-              <option value="">Select workspace...</option>
-            </select>
+            <div class="custom-select" id="skillsWorkspaceSelect">
+              <button type="button" class="custom-select-trigger flex items-center justify-between w-full py-2.5 px-3 bg-surface border border-border-default rounded-md text-text-primary text-sm cursor-pointer transition-all duration-150 hover:border-border-hover" id="skillsWorkspaceSelectTrigger">
+                <span class="custom-select-value flex-1 text-left whitespace-nowrap overflow-hidden text-ellipsis placeholder text-text-secondary">Select workspace...</span>
+                <svg class="custom-select-arrow shrink-0 ml-2 text-text-secondary transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              <div class="custom-select-dropdown hidden" id="skillsWorkspaceSelectDropdown">
+                <div class="custom-select-options p-2" id="skillsWorkspaceSelectOptions"></div>
+              </div>
+            </div>
           </div>
           <div id="skillsList" class="flex flex-col gap-2"></div>
         </div>
