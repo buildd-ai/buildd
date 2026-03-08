@@ -1299,7 +1299,11 @@ const server = Bun.serve({
       try {
         const worker = await workerManager!.claimAndStart(task);
         if (!worker) {
-          return Response.json({ error: 'Failed to claim' }, { status: 400, headers: corsHeaders });
+          // claimAndStart returns null when workspace can't be resolved or server claim returns 0 workers
+          const wsName = task.workspace?.name || task.workspaceId;
+          return Response.json({
+            error: `Failed to claim task "${task.title}" — workspace "${wsName}" may not be cloned locally or server rejected the claim`,
+          }, { status: 400, headers: corsHeaders });
         }
         return Response.json({ worker }, { headers: corsHeaders });
       } catch (err: any) {
