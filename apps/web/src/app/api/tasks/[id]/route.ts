@@ -147,6 +147,13 @@ export async function PATCH(
         }
       }
       updateData.status = status;
+
+      // When resetting to pending, clear claim fields so the task is claimable again
+      if (status === 'pending') {
+        updateData.claimedBy = null;
+        updateData.claimedAt = null;
+        updateData.expiresAt = null;
+      }
     }
 
     const [updated] = await db
