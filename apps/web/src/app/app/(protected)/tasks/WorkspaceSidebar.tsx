@@ -16,6 +16,7 @@ const SEARCH_KEY = 'buildd:taskSearch';
 interface Task {
   id: string;
   title: string;
+  description?: string | null;
   status: string;
   category?: string | null;
   project?: string | null;
@@ -23,6 +24,7 @@ interface Task {
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
   objectiveId?: string | null;
+  resultSummary?: string | null;
 }
 
 interface ObjectiveItem {
@@ -396,12 +398,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
     }
   }
 
-  // Filter tasks by search query and project
+  // Filter tasks by search query (title, description, result summary) and project
   const searchLower = searchQuery.toLowerCase();
   const filteredWorkspaces = workspaces.map(ws => ({
     ...ws,
     tasks: ws.tasks.filter(t => {
-      if (searchQuery && !t.title.toLowerCase().includes(searchLower)) return false;
+      if (searchQuery) {
+        const matchesTitle = t.title.toLowerCase().includes(searchLower);
+        const matchesDescription = t.description?.toLowerCase().includes(searchLower) ?? false;
+        const matchesResultSummary = t.resultSummary?.toLowerCase().includes(searchLower) ?? false;
+        if (!matchesTitle && !matchesDescription && !matchesResultSummary) return false;
+      }
       if (projectFilter && t.project !== projectFilter) return false;
       return true;
     }),
@@ -456,7 +463,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search tasks..."
+            placeholder="Search title, description..."
             className="w-full px-2.5 py-1.5 text-sm border border-border-default rounded bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary placeholder-text-muted"
           />
         </div>
