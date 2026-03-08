@@ -6,21 +6,27 @@ import { useState, useTransition } from 'react';
 export default function ObjectiveActions({
   objectiveId,
   status,
+  cronExpression: initialCron,
+  hasWorkspace,
 }: {
   objectiveId: string;
   status: string;
+  cronExpression: string | null;
+  hasWorkspace: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [loading, setLoading] = useState(false);
+  const [editingCron, setEditingCron] = useState(false);
+  const [cronValue, setCronValue] = useState(initialCron || '');
 
-  async function updateStatus(newStatus: string) {
+  async function patchObjective(body: Record<string, unknown>) {
     setLoading(true);
     try {
       await fetch(`/api/objectives/${objectiveId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(body),
       });
       startTransition(() => router.refresh());
     } finally {
@@ -39,53 +45,116 @@ export default function ObjectiveActions({
     }
   }
 
+  async function handleSaveCron() {
+    const trimmed = cronValue.trim();
+    await patchObjective({ cronExpression: trimmed || null });
+    setEditingCron(false);
+  }
+
   const disabled = loading || isPending;
 
   return (
-    <div className="flex items-center gap-2">
-      {status === 'active' && (
+    <div className="flex flex-col items-end gap-2">
+      {/* Action buttons */}
+      <div className="flex items-center gap-2">
+        {/* Schedule toggle */}
+        {!editingCron && (
+          <button
+            onClick={() => setEditingCron(true)}
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium border border-border-default text-text-secondary rounded-md hover:bg-surface-3 hover:text-text-primary disabled:opacity-50 transition-colors"
+          >
+            {initialCron ? 'Edit Schedule' : 'Add Schedule'}
+          </button>
+        )}
+
+        {status === 'active' && (
+          <button
+            onClick={() => patchObjective({ status: 'paused' })}
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium border border-border-default text-text-secondary rounded-md hover:bg-surface-3 hover:text-text-primary disabled:opacity-50 transition-colors"
+          >
+            Pause
+          </button>
+        )}
+        {status === 'paused' && (
+          <button
+            onClick={() => patchObjective({ status: 'active' })}
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
+          >
+            Resume
+          </button>
+        )}
+        {(status === 'active' || status === 'paused') && (
+          <button
+            onClick={() => patchObjective({ status: 'completed' })}
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium bg-status-success text-white rounded-md hover:bg-status-success/90 disabled:opacity-50 transition-colors"
+          >
+            Complete
+          </button>
+        )}
+        {status === 'completed' && (
+          <button
+            onClick={() => patchObjective({ status: 'archived' })}
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium border border-border-default text-text-muted rounded-md hover:bg-surface-3 hover:text-text-secondary disabled:opacity-50 transition-colors"
+          >
+            Archive
+          </button>
+        )}
         <button
-          onClick={() => updateStatus('paused')}
+          onClick={handleDelete}
           disabled={disabled}
-          className="px-3 py-1.5 text-xs font-medium bg-surface-3 text-text-secondary rounded-md hover:text-text-primary disabled:opacity-50"
+          className="px-3 py-1.5 text-xs font-medium text-status-error border border-status-error/20 hover:bg-status-error/10 rounded-md disabled:opacity-50 transition-colors"
         >
-          Pause
+          Delete
         </button>
+      </div>
+
+      {/* Inline cron editor */}
+      {editingCron && (
+        <div className="flex items-center gap-2 p-2 bg-surface-2 border border-border-default rounded-lg">
+          <input
+            type="text"
+            value={cronValue}
+            onChange={e => setCronValue(e.target.value)}
+            placeholder="e.g. 0 9 * * 1"
+            className="w-40 px-2 py-1 bg-surface-1 border border-border-default rounded text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+            autoFocus
+            onKeyDown={e => {
+              if (e.key === 'Enter') handleSaveCron();
+              if (e.key === 'Escape') setEditingCron(false);
+            }}
+          />
+          {!hasWorkspace && cronValue.trim() && (
+            <span className="text-xs text-status-warning">Needs workspace</span>
+          )}
+          <button
+            onClick={handleSaveCron}
+            disabled={disabled}
+            className="px-2 py-1 text-xs font-medium bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50"
+          >
+            Save
+          </button>
+          <button
+            onClick={() => { setCronValue(initialCron || ''); setEditingCron(false); }}
+            className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+          >
+            Cancel
+          </button>
+          {initialCron && (
+            <button
+              onClick={() => { setCronValue(''); handleSaveCron(); }}
+              disabled={disabled}
+              className="px-2 py-1 text-xs text-status-error hover:text-status-error/80"
+            >
+              Remove
+            </button>
+          )}
+        </div>
       )}
-      {status === 'paused' && (
-        <button
-          onClick={() => updateStatus('active')}
-          disabled={disabled}
-          className="px-3 py-1.5 text-xs font-medium bg-primary/10 text-primary rounded-md hover:bg-primary/20 disabled:opacity-50"
-        >
-          Resume
-        </button>
-      )}
-      {(status === 'active' || status === 'paused') && (
-        <button
-          onClick={() => updateStatus('completed')}
-          disabled={disabled}
-          className="px-3 py-1.5 text-xs font-medium bg-status-success/10 text-status-success rounded-md hover:bg-status-success/20 disabled:opacity-50"
-        >
-          Complete
-        </button>
-      )}
-      {status === 'completed' && (
-        <button
-          onClick={() => updateStatus('archived')}
-          disabled={disabled}
-          className="px-3 py-1.5 text-xs font-medium bg-surface-3 text-text-muted rounded-md hover:text-text-secondary disabled:opacity-50"
-        >
-          Archive
-        </button>
-      )}
-      <button
-        onClick={handleDelete}
-        disabled={disabled}
-        className="px-3 py-1.5 text-xs font-medium text-status-error hover:bg-status-error/10 rounded-md disabled:opacity-50"
-      >
-        Delete
-      </button>
     </div>
   );
 }

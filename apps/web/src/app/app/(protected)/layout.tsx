@@ -51,7 +51,7 @@ export default async function ProtectedLayout({
       </div>
       {/* Mobile page header for non-tasks pages */}
       <MobilePageHeader />
-      <div className="pb-16 md:pb-0">
+      <div className="pb-16">
         {children}
       </div>
       <BottomNav />
