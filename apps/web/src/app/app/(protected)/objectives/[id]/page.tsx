@@ -153,7 +153,12 @@ export default async function ObjectiveDetailPage({
             )}
           </div>
         </div>
-        <ObjectiveActions objectiveId={objective.id} status={objective.status} />
+        <ObjectiveActions
+          objectiveId={objective.id}
+          status={objective.status}
+          cronExpression={objective.cronExpression}
+          hasWorkspace={!!objective.workspaceId}
+        />
       </div>
 
       {/* Progress */}
