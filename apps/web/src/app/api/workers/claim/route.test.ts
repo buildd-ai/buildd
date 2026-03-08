@@ -31,6 +31,11 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -92,6 +97,7 @@ function createMockRequest(options: {
 describe('POST /api/workers/claim', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
     mockWorkersFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
@@ -102,6 +108,8 @@ describe('POST /api/workers/claim', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    // Default: no workspace permissions
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
   });
 
   it('returns 401 when no API key', async () => {

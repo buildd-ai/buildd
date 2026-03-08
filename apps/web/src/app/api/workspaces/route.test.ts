@@ -22,6 +22,11 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
+}));
+
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   getUserDefaultTeamId: mockGetUserDefaultTeamId,
@@ -75,6 +80,8 @@ describe('GET /api/workspaces', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockAccountWorkspacesFindMany.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     mockWorkspacesFindMany.mockReset();
     mockGetUserWorkspaceIds.mockReset();
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
@@ -121,16 +128,19 @@ describe('GET /api/workspaces', () => {
   it('returns workspaces for API key auth', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountWorkspacesFindMany.mockResolvedValue([
-      {
-        workspace: {
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+    ]);
+    // First call returns open workspaces (empty), second call returns full workspace data
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([]) // open workspaces
+      .mockResolvedValueOnce([   // batch fetch by IDs
+        {
           id: 'ws-1',
           name: 'Linked Workspace',
           accountWorkspaces: [],
         },
-      },
-    ]);
-    mockWorkspacesFindMany.mockResolvedValue([]); // No open workspaces
+      ]);
 
     const req = createMockGetRequest({ Authorization: 'Bearer bld_test' });
     const res = await GET(req);

@@ -4,6 +4,8 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { invalidateAccountCacheByHash } from '@/lib/api-auth';
+import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 
 export async function GET(
   req: NextRequest,
@@ -131,6 +133,10 @@ export async function DELETE(
     if (!account) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
     }
+
+    // Invalidate caches before deleting
+    invalidateAccountCacheByHash(account.apiKey);
+    invalidateAccountWorkspaceCache(account.id);
 
     // Delete the account (cascade will handle accountWorkspaces)
     await db.delete(accounts).where(eq(accounts.id, id));

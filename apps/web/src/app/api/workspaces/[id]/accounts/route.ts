@@ -4,6 +4,7 @@ import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema'
 import { eq, and } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 
 export async function GET(
   req: NextRequest,
@@ -125,6 +126,8 @@ export async function POST(
       });
     }
 
+    invalidateAccountWorkspaceCache(accountId);
+
     return NextResponse.json({
       success: true,
       accountId,
@@ -175,6 +178,8 @@ export async function DELETE(
           eq(accountWorkspaces.workspaceId, workspaceId)
         )
       );
+
+    invalidateAccountWorkspaceCache(accountId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

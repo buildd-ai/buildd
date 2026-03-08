@@ -6,6 +6,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { classifyTask } from '@/lib/task-category';
@@ -38,17 +39,14 @@ export async function GET(req: NextRequest) {
       // For API key auth, get:
       // 1. Workspaces explicitly linked to the account
       // 2. Open workspaces (accessMode = 'open')
-      const [linkedWorkspaces, openWorkspaces] = await Promise.all([
-        db.query.accountWorkspaces.findMany({
-          where: eq(accountWorkspaces.accountId, apiAccount.id),
-          columns: { workspaceId: true },
-        }),
+      const [permissions, openWorkspaces] = await Promise.all([
+        getAccountWorkspacePermissions(apiAccount.id),
         db.query.workspaces.findMany({
           where: eq(workspaces.accessMode, 'open'),
           columns: { id: true },
         }),
       ]);
-      const linkedIds = linkedWorkspaces.map(aw => aw.workspaceId);
+      const linkedIds = permissions.map(p => p.workspaceId);
       const openIds = openWorkspaces.map(w => w.id);
       workspaceIds = [...new Set([...linkedIds, ...openIds])];
     } else {

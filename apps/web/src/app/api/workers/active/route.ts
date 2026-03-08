@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, accounts, workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
 import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
+import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 
@@ -24,14 +25,12 @@ const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes (heartbeat every 5 min 
  */
 
 async function authenticateRequest(req: NextRequest) {
-  // Try API key first
+  // Try API key first (uses cached auth)
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.apiKey, hashApiKey(apiKey)),
-    });
+    const account = await authenticateApiKey(apiKey);
     if (account) return { type: 'api' as const, account };
   }
 
@@ -44,11 +43,15 @@ async function authenticateRequest(req: NextRequest) {
 
 async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>) {
   if (auth.type === 'api') {
-    // API key auth: get workspaces via accountWorkspaces join table + open workspaces
-    const aw = await db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.accountId, auth.account.id),
-      with: { workspace: { columns: { id: true, name: true } } },
-    });
+    // API key auth: get workspaces via cached permissions + open workspaces
+    const permissions = await getAccountWorkspacePermissions(auth.account.id);
+    const linkedWsIds = permissions.map(p => p.workspaceId);
+    const linkedWs = linkedWsIds.length > 0
+      ? await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, linkedWsIds),
+          columns: { id: true, name: true },
+        })
+      : [];
     // Try Redis cache first for open workspaces
     let openWorkspaceIds = await getCachedOpenWorkspaceIds();
     let openWs: { id: string; name: string }[];
@@ -69,8 +72,8 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     }
     const seen = new Set<string>();
     const result: { id: string; name: string }[] = [];
-    for (const a of aw) {
-      if (!seen.has(a.workspace.id)) { seen.add(a.workspace.id); result.push(a.workspace); }
+    for (const w of linkedWs) {
+      if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
     }
     for (const w of openWs) {
       if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
@@ -174,13 +177,10 @@ export async function GET(req: NextRequest) {
     // Filter to only heartbeats that have access to user's workspaces
     const activeLocalUis = await Promise.all(
       heartbeats.map(async hb => {
-        // Compute which workspaces this heartbeat can access
-        const accountWs = await db.query.accountWorkspaces.findMany({
-          where: eq(accountWorkspaces.accountId, hb.accountId),
-          columns: { workspaceId: true },
-        });
+        // Compute which workspaces this heartbeat can access (cached)
+        const permissions = await getAccountWorkspacePermissions(hb.accountId);
         const hbWorkspaceIds = [
-          ...accountWs.map(aw => aw.workspaceId),
+          ...permissions.map(p => p.workspaceId),
           ...openWorkspaceIds!,
         ];
 
