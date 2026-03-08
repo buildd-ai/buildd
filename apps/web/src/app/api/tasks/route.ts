@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, objectives } from '@buildd/core/db/schema';
 import { desc, eq, and, or, inArray, notInArray, gte } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -292,9 +292,19 @@ export async function POST(req: NextRequest) {
 
     // Validate outputRequirement if provided
     const validOutputRequirements = ['pr_required', 'artifact_required', 'none', 'auto'];
-    const outputRequirement = rawOutputRequirement && validOutputRequirements.includes(rawOutputRequirement)
+    const explicitOutputRequirement = rawOutputRequirement && validOutputRequirements.includes(rawOutputRequirement)
       ? rawOutputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto'
       : undefined;
+
+    // Inherit outputRequirement from objective if not explicitly set
+    let outputRequirement = explicitOutputRequirement;
+    if (!outputRequirement && objectiveId) {
+      const objective = await db.query.objectives.findFirst({
+        where: eq(objectives.id, objectiveId),
+        columns: { defaultOutputRequirement: true },
+      });
+      outputRequirement = objective?.defaultOutputRequirement ?? 'auto';
+    }
 
     const [task] = await db
       .insert(tasks)

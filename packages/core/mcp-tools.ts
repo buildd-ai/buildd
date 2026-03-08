@@ -449,6 +449,8 @@ export async function handleBuilddAction(
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
       if (params.category) taskBody.category = params.category;
+      // outputRequirement inheritance from objective is handled by the API route;
+      // only pass through if explicitly provided by the caller.
       if (params.outputRequirement) taskBody.outputRequirement = params.outputRequirement;
       if (params.outputSchema && typeof params.outputSchema === 'object') {
         taskBody.outputSchema = params.outputSchema;

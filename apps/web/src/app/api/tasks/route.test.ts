@@ -13,6 +13,7 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => []),
   })),
 }));
+const mockObjectivesFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -94,6 +95,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany },
+      objectives: { findFirst: mockObjectivesFindFirst },
     },
     insert: mockTasksInsert,
   },
@@ -103,7 +105,11 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
+  or: (...args: any[]) => ({ args, type: 'or' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
 }));
 
 // Mock schema
@@ -112,6 +118,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt' },
+  objectives: { id: 'id' },
 }));
 
 // Import handlers AFTER mocks
@@ -261,6 +268,7 @@ describe('POST /api/tasks', () => {
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDispatchNewTask.mockReset();
+    mockObjectivesFindFirst.mockReset();
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
 
@@ -798,6 +806,165 @@ describe('POST /api/tasks', () => {
     await POST(request);
 
     expect(capturedValues.project).toBe('@mono/web');
+  });
+
+  // ── outputRequirement inheritance from objectives ──────────────────────
+
+  it('inherits outputRequirement from objective when not explicitly set', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      outputRequirement: 'pr_required',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1' },
+    });
+    await POST(request);
+
+    expect(capturedValues.outputRequirement).toBe('pr_required');
+  });
+
+  it('uses explicit outputRequirement when provided, ignoring objective default', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      outputRequirement: 'none',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    // Objective has pr_required, but explicit 'none' should win
+    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1', outputRequirement: 'none' },
+    });
+    await POST(request);
+
+    expect(capturedValues.outputRequirement).toBe('none');
+    // Should NOT have queried the objective since explicit value was provided
+    // (Note: due to mock structure, findFirst may still be callable but outputRequirement should be 'none')
+  });
+
+  it('falls back to auto when objective has no defaultOutputRequirement', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      outputRequirement: 'auto',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1' },
+    });
+    await POST(request);
+
+    expect(capturedValues.outputRequirement).toBe('auto');
+  });
+
+  it('does not look up objective when no objectiveId provided', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Test Task',
+      status: 'pending',
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockObjectivesFindFirst.mockClear();
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task' },
+    });
+    await POST(request);
+
+    // Should NOT have queried objectives table
+    expect(mockObjectivesFindFirst).not.toHaveBeenCalled();
+    // outputRequirement should not be set (DB default 'auto' applies)
+    expect(capturedValues.outputRequirement).toBeUndefined();
   });
 
   it('does not dispatch to webhook when assignToLocalUiUrl is set', async () => {

@@ -307,6 +307,7 @@ export const objectives = pgTable('objectives', {
   status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
   cronExpression: text('cron_expression'),
+  defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   scheduleId: uuid('schedule_id'),
   parentObjectiveId: uuid('parent_objective_id'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
