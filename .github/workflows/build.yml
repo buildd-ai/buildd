@@ -107,6 +107,8 @@ jobs:
             docker exec coder-ai-run-my-claude-workspace bash -c '
               export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
               screen -X -S buildd-test quit 2>/dev/null || true
+              screen -X -S buildd-preview quit 2>/dev/null || true
+              sleep 1
               screen -dmS buildd-test bash -c "
                 export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
                 export PORT=8767
