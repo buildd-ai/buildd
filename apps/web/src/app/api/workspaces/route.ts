@@ -4,6 +4,7 @@ import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/sche
 import { desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 
@@ -30,40 +31,34 @@ export async function GET(req: NextRequest) {
     // If session auth, return workspaces owned by the user
     let allWorkspaces;
     if (apiAccount) {
-      // For API key auth, get workspaces linked via accountWorkspaces + open workspaces
-      const [linkedWorkspaces, openWorkspaces] = await Promise.all([
-        db.query.accountWorkspaces.findMany({
-          where: eq(accountWorkspaces.accountId, apiAccount.id),
-          with: {
-            workspace: {
-              with: {
-                accountWorkspaces: {
-                  with: {
-                    account: true,
-                  },
-                },
-              },
-            },
-          },
-        }),
+      // For API key auth, get workspace IDs via cache + open workspaces
+      const [permissions, openWorkspaces] = await Promise.all([
+        getAccountWorkspacePermissions(apiAccount.id),
         db.query.workspaces.findMany({
           where: eq(workspaces.accessMode, 'open'),
           orderBy: desc(workspaces.createdAt),
-          with: {
-            accountWorkspaces: {
-              with: {
-                account: true,
-              },
-            },
-          },
+          columns: { id: true },
+          limit: 100,
         }),
       ]);
 
-      // Merge linked and open, dedupe by id
-      const linkedWs = linkedWorkspaces.map(aw => aw.workspace);
-      const seenIds = new Set(linkedWs.map(w => w.id));
-      const openOnly = openWorkspaces.filter(w => !seenIds.has(w.id));
-      allWorkspaces = [...linkedWs, ...openOnly];
+      // Merge linked and open IDs, dedupe
+      const linkedIds = permissions.map(p => p.workspaceId);
+      const openIds = openWorkspaces.map(w => w.id);
+      const allIds = [...new Set([...linkedIds, ...openIds])];
+
+      // Batch fetch full workspace records with account relationships
+      allWorkspaces = allIds.length > 0
+        ? await db.query.workspaces.findMany({
+            where: inArray(workspaces.id, allIds),
+            orderBy: desc(workspaces.createdAt),
+            with: {
+              accountWorkspaces: {
+                with: { account: true },
+              },
+            },
+          })
+        : [];
     } else {
       // For session auth, get workspaces via team membership
       const wsIds = await getUserWorkspaceIds(user!.id);
