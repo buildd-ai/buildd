@@ -103,20 +103,23 @@ jobs:
 
       - name: Start preview runner
         run: |
-          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
-            docker exec coder-ai-run-my-claude-workspace bash -c '
-              export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+          tailscale ssh ubuntu@100.82.109.19 << SCRIPT
+            docker exec coder-ai-run-my-claude-workspace bash -c "
+              export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
               screen -X -S buildd-test quit 2>/dev/null || true
-              screen -dmS buildd-test bash -c "
-                export PATH=\"$HOME/.local/bin:$HOME/.bun/bin:\$PATH\"
+              screen -dmS buildd-test bash -c '
+                export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
-                export BUILDD_SERVER='"${BUILDD_TEST_SERVER}"'
+                export BUILDD_SERVER=$BUILDD_TEST_SERVER
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
-              "
-            '
+              '
+            "
           SCRIPT
           sleep 5
+        env:
+          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
 
       - name: Integration tests
         run: |
