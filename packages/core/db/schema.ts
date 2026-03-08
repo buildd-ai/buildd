@@ -175,6 +175,11 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
+  // Default runner preference for new tasks created in this workspace
+  // Controls which type of runner (user/service/action) can claim tasks by default
+  // Can be overridden per-task at creation time
+  defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)

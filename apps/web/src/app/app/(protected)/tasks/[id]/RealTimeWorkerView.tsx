@@ -207,11 +207,12 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         return;
       }
 
-      // Fall back to server-side instruct endpoint (queued delivery)
+      // Fall back to server-side instruct endpoint with urgent priority
+      // so the runner gets the message instantly via Pusher (not queued for next sync)
       const res = await fetch(`/api/workers/${worker.id}/instruct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: option }),
+        body: JSON.stringify({ message: option, priority: 'urgent' }),
       });
       if (!res.ok) {
         const data = await res.json();

@@ -32,6 +32,7 @@ interface GitConfig {
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
     autoMergePR?: boolean;
+    defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
 interface Props {
@@ -80,6 +81,9 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [effort, setEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'max'>(
         initialConfig?.effort || 'none'
     );
+    const [defaultRunnerPreference, setDefaultRunnerPreference] = useState<'any' | 'user' | 'service' | 'action'>(
+        initialConfig?.defaultRunnerPreference || 'any'
+    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -120,6 +124,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         : thinkingType === 'enabled' ? { type: 'enabled', budgetTokens: thinkingBudgetTokens }
                         : { type: thinkingType },
                     effort: effort === 'none' ? undefined : effort,
+                    defaultRunnerPreference: defaultRunnerPreference !== 'any' ? defaultRunnerPreference : undefined,
                 }),
             });
 
@@ -561,6 +566,30 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Controls how much effort the model puts into responses. Can be overridden per-task via task context.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Runner Preference Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Default Runner Preference</h3>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Runner Type</label>
+                        <Select
+                            value={defaultRunnerPreference}
+                            onChange={(v) => setDefaultRunnerPreference(v as typeof defaultRunnerPreference)}
+                            options={[
+                                { value: 'any', label: 'Any runner (no preference)' },
+                                { value: 'user', label: 'User runners only (personal / local)' },
+                                { value: 'service', label: 'Service runners only (CI / automated)' },
+                                { value: 'action', label: 'Action runners only (workflow automation)' },
+                            ]}
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Default runner preference for new tasks in this workspace. Only runners matching this type can claim tasks. Can be overridden per-task.
                         </p>
                     </div>
                 </div>

@@ -107,9 +107,51 @@ const prompt = await page.locator('[data-testid="worker-needs-input-prompt"]').t
 expect(prompt).toContain('authentication method');
 ```
 
+## Test-Driven Development (TDD)
+
+### Bug Fix Workflow
+
+Every bug fix **must** include a regression test:
+
+1. **Reproduce** — Identify the exact behavior that's broken
+2. **Write a failing test** — Create a test that captures the broken behavior. It should fail before your fix and pass after.
+3. **Fix the code** — Make the minimum change to fix the bug
+4. **Verify** — Run the test suite to confirm the fix and no regressions
+
+### Feature Workflow
+
+1. **Define behavior** — What should the feature do?
+2. **Write tests** — Cover happy path + key edge cases
+3. **Implement** — Write the minimum code to pass
+4. **Refine** — Clean up, add edge case tests as needed
+
+### Where to Put Tests
+
+| Change type | Test location | Pattern |
+|---|---|---|
+| API route handler | `route.test.ts` co-located with `route.ts` | Mock DB, auth, external services |
+| Runner logic | `apps/runner/__tests__/unit/*.test.ts` | Mock SDK, API client, filesystem |
+| Cross-service flows | `apps/web/tests/integration/*.test.ts` | Live server, real HTTP calls |
+| UI component behavior | `apps/web/tests/e2e/*.test.ts` | Browser automation |
+
+### Test Naming Convention
+
+Use descriptive names that document the regression:
+```typescript
+// Good — documents what broke and the fix
+it('sends urgent priority via Pusher when priority is urgent', ...)
+it('queues instructions without Pusher when no priority set', ...)
+
+// Bad — too vague
+it('handles priority', ...)
+it('works correctly', ...)
+```
+
 ## Best Practices
 
 1. **Always use data-testid for E2E tests** - Don't rely on CSS classes (they change with styling)
 2. **Clean up seeded data** - Run `seed:reset` after testing to avoid polluting the database
 3. **Use fixtures for UI development** - Faster iteration than creating real data
 4. **Document new test IDs** - Add them to this file when creating new data-testid attributes
+5. **Write regression tests for every bug fix** - Prevents the same bug from recurring
+6. **PRs without tests for behavioral changes will be sent back** - Docs/config-only changes are exempt

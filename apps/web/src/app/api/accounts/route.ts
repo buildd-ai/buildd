@@ -77,18 +77,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
     }
 
+    const insertValues: Record<string, unknown> = {
+      name,
+      type: type as 'user' | 'service' | 'action',
+      level: level as 'trigger' | 'worker' | 'admin' || 'worker',
+      authType: authType as 'api' | 'oauth' || 'oauth',
+      apiKey: hashApiKey(plaintextKey),
+      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+      maxConcurrentWorkers: maxConcurrentWorkers || 3,
+      teamId,
+    };
+
+    // Store OAuth token if provided for oauth auth type
+    if (authType === 'oauth' && oauthToken) {
+      insertValues.oauthToken = oauthToken;
+    }
+
     const [account] = await db
       .insert(accounts)
-      .values({
-        name,
-        type: type as 'user' | 'service' | 'action',
-        level: level as 'trigger' | 'worker' | 'admin' || 'worker',
-        authType: authType as 'api' | 'oauth' || 'oauth',
-        apiKey: hashApiKey(plaintextKey),
-        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-        maxConcurrentWorkers: maxConcurrentWorkers || 3,
-        teamId,
-      })
+      .values(insertValues as typeof accounts.$inferInsert)
       .returning();
 
     // Store OAuth token encrypted in secrets table (not in plaintext accounts column)

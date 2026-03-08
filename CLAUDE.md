@@ -81,6 +81,29 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ## Testing
 
+### Test-Driven Development (TDD)
+
+Follow TDD for all bug fixes and feature work:
+
+1. **Bug fixes**: Write a failing regression test **first** that reproduces the bug, then fix the code to make it pass. This prevents regressions and proves the fix works.
+2. **Features**: Write tests alongside or before implementation. At minimum, cover the happy path and key edge cases.
+3. **PR requirements**: PRs without tests for behavioral changes will be sent back. Docs-only or config-only changes are exempt.
+
+**Where to put tests:**
+- **Route handler tests**: Co-located as `route.test.ts` next to `route.ts` (e.g., `apps/web/src/app/api/workers/[id]/instruct/route.test.ts`)
+- **Unit tests**: `apps/runner/__tests__/unit/*.test.ts`
+- **Integration tests**: `apps/web/tests/integration/*.test.ts` (require live server + API key)
+
+**Running tests:**
+```bash
+bun test                                    # All tests
+bun test apps/web/src/app/api/...           # Specific route test
+bun test apps/runner/__tests__/unit/        # Runner unit tests
+bun run test:integration                    # Integration tests (live server)
+```
+
+See `.agent/testing.md` and `.agent/testing-strategy.md` for full details.
+
 ### Dev Mode Auth
 Use `DEV_USER_EMAIL` to test as a real user locally:
 ```bash

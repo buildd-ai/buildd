@@ -9,7 +9,7 @@ import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
-import type { TaskCategoryValue, TaskModeValue } from '@buildd/shared';
+import type { TaskCategoryValue, TaskModeValue, RunnerPreferenceValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
@@ -36,6 +36,7 @@ interface Workspace {
     defaultBranch?: string;
     requiresPR?: boolean;
     autoCreatePR?: boolean;
+    defaultRunnerPreference?: RunnerPreferenceValue;
   } | null;
   configStatus?: 'unconfigured' | 'admin_confirmed';
 }
@@ -95,6 +96,9 @@ export default function NewTaskPage() {
 
   // Dependencies
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
+
+  // Runner preference
+  const [runnerPreference, setRunnerPreference] = useState<RunnerPreferenceValue>('any');
 
   // Advanced options toggle
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -186,6 +190,16 @@ export default function NewTaskPage() {
       .catch(() => setAvailableObjectives([]));
   }, []);
 
+  // Set default runner preference from workspace config
+  useEffect(() => {
+    if (!selectedWorkspaceId) {
+      setRunnerPreference('any');
+      return;
+    }
+    const ws = workspaces.find(w => w.id === selectedWorkspaceId);
+    setRunnerPreference(ws?.gitConfig?.defaultRunnerPreference || 'any');
+  }, [selectedWorkspaceId, workspaces]);
+
   // Fetch projects when workspace changes
   useEffect(() => {
     if (!selectedWorkspaceId) {
@@ -276,6 +290,7 @@ export default function NewTaskPage() {
               description: description || undefined,
               priority,
               ...(mode !== 'execution' && { mode }),
+              ...(runnerPreference !== 'any' && { runnerPreference }),
               ...(selectedSkillSlugs.length > 0 && {
                 context: {
                   skillSlugs: selectedSkillSlugs,
@@ -353,6 +368,7 @@ export default function NewTaskPage() {
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
             ...(objectiveId && { objectiveId }),
+            ...(runnerPreference !== 'any' && { runnerPreference }),
             ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
             ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
           }),
@@ -739,7 +755,7 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning') && (
+                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || runnerPreference !== 'any') && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -760,6 +776,30 @@ export default function NewTaskPage() {
                       defaultValue="5"
                       className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                     />
+                  </div>
+
+                  {/* Runner preference */}
+                  <div>
+                    <label htmlFor="runnerPreference" className="block text-sm font-medium mb-2">
+                      Runner Preference
+                    </label>
+                    <Select
+                      id="runnerPreference"
+                      value={runnerPreference}
+                      onChange={(v) => setRunnerPreference(v as RunnerPreferenceValue)}
+                      options={[
+                        { value: 'any', label: 'Any runner' },
+                        { value: 'user', label: 'User runners only' },
+                        { value: 'service', label: 'Service runners only' },
+                        { value: 'action', label: 'Action runners only' },
+                      ]}
+                    />
+                    <p className="text-xs text-text-secondary mt-1">
+                      Only runners of this type can claim the task.
+                      {runnerPreference !== 'any' && (
+                        <span className="text-primary ml-1">(overriding workspace default)</span>
+                      )}
+                    </p>
                   </div>
 
                   {/* Structured output schema (one-time tasks only) */}

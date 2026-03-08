@@ -458,7 +458,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Attach secretRefs for server-managed credentials (anthropic_api_key and/or oauth_token)
+  // Attach secretRefs for server-managed credentials (API key and/or OAuth token)
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     try {
       const accountSecrets = await db.query.secrets.findMany({
@@ -471,14 +471,17 @@ export async function POST(req: NextRequest) {
 
       if (accountSecrets.length > 0) {
         const provider = getSecretsProvider();
+        const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
+        const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
+
         for (const cw of claimedWorkers) {
-          for (const secret of accountSecrets) {
-            const ref = await provider.createRef(secret.id, cw.id, 300);
-            if (secret.purpose === 'anthropic_api_key') {
-              (cw as any).secretRef = ref;
-            } else if (secret.purpose === 'oauth_token') {
-              (cw as any).oauthSecretRef = ref;
-            }
+          if (apiKeySecret) {
+            const ref = await provider.createRef(apiKeySecret.id, cw.id, 300);
+            (cw as any).secretRef = ref;
+          }
+          if (oauthSecret) {
+            const ref = await provider.createRef(oauthSecret.id, cw.id, 300);
+            (cw as any).oauthSecretRef = ref;
           }
         }
       }
