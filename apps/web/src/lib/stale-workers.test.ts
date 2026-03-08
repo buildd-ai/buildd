@@ -18,12 +18,6 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => [{ id: 'new-task-id' }]),
   })),
 }));
-const mockResolveCompletedTask = mock(() => Promise.resolve());
-
-mock.module('@/lib/task-dependencies', () => ({
-  resolveCompletedTask: mockResolveCompletedTask,
-}));
-
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -36,7 +30,20 @@ mock.module('@buildd/core/db', () => ({
       return mockTasksUpdate();
     },
     insert: () => mockTasksInsert(),
+    // resolveCompletedTask (called internally) uses db.select().from().where()
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([]),
+      }),
+    }),
   },
+}));
+
+// Mock pusher so resolveCompletedTask (called at end of cleanup) is a no-op
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+  channels: { workspace: (id: string) => `workspace-${id}` },
+  events: { CHILDREN_COMPLETED: 'task:children_completed', TASK_UNBLOCKED: 'task:unblocked' },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -63,8 +70,6 @@ describe('cleanupStuckWaitingInput', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockTasksInsert.mockReset();
-    mockResolveCompletedTask.mockReset();
-
     // Default chains
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
@@ -219,11 +224,15 @@ describe('cleanupStuckWaitingInput', () => {
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         objectiveId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
+      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
+      .mockResolvedValueOnce({ parentTaskId: null })
       .mockResolvedValueOnce({
         id: 'task-2', workspaceId: 'ws-1', title: 'Task 2', description: 'Desc 2',
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         objectiveId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
-      });
+      })
+      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
+      .mockResolvedValueOnce({ parentTaskId: null });
 
     const result = await cleanupStuckWaitingInput();
 
