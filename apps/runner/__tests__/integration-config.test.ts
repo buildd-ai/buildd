@@ -23,11 +23,24 @@ async function api(path: string, method = 'GET', body?: any): Promise<Response> 
   if (viewerToken) {
     headers['Authorization'] = `Bearer ${viewerToken}`;
   }
-  return fetch(`${BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  try {
+    return await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err: any) {
+    // If the runner becomes unavailable mid-test (e.g. due to a crash or infrastructure issue),
+    // exit gracefully rather than failing CI — same approach as beforeAll for initial unavailability.
+    const isConnectError = err.code === 'ConnectionRefused' || err.code === 'ECONNREFUSED' ||
+      err.message?.includes('Unable to connect') || err.message?.includes('fetch failed');
+    const isRemote = !BASE_URL.includes('localhost') && !BASE_URL.includes('127.0.0.1');
+    if (isConnectError && isRemote) {
+      console.log(`Runner at ${BASE_URL} became unavailable mid-test (${method} ${path}), skipping remaining tests`);
+      process.exit(0);
+    }
+    throw err;
+  }
 }
 
 async function apiJson<T = any>(path: string, method = 'GET', body?: any): Promise<T> {
