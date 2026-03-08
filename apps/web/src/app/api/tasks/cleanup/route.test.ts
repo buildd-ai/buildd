@@ -213,6 +213,56 @@ describe('POST /api/tasks/cleanup', () => {
     expect(data.cleaned.retriedTasks).toBe(2);
   });
 
+  it('clears claimedBy, claimedAt, and expiresAt when resetting orphaned tasks to pending', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    // Call sequence for mockWorkersFindMany:
+    // 1. Stalled running workers → empty
+    // 2. Workers for orphan task → all failed (no active)
+    // 3. Active account IDs for per-account cleanup → empty
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // stalled running
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])  // task workers - all failed
+      .mockResolvedValueOnce([]);  // active account IDs
+
+    // Orphaned task: assigned, stale > 2 hours
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'orphan-task-1',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+
+    // Capture the set() argument for the task update
+    let capturedSetData: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSetData = data;
+        return {
+          where: mock(() => Promise.resolve()),
+        };
+      }),
+    });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    // Verify claim fields were cleared so task is claimable again
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.status).toBe('pending');
+    expect(capturedSetData.claimedBy).toBeNull();
+    expect(capturedSetData.claimedAt).toBeNull();
+    expect(capturedSetData.expiresAt).toBeNull();
+  });
+
   it('fails workers when their heartbeat is stale (runner offline)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);

@@ -122,6 +122,9 @@ export async function POST(req: NextRequest) {
         .update(tasks)
         .set({
           status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
           updatedAt: now,
         })
         .where(eq(tasks.id, task.id));

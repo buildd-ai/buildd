@@ -567,6 +567,45 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(capturedSetData.project).toBeUndefined();
   });
 
+  it('clears claimedBy, claimedAt, and expiresAt when resetting status to pending', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      claimedBy: 'account-1',
+      claimedAt: new Date(),
+      expiresAt: new Date(),
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    let capturedSetData: any = null;
+    const updatedTask = { ...mockTask, status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null };
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { status: 'pending' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    // Regression test: claim fields must be cleared so the task is claimable again
+    expect(capturedSetData.status).toBe('pending');
+    expect(capturedSetData.claimedBy).toBeNull();
+    expect(capturedSetData.claimedAt).toBeNull();
+    expect(capturedSetData.expiresAt).toBeNull();
+  });
+
   it('allows API key auth to update task', async () => {
     const mockTask = {
       id: 'task-123',
