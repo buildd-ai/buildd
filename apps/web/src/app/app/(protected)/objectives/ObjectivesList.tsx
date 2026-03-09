@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Select } from '@/components/ui/Select';
+import { CronPresets } from '@/components/CronPresets';
+import { useBrowserTimezone } from '@/hooks/useBrowserTimezone';
 
 const STATUS_COLORS: Record<string, string> = {
   active: 'bg-status-success/15 text-status-success',
@@ -55,6 +57,7 @@ export default function ObjectivesList({
   const [isPending, startTransition] = useTransition();
   const [creating, setCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const detectedTimezone = useBrowserTimezone('UTC');
 
   // Form fields
   const [title, setTitle] = useState('');
@@ -171,19 +174,14 @@ export default function ObjectivesList({
           {/* Schedule */}
           <div>
             <label className="block text-xs text-text-muted mb-1">Schedule (optional)</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={cronExpression}
-                onChange={e => setCronExpression(e.target.value)}
-                placeholder="e.g. 0 9 * * 1 (Mon 9am)"
-                className="flex-1 px-3 py-1.5 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                disabled={creating}
-              />
-              {cronExpression && !workspaceId && (
-                <span className="text-xs text-status-warning shrink-0">Needs workspace</span>
-              )}
-            </div>
+            <CronPresets
+              value={cronExpression}
+              onChange={setCronExpression}
+              timezone={detectedTimezone}
+            />
+            {cronExpression && !workspaceId && (
+              <p className="text-xs text-status-warning mt-1">Needs workspace</p>
+            )}
           </div>
 
           <div className="flex gap-2 pt-1">

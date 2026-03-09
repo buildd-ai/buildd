@@ -70,6 +70,7 @@ export async function POST(
       timezone = 'UTC',
       taskTemplate,
       enabled = true,
+      oneShot = false,
       maxConcurrentFromSchedule = 1,
       pauseAfterFailures = 5,
     } = body;
@@ -99,6 +100,7 @@ export async function POST(
         timezone,
         taskTemplate,
         enabled,
+        oneShot,
         nextRunAt,
         maxConcurrentFromSchedule,
         pauseAfterFailures,
