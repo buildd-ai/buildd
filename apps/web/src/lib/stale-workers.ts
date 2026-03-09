@@ -154,6 +154,38 @@ export async function cleanupStaleWorkers(accountId: string) {
 }
 
 /**
+ * Detect workers that are candidates for recovery (stuck but not yet expired).
+ *
+ * Returns workers that have been inactive for 5-15 minutes (before the auto-expire
+ * threshold). This window allows the recovery system to attempt diagnosis/restart
+ * before the blunt stale-expiry kicks in.
+ */
+export async function detectRecoverableWorkers(accountId: string) {
+  const RECOVERY_WINDOW_MIN_MS = 5 * 60 * 1000;   // 5 minutes: start considering recovery
+  const RECOVERY_WINDOW_MAX_MS = 15 * 60 * 1000;   // 15 minutes: auto-expire kicks in
+  const recoveryMin = new Date(Date.now() - RECOVERY_WINDOW_MAX_MS);
+  const recoveryMax = new Date(Date.now() - RECOVERY_WINDOW_MIN_MS);
+
+  const recoverableWorkers = await db.query.workers.findMany({
+    where: and(
+      eq(workers.accountId, accountId),
+      inArray(workers.status, ['running', 'starting']),
+      gt(workers.updatedAt, recoveryMin),  // Not yet expired (updated after 15-min-ago)
+      lt(workers.updatedAt, recoveryMax),  // But stale enough (updated before 5-min-ago)
+    ),
+    columns: { id: true, taskId: true, status: true, updatedAt: true, currentAction: true },
+  });
+
+  return recoverableWorkers.map(w => ({
+    workerId: w.id,
+    taskId: w.taskId,
+    status: w.status,
+    staleSinceMs: Date.now() - (w.updatedAt?.getTime() || 0),
+    currentAction: w.currentAction,
+  }));
+}
+
+/**
  * Clean up workers stuck in waiting_input for 24+ hours.
  *
  * Instead of just resetting to pending, this creates a new retry task

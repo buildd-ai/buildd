@@ -499,6 +499,9 @@ export class WorkerManager {
           await this.rollback(workerId, command.checkpointUuid);
         }
         break;
+      case 'recover':
+        await this.handleRecovery(workerId, command.recoveryMode || 'diagnose', command.recoveryContext);
+        break;
     }
   }
 
@@ -1897,8 +1900,8 @@ export class WorkerManager {
         promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
       }
 
-      // Add task metadata
-      promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
+      // Add task metadata (workerId enables MCP tools to auto-resolve context)
+      promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
       const promptText = promptParts.join('\n\n');
 
@@ -2064,10 +2067,11 @@ export class WorkerManager {
       };
 
       // Attach Buildd MCP server (HTTP remote) so workers can list/update/create tasks
+      // Include workerId so MCP tools (update_progress, complete_task, etc.) auto-resolve the worker
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}`,
+          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}&workerId=${encodeURIComponent(worker.id)}`,
           headers: {
             Authorization: `Bearer ${this.config.apiKey}`,
           },
@@ -2827,6 +2831,135 @@ export class WorkerManager {
         // Ignore - worker may already be done on server
       }
       this.emit({ type: 'worker_update', worker });
+    }
+  }
+
+  /**
+   * Handle worker recovery commands from the server.
+   *
+   * Modes:
+   * - diagnose: Collect diagnostic info and report back to server
+   * - complete: Mark the worker as completed with provided context
+   * - restart: Abort current session and restart with a fresh worker for the same task
+   */
+  private async handleRecovery(workerId: string, mode: string, context?: string) {
+    const worker = this.workers.get(workerId);
+    if (!worker) {
+      console.log(`[Recovery] Worker ${workerId} not found locally`);
+      return;
+    }
+
+    console.log(`[Recovery] Worker ${workerId}: mode=${mode}`);
+
+    switch (mode) {
+      case 'diagnose': {
+        // Collect diagnostic information about the worker
+        const session = this.sessions.get(workerId);
+        const diagnostics = {
+          workerId,
+          localStatus: worker.status,
+          hasSession: !!session,
+          lastActivity: worker.lastActivity,
+          staleDurationMs: Date.now() - worker.lastActivity,
+          milestoneCount: worker.milestones.length,
+          lastMilestone: worker.milestones[worker.milestones.length - 1] || null,
+          currentAction: worker.currentAction,
+          error: worker.error,
+          toolCallCount: worker.toolCalls.length,
+          lastToolCall: worker.toolCalls[worker.toolCalls.length - 1] || null,
+          hasWorktree: !!worker.worktreePath,
+          branch: worker.branch,
+          commitCount: worker.commits.length,
+          lastAssistantMessage: worker.lastAssistantMessage?.slice(0, 500),
+        };
+
+        // Report diagnostics back to server
+        try {
+          await this.buildd.updateWorker(workerId, {
+            currentAction: `Diagnostics collected (${mode})`,
+            milestones: [
+              ...worker.milestones,
+              { type: 'status' as const, label: `Recovery diagnosis: ${JSON.stringify(diagnostics).slice(0, 200)}`, ts: Date.now() },
+            ],
+          });
+        } catch (err) {
+          console.error(`[Recovery] Failed to report diagnostics for ${workerId}:`, err);
+        }
+        break;
+      }
+
+      case 'complete': {
+        // Force-complete the worker with optional context
+        const session = this.sessions.get(workerId);
+        if (session) {
+          session.abortController.abort();
+          session.inputStream.end();
+          this.sessions.delete(workerId);
+        }
+
+        worker.status = 'done';
+        worker.completedAt = Date.now();
+        worker.currentAction = 'Completed via recovery';
+        worker.hasNewActivity = true;
+        this.addMilestone(worker, { type: 'status', label: 'Completed via recovery', ts: Date.now() });
+        this.emit({ type: 'worker_update', worker });
+
+        try {
+          await this.buildd.updateWorker(workerId, {
+            status: 'completed',
+            summary: context || 'Completed via server recovery',
+          });
+        } catch (err) {
+          console.error(`[Recovery] Failed to complete worker ${workerId}:`, err);
+        }
+
+        this.unsubscribeFromWorker(workerId);
+        break;
+      }
+
+      case 'restart': {
+        // Abort current session, then let the server create a new worker
+        // The server handles creating the new worker — runner just cleans up
+        const session = this.sessions.get(workerId);
+        if (session) {
+          session.abortController.abort();
+          session.inputStream.end();
+          this.sessions.delete(workerId);
+        }
+
+        worker.status = 'error';
+        worker.error = 'Restarted via recovery';
+        worker.completedAt = Date.now();
+        worker.currentAction = 'Restarted via recovery';
+        worker.hasNewActivity = true;
+        this.addMilestone(worker, { type: 'status', label: 'Restarted via recovery', ts: Date.now() });
+        this.emit({ type: 'worker_update', worker });
+
+        try {
+          await this.buildd.updateWorker(workerId, {
+            status: 'failed',
+            error: 'Restarted via recovery',
+          });
+        } catch (err) {
+          console.error(`[Recovery] Failed to update worker ${workerId} for restart:`, err);
+        }
+
+        this.unsubscribeFromWorker(workerId);
+
+        // Clean up worktree if it exists
+        if (worker.worktreePath) {
+          const worktreeMarker = join('.buildd-worktrees', '');
+          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
+          const repoPath = worktreeIdx > 0
+            ? worker.worktreePath.substring(0, worktreeIdx)
+            : worker.worktreePath;
+          this.cleanupWorktree(repoPath, worker.worktreePath, workerId).catch(() => {});
+        }
+        break;
+      }
+
+      default:
+        console.warn(`[Recovery] Unknown recovery mode: ${mode}`);
     }
   }
 

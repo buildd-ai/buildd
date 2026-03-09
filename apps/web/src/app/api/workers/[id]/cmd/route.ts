@@ -46,10 +46,10 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { action, text } = body;
+  const { action, text, recoveryMode, recoveryContext } = body;
 
-  // Valid actions: pause, resume, abort, message
-  const validActions = ['pause', 'resume', 'abort', 'message'];
+  // Valid actions: pause, resume, abort, message, recover
+  const validActions = ['pause', 'resume', 'abort', 'message', 'recover'];
   if (!validActions.includes(action)) {
     return NextResponse.json(
       { error: `Invalid action. Must be one of: ${validActions.join(', ')}` },
@@ -61,7 +61,7 @@ export async function POST(
   await triggerEvent(
     channels.worker(id),
     events.WORKER_COMMAND,
-    { action, text, timestamp: Date.now() }
+    { action, text, timestamp: Date.now(), ...(recoveryMode ? { recoveryMode } : {}), ...(recoveryContext ? { recoveryContext } : {}) }
   );
 
   return NextResponse.json({ ok: true, action });

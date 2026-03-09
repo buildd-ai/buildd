@@ -143,7 +143,7 @@ async function getMemoryClientForTeam(workspaceId: string | null | undefined, fa
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -184,6 +184,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   };
 
   const ctx: ActionContext = {
+    workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
     getWorkspaceId,
     getLevel: async () => accountLevel,
@@ -293,7 +294,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             isError: true,
           };
         }
-        return await handleMemoryAction(memClient, action, params, { project: repoName });
+        return await handleMemoryAction(memClient, action, params, { project: repoName, workerId });
       } else {
         throw new Error(`Unknown tool: ${name}`);
       }
@@ -474,10 +475,11 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
-  // Resolve workspace from query params: ?workspace= (ID) or ?repo= (repo name)
+  // Resolve workspace and worker from query params
   const url = new URL(req.url);
   const workspaceParam = url.searchParams.get("workspace");
   const repoParam = url.searchParams.get("repo");
+  const workerIdParam = url.searchParams.get("workerId") || undefined;
   let workspaceId: string | undefined;
 
   if (workspaceParam) {
@@ -507,7 +509,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerIdParam);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless
