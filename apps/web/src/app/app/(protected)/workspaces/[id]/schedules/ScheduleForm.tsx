@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { CronPresets } from '@/components/CronPresets';
+import { useBrowserTimezone } from '@/hooks/useBrowserTimezone';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 
 interface Props {
@@ -20,6 +22,7 @@ interface Props {
       runnerPreference?: string;
     };
     enabled: boolean;
+    oneShot: boolean;
     maxConcurrentFromSchedule: number;
     pauseAfterFailures: number;
   };
@@ -28,6 +31,7 @@ interface Props {
 export function ScheduleForm({ workspaceId, initialData }: Props) {
   const router = useRouter();
   const isEdit = !!initialData;
+  const detectedTimezone = useBrowserTimezone('UTC');
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,8 +39,18 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
   // Schedule fields
   const [name, setName] = useState(initialData?.name || '');
+  const [oneShot, setOneShot] = useState(initialData?.oneShot ?? false);
+  const [runAtDate, setRunAtDate] = useState('');
+  const [runAtTime, setRunAtTime] = useState('');
   const [cronExpression, setCronExpression] = useState(initialData?.cronExpression || '0 9 * * *');
   const [timezone, setTimezone] = useState(initialData?.timezone || 'UTC');
+
+  // Auto-detect timezone for new schedules (not edits)
+  useEffect(() => {
+    if (!isEdit && detectedTimezone !== 'UTC') {
+      setTimezone(detectedTimezone);
+    }
+  }, [isEdit, detectedTimezone]);
   const [enabled, setEnabled] = useState(initialData?.enabled ?? true);
   const [maxConcurrent, setMaxConcurrent] = useState(initialData?.maxConcurrentFromSchedule ?? 1);
   const [pauseAfterFailures, setPauseAfterFailures] = useState(initialData?.pauseAfterFailures ?? 5);
@@ -51,6 +65,11 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
   const [cronPreview, setCronPreview] = useState<{ valid: boolean; description?: string; nextRuns?: string[] } | null>(null);
 
   useEffect(() => {
+    // Skip cron preview for one-shot with datetime picker
+    if (oneShot && runAtDate) {
+      setCronPreview(null);
+      return;
+    }
     const timer = setTimeout(async () => {
       if (!cronExpression.trim()) {
         setCronPreview(null);
@@ -68,18 +87,28 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [cronExpression, timezone, workspaceId]);
+  }, [cronExpression, timezone, workspaceId, oneShot, runAtDate]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(null);
 
+    // For one-shot schedules with a specific datetime, build a cron expression
+    let finalCron = cronExpression;
+    if (oneShot && runAtDate && runAtTime) {
+      const [year, month, day] = runAtDate.split('-').map(Number);
+      const [hour, minute] = runAtTime.split(':').map(Number);
+      // Build cron for that exact time: minute hour day month *
+      finalCron = `${minute} ${hour} ${day} ${month} *`;
+    }
+
     const body = {
       name,
-      cronExpression,
+      cronExpression: finalCron,
       timezone,
       enabled,
+      oneShot,
       maxConcurrentFromSchedule: maxConcurrent,
       pauseAfterFailures,
       taskTemplate: {
@@ -134,40 +163,79 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
             />
           </div>
 
-          {/* Cron expression */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Cron Expression</label>
-            <input
-              type="text"
-              value={cronExpression}
-              onChange={(e) => setCronExpression(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
-              placeholder="0 9 * * *"
-              required
-            />
-            {cronPreview && (
-              <div className="mt-2">
-                {cronPreview.valid ? (
-                  <div className="text-sm">
-                    <p className="text-status-success">{cronPreview.description}</p>
-                    {cronPreview.nextRuns && cronPreview.nextRuns.length > 0 && (
-                      <div className="text-text-muted mt-1">
-                        <p className="text-xs font-medium">Next runs:</p>
-                        {cronPreview.nextRuns.map((run, i) => (
-                          <p key={i} className="text-xs">{run}</p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-sm text-status-error">{cronPreview.description}</p>
-                )}
-              </div>
+          {/* One-shot toggle */}
+          <div className="flex items-center gap-3">
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={oneShot}
+                onChange={(e) => setOneShot(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-surface-3 peer-focus:outline-none rounded-full peer peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+            </label>
+            <span className="text-sm font-medium">Run once only</span>
+            {oneShot && (
+              <span className="text-xs text-text-muted">Schedule will auto-disable after firing</span>
             )}
-            <p className="text-xs text-text-muted mt-1">
-              Standard 5-field cron: minute hour day-of-month month day-of-week
-            </p>
           </div>
+
+          {/* Schedule timing: datetime picker for one-shot, cron for recurring */}
+          {oneShot ? (
+            <div>
+              <label className="block text-sm font-medium mb-1">Run At</label>
+              <div className="flex gap-3">
+                <input
+                  type="date"
+                  value={runAtDate}
+                  onChange={(e) => setRunAtDate(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                  required
+                />
+                <input
+                  type="time"
+                  value={runAtTime}
+                  onChange={(e) => setRunAtTime(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                  required
+                />
+              </div>
+              <p className="text-xs text-text-muted mt-1">
+                Select the date and time to run the task (in selected timezone)
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium mb-1">Schedule</label>
+              <CronPresets
+                value={cronExpression}
+                onChange={setCronExpression}
+                timezone={timezone}
+              />
+              {cronPreview && (
+                <div className="mt-2">
+                  {cronPreview.valid ? (
+                    <div className="text-sm">
+                      <p className="text-status-success">{cronPreview.description}</p>
+                      {cronPreview.nextRuns && cronPreview.nextRuns.length > 0 && (
+                        <div className="text-text-muted mt-1">
+                          <p className="text-xs font-medium">Next runs:</p>
+                          {cronPreview.nextRuns.map((run, i) => (
+                            <p key={i} className="text-xs">{run}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-status-error">{cronPreview.description}</p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-text-muted mt-1">
+                Standard 5-field cron: minute hour day-of-month month day-of-week
+              </p>
+            </div>
+          )}
 
           {/* Timezone */}
           <div>

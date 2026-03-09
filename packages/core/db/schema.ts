@@ -483,6 +483,7 @@ export const taskSchedules = pgTable('task_schedules', {
   timezone: text('timezone').default('UTC').notNull(),
   taskTemplate: jsonb('task_template').notNull().$type<TaskScheduleTemplate>(),
   enabled: boolean('enabled').default(true).notNull(),
+  oneShot: boolean('one_shot').default(false).notNull(),
   nextRunAt: timestamp('next_run_at', { withTimezone: true }),
   lastRunAt: timestamp('last_run_at', { withTimezone: true }),
   lastTaskId: uuid('last_task_id'),

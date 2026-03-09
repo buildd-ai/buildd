@@ -1,0 +1,1 @@
+ALTER TABLE "task_schedules" ADD COLUMN "one_shot" boolean DEFAULT false NOT NULL;
