@@ -6,7 +6,17 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import StatusBadge from '@/components/StatusBadge';
+import MarkdownContent from '@/components/MarkdownContent';
 import ObjectiveActions from './ObjectiveActions';
+import {
+  extractRunHistory,
+  getLatestReport,
+  collectArtifacts,
+  categorizeArtifacts,
+  collectRecentActivity,
+  extractInsights,
+  timeAgo,
+} from './objective-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,17 +32,6 @@ const PRIORITY_LABELS: Record<number, string> = {
   5: 'Medium',
   10: 'High',
 };
-
-function timeAgo(date: Date | string): string {
-  const ms = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 export default async function ObjectiveDetailPage({
   params,
@@ -86,59 +85,19 @@ export default async function ObjectiveDetailPage({
   const activeTasks = objective.tasks?.filter(t => !['completed', 'failed'].includes(t.status)) || [];
   const doneTasks = objective.tasks?.filter(t => ['completed', 'failed'].includes(t.status)) || [];
 
-  // Planning history — completed planning tasks
-  const planningHistory = objective.tasks?.filter(t => t.mode === 'planning' && t.status === 'completed') || [];
-
-  // Insights — structured outputs from completed execution tasks
-  const insights = objective.tasks
-    ?.filter(t => t.mode !== 'planning' && t.status === 'completed' && (t.result as any)?.structuredOutput)
-    .map(t => ({
-      taskId: t.id,
-      title: t.title,
-      structuredOutput: (t.result as any).structuredOutput,
-      createdAt: t.createdAt,
-    })) || [];
+  // Derived data using extracted helpers
+  const taskData = (objective.tasks || []) as unknown as import('./objective-helpers').TaskData[];
+  const runHistory = extractRunHistory(taskData);
+  const latestReport = getLatestReport(runHistory);
+  const insights = extractInsights(taskData);
+  const allArtifacts = collectArtifacts(taskData);
+  const { keyed: keyedArtifacts, regular: regularArtifacts } = categorizeArtifacts(allArtifacts);
+  const recentActivity = collectRecentActivity(taskData);
 
   // Configuration from schedule template
   const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
   const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
   const recipeId = templateContext?.recipeId as string | undefined;
-
-  // Collect all artifacts across all workers
-  const allArtifacts = objective.tasks?.flatMap(t =>
-    t.workers?.flatMap(w =>
-      (w.artifacts || []).map(a => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
-    ) || []
-  ) || [];
-
-  // Collect recent worker activity across all tasks
-  const recentActivity = objective.tasks
-    ?.flatMap(t =>
-      (t.workers || []).map(w => ({
-        taskId: t.id,
-        taskTitle: t.title,
-        workerId: w.id,
-        status: w.status,
-        currentAction: w.currentAction,
-        prUrl: w.prUrl,
-        prNumber: w.prNumber,
-        branch: w.branch,
-        turns: w.turns,
-        costUsd: w.costUsd,
-        commitCount: w.commitCount,
-        filesChanged: w.filesChanged,
-        startedAt: w.startedAt,
-        completedAt: w.completedAt,
-      }))
-    )
-    .sort((a, b) => {
-      const aTime = a.completedAt || a.startedAt;
-      const bTime = b.completedAt || b.startedAt;
-      if (!bTime) return -1;
-      if (!aTime) return 1;
-      return new Date(bTime).getTime() - new Date(aTime).getTime();
-    })
-    .slice(0, 8) || [];
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -277,44 +236,108 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
-      {/* Planning History */}
-      {planningHistory.length > 0 && (
+      {/* Latest Report — prominent display of most recent run summary */}
+      {latestReport && (
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide">
+              Latest Report
+            </h2>
+            <span className="text-xs text-text-muted">{timeAgo(latestReport.createdAt)}</span>
+          </div>
+          <div className="p-5 bg-surface-2 border border-border-default rounded-[10px]">
+            <MarkdownContent content={latestReport.summary!} />
+            <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border-default/50">
+              <Link
+                href={`/app/tasks/${latestReport.taskId}`}
+                className="text-xs text-primary hover:underline"
+              >
+                View full task
+              </Link>
+              {latestReport.objectiveComplete && (
+                <span className="text-xs bg-status-success/10 text-status-success px-2 py-0.5 rounded-full">
+                  Objective complete
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Keyed Artifacts — persistent state artifacts updated across runs */}
+      {keyedArtifacts.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-            Planning History ({planningHistory.length})
+            Pinned Artifacts ({keyedArtifacts.length})
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {keyedArtifacts.map(a => (
+              <div
+                key={a.id}
+                className="p-4 bg-surface-2 border border-primary/20 rounded-[10px] hover:border-primary/40 transition-colors"
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider bg-primary/10 text-primary rounded">
+                    {a.type}
+                  </span>
+                  <span className="text-xs text-text-muted font-mono truncate">{a.key}</span>
+                </div>
+                <span className="text-sm font-medium text-text-primary block truncate">
+                  {a.title || a.key || 'Untitled'}
+                </span>
+                <div className="flex items-center justify-between mt-2 text-xs text-text-muted">
+                  <span className="truncate">{a.taskTitle}</span>
+                  {a.shareToken && (
+                    <a
+                      href={`/share/${a.shareToken}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline shrink-0 ml-2"
+                    >
+                      View
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Run History — completed planning/recurring task runs */}
+      {runHistory.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
+            Run History ({runHistory.length})
           </h2>
           <div className="space-y-2">
-            {planningHistory.map(task => {
-              const result = task.result as Record<string, unknown> | null;
-              const summary = result?.summary as string | undefined;
-              const structured = result?.structuredOutput as Record<string, unknown> | undefined;
-              const tasksCreated = structured?.tasksCreated as number | undefined;
-              return (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="block p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <svg className="w-4 h-4 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                      </svg>
-                      <span className="text-sm text-text-primary">{timeAgo(task.createdAt)}</span>
-                      {tasksCreated !== undefined && (
-                        <span className="text-xs text-text-muted">({tasksCreated} task{tasksCreated !== 1 ? 's' : ''} created)</span>
-                      )}
-                    </div>
-                    {!!structured?.objectiveComplete && (
-                      <span className="text-xs bg-status-success/10 text-status-success px-2 py-0.5 rounded-full">Complete</span>
+            {runHistory.map(run => (
+              <Link
+                key={run.taskId}
+                href={`/app/tasks/${run.taskId}`}
+                className="block p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-sm text-text-primary">{timeAgo(run.createdAt)}</span>
+                    {run.tasksCreated !== undefined && (
+                      <span className="text-xs text-text-muted">({run.tasksCreated} task{run.tasksCreated !== 1 ? 's' : ''} created)</span>
                     )}
                   </div>
-                  {summary && (
-                    <p className="text-xs text-text-muted mt-2 line-clamp-3">{summary}</p>
+                  {run.objectiveComplete && (
+                    <span className="text-xs bg-status-success/10 text-status-success px-2 py-0.5 rounded-full">Complete</span>
                   )}
-                </Link>
-              );
-            })}
+                </div>
+                {run.summary && (
+                  <div className="mt-2 text-xs text-text-muted">
+                    <MarkdownContent content={run.summary} className="prose-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1" />
+                  </div>
+                )}
+              </Link>
+            ))}
           </div>
         </div>
       )}
@@ -474,9 +497,9 @@ export default async function ObjectiveDetailPage({
                     )}
                   </div>
                   {task.result && (task.result as any).summary && (
-                    <p className="text-xs text-text-muted mt-1.5 ml-[calc(2.5rem)] line-clamp-2">
-                      {(task.result as any).summary}
-                    </p>
+                    <div className="text-xs text-text-muted mt-1.5 ml-[calc(2.5rem)]">
+                      <MarkdownContent content={(task.result as any).summary} className="prose-xs [&_p]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs line-clamp-3" />
+                    </div>
                   )}
                 </Link>
               );
@@ -485,14 +508,14 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
-      {/* Artifacts */}
-      {allArtifacts.length > 0 && (
+      {/* Regular Artifacts (non-keyed) */}
+      {regularArtifacts.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-            Artifacts ({allArtifacts.length})
+            Artifacts ({regularArtifacts.length})
           </h2>
           <div className="space-y-2">
-            {allArtifacts.map(a => (
+            {regularArtifacts.map(a => (
               <div
                 key={a.id}
                 className="flex items-center gap-3 p-3 bg-surface-2 border border-border-default rounded-lg"

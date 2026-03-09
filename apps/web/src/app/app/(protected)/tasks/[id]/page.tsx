@@ -599,7 +599,9 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     {result.summary && (
-                      <p className="text-sm text-text-secondary mt-2">{result.summary}</p>
+                      <div className="text-sm text-text-secondary mt-2">
+                        <MarkdownContent content={result.summary} />
+                      </div>
                     )}
                   </div>
                 )}
@@ -662,9 +664,12 @@ export default async function TaskDetailPage({
                       </a>
                     )}
                     {(art.type === 'content' || art.type === 'report' || art.type === 'summary') && art.content && (
-                      <p className="text-sm text-text-secondary line-clamp-3">
-                        {art.content.length > 500 ? art.content.slice(0, 500) + '...' : art.content}
-                      </p>
+                      <div className="text-sm text-text-secondary max-h-48 overflow-hidden relative">
+                        <MarkdownContent content={art.content} />
+                        {art.content.length > 500 && (
+                          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-surface-2 to-transparent" />
+                        )}
+                      </div>
                     )}
                     {art.type === 'data' && art.content && (
                       <pre className="text-xs font-mono text-text-muted mt-1 line-clamp-3 overflow-hidden">

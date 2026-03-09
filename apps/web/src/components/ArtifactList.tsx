@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import MarkdownContent from '@/components/MarkdownContent';
+import { getArtifactPreview } from '@/components/artifact-helpers';
 
 interface ArtifactItem {
   id: string;
@@ -60,19 +62,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
   }
 
   function getPreview(artifact: ArtifactItem): string | null {
-    const meta = artifact.metadata;
-    if (artifact.type === 'link') {
-      return (meta?.url as string) || null;
-    }
-    if (!artifact.content) return null;
-    if (artifact.type === 'data') {
-      try {
-        return JSON.stringify(JSON.parse(artifact.content), null, 2).slice(0, 200);
-      } catch {
-        return artifact.content.slice(0, 200);
-      }
-    }
-    return artifact.content.slice(0, 200);
+    return getArtifactPreview(artifact);
   }
 
   if (artifacts.length === 0) {
@@ -175,9 +165,9 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                       {preview}
                     </pre>
                   ) : (
-                    <p className="text-xs text-text-secondary line-clamp-3">
-                      {preview}
-                    </p>
+                    <div className="text-xs text-text-secondary line-clamp-4 overflow-hidden">
+                      <MarkdownContent content={preview} className="prose-xs [&_p]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_ul]:my-0.5 [&_ol]:my-0.5" />
+                    </div>
                   )}
                 </div>
               )}
