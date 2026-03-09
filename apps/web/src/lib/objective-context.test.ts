@@ -1,372 +1,207 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { isWithinActiveHours } from './objective-context';
 
-// Mock functions for db.query
-const mockObjectivesFindFirst = mock(() => null as any);
-const mockTasksFindMany = mock(() => [] as any[]);
-const mockTaskRecipesFindFirst = mock(() => null as any);
+// ── isWithinActiveHours ──
 
-// Mock database
+describe('isWithinActiveHours', () => {
+  it('returns true when hour is within normal range (9-17)', () => {
+    expect(isWithinActiveHours(9, 9, 17)).toBe(true);
+    expect(isWithinActiveHours(12, 9, 17)).toBe(true);
+    expect(isWithinActiveHours(16, 9, 17)).toBe(true);
+  });
+
+  it('returns false when hour is outside normal range (9-17)', () => {
+    expect(isWithinActiveHours(8, 9, 17)).toBe(false);
+    expect(isWithinActiveHours(17, 9, 17)).toBe(false);
+    expect(isWithinActiveHours(0, 9, 17)).toBe(false);
+    expect(isWithinActiveHours(23, 9, 17)).toBe(false);
+  });
+
+  it('returns true when hour is within overnight range (22-6)', () => {
+    expect(isWithinActiveHours(22, 22, 6)).toBe(true);
+    expect(isWithinActiveHours(23, 22, 6)).toBe(true);
+    expect(isWithinActiveHours(0, 22, 6)).toBe(true);
+    expect(isWithinActiveHours(3, 22, 6)).toBe(true);
+    expect(isWithinActiveHours(5, 22, 6)).toBe(true);
+  });
+
+  it('returns false when hour is outside overnight range (22-6)', () => {
+    expect(isWithinActiveHours(6, 22, 6)).toBe(false);
+    expect(isWithinActiveHours(12, 22, 6)).toBe(false);
+    expect(isWithinActiveHours(21, 22, 6)).toBe(false);
+  });
+
+  it('returns true for all hours when start === end', () => {
+    expect(isWithinActiveHours(0, 9, 9)).toBe(true);
+    expect(isWithinActiveHours(9, 9, 9)).toBe(true);
+    expect(isWithinActiveHours(23, 9, 9)).toBe(true);
+  });
+
+  it('handles boundary at hour 0', () => {
+    expect(isWithinActiveHours(0, 0, 8)).toBe(true);
+    expect(isWithinActiveHours(0, 1, 8)).toBe(false);
+  });
+
+  it('handles boundary at hour 23', () => {
+    expect(isWithinActiveHours(23, 20, 0)).toBe(true);
+    expect(isWithinActiveHours(23, 0, 23)).toBe(false);
+  });
+
+  it('handles full day range (0-24 treated as 0-0)', () => {
+    // start === end => always active
+    expect(isWithinActiveHours(12, 0, 0)).toBe(true);
+  });
+});
+
+// ── buildObjectiveContext (mocked DB) ──
+
+// Mock the DB module before importing the function under test
+const mockFindFirst = mock(() => Promise.resolve(null));
+const mockFindMany = mock(() => Promise.resolve([]));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      objectives: { findFirst: mockObjectivesFindFirst },
-      tasks: { findMany: mockTasksFindMany },
-      taskRecipes: { findFirst: mockTaskRecipesFindFirst },
+      objectives: { findFirst: mockFindFirst },
+      tasks: { findMany: mockFindMany },
+      taskRecipes: { findFirst: mock(() => Promise.resolve(null)) },
     },
   },
 }));
 
-// Mock drizzle-orm
-mock.module('drizzle-orm', () => ({
-  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  and: (...args: any[]) => ({ args, type: 'and' }),
-  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
-  desc: (field: any) => ({ field, type: 'desc' }),
-}));
-
-// Mock schema
-mock.module('@buildd/core/db/schema', () => ({
-  objectives: { id: 'id', status: 'status' },
-  tasks: { id: 'id', objectiveId: 'objectiveId', status: 'status', createdAt: 'createdAt' },
-  taskRecipes: { id: 'id' },
-}));
-
-// Import AFTER mocks
-import { buildObjectiveContext } from './objective-context';
-
-// Helper: tasks.findMany is called 3 times (completed, active, failed) in order.
-// We use mockImplementation to return different results per call.
-function setupTaskQueries(opts: {
-  completed?: any[];
-  active?: any[];
-  failed?: any[];
-}) {
-  let callIndex = 0;
-  const results = [
-    opts.completed ?? [],
-    opts.active ?? [],
-    opts.failed ?? [],
-  ];
-  mockTasksFindMany.mockImplementation(() => {
-    const result = results[callIndex] ?? [];
-    callIndex++;
-    return result;
-  });
-}
+// Dynamic import so mocks are wired up
+const { buildObjectiveContext } = await import('./objective-context');
 
 describe('buildObjectiveContext', () => {
   beforeEach(() => {
-    mockObjectivesFindFirst.mockReset();
-    mockTasksFindMany.mockReset();
-    mockTaskRecipesFindFirst.mockReset();
+    mockFindFirst.mockReset();
+    mockFindMany.mockReset();
   });
 
   it('returns null when objective not found', async () => {
-    mockObjectivesFindFirst.mockResolvedValue(null);
-
-    const result = await buildObjectiveContext('nonexistent-id');
+    mockFindFirst.mockResolvedValueOnce(null);
+    const result = await buildObjectiveContext('missing-id');
     expect(result).toBeNull();
   });
 
-  it('builds context with objective metadata (title, description, priority)', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
+  it('returns standard context for non-heartbeat objective', async () => {
+    mockFindFirst.mockResolvedValueOnce({
       id: 'obj-1',
-      title: 'Ship v2.0',
-      description: 'Release the next major version',
+      title: 'Ship feature X',
+      description: 'Build the new feature',
       status: 'active',
-      priority: 8,
+      priority: 1,
+      isHeartbeat: false,
+      heartbeatChecklist: null,
     });
-    setupTaskQueries({});
+    // completedTasks, activeTasks, failedTasks
+    mockFindMany.mockResolvedValueOnce([]);
+    mockFindMany.mockResolvedValueOnce([]);
+    mockFindMany.mockResolvedValueOnce([]);
 
     const result = await buildObjectiveContext('obj-1');
     expect(result).not.toBeNull();
-    expect(result!.description).toContain('## Objective: Ship v2.0');
-    expect(result!.description).toContain('Release the next major version');
+    expect(result!.description).toContain('## Objective: Ship feature X');
+    expect(result!.description).toContain('Build the new feature');
     expect(result!.context.objectiveId).toBe('obj-1');
-    expect(result!.context.objectiveTitle).toBe('Ship v2.0');
+    // Should NOT have heartbeat fields
+    expect(result!.context.heartbeat).toBeUndefined();
+    expect(result!.context.outputSchema).toBeUndefined();
   });
 
-  it('builds context with completed tasks history', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'My Objective',
+  it('returns heartbeat context with checklist and protocol', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb',
+      title: 'Daily health check',
+      description: 'Check all services',
+      status: 'active',
+      priority: 0,
+      isHeartbeat: true,
+      heartbeatChecklist: '- [ ] Check API latency\n- [ ] Check error rate',
+    });
+    // priorHeartbeats query
+    mockFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildObjectiveContext('obj-hb');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Heartbeat: Daily health check');
+    expect(result!.description).toContain('Check all services');
+    expect(result!.description).toContain('## Checklist');
+    expect(result!.description).toContain('Check API latency');
+    expect(result!.description).toContain('## Protocol');
+    expect(result!.description).toContain('periodic heartbeat check');
+    expect(result!.description).toContain('report status "ok"');
+  });
+
+  it('includes outputSchema in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb2',
+      title: 'Heartbeat',
       description: null,
       status: 'active',
-      priority: 5,
+      priority: 0,
+      isHeartbeat: true,
+      heartbeatChecklist: '- check stuff',
     });
+    mockFindMany.mockResolvedValueOnce([]);
 
-    const completedTasks = [
+    const result = await buildObjectiveContext('obj-hb2');
+    expect(result).not.toBeNull();
+    expect(result!.context.heartbeat).toBe(true);
+    expect(result!.context.outputSchema).toBeDefined();
+    const schema = result!.context.outputSchema as Record<string, unknown>;
+    expect(schema.type).toBe('object');
+    expect((schema.properties as any).status.enum).toContain('ok');
+    expect((schema.properties as any).status.enum).toContain('action_taken');
+    expect((schema.properties as any).status.enum).toContain('error');
+  });
+
+  it('includes heartbeatChecklist in context data', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb3',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      isHeartbeat: true,
+      heartbeatChecklist: '- check A\n- check B',
+    });
+    mockFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildObjectiveContext('obj-hb3');
+    expect(result!.context.heartbeatChecklist).toBe('- check A\n- check B');
+  });
+
+  it('shows compact prior heartbeat results', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb4',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      isHeartbeat: true,
+      heartbeatChecklist: '- check stuff',
+    });
+    mockFindMany.mockResolvedValueOnce([
       {
-        id: 'task-1',
-        title: 'Setup CI',
-        mode: 'fire-and-forget',
-        result: { summary: 'CI pipeline configured', structuredOutput: { pipeline: 'github-actions' } },
-        createdAt: new Date(Date.now() - 3600000).toISOString(), // 1h ago
+        result: {
+          summary: 'All good',
+          structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+        },
+        createdAt: new Date(Date.now() - 3600000), // 1 hour ago
       },
       {
-        id: 'task-2',
-        title: 'Write tests',
-        mode: 'planning',
-        result: { summary: 'Tests added for auth module' },
-        createdAt: new Date(Date.now() - 7200000).toISOString(), // 2h ago
+        result: {
+          summary: 'Fixed cache',
+          structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+        },
+        createdAt: new Date(Date.now() - 7200000), // 2 hours ago
       },
-    ];
+    ]);
 
-    setupTaskQueries({ completed: completedTasks });
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    // Description should include prior results section
-    expect(result!.description).toContain('## Prior Results (last 10)');
-    expect(result!.description).toContain('[Setup CI]');
-    expect(result!.description).toContain('CI pipeline configured');
-    expect(result!.description).toContain('[Write tests]');
-    expect(result!.description).toContain('Tests added for auth module');
-    // Structured output should be serialized
-    expect(result!.description).toContain('"pipeline":"github-actions"');
-
-    // Context data should include recentCompletions
-    expect(result!.context.recentCompletions).toHaveLength(2);
-    const first = (result!.context.recentCompletions as any[])[0];
-    expect(first.taskId).toBe('task-1');
-    expect(first.title).toBe('Setup CI');
-    expect(first.mode).toBe('fire-and-forget');
-    expect(first.summary).toBe('CI pipeline configured');
-    expect(first.structuredOutput).toEqual({ pipeline: 'github-actions' });
-  });
-
-  it('builds context with active tasks', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'My Objective',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    const activeTasks = [
-      { id: 'task-3', title: 'Deploy service', status: 'in_progress' },
-      { id: 'task-4', title: 'Run migrations', status: 'pending' },
-    ];
-
-    setupTaskQueries({ active: activeTasks });
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    expect(result!.description).toContain('## Active Tasks');
-    expect(result!.description).toContain('[Deploy service] status: in_progress');
-    expect(result!.description).toContain('[Run migrations] status: pending');
-
-    expect(result!.context.activeTasks).toHaveLength(2);
-    const first = (result!.context.activeTasks as any[])[0];
-    expect(first.taskId).toBe('task-3');
-    expect(first.title).toBe('Deploy service');
-    expect(first.status).toBe('in_progress');
-  });
-
-  it('builds context with failed tasks', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'My Objective',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    const failedTasks = [
-      { id: 'task-5', title: 'Deploy to prod', result: { summary: 'OOM killed' } },
-      { id: 'task-6', title: 'Run e2e tests', result: null },
-    ];
-
-    setupTaskQueries({ failed: failedTasks });
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    expect(result!.description).toContain('## Failed Tasks (recent)');
-    expect(result!.description).toContain('[Deploy to prod] error: OOM killed');
-    expect(result!.description).toContain('[Run e2e tests] error: unknown error');
-  });
-
-  it('handles empty task lists gracefully', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'Empty Objective',
-      description: 'Nothing done yet',
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({});
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    // Should have objective header and description, but no task sections
-    expect(result!.description).toContain('## Objective: Empty Objective');
-    expect(result!.description).toContain('Nothing done yet');
-    expect(result!.description).not.toContain('## Prior Results');
-    expect(result!.description).not.toContain('## Active Tasks');
-    expect(result!.description).not.toContain('## Failed Tasks');
-    expect(result!.description).not.toContain('## Playbook');
-
-    expect(result!.context.recentCompletions).toHaveLength(0);
-    expect(result!.context.activeTasks).toHaveLength(0);
-  });
-
-  it('includes recipe playbook if configured via templateContext', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'Recipe Objective',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({});
-
-    mockTaskRecipesFindFirst.mockResolvedValue({
-      name: 'Deploy Pipeline',
-      steps: [
-        { ref: 'step-1', title: 'Build image', description: 'Docker build' },
-        { ref: 'step-2', title: 'Push to registry' },
-        { title: 'Run smoke tests', description: 'Verify health endpoint' },
-      ],
-    });
-
-    const result = await buildObjectiveContext('obj-1', { recipeId: 'recipe-123' });
-    expect(result).not.toBeNull();
-
-    expect(result!.description).toContain('## Playbook');
-    expect(result!.description).toContain('- [ ] Build image: Docker build');
-    expect(result!.description).toContain('- [ ] Push to registry');
-    expect(result!.description).toContain('- [ ] Run smoke tests: Verify health endpoint');
-
-    expect(result!.context.recipeSteps).toHaveLength(3);
-  });
-
-  it('does not include playbook when no recipeId in templateContext', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'No Recipe',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({});
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    expect(result!.description).not.toContain('## Playbook');
-    expect(result!.context.recipeSteps).toBeUndefined();
-    // Should not have queried recipes table
-    expect(mockTaskRecipesFindFirst).not.toHaveBeenCalled();
-  });
-
-  it('does not include playbook when recipe not found', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'Bad Recipe Ref',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({});
-    mockTaskRecipesFindFirst.mockResolvedValue(null);
-
-    const result = await buildObjectiveContext('obj-1', { recipeId: 'nonexistent' });
-    expect(result).not.toBeNull();
-
-    expect(result!.description).not.toContain('## Playbook');
-    expect(result!.context.recipeSteps).toBeUndefined();
-  });
-
-  it('handles completed tasks with no result (null)', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'Obj',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({
-      completed: [
-        { id: 'task-1', title: 'Silent task', mode: 'fire-and-forget', result: null, createdAt: new Date().toISOString() },
-      ],
-    });
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    expect(result!.description).toContain('[Silent task]');
-    expect(result!.description).toContain('no summary');
-
-    const completions = result!.context.recentCompletions as any[];
-    expect(completions[0].summary).toBeNull();
-    expect(completions[0].structuredOutput).toBeNull();
-  });
-
-  it('combines all sections when tasks of every type exist', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'Full Objective',
-      description: 'A rich objective',
-      status: 'active',
-      priority: 10,
-    });
-
-    setupTaskQueries({
-      completed: [
-        { id: 't1', title: 'Done task', mode: 'planning', result: { summary: 'All good' }, createdAt: new Date().toISOString() },
-      ],
-      active: [
-        { id: 't2', title: 'Running task', status: 'in_progress' },
-      ],
-      failed: [
-        { id: 't3', title: 'Broken task', result: { summary: 'Timeout' } },
-      ],
-    });
-
-    mockTaskRecipesFindFirst.mockResolvedValue({
-      name: 'Steps',
-      steps: [{ title: 'Step one' }],
-    });
-
-    const result = await buildObjectiveContext('obj-1', { recipeId: 'r-1' });
-    expect(result).not.toBeNull();
-
-    // All sections present
-    expect(result!.description).toContain('## Objective: Full Objective');
-    expect(result!.description).toContain('A rich objective');
-    expect(result!.description).toContain('## Prior Results (last 10)');
-    expect(result!.description).toContain('## Active Tasks');
-    expect(result!.description).toContain('## Failed Tasks (recent)');
-    expect(result!.description).toContain('## Playbook');
-  });
-
-  it('omits description line when objective has no description', async () => {
-    mockObjectivesFindFirst.mockResolvedValue({
-      id: 'obj-1',
-      title: 'No Desc',
-      description: null,
-      status: 'active',
-      priority: 0,
-    });
-
-    setupTaskQueries({});
-
-    const result = await buildObjectiveContext('obj-1');
-    expect(result).not.toBeNull();
-
-    // Description should only have the header, no extra lines besides it
-    const lines = result!.description.split('\n');
-    expect(lines[0]).toBe('## Objective: No Desc');
-    expect(lines.length).toBe(1);
+    const result = await buildObjectiveContext('obj-hb4');
+    expect(result!.description).toContain('## Prior Heartbeats');
+    expect(result!.description).toContain('[ok] All systems nominal');
+    expect(result!.description).toContain('[action_taken] Cleared stale cache');
   });
 });

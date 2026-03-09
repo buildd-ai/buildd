@@ -311,6 +311,12 @@ export const objectives = pgTable('objectives', {
   scheduleId: uuid('schedule_id'),
   parentObjectiveId: uuid('parent_objective_id'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Heartbeat mode
+  isHeartbeat: boolean('is_heartbeat').default(false).notNull(),
+  heartbeatChecklist: text('heartbeat_checklist'),
+  activeHoursStart: integer('active_hours_start'),  // 0-23, null = always active
+  activeHoursEnd: integer('active_hours_end'),       // 0-23, null = always active
+  activeHoursTimezone: text('active_hours_timezone'), // e.g. 'America/New_York'
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

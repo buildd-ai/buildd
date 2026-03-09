@@ -12,6 +12,11 @@ import EditableTitle from './EditableTitle';
 import EditableDescription from './EditableDescription';
 import PrioritySelector from './PrioritySelector';
 import ScheduleWizard from './ScheduleWizard';
+import HeartbeatStatusBadge from './HeartbeatStatusBadge';
+import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
+import ActiveHoursConfig from './ActiveHoursConfig';
+import HeartbeatTimeline from './HeartbeatTimeline';
+import { getHeartbeatStatus, isOverdue as checkOverdue } from './heartbeat-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,6 +123,28 @@ export default async function ObjectiveDetailPage({
     ) || []
   ) || [];
 
+  // Heartbeat data
+  const isHeartbeat = objective.isHeartbeat === true;
+  const heartbeatChecklist = objective.heartbeatChecklist ?? null;
+  const activeHoursStart = objective.activeHoursStart ?? null;
+  const activeHoursEnd = objective.activeHoursEnd ?? null;
+  const activeHoursTimezone = objective.activeHoursTimezone ?? null;
+
+  const heartbeatTasks = isHeartbeat
+    ? (objective.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
+    : [];
+  const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
+    (objective.tasks || []).map(t => ({
+      id: t.id,
+      createdAt: t.createdAt,
+      status: t.status,
+      result: t.result,
+    }))
+  );
+  const heartbeatOverdue = isHeartbeat && objective.schedule?.nextRunAt && objective.cronExpression
+    ? checkOverdue(objective.schedule.nextRunAt, objective.cronExpression)
+    : false;
+
   // Collect recent worker activity across all tasks
   const recentActivity = objective.tasks
     ?.flatMap(t =>
@@ -167,6 +194,13 @@ export default async function ObjectiveDetailPage({
               <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[objective.status]?.dot || ''}`} />
               {objective.status}
             </span>
+            {isHeartbeat && (
+              <HeartbeatStatusBadge
+                lastStatus={lastHeartbeatStatus}
+                lastAt={lastHeartbeatAt}
+                isOverdue={heartbeatOverdue}
+              />
+            )}
           </div>
           <div className="flex items-center gap-3 text-sm text-text-secondary">
             {objective.workspace && (
@@ -207,6 +241,14 @@ export default async function ObjectiveDetailPage({
         <EditableDescription objectiveId={objective.id} initialDescription={objective.description} />
       </div>
 
+      {/* Heartbeat Checklist */}
+      {isHeartbeat && (
+        <HeartbeatChecklistEditor
+          objectiveId={objective.id}
+          checklist={heartbeatChecklist}
+        />
+      )}
+
       {/* Schedule Wizard — no schedule configured */}
       {!objective.cronExpression && (
         <div className="mb-6">
@@ -236,6 +278,16 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
+      {/* Active Hours (heartbeat only) */}
+      {isHeartbeat && (
+        <ActiveHoursConfig
+          objectiveId={objective.id}
+          activeHoursStart={activeHoursStart}
+          activeHoursEnd={activeHoursEnd}
+          activeHoursTimezone={activeHoursTimezone}
+        />
+      )}
+
       {/* Configuration */}
       <ObjectiveConfig
         objectiveId={objective.id}
@@ -248,8 +300,20 @@ export default async function ObjectiveDetailPage({
         workspaces={teamWorkspaces}
       />
 
-      {/* Planning History */}
-      {planningHistory.length > 0 && (
+      {/* Heartbeat Timeline */}
+      {isHeartbeat && heartbeatTasks.length > 0 && (
+        <HeartbeatTimeline
+          tasks={heartbeatTasks.map(t => ({
+            id: t.id,
+            createdAt: t.createdAt,
+            status: t.status,
+            result: t.result,
+          }))}
+        />
+      )}
+
+      {/* Planning History (non-heartbeat objectives) */}
+      {!isHeartbeat && planningHistory.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
             Planning History ({planningHistory.length})

@@ -6,7 +6,7 @@ import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { buildObjectiveContext } from '@/lib/objective-context';
+import { buildObjectiveContext, isWithinActiveHours } from '@/lib/objective-context';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -278,8 +278,42 @@ export async function GET(req: NextRequest) {
         // Check if this schedule is linked to an objective
         const linkedObjective = await db.query.objectives.findFirst({
           where: eq(objectives.scheduleId, schedule.id),
-          columns: { id: true },
+          columns: {
+            id: true,
+            isHeartbeat: true,
+            activeHoursStart: true,
+            activeHoursEnd: true,
+            activeHoursTimezone: true,
+          },
         });
+
+        // Active hours gating for heartbeat objectives
+        if (
+          linkedObjective?.isHeartbeat &&
+          linkedObjective.activeHoursStart != null &&
+          linkedObjective.activeHoursEnd != null
+        ) {
+          const tz = linkedObjective.activeHoursTimezone || schedule.timezone || 'UTC';
+          const currentHourStr = new Date().toLocaleString('en-US', {
+            timeZone: tz,
+            hour: 'numeric',
+            hour12: false,
+          });
+          const currentHour = parseInt(currentHourStr, 10);
+
+          if (!isWithinActiveHours(currentHour, linkedObjective.activeHoursStart, linkedObjective.activeHoursEnd)) {
+            // Outside active hours — advance nextRunAt, skip task creation
+            const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
+            const advancedNextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            await db
+              .update(taskSchedules)
+              .set({ nextRunAt: advancedNextRunAt, updatedAt: now })
+              .where(eq(taskSchedules.id, schedule.id));
+            skipped++;
+            continue;
+          }
+        }
 
         // If linked to an objective, build rich planning context
         if (linkedObjective) {

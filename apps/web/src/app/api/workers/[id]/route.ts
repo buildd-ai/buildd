@@ -335,6 +335,18 @@ export async function PATCH(
     .where(eq(workers.id, id))
     .returning();
 
+  // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
+  const taskContext = worker.taskId
+    ? (await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { context: true },
+      }))?.context as Record<string, unknown> | null
+    : null;
+  const isHeartbeatOk =
+    taskContext?.heartbeat === true &&
+    status === 'completed' &&
+    body.structuredOutput?.status === 'ok';
+
   // Trigger realtime events
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
@@ -343,6 +355,9 @@ export async function PATCH(
   const pusherPayload: Record<string, unknown> = { worker: updated };
   if (taskProgress && Array.isArray(taskProgress) && taskProgress.length > 0) {
     pusherPayload.taskProgress = taskProgress;
+  }
+  if (isHeartbeatOk) {
+    pusherPayload.heartbeatOk = true;
   }
 
   await triggerEvent(
@@ -360,7 +375,8 @@ export async function PATCH(
   }
 
   // Send Slack/Discord notifications and webhook callback on completion/failure
-  if ((status === 'completed' || status === 'failed') && worker.taskId) {
+  // Smart suppression: skip notifications for heartbeat tasks with status "ok"
+  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk) {
     try {
       const taskForNotify = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
