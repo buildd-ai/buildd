@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-03-08
+
+### Added
+
+- Heartbeat objective fields for MCP manage_objectives action
+- Heartbeat objectives with smart suppression, active hours, and checklist protocol
+- Enhance objectives with editable fields, scheduling wizard, run-now, one-shot schedules, and config panel
+- Redesign objective detail with markdown rendering and structured layout
+
+### Fixed
+
+- Add planner dedup guidance and repetitive result detection to objective context
+
+## [0.30.0] - 2026-03-08
+
+### Added
+
+- Axiom dependency for OTEL trace export (#326)
+- In-memory caching for API auth and workspace permissions (#324)
+- Periodic reconciliation of local workers against remote state (#321)
+- Configurable inputPolicy for worker communication (#323)
+
+### Fixed
+
+- Block AskUserQuestion in autonomous mode via PreToolUse hook (#328)
+- Narrow proxy.ts matcher to install paths only
+- Update app.buildd.dev URLs to buildd.dev (#325)
+- Enable Layer 2 fallthrough when SDK resume fails on worker input response (#322)
+- Prevent duplicate worker claims on same task (#320)
+
+### Documentation
+
+- Update testing docs to reflect current state (#319)
+
+### CI
+
+- Only run integration tests on PRs to main
+
+## [0.29.0] - 2026-03-08
+
+_Release PR only — no additional changes._
+
+## [0.28.0] - 2026-03-08
+
+_Release PR only — no additional changes._
+
 ## [0.27.0] - 2026-03-08
 
 ### Added
@@ -464,7 +510,11 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/buildd-ai/buildd/compare/v0.30.0...v0.31.0
+[0.30.0]: https://github.com/buildd-ai/buildd/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/buildd-ai/buildd/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/buildd-ai/buildd/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/buildd-ai/buildd/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/buildd-ai/buildd/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/buildd-ai/buildd/compare/v0.24.0...v0.25.0
