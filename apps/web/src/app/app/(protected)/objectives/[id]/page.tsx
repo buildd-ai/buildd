@@ -1,12 +1,22 @@
 import { db } from '@buildd/core/db';
-import { objectives } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { objectives, workspaces } from '@buildd/core/db/schema';
+import { eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import StatusBadge from '@/components/StatusBadge';
 import ObjectiveActions from './ObjectiveActions';
+import ObjectiveConfig from './ObjectiveConfig';
+import EditableTitle from './EditableTitle';
+import EditableDescription from './EditableDescription';
+import PrioritySelector from './PrioritySelector';
+import ScheduleWizard from './ScheduleWizard';
+import HeartbeatStatusBadge from './HeartbeatStatusBadge';
+import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
+import ActiveHoursConfig from './ActiveHoursConfig';
+import HeartbeatTimeline from './HeartbeatTimeline';
+import { getHeartbeatStatus, isOverdue as checkOverdue } from './heartbeat-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,12 +25,6 @@ const STATUS_STYLES: Record<string, { bg: string; dot: string }> = {
   paused: { bg: 'bg-status-warning/10 text-status-warning border border-status-warning/20', dot: 'bg-status-warning' },
   completed: { bg: 'bg-primary/10 text-primary border border-primary/20', dot: 'bg-primary' },
   archived: { bg: 'bg-surface-3 text-text-muted border border-border-default', dot: 'bg-text-muted' },
-};
-
-const PRIORITY_LABELS: Record<number, string> = {
-  0: 'Low',
-  5: 'Medium',
-  10: 'High',
 };
 
 function timeAgo(date: Date | string): string {
@@ -45,35 +49,41 @@ export default async function ObjectiveDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  const objective = await db.query.objectives.findFirst({
-    where: eq(objectives.id, id),
-    with: {
-      workspace: { columns: { id: true, name: true } },
-      tasks: {
-        columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, mode: true },
-        orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
-        with: {
-          workers: {
-            columns: {
-              id: true, status: true, branch: true, prUrl: true, prNumber: true,
-              costUsd: true, turns: true, completedAt: true, startedAt: true,
-              currentAction: true, commitCount: true, filesChanged: true,
-            },
-            orderBy: (workers, { desc }) => [desc(workers.startedAt)],
-            limit: 3,
-            with: {
-              artifacts: {
-                columns: { id: true, type: true, title: true, key: true, shareToken: true },
-                limit: 5,
+  const [objective, teamWorkspaces] = await Promise.all([
+    db.query.objectives.findFirst({
+      where: eq(objectives.id, id),
+      with: {
+        workspace: { columns: { id: true, name: true } },
+        tasks: {
+          columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, mode: true },
+          orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
+          with: {
+            workers: {
+              columns: {
+                id: true, status: true, branch: true, prUrl: true, prNumber: true,
+                costUsd: true, turns: true, completedAt: true, startedAt: true,
+                currentAction: true, commitCount: true, filesChanged: true,
+              },
+              orderBy: (workers, { desc }) => [desc(workers.startedAt)],
+              limit: 3,
+              with: {
+                artifacts: {
+                  columns: { id: true, type: true, title: true, key: true, shareToken: true },
+                  limit: 5,
+                },
               },
             },
           },
         },
+        subObjectives: { columns: { id: true, title: true, status: true } },
+        schedule: true,
       },
-      subObjectives: { columns: { id: true, title: true, status: true } },
-      schedule: true,
-    },
-  });
+    }),
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true, name: true },
+    }),
+  ]);
 
   if (!objective || !teamIds.includes(objective.teamId)) {
     notFound();
@@ -103,6 +113,8 @@ export default async function ObjectiveDetailPage({
   const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
   const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
   const recipeId = templateContext?.recipeId as string | undefined;
+  const configModel = templateContext?.model as string | undefined;
+  const outputSchema = templateContext?.outputSchema as unknown | undefined;
 
   // Collect all artifacts across all workers
   const allArtifacts = objective.tasks?.flatMap(t =>
@@ -110,6 +122,28 @@ export default async function ObjectiveDetailPage({
       (w.artifacts || []).map(a => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
     ) || []
   ) || [];
+
+  // Heartbeat data
+  const isHeartbeat = objective.isHeartbeat === true;
+  const heartbeatChecklist = objective.heartbeatChecklist ?? null;
+  const activeHoursStart = objective.activeHoursStart ?? null;
+  const activeHoursEnd = objective.activeHoursEnd ?? null;
+  const activeHoursTimezone = objective.activeHoursTimezone ?? null;
+
+  const heartbeatTasks = isHeartbeat
+    ? (objective.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
+    : [];
+  const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
+    (objective.tasks || []).map(t => ({
+      id: t.id,
+      createdAt: t.createdAt,
+      status: t.status,
+      result: t.result,
+    }))
+  );
+  const heartbeatOverdue = isHeartbeat && objective.schedule?.nextRunAt && objective.cronExpression
+    ? checkOverdue(objective.schedule.nextRunAt, objective.cronExpression)
+    : false;
 
   // Collect recent worker activity across all tasks
   const recentActivity = objective.tasks
@@ -155,11 +189,18 @@ export default async function ObjectiveDetailPage({
       <div className="flex items-start justify-between mb-6">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-2xl font-bold text-text-primary truncate">{objective.title}</h1>
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_STYLES[objective.status]?.bg || ''}`}>
+            <EditableTitle objectiveId={objective.id} initialTitle={objective.title} />
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ${STATUS_STYLES[objective.status]?.bg || ''}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[objective.status]?.dot || ''}`} />
               {objective.status}
             </span>
+            {isHeartbeat && (
+              <HeartbeatStatusBadge
+                lastStatus={lastHeartbeatStatus}
+                lastAt={lastHeartbeatAt}
+                isOverdue={heartbeatOverdue}
+              />
+            )}
           </div>
           <div className="flex items-center gap-3 text-sm text-text-secondary">
             {objective.workspace && (
@@ -167,9 +208,7 @@ export default async function ObjectiveDetailPage({
                 {objective.workspace.name}
               </Link>
             )}
-            {objective.priority > 0 && (
-              <span>{PRIORITY_LABELS[objective.priority] || `P${objective.priority}`} priority</span>
-            )}
+            <PrioritySelector objectiveId={objective.id} initialPriority={objective.priority} />
           </div>
         </div>
         <ObjectiveActions
@@ -198,27 +237,26 @@ export default async function ObjectiveDetailPage({
       )}
 
       {/* Description */}
-      {objective.description && (
-        <div className="mb-6">
-          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-2">Description</h2>
-          <p className="text-text-primary whitespace-pre-wrap">{objective.description}</p>
-        </div>
+      <div className="mb-6">
+        <EditableDescription objectiveId={objective.id} initialDescription={objective.description} />
+      </div>
+
+      {/* Heartbeat Checklist */}
+      {isHeartbeat && (
+        <HeartbeatChecklistEditor
+          objectiveId={objective.id}
+          checklist={heartbeatChecklist}
+        />
       )}
 
-      {/* Setup hint — no schedule configured */}
-      {!objective.cronExpression && totalTasks === 0 && (
-        <div className="mb-6 p-4 bg-status-warning/5 border border-status-warning/20 rounded-lg">
-          <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-status-warning shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-            </svg>
-            <div>
-              <p className="text-sm font-medium text-text-primary">No schedule configured</p>
-              <p className="text-xs text-text-secondary mt-1">
-                This objective won&apos;t create tasks automatically. Add a <strong>cron schedule</strong> (e.g. <code className="bg-surface-3 px-1 rounded text-text-primary">0 9 * * 1</code> for every Monday at 9am) to enable recurring task creation, or create tasks manually and link them to this objective.
-              </p>
-            </div>
-          </div>
+      {/* Schedule Wizard — no schedule configured */}
+      {!objective.cronExpression && (
+        <div className="mb-6">
+          <ScheduleWizard
+            objectiveId={objective.id}
+            hasWorkspace={!!objective.workspaceId}
+            workspaces={teamWorkspaces}
+          />
         </div>
       )}
 
@@ -240,45 +278,42 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
-      {/* Configuration */}
-      {(skillSlugs.length > 0 || recipeId || objective.cronExpression) && (
-        <div className="mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
-          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">Configuration</h2>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            {objective.cronExpression && (
-              <div>
-                <span className="text-text-muted">Schedule</span>
-                <code className="block text-xs bg-surface-3 px-1.5 py-0.5 rounded mt-1">{objective.cronExpression}</code>
-              </div>
-            )}
-            {objective.workspace && (
-              <div>
-                <span className="text-text-muted">Workspace</span>
-                <p className="text-text-primary mt-1">{objective.workspace.name}</p>
-              </div>
-            )}
-            {skillSlugs.length > 0 && (
-              <div>
-                <span className="text-text-muted">Skills</span>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {skillSlugs.map(slug => (
-                    <span key={slug} className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">{slug}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {recipeId && (
-              <div>
-                <span className="text-text-muted">Recipe</span>
-                <p className="text-xs text-text-primary mt-1 font-mono">{recipeId}</p>
-              </div>
-            )}
-          </div>
-        </div>
+      {/* Active Hours (heartbeat only) */}
+      {isHeartbeat && (
+        <ActiveHoursConfig
+          objectiveId={objective.id}
+          activeHoursStart={activeHoursStart}
+          activeHoursEnd={activeHoursEnd}
+          activeHoursTimezone={activeHoursTimezone}
+        />
       )}
 
-      {/* Planning History */}
-      {planningHistory.length > 0 && (
+      {/* Configuration */}
+      <ObjectiveConfig
+        objectiveId={objective.id}
+        workspaceId={objective.workspaceId}
+        workspace={objective.workspace}
+        skillSlugs={skillSlugs}
+        recipeId={recipeId || null}
+        model={configModel || null}
+        outputSchema={outputSchema || null}
+        workspaces={teamWorkspaces}
+      />
+
+      {/* Heartbeat Timeline */}
+      {isHeartbeat && heartbeatTasks.length > 0 && (
+        <HeartbeatTimeline
+          tasks={heartbeatTasks.map(t => ({
+            id: t.id,
+            createdAt: t.createdAt,
+            status: t.status,
+            result: t.result,
+          }))}
+        />
+      )}
+
+      {/* Planning History (non-heartbeat objectives) */}
+      {!isHeartbeat && planningHistory.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
             Planning History ({planningHistory.length})

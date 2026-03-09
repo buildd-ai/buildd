@@ -19,6 +19,25 @@ export default function ObjectiveActions({
   const [loading, setLoading] = useState(false);
   const [editingCron, setEditingCron] = useState(false);
   const [cronValue, setCronValue] = useState(initialCron || '');
+  const [running, setRunning] = useState(false);
+
+  async function handleRunNow() {
+    setRunning(true);
+    try {
+      const res = await fetch(`/api/objectives/${objectiveId}/run`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        startTransition(() => router.refresh());
+        if (data.task?.id) {
+          router.push(`/app/tasks/${data.task.id}`);
+        }
+      }
+    } finally {
+      setRunning(false);
+    }
+  }
 
   async function patchObjective(body: Record<string, unknown>) {
     setLoading(true);
@@ -57,6 +76,17 @@ export default function ObjectiveActions({
     <div className="flex flex-col items-end gap-2">
       {/* Action buttons */}
       <div className="flex items-center gap-2">
+        {/* Run Now */}
+        {status === 'active' && hasWorkspace && (
+          <button
+            onClick={handleRunNow}
+            disabled={disabled || running}
+            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
+          >
+            {running ? 'Running...' : 'Run Now'}
+          </button>
+        )}
+
         {/* Schedule toggle */}
         {!editingCron && (
           <button

@@ -41,7 +41,7 @@ export async function GET(
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, title: true, status: true, priority: true, createdAt: true },
+          columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, updatedAt: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
         },
         subObjectives: { columns: { id: true, title: true, status: true } },
@@ -60,6 +60,19 @@ export async function GET(
     // Extract skill/recipe config from schedule template
     const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
 
+    // Compute heartbeat status from most recent completed task with structuredOutput
+    let lastHeartbeatStatus: string | null = null;
+    let lastHeartbeatAt: string | null = null;
+    if (objective.isHeartbeat) {
+      const lastCompletedTask = objective.tasks?.find(
+        (t: any) => t.status === 'completed' && t.result?.structuredOutput?.status
+      );
+      if (lastCompletedTask) {
+        lastHeartbeatStatus = (lastCompletedTask as any).result?.structuredOutput?.status || null;
+        lastHeartbeatAt = lastCompletedTask.updatedAt?.toISOString?.() || (lastCompletedTask.updatedAt as any) || null;
+      }
+    }
+
     return NextResponse.json({
       ...objective,
       totalTasks,
@@ -69,6 +82,8 @@ export async function GET(
       recipeId: templateContext?.recipeId || null,
       outputSchema: templateContext?.outputSchema || null,
       model: templateContext?.model || null,
+      lastHeartbeatStatus,
+      lastHeartbeatAt,
     });
   } catch (error) {
     console.error('Get objective error:', error);
@@ -108,7 +123,16 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model } = body;
+    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model,
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
+
+    // Validate active hours range
+    if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
+      return NextResponse.json({ error: 'activeHoursStart must be between 0 and 23' }, { status: 400 });
+    }
+    if (activeHoursEnd !== undefined && activeHoursEnd !== null && (activeHoursEnd < 0 || activeHoursEnd > 23)) {
+      return NextResponse.json({ error: 'activeHoursEnd must be between 0 and 23' }, { status: 400 });
+    }
 
     const updateData: Partial<typeof objectives.$inferInsert> = {
       updatedAt: new Date(),
@@ -125,9 +149,14 @@ export async function PATCH(
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
+    if (isHeartbeat !== undefined) updateData.isHeartbeat = isHeartbeat;
+    if (heartbeatChecklist !== undefined) updateData.heartbeatChecklist = heartbeatChecklist || null;
+    if (activeHoursStart !== undefined) updateData.activeHoursStart = activeHoursStart ?? null;
+    if (activeHoursEnd !== undefined) updateData.activeHoursEnd = activeHoursEnd ?? null;
+    if (activeHoursTimezone !== undefined) updateData.activeHoursTimezone = activeHoursTimezone || null;
 
     // Handle cronExpression changes or skill/recipe updates on existing schedule
-    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined;
+    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined || isHeartbeat !== undefined;
     if (scheduleNeedsUpdate) {
       if (cronExpression !== undefined) updateData.cronExpression = cronExpression || null;
 
@@ -161,6 +190,10 @@ export async function PATCH(
       if (model !== undefined) {
         if (model) templateContext.model = model;
         else delete templateContext.model;
+      }
+      if (isHeartbeat !== undefined) {
+        if (isHeartbeat) templateContext.heartbeat = true;
+        else delete templateContext.heartbeat;
       }
 
       if (effectiveCron && effectiveWorkspaceId) {

@@ -311,6 +311,12 @@ export const objectives = pgTable('objectives', {
   scheduleId: uuid('schedule_id'),
   parentObjectiveId: uuid('parent_objective_id'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Heartbeat mode
+  isHeartbeat: boolean('is_heartbeat').default(false).notNull(),
+  heartbeatChecklist: text('heartbeat_checklist'),
+  activeHoursStart: integer('active_hours_start'),  // 0-23, null = always active
+  activeHoursEnd: integer('active_hours_end'),       // 0-23, null = always active
+  activeHoursTimezone: text('active_hours_timezone'), // e.g. 'America/New_York'
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -483,6 +489,7 @@ export const taskSchedules = pgTable('task_schedules', {
   timezone: text('timezone').default('UTC').notNull(),
   taskTemplate: jsonb('task_template').notNull().$type<TaskScheduleTemplate>(),
   enabled: boolean('enabled').default(true).notNull(),
+  oneShot: boolean('one_shot').default(false).notNull(),
   nextRunAt: timestamp('next_run_at', { withTimezone: true }),
   lastRunAt: timestamp('last_run_at', { withTimezone: true }),
   lastTaskId: uuid('last_task_id'),
