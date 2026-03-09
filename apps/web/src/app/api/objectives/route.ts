@@ -93,10 +93,19 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, cronExpression, priority, parentObjectiveId, skillSlugs, recipeId, outputSchema, model } = body;
+    const { title, description, workspaceId, cronExpression, priority, parentObjectiveId, skillSlugs, recipeId, outputSchema, model,
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
+    }
+
+    // Validate active hours range
+    if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
+      return NextResponse.json({ error: 'activeHoursStart must be between 0 and 23' }, { status: 400 });
+    }
+    if (activeHoursEnd !== undefined && activeHoursEnd !== null && (activeHoursEnd < 0 || activeHoursEnd > 23)) {
+      return NextResponse.json({ error: 'activeHoursEnd must be between 0 and 23' }, { status: 400 });
     }
 
     // Resolve teamId
@@ -133,6 +142,11 @@ export async function POST(req: NextRequest) {
         cronExpression: cronExpression || null,
         parentObjectiveId: parentObjectiveId || null,
         createdByUserId: user?.id || null,
+        isHeartbeat: isHeartbeat || false,
+        heartbeatChecklist: heartbeatChecklist || null,
+        activeHoursStart: activeHoursStart ?? null,
+        activeHoursEnd: activeHoursEnd ?? null,
+        activeHoursTimezone: activeHoursTimezone || null,
       })
       .returning();
 
@@ -144,6 +158,7 @@ export async function POST(req: NextRequest) {
       if (recipeId) templateContext.recipeId = recipeId;
       if (outputSchema) templateContext.outputSchema = outputSchema;
       if (model) templateContext.model = model;
+      if (isHeartbeat) templateContext.heartbeat = true;
 
       const [schedule] = await db
         .insert(taskSchedules)

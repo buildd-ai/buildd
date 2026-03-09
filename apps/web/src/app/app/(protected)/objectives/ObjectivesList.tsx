@@ -4,8 +4,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Select } from '@/components/ui/Select';
-import { CronPresets } from '@/components/CronPresets';
 import { useBrowserTimezone } from '@/hooks/useBrowserTimezone';
+import {
+  DEFAULT_HEARTBEAT_CHECKLIST,
+  HEARTBEAT_CRON_PRESETS,
+  OBJECTIVE_CRON_PRESETS,
+  getHourOptions,
+  validateActiveHours,
+} from '@/lib/heartbeat-helpers';
 
 const STATUS_COLORS: Record<string, string> = {
   active: 'bg-status-success/15 text-status-success',
@@ -44,6 +50,8 @@ interface ObjectiveItem {
   } | null;
 }
 
+const HOUR_OPTIONS = getHourOptions();
+
 export default function ObjectivesList({
   objectives,
   teamId,
@@ -57,7 +65,7 @@ export default function ObjectivesList({
   const [isPending, startTransition] = useTransition();
   const [creating, setCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const detectedTimezone = useBrowserTimezone('UTC');
+  const browserTimezone = useBrowserTimezone();
 
   // Form fields
   const [title, setTitle] = useState('');
@@ -66,30 +74,80 @@ export default function ObjectivesList({
   const [workspaceId, setWorkspaceId] = useState('');
   const [cronExpression, setCronExpression] = useState('');
 
+  // Heartbeat fields
+  const [isHeartbeat, setIsHeartbeat] = useState(false);
+  const [heartbeatChecklist, setHeartbeatChecklist] = useState('');
+  const [activeHoursEnabled, setActiveHoursEnabled] = useState(false);
+  const [activeHoursStart, setActiveHoursStart] = useState(8);
+  const [activeHoursEnd, setActiveHoursEnd] = useState(22);
+  const [activeHoursTimezone, setActiveHoursTimezone] = useState('');
+
+  // Set timezone from browser on first render (activeHoursTimezone default)
+  const effectiveTimezone = activeHoursTimezone || browserTimezone;
+
   function resetForm() {
     setTitle('');
     setDescription('');
     setPriority(0);
     setWorkspaceId('');
     setCronExpression('');
+    setIsHeartbeat(false);
+    setHeartbeatChecklist('');
+    setActiveHoursEnabled(false);
+    setActiveHoursStart(8);
+    setActiveHoursEnd(22);
+    setActiveHoursTimezone('');
     setShowForm(false);
   }
+
+  function handleHeartbeatToggle(enabled: boolean) {
+    setIsHeartbeat(enabled);
+    if (enabled) {
+      // Pre-fill checklist if empty
+      if (!heartbeatChecklist) {
+        setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST);
+      }
+      // Default to "Every hour" cron if no cron set
+      if (!cronExpression) {
+        setCronExpression('0 * * * *');
+      }
+    }
+  }
+
+  const activeHoursError = activeHoursEnabled
+    ? validateActiveHours(activeHoursStart, activeHoursEnd)
+    : null;
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
+    if (isHeartbeat && !heartbeatChecklist.trim()) return;
+    if (activeHoursError) return;
+
     setCreating(true);
     try {
+      const payload: Record<string, unknown> = {
+        title: title.trim(),
+        description: description.trim() || undefined,
+        priority,
+        workspaceId: workspaceId || undefined,
+        cronExpression: cronExpression.trim() || undefined,
+      };
+
+      if (isHeartbeat) {
+        payload.isHeartbeat = true;
+        payload.heartbeatChecklist = heartbeatChecklist.trim();
+        if (activeHoursEnabled) {
+          payload.activeHoursStart = activeHoursStart;
+          payload.activeHoursEnd = activeHoursEnd;
+          payload.activeHoursTimezone = effectiveTimezone;
+        }
+      }
+
       const res = await fetch('/api/objectives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim() || undefined,
-          priority,
-          workspaceId: workspaceId || undefined,
-          cronExpression: cronExpression.trim() || undefined,
-        }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         resetForm();
@@ -104,6 +162,8 @@ export default function ObjectivesList({
     { value: '', label: 'All workspaces' },
     ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
   ];
+
+  const cronPresets = isHeartbeat ? HEARTBEAT_CRON_PRESETS : OBJECTIVE_CRON_PRESETS;
 
   return (
     <div>
@@ -135,6 +195,50 @@ export default function ObjectivesList({
             className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary resize-none"
             disabled={creating}
           />
+
+          {/* Heartbeat mode toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isHeartbeat}
+              onClick={() => handleHeartbeatToggle(!isHeartbeat)}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                isHeartbeat ? 'bg-primary' : 'bg-surface-4'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  isHeartbeat ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                }`}
+              />
+            </button>
+            <label className="text-xs text-text-secondary select-none cursor-pointer" onClick={() => handleHeartbeatToggle(!isHeartbeat)}>
+              Heartbeat mode
+            </label>
+            {isHeartbeat && (
+              <span className="text-xs text-text-muted ml-1">
+                — recurring check-in with a checklist
+              </span>
+            )}
+          </div>
+
+          {/* Heartbeat checklist */}
+          {isHeartbeat && (
+            <div>
+              <label className="block text-xs text-text-muted mb-1">
+                Heartbeat checklist <span className="text-status-error">*</span>
+              </label>
+              <textarea
+                value={heartbeatChecklist}
+                onChange={e => setHeartbeatChecklist(e.target.value)}
+                placeholder={DEFAULT_HEARTBEAT_CHECKLIST}
+                rows={6}
+                className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono resize-y"
+                disabled={creating}
+              />
+            </div>
+          )}
 
           <div className="flex gap-3">
             {/* Priority pills */}
@@ -173,24 +277,112 @@ export default function ObjectivesList({
 
           {/* Schedule */}
           <div>
-            <label className="block text-xs text-text-muted mb-1">Schedule (optional)</label>
-            <CronPresets
-              value={cronExpression}
-              onChange={setCronExpression}
-              timezone={detectedTimezone}
-            />
-            {cronExpression && !workspaceId && (
-              <p className="text-xs text-status-warning mt-1">Needs workspace</p>
-            )}
+            <label className="block text-xs text-text-muted mb-1">
+              Schedule {isHeartbeat ? '' : '(optional)'}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={cronExpression}
+                onChange={e => setCronExpression(e.target.value)}
+                placeholder={isHeartbeat ? 'e.g. 0 * * * * (every hour)' : 'e.g. 0 9 * * 1 (Mon 9am)'}
+                className="flex-1 px-3 py-1.5 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                disabled={creating}
+              />
+              {cronExpression && !workspaceId && (
+                <span className="text-xs text-status-warning shrink-0">Needs workspace</span>
+              )}
+            </div>
+            {/* Cron presets */}
+            <div className="flex gap-1.5 mt-1.5">
+              {cronPresets.map(preset => (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => setCronExpression(preset.value)}
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${
+                    cronExpression === preset.value
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border-default text-text-muted hover:border-primary/30 hover:text-text-secondary'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
+
+          {/* Active hours (heartbeat only) */}
+          {isHeartbeat && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={activeHoursEnabled}
+                  onClick={() => setActiveHoursEnabled(!activeHoursEnabled)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                    activeHoursEnabled ? 'bg-primary' : 'bg-surface-4'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      activeHoursEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    }`}
+                  />
+                </button>
+                <label className="text-xs text-text-secondary select-none cursor-pointer" onClick={() => setActiveHoursEnabled(!activeHoursEnabled)}>
+                  Active hours only
+                </label>
+              </div>
+
+              {activeHoursEnabled && (
+                <div className="flex items-end gap-2 pl-11">
+                  <div>
+                    <label className="block text-xs text-text-muted mb-1">Start</label>
+                    <Select
+                      value={String(activeHoursStart)}
+                      onChange={v => setActiveHoursStart(Number(v))}
+                      options={HOUR_OPTIONS}
+                      size="sm"
+                    />
+                  </div>
+                  <span className="text-xs text-text-muted pb-2">to</span>
+                  <div>
+                    <label className="block text-xs text-text-muted mb-1">End</label>
+                    <Select
+                      value={String(activeHoursEnd)}
+                      onChange={v => setActiveHoursEnd(Number(v))}
+                      options={HOUR_OPTIONS}
+                      size="sm"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs text-text-muted mb-1">Timezone</label>
+                    <input
+                      type="text"
+                      value={activeHoursTimezone || browserTimezone}
+                      onChange={e => setActiveHoursTimezone(e.target.value)}
+                      placeholder="e.g. America/New_York"
+                      className="w-full px-2 py-1 bg-surface-1 border border-border-default rounded-md text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
+                      disabled={creating}
+                    />
+                  </div>
+                  {activeHoursError && (
+                    <span className="text-xs text-status-error shrink-0 pb-2">{activeHoursError}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-2 pt-1">
             <button
               type="submit"
-              disabled={creating || !title.trim()}
+              disabled={creating || !title.trim() || (isHeartbeat && !heartbeatChecklist.trim()) || !!activeHoursError}
               className="px-4 py-2 bg-primary text-white text-sm rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
-              {creating ? 'Creating...' : 'Create'}
+              {creating ? 'Creating...' : isHeartbeat ? 'Create heartbeat' : 'Create'}
             </button>
             <button
               type="button"
@@ -224,7 +416,14 @@ export default function ObjectivesList({
                 className="block p-4 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
               >
                 <div className="flex items-center gap-3 mb-2">
-                  <h3 className="font-medium text-text-primary flex-1 truncate">{obj.title}</h3>
+                  <h3 className="font-medium text-text-primary flex-1 truncate flex items-center gap-1.5">
+                    {(obj as any).isHeartbeat && (
+                      <svg className="w-4 h-4 text-status-success shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                      </svg>
+                    )}
+                    {obj.title}
+                  </h3>
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[obj.status] || ''}`}>
                     {obj.status}
                   </span>
