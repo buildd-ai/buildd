@@ -118,7 +118,7 @@ describe('buildObjectiveContext', () => {
     expect(result).not.toBeNull();
 
     // Description should include prior results section
-    expect(result!.description).toContain('## Prior Results (last 10)');
+    expect(result!.description).toContain('## Prior Results');
     expect(result!.description).toContain('[Setup CI]');
     expect(result!.description).toContain('CI pipeline configured');
     expect(result!.description).toContain('[Write tests]');
@@ -204,9 +204,10 @@ describe('buildObjectiveContext', () => {
     const result = await buildObjectiveContext('obj-1');
     expect(result).not.toBeNull();
 
-    // Should have objective header and description, but no task sections
+    // Should have objective header, description, and instructions, but no task sections
     expect(result!.description).toContain('## Objective: Empty Objective');
     expect(result!.description).toContain('Nothing done yet');
+    expect(result!.description).toContain('## Instructions');
     expect(result!.description).not.toContain('## Prior Results');
     expect(result!.description).not.toContain('## Active Tasks');
     expect(result!.description).not.toContain('## Failed Tasks');
@@ -344,10 +345,66 @@ describe('buildObjectiveContext', () => {
     // All sections present
     expect(result!.description).toContain('## Objective: Full Objective');
     expect(result!.description).toContain('A rich objective');
-    expect(result!.description).toContain('## Prior Results (last 10)');
+    expect(result!.description).toContain('## Instructions');
+    expect(result!.description).toContain('## Prior Results');
     expect(result!.description).toContain('## Active Tasks');
     expect(result!.description).toContain('## Failed Tasks (recent)');
     expect(result!.description).toContain('## Playbook');
+  });
+
+  it('detects repetitive results and adds warning + trims history', async () => {
+    mockObjectivesFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      title: 'Repetitive Obj',
+      description: null,
+      status: 'active',
+      priority: 0,
+    });
+
+    // 5 tasks with same summary — triggers repetitive detection
+    const sameSummary = 'All clear, nothing changed';
+    const completedTasks = Array.from({ length: 5 }, (_, i) => ({
+      id: `task-${i}`,
+      title: 'Check-in',
+      mode: 'planning',
+      result: { summary: sameSummary },
+      createdAt: new Date(Date.now() - i * 600000).toISOString(),
+    }));
+
+    setupTaskQueries({ completed: completedTasks });
+
+    const result = await buildObjectiveContext('obj-1');
+    expect(result).not.toBeNull();
+
+    // Should have repetitive warning
+    expect(result!.description).toContain('nearly identical results');
+    // Should only show 2 results instead of all 5
+    expect(result!.description).toContain('latest — earlier runs were similar');
+    // Context flag should be set
+    expect(result!.context.isRepetitive).toBe(true);
+  });
+
+  it('does not flag as repetitive when summaries are diverse', async () => {
+    mockObjectivesFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      title: 'Diverse Obj',
+      description: null,
+      status: 'active',
+      priority: 0,
+    });
+
+    const completedTasks = [
+      { id: 't1', title: 'A', mode: 'planning', result: { summary: 'Found 3 issues' }, createdAt: new Date().toISOString() },
+      { id: 't2', title: 'B', mode: 'planning', result: { summary: 'Fixed auth bug' }, createdAt: new Date().toISOString() },
+      { id: 't3', title: 'C', mode: 'planning', result: { summary: 'Deployed v2' }, createdAt: new Date().toISOString() },
+    ];
+
+    setupTaskQueries({ completed: completedTasks });
+
+    const result = await buildObjectiveContext('obj-1');
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('nearly identical');
+    expect(result!.context.isRepetitive).toBe(false);
   });
 
   it('omits description line when objective has no description', async () => {
@@ -364,9 +421,13 @@ describe('buildObjectiveContext', () => {
     const result = await buildObjectiveContext('obj-1');
     expect(result).not.toBeNull();
 
-    // Description should only have the header, no extra lines besides it
+    // Description should have header + instructions, but no description line
+    expect(result!.description).toContain('## Objective: No Desc');
+    expect(result!.description).toContain('## Instructions');
+    // Should NOT have a line between header and instructions (no description)
     const lines = result!.description.split('\n');
     expect(lines[0]).toBe('## Objective: No Desc');
-    expect(lines.length).toBe(1);
+    expect(lines[1]).toBe('');  // blank line before Instructions
+    expect(lines[2]).toBe('## Instructions');
   });
 });

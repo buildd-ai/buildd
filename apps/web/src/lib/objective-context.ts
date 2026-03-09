@@ -69,14 +69,35 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
     }
   }
 
+  // Detect if recent results are repetitive (same summaries)
+  const recentSummaries = completedTasks.slice(0, 5).map(t => {
+    const result = t.result as Record<string, unknown> | null;
+    return result?.summary as string || '';
+  }).filter(Boolean);
+  const uniqueSummaries = new Set(recentSummaries);
+  const isRepetitive = recentSummaries.length >= 3 && uniqueSummaries.size <= 2;
+
   // Build rich description
   const descParts: string[] = [];
   descParts.push(`## Objective: ${objective.title}`);
   if (objective.description) descParts.push(objective.description);
 
+  // Planner guidance
+  descParts.push('\n## Instructions');
+  descParts.push('Review the prior results below. Focus on what has CHANGED since the last run.');
+  descParts.push('- If nothing meaningful has changed, produce a brief "no changes" summary — do NOT repeat the same analysis.');
+  descParts.push('- Only create new execution tasks when there is genuinely new information or action needed.');
+  descParts.push('- If the prior results show the same outcome repeatedly, skip redundant checks and focus on anything that is actually different or newly due.');
+  if (isRepetitive) {
+    descParts.push('\n> ⚠️ The last several runs produced nearly identical results. Only report if something has CHANGED or a new action is due. If nothing is new, respond with a minimal confirmation.');
+  }
+
   if (completedTasks.length > 0) {
-    descParts.push('\n## Prior Results (last 10)');
-    for (const t of completedTasks) {
+    // Show fewer results when repetitive — just the latest plus one older for context
+    const tasksToShow = isRepetitive ? completedTasks.slice(0, 2) : completedTasks;
+    const label = isRepetitive ? 'Prior Results (latest — earlier runs were similar)' : `Prior Results (last ${tasksToShow.length})`;
+    descParts.push(`\n## ${label}`);
+    for (const t of tasksToShow) {
       const result = t.result as Record<string, unknown> | null;
       const summary = result?.summary as string || 'no summary';
       const structuredOutput = result?.structuredOutput;
@@ -132,6 +153,7 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       status: t.status,
     })),
     ...(recipeSteps ? { recipeSteps } : {}),
+    isRepetitive,
   };
 
   return { description: descParts.join('\n'), context: contextData };
