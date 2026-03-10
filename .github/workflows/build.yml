@@ -82,13 +82,56 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Create Neon preview branch
+        id: neon
+        run: |
+          BRANCH_NAME="ci/pr-${{ github.event.pull_request.number }}"
+
+          # Check if branch already exists
+          EXISTING=$(curl -sf \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches" \
+            | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "Reusing existing Neon branch: $EXISTING"
+            BRANCH_ID="$EXISTING"
+          else
+            echo "Creating Neon branch: $BRANCH_NAME"
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+            BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+            if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+              echo "::error::Failed to create Neon branch"
+              echo "$RESPONSE" | jq .
+              exit 1
+            fi
+          fi
+
+          ENDPOINTS=$(curl -sf \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+          HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+
+          echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
+          echo "database_url=postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require" >> "$GITHUB_OUTPUT"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
+          NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
+          NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
+
       - name: Deploy preview to Vercel
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
           DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
             --build-env SKIP_MIGRATE=1 \
-            -e DATABASE_URL="${{ secrets.DATABASE_URL_PREVIEW }}" \
+            -e DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
             -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
             --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
@@ -172,3 +215,16 @@ jobs:
         if: always()
         run: |
           tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "screen -X -S buildd-test quit 2>/dev/null; rm -rf /tmp/buildd-ci"' || true
+
+      - name: Cleanup Neon branch
+        if: always()
+        run: |
+          BRANCH_ID="${{ steps.neon.outputs.branch_id }}"
+          [ -z "$BRANCH_ID" ] && exit 0
+          curl -sf -X DELETE \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID" || true
+          echo "Deleted Neon branch: $BRANCH_ID"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
