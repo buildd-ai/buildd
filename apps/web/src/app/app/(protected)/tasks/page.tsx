@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, objectives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -27,6 +27,8 @@ export default async function TasksPage() {
     hasArtifact: boolean;
     filesChanged: number | null;
     waitingPrompt: string | null;
+    objectiveId: string | null;
+    objectiveTitle: string | null;
   }> = [];
 
   if (!isDev && user) {
@@ -55,10 +57,24 @@ export default async function TasksPage() {
             updatedAt: true,
             workspaceId: true,
             result: true,
+            objectiveId: true,
           },
           orderBy: [desc(tasks.updatedAt)],
           limit: 200,
         });
+
+        // Fetch objective titles for tasks that have objectiveId
+        const objectiveIds = [...new Set(recentTasks.map(t => t.objectiveId).filter(Boolean))] as string[];
+        const objectiveTitleMap = new Map<string, string>();
+        if (objectiveIds.length > 0) {
+          const objs = await db.query.objectives.findMany({
+            where: inArray(objectives.id, objectiveIds),
+            columns: { id: true, title: true },
+          });
+          for (const o of objs) {
+            objectiveTitleMap.set(o.id, o.title);
+          }
+        }
 
         // Query workers waiting for input to enrich task status
         const waitingWorkers = await db.query.workers.findMany({
@@ -90,6 +106,8 @@ export default async function TasksPage() {
             hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
             filesChanged: result?.files?.length ?? null,
             waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
+            objectiveId: t.objectiveId || null,
+            objectiveTitle: t.objectiveId ? (objectiveTitleMap.get(t.objectiveId) || null) : null,
           };
         });
       }
