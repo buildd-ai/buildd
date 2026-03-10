@@ -86,7 +86,7 @@ jobs:
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
-          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --confirm 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app')
+          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
           for i in $(seq 1 30); do
