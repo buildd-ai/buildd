@@ -125,18 +125,18 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
-      - name: Build and deploy preview to Vercel
+      - name: Deploy preview to Vercel
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
 
-          # Build locally where we control DATABASE_URL, then deploy prebuilt
-          vercel pull --yes --token=${{ secrets.VERCEL_TOKEN }}
-          vercel build --token=${{ secrets.VERCEL_TOKEN }}
-          DEPLOY_URL=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }} \
+          # Neon clone already has all migrations — skip db:migrate, just build Next.js
+          # Use -e to set runtime env vars (DATABASE_URL points to the Neon clone)
+          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
             -e DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
             -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
-            2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
+            --build-env SKIP_MIGRATE=1 \
+            --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
 
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
@@ -158,8 +158,6 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
-          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
