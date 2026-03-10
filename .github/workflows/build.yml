@@ -88,6 +88,8 @@ jobs:
           npm i -g vercel@latest
           DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
             --build-env SKIP_MIGRATE=1 \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL_PREVIEW }}" \
+            -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
             --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
