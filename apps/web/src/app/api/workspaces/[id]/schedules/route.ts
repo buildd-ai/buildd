@@ -88,6 +88,11 @@ export async function POST(
       return NextResponse.json({ error: `Invalid cron expression: ${cronError}` }, { status: 400 });
     }
 
+    // Ensure priority is a number
+    if (taskTemplate.priority !== undefined) {
+      taskTemplate.priority = typeof taskTemplate.priority === 'number' ? taskTemplate.priority : 0;
+    }
+
     // Compute next run time
     const nextRunAt = enabled ? computeNextRunAt(cronExpression, timezone) : null;
 

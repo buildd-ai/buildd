@@ -331,7 +331,7 @@ export async function GET(req: NextRequest) {
             workspaceId: schedule.workspaceId,
             title: taskTitle,
             description: taskDescription,
-            priority: template.priority || 0,
+            priority: typeof template.priority === 'number' ? template.priority : 0,
             status: 'pending',
             mode: template.mode || 'execution',
             runnerPreference: template.runnerPreference || 'any',

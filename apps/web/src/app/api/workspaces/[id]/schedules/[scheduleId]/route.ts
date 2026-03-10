@@ -77,7 +77,12 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (body.name !== undefined) updates.name = body.name;
-    if (body.taskTemplate !== undefined) updates.taskTemplate = body.taskTemplate;
+    if (body.taskTemplate !== undefined) {
+      if (body.taskTemplate.priority !== undefined) {
+        body.taskTemplate.priority = typeof body.taskTemplate.priority === 'number' ? body.taskTemplate.priority : 0;
+      }
+      updates.taskTemplate = body.taskTemplate;
+    }
     if (body.oneShot !== undefined) updates.oneShot = body.oneShot;
     if (body.maxConcurrentFromSchedule !== undefined) updates.maxConcurrentFromSchedule = body.maxConcurrentFromSchedule;
     if (body.pauseAfterFailures !== undefined) updates.pauseAfterFailures = body.pauseAfterFailures;

@@ -13,11 +13,12 @@ export default async function SchedulesPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ new?: string }>;
+  searchParams: Promise<{ new?: string; edit?: string }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
   const showNew = query.new === '1';
+  const editId = query.edit || null;
 
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
@@ -53,6 +54,8 @@ export default async function SchedulesPage({
     orderBy: [desc(taskSchedules.createdAt)],
   });
 
+  const editSchedule = editId ? schedules.find((s) => s.id === editId) : null;
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -67,7 +70,7 @@ export default async function SchedulesPage({
               {schedules.length} schedule{schedules.length !== 1 ? 's' : ''}
             </p>
           </div>
-          {!showNew && (
+          {!showNew && !editSchedule && (
             <Link
               href={`/app/workspaces/${id}/schedules?new=1`}
               className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
@@ -80,6 +83,31 @@ export default async function SchedulesPage({
         {showNew && (
           <div className="mb-8">
             <ScheduleForm workspaceId={id} />
+          </div>
+        )}
+
+        {editSchedule && (
+          <div className="mb-8">
+            <ScheduleForm
+              workspaceId={id}
+              initialData={{
+                id: editSchedule.id,
+                name: editSchedule.name,
+                cronExpression: editSchedule.cronExpression,
+                timezone: editSchedule.timezone,
+                taskTemplate: editSchedule.taskTemplate as {
+                  title: string;
+                  description?: string;
+                  mode?: string;
+                  priority?: number;
+                  runnerPreference?: string;
+                },
+                enabled: editSchedule.enabled,
+                oneShot: editSchedule.oneShot,
+                maxConcurrentFromSchedule: editSchedule.maxConcurrentFromSchedule,
+                pauseAfterFailures: editSchedule.pauseAfterFailures,
+              }}
+            />
           </div>
         )}
 
