@@ -142,6 +142,87 @@
 **Architecture**: Modular packages — server helpers, WebSocket handlers, session management, client shims. Multi-runtime support (Node + Bun).
 **Takeaway for Buildd**: The modular package structure (separate server, WebSocket, and client packages) is a clean pattern. If Buildd ever publishes SDK helpers for external integrations, this layered approach is worth emulating.
 
+#### 12. Claude Code Agent Farm (Dicklesworthstone) — ~2k stars
+**What**: Orchestration framework for running 20–50 Claude Code agents in parallel via tmux. Single 3k-line Python script (`claude_code_agent_farm.py`) + 37 stack config JSONs + 41 prompt files + 31 best-practices guides.
+**Repo**: [github.com/Dicklesworthstone/claude_code_agent_farm](https://github.com/Dicklesworthstone/claude_code_agent_farm)
+
+**Architecture**: tmux-based — each agent gets its own pane. Central `AgentMonitor` polls panes every N seconds (default 10s) by capturing tmux pane content and regex-matching status indicators ("✻ Pontificating", "● Bash(", "✻ Thinking", etc.). State persisted to `.claude_agent_farm_state.json` with `fcntl` file locking for atomic reads/writes.
+
+**Key Implementation Details:**
+
+1. **Adaptive Idle Timeout** (`calculate_adaptive_timeout()`):
+   - Tracks cycle times (working→ready transitions) in a sliding window of last 20 cycles
+   - Calculates median cycle time, sets timeout to 3× median
+   - Bounds: min 30s, max 600s (10 min)
+   - Only adjusts if >20% change from current value (prevents thrashing)
+   - Needs ≥3 cycle samples before activating; uses base timeout until then
+   - **Buildd relevance**: Our runner uses fixed heartbeat timeout (5 min). Adaptive timeout based on historical task duration would prevent premature kills on complex tasks while catching truly stalled workers faster.
+
+2. **File-Based Heartbeat System**:
+   - `.heartbeats/agentNN.heartbeat` files with ISO timestamps
+   - Updated on every status check when agent is "working" or "ready"
+   - Stale heartbeat (>120s) triggers "error" restart
+   - Displayed in monitoring dashboard with color coding: green (<30s), yellow (<60s), red (>60s)
+   - **Buildd relevance**: Simpler than our WebSocket-based heartbeat but the age-based color coding in the dashboard is a nice UX touch we could adopt.
+
+3. **Lock-Based Coordination** (two separate levels):
+   - **Launch lock** (`~/.claude/.agent_farm_launch.lock`): Prevents concurrent `claude` CLI launches that corrupt shared settings. Uses `O_CREAT|O_EXCL` for atomicity. Stale after 30s, auto-cleaned.
+   - **Work coordination** (prompt-based, not enforced in code): Agents are instructed via prompt to maintain `/coordination/active_work_registry.json` + per-agent lock files. Advisory only — relies on the LLM following instructions.
+   - Stale lock detection: >1hr for work locks, >30s for launch locks
+   - **Buildd relevance**: The launch lock is a solved problem for us (we spawn one worker per task). The advisory work coordination is interesting but fragile — Buildd's task-level isolation is more robust. However, for multi-worker-on-same-repo scenarios, a PreToolUse hook checking a file-lock registry (as noted in pattern #2) would be stronger than prompt-based coordination.
+
+4. **Auto-Recovery with Exponential Backoff**:
+   - Three restart reasons: `context` (low context%), `error` (settings corruption/stalled heartbeat), `idle` (exceeded adaptive timeout)
+   - `context` restarts use `/clear` (soft reset); `error`/`idle` do full agent restart
+   - Exponential backoff: `min(300, 10 * 2^restart_count)` seconds between restarts (10s, 20s, 40s, 80s, 160s, 300s max)
+   - Max consecutive errors configurable (default 3) before agent disabled
+   - **Buildd relevance**: Our workers don't have graduated restart strategies. The `/clear` vs full restart distinction is valuable — context exhaustion should try a soft reset before killing the worker. The exponential backoff pattern is directly adoptable for our auto-retry logic.
+
+5. **Stack Profiles** (37 configs):
+   - JSON configs with: `tech_stack`, `problem_commands` (type_check, lint), `best_practices_files`, `chunk_size`, `agents` count, timing params, prompt files
+   - Example Next.js config: 20 agents, chunk_size 50, stagger 10s, wait_after_cc 15s, idle_timeout 60s
+   - Each stack has a matching best-practices guide (31 markdown files) and default prompt
+   - **Buildd relevance**: Could inspire workspace-specific defaults. When a workspace is detected as Next.js (via package.json), auto-set suggested effort level, model, and budget. Not the 34 configs themselves, but the concept of stack detection → config presets.
+
+6. **Context Percentage Detection**:
+   - Regex scrapes "Context left until auto-compact: N%" from tmux pane content
+   - Multiple fallback patterns for different Claude Code versions
+   - Triggers `/clear` when below threshold (default 20%)
+   - **Buildd relevance**: SDK hooks expose context usage events directly — we don't need tmux scraping. But tracking context% per worker and taking action (compact/restart) before exhaustion is a pattern we should adopt.
+
+**SDK Features Used**: None — this is entirely CLI-based. Launches `claude` CLI processes in tmux panes and monitors via terminal scraping. Does NOT use the Agent SDK's query() API, hooks, or any programmatic interface.
+
+**What We Should NOT Adopt**:
+- tmux-based architecture (we have proper subprocess management via SDK)
+- Terminal scraping for status detection (we have SDK hook events)
+- Prompt-based work coordination (fragile; our task isolation is better)
+- Single-machine constraint (we run distributed workers)
+
+**What We SHOULD Adopt** (Priority Order):
+1. **Adaptive idle timeout** — Replace fixed 5-min heartbeat timeout with median-of-recent-cycles × 3. Low effort, high impact.
+2. **Graduated restart strategy** — `/clear` (soft) for context exhaustion vs full restart for errors. Currently we only do full restarts.
+3. **Exponential backoff on restarts** — `min(300, 10 * 2^count)` prevents restart storms on systemic issues.
+4. **Stack detection → config presets** — Auto-detect project type from package.json/Cargo.toml/etc and suggest effort/model/budget defaults.
+5. **Heartbeat age visualization** — Color-coded heartbeat freshness in dashboard (green/yellow/red thresholds).
+
+#### 13. claude-code-by-agents (baryhuang) — ~400 stars
+**What**: Desktop app (Electron) and REST API for multi-agent Claude Code orchestration. Deno backend coordinates local and remote agents through @mentions.
+**Repo**: [github.com/baryhuang/claude-code-by-agents](https://github.com/baryhuang/claude-code-by-agents)
+**Architecture**: Frontend (Electron, port 3000) → Backend orchestrator (Deno, port 8080) → Multiple Claude Code CLI agents (ports 8081, 8082, etc.). Remote agents run on other machines. @mention syntax routes messages to specific agents. File-based inter-agent communication.
+**SDK Features Used**: None — uses Claude CLI directly with OAuth auth (no API keys). No SDK hooks, no programmatic API.
+**Key Features**: @agent-name mention routing, automatic task decomposition with dependency management, multi-machine agent coordination, REST API for chat/history/abort.
+
+**Processed**: 2026-03-09
+**Assessment**: Investigated for potential Buildd integration. Conclusion: Buildd's existing architecture already covers (and exceeds) what this project offers.
+- Their **@mention routing** → Buildd's task + skill assignment
+- Their **multi-machine agents** → Buildd's distributed worker claim model
+- Their **orchestrator decomposition** → Buildd's objectives → tasks
+- Their **REST API** → Buildd's MCP server
+- Their **limitations** (no persistence, no session resume, no real-time visibility, context fragmentation across agents) are problems Buildd already solves via DB-backed task state, worker heartbeats, and Pusher realtime.
+- The `@mention` syntax is effectively a skill/agent invocator — same concept as Claude Code's `/` slash commands or Buildd's skill attachment on tasks. No novel pattern to adopt.
+
+**Action**: None. Validates Buildd's architectural direction. No features to borrow.
+
 ## Buildd's Current SDK Usage (What We Do Well)
 
 | Feature | Status | Notes |
@@ -266,6 +347,23 @@ Distribute Buildd skills as Claude Code plugins via the official marketplace:
 - Enterprise marketplace features (`strictKnownMarketplaces`) for org control
 - `git-subdir` source type enables pointing to specific skill directories in a monorepo
 Could expand Buildd's reach and provide a new distribution channel for workspace skills.
+
+#### 11. Adaptive Idle Timeout (from Agent Farm)
+Replace fixed worker timeouts with cycle-time-aware adaptive thresholds:
+- Track last 20 work cycle durations (working→complete transitions)
+- Set timeout = 3× median cycle time, bounded [30s, 600s]
+- Only adjust on >20% change to prevent thrashing
+- Needs ≥3 samples before activating (falls back to base timeout)
+- Directly applicable to Buildd's runner heartbeat timeout (currently fixed 5 min)
+
+#### 12. Graduated Restart Strategy (from Agent Farm)
+Different recovery actions based on failure type:
+- **Context exhaustion** → soft reset (`/clear` or SDK compact) — preserve session, free context
+- **Heartbeat stale / error** → full worker restart
+- **Idle too long** → full restart with new prompt
+- Exponential backoff between restarts: `min(300, 10 * 2^restart_count)` seconds
+- Max consecutive errors threshold before disabling worker entirely
+- Prevents restart storms on systemic issues (rate limits, auth failures)
 
 ## Recommendations for Buildd (Priority Order)
 
