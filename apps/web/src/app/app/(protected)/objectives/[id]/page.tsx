@@ -17,6 +17,7 @@ import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import ActiveHoursConfig from './ActiveHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from './heartbeat-helpers';
+import PrLink from './PrLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -408,15 +409,7 @@ export default async function ObjectiveDetailPage({
                     </span>
                   ) : null}
                   {w.prUrl && (
-                    <a
-                      href={w.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:underline"
-                      onClick={e => e.stopPropagation()}
-                    >
-                      PR #{w.prNumber}
-                    </a>
+                    <PrLink href={w.prUrl} prNumber={w.prNumber} className="text-primary hover:underline" />
                   )}
                   {(w.completedAt || w.startedAt) && (
                     <span>{timeAgo(w.completedAt || w.startedAt!)}</span>
@@ -456,15 +449,7 @@ export default async function ObjectiveDetailPage({
                         <span className="truncate flex-1">{latestWorker.currentAction}</span>
                       )}
                       {latestWorker.prUrl && (
-                        <a
-                          href={latestWorker.prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline shrink-0"
-                          onClick={e => e.stopPropagation()}
-                        >
-                          PR #{latestWorker.prNumber}
-                        </a>
+                        <PrLink href={latestWorker.prUrl} prNumber={latestWorker.prNumber} className="text-primary hover:underline shrink-0" />
                       )}
                       {latestWorker.turns > 0 && (
                         <span className="shrink-0">{latestWorker.turns} turns</span>
@@ -497,15 +482,7 @@ export default async function ObjectiveDetailPage({
                     <StatusBadge status={task.status} />
                     <span className="flex-1 text-sm text-text-primary truncate">{task.title}</span>
                     {latestWorker?.prUrl && (
-                      <a
-                        href={latestWorker.prUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-primary hover:underline shrink-0"
-                        onClick={e => e.stopPropagation()}
-                      >
-                        PR #{latestWorker.prNumber}
-                      </a>
+                      <PrLink href={latestWorker.prUrl} prNumber={latestWorker.prNumber} className="text-xs text-primary hover:underline shrink-0" />
                     )}
                   </div>
                   {task.result && (task.result as any).summary && (
