@@ -125,17 +125,12 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
-      - name: Run migrations on preview branch
-        run: cd packages/core && bun db:migrate
-        env:
-          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
-
       - name: Deploy preview to Vercel
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
           DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
-            --build-env SKIP_MIGRATE=1 \
+            -b DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
             -e DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
             -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
             --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
