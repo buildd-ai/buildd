@@ -64,7 +64,11 @@ export default async function SchedulesPage({
           <div>
             <h1 className="text-3xl font-bold">Schedules</h1>
             <p className="text-text-muted mt-1">
-              {schedules.length} schedule{schedules.length !== 1 ? 's' : ''}
+              {schedules.length} schedule{schedules.length !== 1 ? 's' : ''} in {workspace.name}
+              {' · '}
+              <Link href="/app/schedules" className="text-primary hover:underline">
+                View all automation →
+              </Link>
             </p>
           </div>
           {!showNew && (
