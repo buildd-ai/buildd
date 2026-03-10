@@ -528,8 +528,11 @@ async function handleMcpRequest(req: Request): Promise<Response> {
 
 // ── Next.js Route Handlers ───────────────────────────────────────────────────
 
-export async function GET(req: Request): Promise<Response> {
-  return handleMcpRequest(req);
+export async function GET(_req: Request): Promise<Response> {
+  // Stateless server — no SSE notifications to push.
+  // Returning 405 stops MCP clients from polling the SSE endpoint
+  // (which otherwise reconnects every ~1s on serverless, burning invocations).
+  return new Response("SSE not supported on stateless server", { status: 405 });
 }
 
 export async function POST(req: Request): Promise<Response> {
