@@ -125,15 +125,19 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
-      - name: Deploy preview to Vercel
+      - name: Build and deploy preview to Vercel
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
-          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
-            -b DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
+
+          # Build locally where we control DATABASE_URL, then deploy prebuilt
+          vercel pull --yes --token=${{ secrets.VERCEL_TOKEN }}
+          vercel build --token=${{ secrets.VERCEL_TOKEN }}
+          DEPLOY_URL=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }} \
             -e DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
             -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
-            --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
+            2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
+
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
           for i in $(seq 1 30); do
@@ -142,14 +146,10 @@ jobs:
               echo "Deployment ready: $BODY"
               break
             fi
-            if echo "$BODY" | grep -qi "deployment.*failed\|error\|DEPLOYMENT_NOT_FOUND"; then
-              echo "::error::Vercel deployment failed. Response: $(echo "$BODY" | head -5)"
-              exit 1
-            fi
             echo "Waiting for deployment... (attempt $i)"
             sleep 10
           done
-          # Final check — if we exhausted retries, fail
+          # Final check
           FINAL=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
           if ! echo "$FINAL" | jq -e . >/dev/null 2>&1; then
             echo "::error::Deployment never became ready. Last response: $(echo "$FINAL" | head -5)"
@@ -158,6 +158,8 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
