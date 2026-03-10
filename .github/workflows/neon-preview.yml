@@ -27,12 +27,12 @@ jobs:
             "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches" \
             | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
 
-          if [ -n "$EXISTING" ] && [ "$EXISTING" \!= "null" ]; then
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "Neon branch already exists: $EXISTING"
             BRANCH_ID="$EXISTING"
           else
             echo "Creating Neon branch: $BRANCH_NAME"
-            RESPONSE=$(curl -sf -X POST \
+            RESPONSE=$(curl -s -X POST \
               -H "Authorization: Bearer $NEON_API_KEY" \
               -H "Content-Type: application/json" \
               -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
@@ -74,14 +74,14 @@ jobs:
             | jq -r --arg branch "$GIT_BRANCH" \
               '.envs[] | select(.key == "DATABASE_URL" and .gitBranch == $branch) | .id')
 
-          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" \!= "null" ]; then
+          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
             curl -sf -X DELETE \
               -H "Authorization: Bearer $VERCEL_TOKEN" \
               "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$EXISTING_ID"
           fi
 
           # Create branch-specific DATABASE_URL
-          curl -sf -X POST \
+          curl -s -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
@@ -91,7 +91,7 @@ jobs:
               \"target\": [\"preview\"],
               \"gitBranch\": \"$GIT_BRANCH\"
             }" \
-            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env"
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env"
 
           echo "Set DATABASE_URL for branch $GIT_BRANCH"
         env:
