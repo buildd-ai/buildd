@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { deviceCodes } from '@buildd/core/db/schema';
 import { randomBytes } from 'crypto';
+import { trackEvent } from '@/lib/axiom';
 
 const EXPIRY_MINUTES = 15;
 
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
     const baseUrl = process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://buildd.dev';
     const verificationUrl = `${baseUrl}/app/device?code=${userCode}`;
 
+    trackEvent('api.auth.device.code', { clientName, level });
     return NextResponse.json({
       user_code: userCode,
       device_token: deviceToken,
