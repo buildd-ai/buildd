@@ -9,7 +9,7 @@ const WORKERS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
   'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'workspaceId', 'workspaceName',
-  'branch', 'status', 'error', 'completedAt', 'lastActivity', 'sessionId',
+  'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId',
   'waitingFor',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
@@ -150,6 +150,7 @@ export function loadAllWorkers(): LocalWorker[] {
         status: data.status as LocalWorker['status'],
         error: data.error as string | undefined,
         completedAt: data.completedAt as number | undefined,
+        startedAt: (data.startedAt as number) || (data.lastActivity as number),  // Fallback for workers saved before startedAt existed
         lastActivity: data.lastActivity as number,
         sessionId: data.sessionId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
@@ -215,6 +216,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       status: data.status as LocalWorker['status'],
       error: data.error as string | undefined,
       completedAt: data.completedAt as number | undefined,
+      startedAt: (data.startedAt as number) || (data.lastActivity as number),
       lastActivity: data.lastActivity as number,
       sessionId: data.sessionId as string | undefined,
       waitingFor: data.waitingFor as LocalWorker['waitingFor'],

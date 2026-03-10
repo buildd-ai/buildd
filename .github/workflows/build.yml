@@ -82,6 +82,26 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Deploy preview to Vercel
+        id: vercel-deploy
+        run: |
+          npm i -g vercel@latest
+          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
+          echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed to: $DEPLOY_URL"
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sI "$DEPLOY_URL/api/version" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            if [ "$STATUS" != "000" ] && [ "$STATUS" != "502" ]; then
+              echo "Deployment ready (status: $STATUS)"
+              break
+            fi
+            echo "Waiting for deployment... (attempt $i)"
+            sleep 10
+          done
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -103,6 +123,7 @@ jobs:
 
       - name: Start preview runner
         run: |
+          DEPLOY_URL="${{ steps.vercel-deploy.outputs.url }}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
               export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
@@ -111,7 +132,7 @@ jobs:
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
-                export BUILDD_SERVER=$BUILDD_TEST_SERVER
+                export BUILDD_SERVER=$DEPLOY_URL
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
@@ -119,7 +140,6 @@ jobs:
           sleep 5
         env:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
-          BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
 
       - name: Integration tests
         run: |
@@ -130,7 +150,7 @@ jobs:
                apps/web/tests/integration/recipes.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
-          BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
+          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
@@ -139,7 +159,7 @@ jobs:
         run: bun test tests/e2e/server-worker-flow.test.ts
         timeout-minutes: 10
         env:
-          BUILDD_TEST_SERVER: ${{ secrets.BUILDD_TEST_SERVER }}
+          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
