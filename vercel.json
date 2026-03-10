@@ -1,5 +1,4 @@
 {
   "bunVersion": "1.x",
-  "framework": "nextjs",
-  "ignoreCommand": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"main\" ] || exit 0"
+  "framework": "nextjs"
 }
