@@ -16,6 +16,31 @@ interface GridTask {
   hasArtifact: boolean;
   filesChanged: number | null;
   waitingPrompt: string | null;
+  objectiveId: string | null;
+  objectiveTitle: string | null;
+}
+
+interface CollapsedGroup {
+  type: 'collapsed';
+  objectiveId: string;
+  objectiveTitle: string;
+  tasks: GridTask[];
+  latestTask: GridTask;
+  count: number;
+}
+
+interface SingleTask {
+  type: 'single';
+  task: GridTask;
+}
+
+type SwimLaneItem = CollapsedGroup | SingleTask;
+
+interface WorkspaceRow {
+  workspaceName: string;
+  items: SwimLaneItem[];
+  hasActive: boolean;
+  latestUpdate: string;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -54,39 +79,102 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function groupByTime(tasks: GridTask[]): { label: string; tasks: GridTask[] }[] {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const weekAgo = new Date(today.getTime() - 7 * 86400000);
+const STATUS_PRIORITY: Record<string, number> = {
+  waiting_input: 0,
+  in_progress: 1,
+  assigned: 2,
+  pending: 3,
+  failed: 4,
+  completed: 5,
+};
 
-  const groups: { label: string; tasks: GridTask[] }[] = [
-    { label: 'Needs input', tasks: [] },
-    { label: 'Active', tasks: [] },
-    { label: 'Today', tasks: [] },
-    { label: 'Yesterday', tasks: [] },
-    { label: 'This week', tasks: [] },
-    { label: 'Older', tasks: [] },
-  ];
+function isActive(status: string): boolean {
+  return ['in_progress', 'assigned', 'pending', 'waiting_input'].includes(status);
+}
 
-  for (const t of tasks) {
-    if (t.status === 'waiting_input') {
-      groups[0].tasks.push(t);
-      continue;
-    }
-    const isActive = ['in_progress', 'assigned', 'pending'].includes(t.status);
-    if (isActive) {
-      groups[1].tasks.push(t);
-      continue;
-    }
-    const d = new Date(t.updatedAt);
-    if (d >= today) groups[2].tasks.push(t);
-    else if (d >= yesterday) groups[3].tasks.push(t);
-    else if (d >= weekAgo) groups[4].tasks.push(t);
-    else groups[5].tasks.push(t);
+function buildWorkspaceRows(tasks: GridTask[]): { needsInput: GridTask[]; workspaceRows: WorkspaceRow[] } {
+  // Extract needs-input tasks (cross-workspace pinned section)
+  const needsInput = tasks.filter(t => t.status === 'waiting_input');
+  const nonWaiting = tasks.filter(t => t.status !== 'waiting_input');
+
+  // Group by workspace
+  const byWorkspace = new Map<string, GridTask[]>();
+  for (const t of nonWaiting) {
+    const existing = byWorkspace.get(t.workspaceName) || [];
+    existing.push(t);
+    byWorkspace.set(t.workspaceName, existing);
   }
 
-  return groups.filter(g => g.tasks.length > 0);
+  const workspaceRows: WorkspaceRow[] = [];
+
+  for (const [workspaceName, wsTasks] of byWorkspace) {
+    // Sort: active first (by status priority), then by recency
+    const sorted = [...wsTasks].sort((a, b) => {
+      const aPri = STATUS_PRIORITY[a.status] ?? 99;
+      const bPri = STATUS_PRIORITY[b.status] ?? 99;
+      if (aPri !== bPri) return aPri - bPri;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+
+    // Collapse recurring: completed tasks sharing objectiveId with 3+ instances
+    const completedByObjective = new Map<string, GridTask[]>();
+    const items: SwimLaneItem[] = [];
+    const deferredObjectiveIds = new Set<string>();
+
+    // First pass: identify collapsible objectives
+    for (const t of sorted) {
+      if (t.status === 'completed' && t.objectiveId) {
+        const group = completedByObjective.get(t.objectiveId) || [];
+        group.push(t);
+        completedByObjective.set(t.objectiveId, group);
+      }
+    }
+    for (const [objId, group] of completedByObjective) {
+      if (group.length >= 3) {
+        deferredObjectiveIds.add(objId);
+      }
+    }
+
+    // Second pass: build items
+    const addedObjectives = new Set<string>();
+    for (const t of sorted) {
+      if (t.status === 'completed' && t.objectiveId && deferredObjectiveIds.has(t.objectiveId)) {
+        if (!addedObjectives.has(t.objectiveId)) {
+          addedObjectives.add(t.objectiveId);
+          const group = completedByObjective.get(t.objectiveId)!;
+          items.push({
+            type: 'collapsed',
+            objectiveId: t.objectiveId,
+            objectiveTitle: t.objectiveTitle || t.title,
+            tasks: group,
+            latestTask: group[0], // already sorted by recency
+            count: group.length,
+          });
+        }
+        // Skip individual tasks that are collapsed
+        continue;
+      }
+      items.push({ type: 'single', task: t });
+    }
+
+    const hasActiveTask = wsTasks.some(t => isActive(t.status));
+    const latestUpdate = sorted[0]?.updatedAt || '';
+
+    workspaceRows.push({
+      workspaceName,
+      items,
+      hasActive: hasActiveTask,
+      latestUpdate,
+    });
+  }
+
+  // Sort workspace rows: active workspaces first, then by most recent task
+  workspaceRows.sort((a, b) => {
+    if (a.hasActive !== b.hasActive) return a.hasActive ? -1 : 1;
+    return new Date(b.latestUpdate).getTime() - new Date(a.latestUpdate).getTime();
+  });
+
+  return { needsInput, workspaceRows };
 }
 
 function TaskTile({ task }: { task: GridTask }) {
@@ -106,7 +194,7 @@ function TaskTile({ task }: { task: GridTask }) {
         : '';
 
   return (
-    <div className="relative group">
+    <div className="relative group shrink-0 w-[180px]">
       <Link
         href={`/app/tasks/${task.id}`}
         className={`
@@ -222,6 +310,64 @@ function TaskTile({ task }: { task: GridTask }) {
   );
 }
 
+function CollapsedTile({ group }: { group: CollapsedGroup }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  return (
+    <div className="relative group shrink-0 w-[180px]">
+      <Link
+        href={`/app/tasks/${group.latestTask.id}`}
+        className="block relative w-full rounded-lg h-[72px] transition-all hover:border-text-muted/30"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        {/* Stacked card effect — two shadow layers behind */}
+        <div className="absolute inset-0 translate-x-[3px] translate-y-[3px] rounded-lg bg-surface-3/50 border border-border-default/30" />
+        <div className="absolute inset-0 translate-x-[1.5px] translate-y-[1.5px] rounded-lg bg-surface-3/70 border border-border-default/50" />
+
+        {/* Main card */}
+        <div className="relative w-full h-full rounded-lg bg-surface-3 border border-border-default hover:bg-surface-2 transition-colors">
+          <div className="p-2.5 pt-3 h-full flex flex-col justify-between">
+            {/* Title row */}
+            <div className="flex items-start gap-1.5 min-w-0">
+              <span className="mt-0.5 w-1.5 h-1.5 rounded-full shrink-0 bg-status-success" />
+              <span className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2 min-w-0">
+                {group.objectiveTitle}
+              </span>
+            </div>
+
+            {/* Bottom row: count + recency */}
+            <div className="flex items-center gap-1.5 mt-auto">
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-mono rounded bg-text-muted/10 text-text-secondary">
+                &times;{group.count}
+              </span>
+              <span className="ml-auto text-[9px] font-mono text-text-muted">
+                last: {timeAgo(group.latestTask.updatedAt)}
+              </span>
+            </div>
+          </div>
+        </div>
+      </Link>
+
+      {/* Tooltip on hover */}
+      {showTooltip && (
+        <div className="absolute z-50 bottom-full left-0 mb-2 w-64 p-3 rounded-lg bg-surface-3 border border-border-default shadow-lg pointer-events-none">
+          <div className="text-[11px] text-text-primary font-medium mb-1">
+            {group.objectiveTitle}
+          </div>
+          <div className="text-[10px] text-text-secondary leading-relaxed">
+            {group.count} completed runs &middot; most recent {timeAgo(group.latestTask.updatedAt)}
+          </div>
+          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default">
+            <span className="text-[9px] font-mono text-text-muted">{group.latestTask.workspaceName}</span>
+            <span className="text-[9px] font-mono text-text-muted">recurring objective</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type FilterStatus = 'all' | 'needs_input' | 'active' | 'completed' | 'failed';
 
 export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
@@ -236,9 +382,9 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
     return tasks;
   }, [tasks, filter]);
 
-  const groups = useMemo(() => groupByTime(filtered), [filtered]);
+  const { needsInput, workspaceRows } = useMemo(() => buildWorkspaceRows(filtered), [filtered]);
 
-  // Stats
+  // Stats (always from unfiltered)
   const waitingCount = tasks.filter(t => t.status === 'waiting_input').length;
   const activeCount = tasks.filter(t => ['in_progress', 'assigned', 'waiting_input'].includes(t.status)).length;
   const completedCount = tasks.filter(t => t.status === 'completed').length;
@@ -279,7 +425,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-5xl mx-auto p-6">
+      <div className="max-w-[1400px] mx-auto p-6">
         {/* Header stats */}
         <div className="flex items-center gap-6 mb-6">
           <div>
@@ -330,26 +476,59 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
           ))}
         </div>
 
-        {/* Task grid by time group */}
-        <div className="space-y-6">
-          {groups.map((group) => (
-            <div key={group.label}>
-              <div className={`text-[10px] font-mono uppercase tracking-[2.5px] mb-3 pb-1.5 border-b ${
-                group.label === 'Needs input'
-                  ? 'text-status-warning border-status-warning/20'
-                  : 'text-text-muted border-border-default'
-              }`}>
-                {group.label}
-                <span className="ml-2 normal-case tracking-normal">{group.tasks.length}</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                {group.tasks.map((task) => (
-                  <TaskTile key={task.id} task={task} />
-                ))}
+        {/* Needs input — pinned section above workspace rows */}
+        {needsInput.length > 0 && (
+          <div className="mb-6">
+            <div className="text-[10px] font-mono uppercase tracking-[2.5px] mb-3 pb-1.5 border-b text-status-warning border-status-warning/20">
+              Needs input
+              <span className="ml-2 normal-case tracking-normal">{needsInput.length}</span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-2">
+              {needsInput.map((task) => (
+                <TaskTile key={task.id} task={task} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Workspace swim lanes */}
+        <div className="space-y-5">
+          {workspaceRows.map((row) => (
+            <div key={row.workspaceName} className="group/row">
+              <div className="flex items-start gap-4">
+                {/* Workspace label */}
+                <div className="shrink-0 w-[100px] pt-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[2.5px] text-text-muted leading-tight">
+                    {row.workspaceName}
+                  </div>
+                  <div className="text-[9px] font-mono text-text-muted/50 mt-0.5">
+                    {row.items.length} {row.items.length === 1 ? 'item' : 'items'}
+                  </div>
+                </div>
+
+                {/* Tiles — horizontal scroll */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex gap-2 overflow-x-auto pb-2 pt-1">
+                    {row.items.map((item) =>
+                      item.type === 'collapsed' ? (
+                        <CollapsedTile key={`obj-${item.objectiveId}`} group={item} />
+                      ) : (
+                        <TaskTile key={item.task.id} task={item.task} />
+                      )
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           ))}
         </div>
+
+        {/* Empty filtered state */}
+        {workspaceRows.length === 0 && needsInput.length === 0 && filtered.length === 0 && tasks.length > 0 && (
+          <div className="text-center py-12">
+            <p className="text-text-muted text-sm">No tasks match this filter.</p>
+          </div>
+        )}
       </div>
     </div>
   );
