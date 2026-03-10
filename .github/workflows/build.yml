@@ -137,14 +137,24 @@ jobs:
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
           for i in $(seq 1 30); do
-            STATUS=$(curl -sI "$DEPLOY_URL/api/version" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
-            if [ "$STATUS" != "000" ] && [ "$STATUS" != "502" ]; then
-              echo "Deployment ready (status: $STATUS)"
+            BODY=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
+            if echo "$BODY" | jq -e . >/dev/null 2>&1; then
+              echo "Deployment ready: $BODY"
               break
+            fi
+            if echo "$BODY" | grep -qi "deployment.*failed\|error\|DEPLOYMENT_NOT_FOUND"; then
+              echo "::error::Vercel deployment failed. Response: $(echo "$BODY" | head -5)"
+              exit 1
             fi
             echo "Waiting for deployment... (attempt $i)"
             sleep 10
           done
+          # Final check — if we exhausted retries, fail
+          FINAL=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
+          if ! echo "$FINAL" | jq -e . >/dev/null 2>&1; then
+            echo "::error::Deployment never became ready. Last response: $(echo "$FINAL" | head -5)"
+            exit 1
+          fi
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
