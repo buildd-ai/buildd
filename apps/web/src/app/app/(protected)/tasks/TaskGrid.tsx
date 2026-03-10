@@ -316,7 +316,7 @@ function CollapsedTile({ group }: { group: CollapsedGroup }) {
   return (
     <div className="relative group shrink-0 w-[180px]">
       <Link
-        href={`/app/tasks/${group.latestTask.id}`}
+        href={`/app/objectives/${group.objectiveId}`}
         className="block relative w-full rounded-lg h-[72px] transition-all hover:border-text-muted/30"
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
@@ -360,7 +360,7 @@ function CollapsedTile({ group }: { group: CollapsedGroup }) {
           </div>
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default">
             <span className="text-[9px] font-mono text-text-muted">{group.latestTask.workspaceName}</span>
-            <span className="text-[9px] font-mono text-text-muted">recurring objective</span>
+            <span className="text-[9px] font-mono text-primary/70 ml-auto">view objective →</span>
           </div>
         </div>
       )}
