@@ -129,6 +129,7 @@ export interface LocalWorker {
   branch: string;
   status: WorkerStatus;
   hasNewActivity: boolean;  // Blue dot
+  startedAt: number;  // When worker was created (for cycle time tracking)
   lastActivity: number;
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
@@ -298,11 +299,13 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback';
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback' | 'recover';
   text?: string;
   timestamp: number;
   // rollback fields
   checkpointUuid?: string;
+  // recovery fields
+  recoveryMode?: 'diagnose' | 'complete' | 'restart';
 }
 
 // Provider configuration for LLM routing

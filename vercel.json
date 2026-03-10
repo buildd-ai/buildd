@@ -1,5 +1,5 @@
 {
   "bunVersion": "1.x",
   "framework": "nextjs",
-  "ignoreCommand": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"main\" ] || exit 0"
+  "ignoreCommand": "if [ \"$VERCEL_ENV\" = \"production\" ] || [ -n \"$VERCEL_GIT_PULL_REQUEST_ID\" ]; then exit 1; else exit 0; fi"
 }

@@ -9,9 +9,9 @@ export interface ModelOption {
 
 export const MODEL_OPTIONS: ModelOption[] = [
   { value: '', label: 'Default' },
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
-  { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
+  { value: 'sonnet', label: 'Claude Sonnet' },
+  { value: 'opus', label: 'Claude Opus' },
+  { value: 'haiku', label: 'Claude Haiku' },
 ];
 
 export interface WorkspaceOption {

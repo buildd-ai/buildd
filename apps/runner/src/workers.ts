@@ -172,6 +172,11 @@ export class WorkerManager {
   private dirtyForDisk = new Set<string>();
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
+  private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
+  private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
+  // Graduated recovery: track which stale workers have been probed (avoid repeated probes)
+  private probedWorkers = new Set<string>();
   private sessionGeneration = 0;
   // Pending permission request resolvers — keyed by worker ID.
   // When a PermissionRequest hook fires, we store a resolver here.
@@ -499,6 +504,11 @@ export class WorkerManager {
           await this.rollback(workerId, command.checkpointUuid);
         }
         break;
+      case 'recover':
+        if (command.recoveryMode) {
+          await this.recover(workerId, command.recoveryMode);
+        }
+        break;
     }
   }
 
@@ -673,17 +683,69 @@ export class WorkerManager {
 
   private checkStale() {
     const now = Date.now();
+    const timeout = this.adaptiveStaleTimeout;
     for (const worker of this.workers.values()) {
       // Skip stale check for workers waiting on user input (plan approval, questions)
       if (worker.status === 'waiting') continue;
 
       if (worker.status === 'working') {
-        const timeout = 300_000; // 5 minutes
         if (now - worker.lastActivity > timeout) {
-          worker.status = 'stale';
-          this.emit({ type: 'worker_update', worker });
+          // Graduated recovery: if session is still alive, try a soft probe first
+          const session = this.sessions.get(worker.id);
+          if (session && !this.probedWorkers.has(worker.id)) {
+            this.probedWorkers.add(worker.id);
+            console.log(`[Worker ${worker.id}] Idle ${Math.round((now - worker.lastActivity) / 1000)}s — sending soft probe before marking stale`);
+            try {
+              session.inputStream.enqueue(buildUserMessage(
+                'You appear to have stalled. If you are still working, continue. If you are stuck, summarize what you have done and finish.',
+                { sessionId: worker.sessionId },
+              ));
+              worker.lastActivity = now;  // Give it another cycle to respond
+              worker.currentAction = 'Probed (idle recovery)';
+              this.addMilestone(worker, { type: 'status', label: 'Idle probe sent', ts: now });
+              this.emit({ type: 'worker_update', worker });
+            } catch {
+              // Session stream closed — fall through to stale
+              worker.status = 'stale';
+              this.emit({ type: 'worker_update', worker });
+            }
+          } else {
+            // Already probed or no session — mark stale
+            worker.status = 'stale';
+            this.probedWorkers.delete(worker.id);
+            this.emit({ type: 'worker_update', worker });
+          }
         }
       }
+    }
+  }
+
+  /** Record a completed worker's cycle time and recalculate adaptive stale timeout */
+  private recordCycleTime(worker: LocalWorker) {
+    const duration = (worker.completedAt || Date.now()) - worker.startedAt;
+    if (duration <= 0) return;
+
+    this.recentCycleTimes.push(duration);
+    // Keep last 20 cycle times
+    if (this.recentCycleTimes.length > 20) {
+      this.recentCycleTimes.shift();
+    }
+
+    // Need at least 3 samples before adapting
+    if (this.recentCycleTimes.length < 3) return;
+
+    // Median of recent cycle times
+    const sorted = [...this.recentCycleTimes].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    // Timeout = 50% of median cycle time (workers that go silent for half their
+    // typical total runtime are likely stuck), bounded [2 min, 10 min]
+    const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
+
+    // Only adjust on >20% change to prevent thrashing
+    if (Math.abs(newTimeout - this.adaptiveStaleTimeout) / this.adaptiveStaleTimeout > 0.2) {
+      console.log(`[Adaptive timeout] ${Math.round(this.adaptiveStaleTimeout / 1000)}s → ${Math.round(newTimeout / 1000)}s (median cycle: ${Math.round(median / 1000)}s, samples: ${this.recentCycleTimes.length})`);
+      this.adaptiveStaleTimeout = newTimeout;
     }
   }
 
@@ -943,6 +1005,7 @@ export class WorkerManager {
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
+      startedAt: Date.now(),
       lastActivity: Date.now(),
       milestones: [],
       currentAction: 'Starting...',
@@ -1898,7 +1961,7 @@ export class WorkerManager {
       }
 
       // Add task metadata
-      promptParts.push(`---\nTask ID: ${task.id}\nWorkspace: ${worker.workspaceName}`);
+      promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
       const promptText = promptParts.join('\n\n');
 
@@ -2067,7 +2130,7 @@ export class WorkerManager {
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}`,
+          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}&worker=${encodeURIComponent(worker.id)}`,
           headers: {
             Authorization: `Bearer ${this.config.apiKey}`,
           },
@@ -2218,6 +2281,8 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        this.recordCycleTime(worker);
+        this.probedWorkers.delete(worker.id);  // Clean up probe tracking
         // Generate follow-up prompt suggestions if Stop hook didn't already
         if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
           worker.promptSuggestions = this.generatePromptSuggestions(worker);
@@ -2361,6 +2426,8 @@ export class WorkerManager {
     if (worker.status === 'stale') {
       worker.status = 'working';
     }
+    // Clear probe tracking when activity resumes (probe succeeded or agent was active)
+    this.probedWorkers.delete(worker.id);
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;
@@ -2970,6 +3037,162 @@ export class WorkerManager {
         worker.completedAt = Date.now();
         this.emit({ type: 'worker_update', worker });
       }
+    });
+  }
+
+  async recover(workerId: string, mode: 'diagnose' | 'complete' | 'restart') {
+    // Try loading from memory first, then disk
+    let worker = this.workers.get(workerId);
+    if (!worker) {
+      const diskWorker = storeLoadWorker(workerId);
+      if (diskWorker) {
+        this.workers.set(workerId, diskWorker);
+        worker = diskWorker;
+        console.log(`[Worker ${workerId}] Restored from disk for recovery (status: ${diskWorker.status})`);
+      }
+    }
+
+    if (!worker) {
+      console.error(`[Worker ${workerId}] Cannot recover: worker not found in memory or on disk`);
+      return;
+    }
+
+    console.log(`[Worker ${workerId}] Recovery initiated: mode=${mode}`);
+    this.addMilestone(worker, { type: 'status', label: `Recovery: ${mode}`, ts: Date.now() });
+
+    switch (mode) {
+      case 'restart':
+        // Restart reuses the existing retry logic
+        await this.retry(workerId);
+        return;
+
+      case 'diagnose':
+      case 'complete':
+        await this.runDoctorAgent(worker, mode);
+        return;
+    }
+  }
+
+  private async runDoctorAgent(worker: LocalWorker, goal: 'diagnose' | 'complete') {
+    const workspacePath = this.resolver.resolve({
+      id: worker.workspaceId,
+      name: worker.workspaceName,
+      repo: undefined,
+    });
+
+    if (!workspacePath) {
+      console.error(`[Worker ${worker.id}] Cannot run doctor: workspace not found`);
+      await this.buildd.updateWorker(worker.id, {
+        status: 'failed',
+        error: 'Recovery failed: workspace not found',
+      });
+      return;
+    }
+
+    // Use worktree if available, otherwise workspace root
+    const cwd = worker.worktreePath && existsSync(worker.worktreePath)
+      ? worker.worktreePath
+      : workspacePath;
+
+    // Build doctor prompt based on goal
+    const contextParts: string[] = [];
+
+    contextParts.push(`## Recovery Mode: ${goal}`);
+    contextParts.push(`You are a recovery agent inspecting a worker that failed to complete properly.`);
+    contextParts.push(`Worker ID: ${worker.id}`);
+    contextParts.push(`Task: ${worker.taskTitle}`);
+    if (worker.taskDescription) {
+      contextParts.push(`Task Description: ${worker.taskDescription}`);
+    }
+    if (worker.branch) {
+      contextParts.push(`Branch: ${worker.branch}`);
+    }
+
+    // Include what was done
+    if (worker.milestones.length > 0) {
+      const milestoneLabels = worker.milestones
+        .filter(m => !['Recovery: diagnose', 'Recovery: complete'].includes(m.label))
+        .map(m => `- ${m.label}`);
+      if (milestoneLabels.length > 0) {
+        contextParts.push(`## Previous Progress\n${milestoneLabels.join('\n')}`);
+      }
+    }
+
+    // Last output from previous session
+    if (worker.output && worker.output.length > 0) {
+      const lastOutput = worker.output.slice(-3).join('\n');
+      contextParts.push(`## Last Output\n${lastOutput}`);
+    }
+
+    if (goal === 'diagnose') {
+      contextParts.push(`## Instructions
+Inspect the current state and report findings. Do NOT continue the original task.
+
+1. Run \`git status\` to check for uncommitted changes
+2. Run \`git log --oneline -5\` to see recent commits
+3. Check if the task work appears complete or partial
+4. Report your findings as a structured summary
+
+Your assessment should include:
+- **status**: complete | partial | not_started | unknown
+- **uncommitted_changes**: yes | no
+- **unpushed_commits**: yes | no
+- **recommendation**: complete | restart | fail
+- **reason**: Brief explanation
+
+Keep it brief. Budget: $0.50 max.`);
+    } else {
+      // 'complete' mode
+      contextParts.push(`## Instructions
+The previous agent completed the work but failed to report completion properly.
+Your job is to close out this task — do NOT start new work.
+
+1. Check \`git status\` — commit any uncommitted changes if they look intentional
+2. Check \`git log origin/${worker.branch || 'main'}..HEAD\` — push unpushed commits if any
+3. If a PR is needed and doesn't exist, create one using \`buildd\` action=create_pr
+4. Call \`buildd\` action=complete_task with worker ID ${worker.id} and a summary of what was done
+5. If the work is clearly incomplete or broken, call complete_task with an error instead
+
+Budget: $1.00 max. Do NOT start new work or refactor anything.`);
+    }
+
+    const doctorPrompt = contextParts.join('\n\n');
+
+    // Update worker status
+    worker.status = 'working';
+    worker.error = undefined;
+    worker.currentAction = `Recovery: ${goal}...`;
+    worker.hasNewActivity = true;
+    worker.lastActivity = Date.now();
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+
+    await this.buildd.updateWorker(worker.id, {
+      status: 'running',
+      currentAction: `Recovery: ${goal}`,
+    });
+
+    // Build task-like object for startSession
+    const task = {
+      id: worker.taskId,
+      title: `[Recovery] ${worker.taskTitle}`,
+      description: doctorPrompt,
+      workspaceId: worker.workspaceId,
+      workspace: { name: worker.workspaceName },
+      status: 'assigned',
+      priority: 1,
+    };
+
+    // Start a new session with strict budget limits
+    this.startSession(worker, cwd, task as any).catch(err => {
+      console.error(`[Worker ${worker.id}] Doctor agent failed:`, err);
+      worker.status = 'error';
+      worker.error = `Recovery ${goal} failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
+      worker.currentAction = 'Recovery failed';
+      worker.hasNewActivity = true;
+      worker.completedAt = Date.now();
+      this.emit({ type: 'worker_update', worker });
+      this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error }).catch(() => {});
     });
   }
 

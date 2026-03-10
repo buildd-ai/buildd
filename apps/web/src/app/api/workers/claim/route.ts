@@ -44,6 +44,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Clean up stale workers before checking capacity
+  // TODO: Consider calling attemptStaleRecovery() from a periodic cron instead of claim
+  // Recovery is async and shouldn't block claiming
   await cleanupStaleWorkers(account.id);
 
   // Check current active workers (after expiring stale ones)

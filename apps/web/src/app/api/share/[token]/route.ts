@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { artifacts, workers, tasks } from '@buildd/core/db/schema';
+import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { trackEvent } from '@/lib/axiom';
 
 // GET /api/share/[token] - Public artifact access via share token
 export async function GET(
@@ -29,9 +30,16 @@ export async function GET(
   });
 
   if (!artifact) {
+    trackEvent('api.share.request', { token, status: 'not_found' });
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
+  trackEvent('api.share.request', {
+    token,
+    status: 'found',
+    artifactType: artifact.type,
+    taskId: artifact.worker?.task?.id,
+  });
   return NextResponse.json({
     artifact: {
       id: artifact.id,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
+import { trackEvent } from '@/lib/axiom';
 
 /**
  * POST /api/memory/quickstart
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
   const ip =
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
   if (isRateLimited(ip)) {
+    trackEvent('api.memory.quickstart', { ip, origin, status: 'rate_limited' });
     return NextResponse.json(
       { error: 'Rate limit exceeded. Try again later.' },
       { status: 429, headers: cors },
@@ -114,6 +116,7 @@ export async function POST(req: NextRequest) {
       },
     };
 
+    trackEvent('api.memory.quickstart', { ip, origin, status: 'success', teamId });
     return NextResponse.json({ key, teamId, mcpConfig }, { headers: cors });
   } catch (err: any) {
     console.error('Quickstart error:', err);
