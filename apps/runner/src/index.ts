@@ -1610,6 +1610,12 @@ const server = Bun.serve({
         if (!success) {
           return Response.json({ error: 'Worker not found or not running' }, { status: 404, headers: corsHeaders });
         }
+      } else if (action === 'recover') {
+        const { recoveryMode } = body;
+        if (!recoveryMode || !['diagnose', 'complete', 'restart'].includes(recoveryMode)) {
+          return Response.json({ error: 'recoveryMode required (diagnose|complete|restart)' }, { status: 400, headers: corsHeaders });
+        }
+        await workerManager.recover(workerId, recoveryMode);
       }
 
       return Response.json({ ok: true, action }, { headers: corsHeaders });
