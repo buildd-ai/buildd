@@ -3,6 +3,7 @@
 import { useState, useTransition, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { MODEL_OPTIONS } from './config-helpers';
 
 interface WorkspaceOption {
   id: string;
@@ -19,13 +20,6 @@ interface ObjectiveConfigProps {
   outputSchema: unknown | null;
   workspaces: WorkspaceOption[];
 }
-
-const MODEL_OPTIONS = [
-  { value: '', label: 'Default' },
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
-  { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-];
 
 export default function ObjectiveConfig({
   objectiveId,
