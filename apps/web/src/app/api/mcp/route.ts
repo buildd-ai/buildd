@@ -143,7 +143,7 @@ async function getMemoryClientForTeam(workspaceId: string | null | undefined, fa
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -184,6 +184,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   };
 
   const ctx: ActionContext = {
+    workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
     getWorkspaceId,
     getLevel: async () => accountLevel,
@@ -507,7 +508,8 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId);
+  const workerParam = url.searchParams.get("worker");
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

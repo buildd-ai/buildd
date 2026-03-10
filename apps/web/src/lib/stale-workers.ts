@@ -154,6 +154,95 @@ export async function cleanupStaleWorkers(accountId: string) {
 }
 
 /**
+ * Attempt recovery for stale workers before failing them.
+ *
+ * Called separately from cleanup — this tries to send a 'recover' command
+ * to the runner via Pusher before giving up and marking as failed.
+ *
+ * Returns workers that were sent recovery commands (so cleanup can skip them).
+ */
+export async function attemptStaleRecovery(accountId: string): Promise<string[]> {
+  const { triggerEvent, channels, events } = await import('@/lib/pusher');
+
+  const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+  const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
+
+  // Find stale workers that haven't already been sent a recovery command
+  // We use a 30-minute hard cutoff — if recovery was attempted and worker
+  // is still stale after 30 minutes, let cleanup handle it
+  const RECOVERY_CUTOFF_MS = 30 * 60 * 1000;
+  const recoveryCutoff = new Date(Date.now() - RECOVERY_CUTOFF_MS);
+
+  const staleWorkers = await db.query.workers.findMany({
+    where: and(
+      eq(workers.accountId, accountId),
+      inArray(workers.status, ['running', 'starting']),
+      lt(workers.updatedAt, staleThreshold),
+      // Don't attempt recovery on workers that have been stale for 30+ minutes
+      // (they already had their chance)
+      gt(workers.updatedAt, recoveryCutoff),
+    ),
+    columns: { id: true, taskId: true, localUiUrl: true },
+  });
+
+  if (staleWorkers.length === 0) return [];
+
+  const recoveredIds: string[] = [];
+
+  for (const worker of staleWorkers) {
+    try {
+      // Only attempt recovery if runner has a fresh heartbeat
+      if (worker.localUiUrl) {
+        const heartbeat = await db.query.workerHeartbeats.findFirst({
+          where: and(
+            eq(workerHeartbeats.accountId, accountId),
+            eq(workerHeartbeats.localUiUrl, worker.localUiUrl),
+            gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
+          ),
+          columns: { id: true },
+        });
+
+        if (!heartbeat) continue; // Runner is dead, skip recovery
+      } else {
+        // No localUiUrl on the worker — check if ANY heartbeat for the account is fresh
+        const anyHeartbeat = await db.query.workerHeartbeats.findFirst({
+          where: and(
+            eq(workerHeartbeats.accountId, accountId),
+            gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
+          ),
+          columns: { id: true },
+        });
+
+        if (!anyHeartbeat) continue; // No live runner for this account
+      }
+
+      // Send diagnose command — the runner will inspect and report back
+      await triggerEvent(
+        channels.worker(worker.id),
+        events.WORKER_COMMAND,
+        {
+          action: 'recover',
+          recoveryMode: 'diagnose',
+          timestamp: Date.now(),
+        }
+      );
+
+      // Touch updatedAt so cleanup doesn't immediately expire it
+      await db
+        .update(workers)
+        .set({ updatedAt: new Date() })
+        .where(eq(workers.id, worker.id));
+
+      recoveredIds.push(worker.id);
+    } catch (err) {
+      console.error(`[Recovery] Failed to send recover command to worker ${worker.id}:`, err);
+    }
+  }
+
+  return recoveredIds;
+}
+
+/**
  * Clean up workers stuck in waiting_input for 24+ hours.
  *
  * Instead of just resetting to pending, this creates a new retry task

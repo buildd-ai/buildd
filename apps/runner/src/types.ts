@@ -298,11 +298,13 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback';
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback' | 'recover';
   text?: string;
   timestamp: number;
   // rollback fields
   checkpointUuid?: string;
+  // recovery fields
+  recoveryMode?: 'diagnose' | 'complete' | 'restart';
 }
 
 // Provider configuration for LLM routing

@@ -7,7 +7,15 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
-// POST /api/workers/[id]/cmd - Send command to worker via Pusher
+/**
+ * POST /api/workers/[id]/recover
+ *
+ * Trigger recovery for a stale/failed worker. Sends a 'recover' command
+ * to the runner via Pusher. The runner then spawns a doctor agent to
+ * diagnose, complete, or restart the worker.
+ *
+ * Body: { mode: 'diagnose' | 'complete' | 'restart' }
+ */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -33,7 +41,7 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Verify access: API key checks account ownership, session checks workspace membership
+  // Verify access
   if (account) {
     if (worker.accountId !== account.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -46,23 +54,36 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { action, text } = body;
+  const { mode } = body;
 
-  // Valid actions: pause, resume, abort, message
-  const validActions = ['pause', 'resume', 'abort', 'message', 'recover'];
-  if (!validActions.includes(action)) {
+  const validModes = ['diagnose', 'complete', 'restart'];
+  if (!mode || !validModes.includes(mode)) {
     return NextResponse.json(
-      { error: `Invalid action. Must be one of: ${validActions.join(', ')}` },
+      { error: `Invalid mode. Must be one of: ${validModes.join(', ')}` },
       { status: 400 }
     );
   }
 
-  // Push command via Pusher
+  // Update worker status to indicate recovery is in progress
+  await db
+    .update(workers)
+    .set({
+      status: 'running',
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workers.id, id));
+
+  // Send recover command via Pusher
   await triggerEvent(
     channels.worker(id),
     events.WORKER_COMMAND,
-    { action, text, timestamp: Date.now() }
+    {
+      action: 'recover',
+      recoveryMode: mode,
+      timestamp: Date.now(),
+    }
   );
 
-  return NextResponse.json({ ok: true, action });
+  return NextResponse.json({ ok: true, mode, workerId: id });
 }
