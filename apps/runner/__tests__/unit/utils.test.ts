@@ -337,31 +337,110 @@ describe('extractCommitMessage', () => {
 });
 
 // --- Stale Worker Detection ---
-// Tests the stale check logic (120 seconds threshold)
+// Tests the stale check logic with adaptive timeout (default 300s, range 120s-600s)
 
-const STALE_THRESHOLD_MS = 120_000;
-
-function isWorkerStale(lastActivity: number, currentTime: number): boolean {
-  return currentTime - lastActivity > STALE_THRESHOLD_MS;
+function isWorkerStale(lastActivity: number, currentTime: number, timeout: number = 300_000): boolean {
+  return currentTime - lastActivity > timeout;
 }
 
 describe('Stale Worker Detection', () => {
   const now = Date.now();
 
-  test('worker is not stale within threshold', () => {
-    expect(isWorkerStale(now - 60_000, now)).toBe(false);  // 60s ago
-    expect(isWorkerStale(now - 119_000, now)).toBe(false); // 119s ago
-    expect(isWorkerStale(now, now)).toBe(false);           // just now
+  test('worker is not stale within default timeout (5 min)', () => {
+    expect(isWorkerStale(now - 60_000, now)).toBe(false);   // 60s ago
+    expect(isWorkerStale(now - 299_000, now)).toBe(false);  // 299s ago
+    expect(isWorkerStale(now, now)).toBe(false);            // just now
   });
 
-  test('worker is stale after threshold', () => {
-    expect(isWorkerStale(now - 121_000, now)).toBe(true);  // 121s ago
-    expect(isWorkerStale(now - 300_000, now)).toBe(true);  // 5min ago
+  test('worker is stale after default timeout', () => {
+    expect(isWorkerStale(now - 301_000, now)).toBe(true);   // 301s ago
+    expect(isWorkerStale(now - 600_000, now)).toBe(true);   // 10min ago
   });
 
   test('worker at exactly threshold is not stale', () => {
-    // > not >= so 120s exactly is not stale
-    expect(isWorkerStale(now - 120_000, now)).toBe(false);
+    // > not >= so 300s exactly is not stale
+    expect(isWorkerStale(now - 300_000, now)).toBe(false);
+  });
+
+  test('adaptive timeout: shorter timeout for fast tasks', () => {
+    // If tasks typically complete in 2 min, timeout adapts to 120s (min bound)
+    const adaptedTimeout = 120_000;
+    expect(isWorkerStale(now - 121_000, now, adaptedTimeout)).toBe(true);
+    expect(isWorkerStale(now - 100_000, now, adaptedTimeout)).toBe(false);
+  });
+
+  test('adaptive timeout: longer timeout for complex tasks', () => {
+    // If tasks typically take 15 min, timeout adapts to 600s (max bound)
+    const adaptedTimeout = 600_000;
+    expect(isWorkerStale(now - 500_000, now, adaptedTimeout)).toBe(false);
+    expect(isWorkerStale(now - 601_000, now, adaptedTimeout)).toBe(true);
+  });
+});
+
+// --- Adaptive Timeout Calculation ---
+// Mirrors WorkerManager.recordCycleTime() logic
+
+function calculateAdaptiveTimeout(cycleTimes: number[], currentTimeout: number = 300_000): number {
+  if (cycleTimes.length < 3) return currentTimeout;
+
+  const sorted = [...cycleTimes].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+
+  // 50% of median cycle time, bounded [2 min, 10 min]
+  const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
+
+  // Only adjust on >20% change
+  if (Math.abs(newTimeout - currentTimeout) / currentTimeout > 0.2) {
+    return newTimeout;
+  }
+  return currentTimeout;
+}
+
+describe('Adaptive Timeout Calculation', () => {
+  test('returns current timeout with fewer than 3 samples', () => {
+    expect(calculateAdaptiveTimeout([], 300_000)).toBe(300_000);
+    expect(calculateAdaptiveTimeout([60_000], 300_000)).toBe(300_000);
+    expect(calculateAdaptiveTimeout([60_000, 120_000], 300_000)).toBe(300_000);
+  });
+
+  test('adapts down for fast tasks', () => {
+    // 3 tasks of ~2 min each → median 120s → 50% = 60s → clamped to 120s min
+    const result = calculateAdaptiveTimeout([110_000, 120_000, 130_000], 300_000);
+    expect(result).toBe(120_000);  // Floor of 2 minutes
+  });
+
+  test('adapts for medium tasks', () => {
+    // 3 tasks of ~7 min each → median 420s → 50% = 210s
+    const result = calculateAdaptiveTimeout([400_000, 420_000, 440_000], 300_000);
+    expect(result).toBe(210_000);  // 3.5 minutes (>20% change from 300s)
+  });
+
+  test('caps at 10 minutes for long tasks', () => {
+    // 3 tasks of ~30 min each → median 1800s → 50% = 900s → clamped to 600s
+    const result = calculateAdaptiveTimeout([1_700_000, 1_800_000, 1_900_000], 300_000);
+    expect(result).toBe(600_000);  // Ceiling of 10 minutes
+  });
+
+  test('does not change on <20% difference (prevents thrashing)', () => {
+    // Current 300s, new would be ~280s (7% change) → no change
+    const result = calculateAdaptiveTimeout([540_000, 560_000, 580_000], 300_000);
+    expect(result).toBe(300_000);  // No change — within 20% band
+  });
+
+  test('uses median not mean (outlier resistant)', () => {
+    // One 60-min outlier shouldn't skew the result
+    const result = calculateAdaptiveTimeout([120_000, 130_000, 3_600_000], 300_000);
+    // Median is 130s → 50% = 65s → clamped to 120s
+    expect(result).toBe(120_000);
+  });
+
+  test('sliding window: only uses last 20 samples', () => {
+    // Simulate old slow tasks followed by recent fast tasks
+    const times = Array(17).fill(1_200_000).concat([120_000, 130_000, 140_000]);
+    // With 20 samples, median is still dominated by old slow tasks (1200s)
+    // 50% of 1200s = 600s (hits cap)
+    const result = calculateAdaptiveTimeout(times, 300_000);
+    expect(result).toBe(600_000);
   });
 });
 

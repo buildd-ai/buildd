@@ -172,6 +172,11 @@ export class WorkerManager {
   private dirtyForDisk = new Set<string>();
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
+  private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
+  private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
+  // Graduated recovery: track which stale workers have been probed (avoid repeated probes)
+  private probedWorkers = new Set<string>();
   private sessionGeneration = 0;
   // Pending permission request resolvers — keyed by worker ID.
   // When a PermissionRequest hook fires, we store a resolver here.
@@ -678,17 +683,69 @@ export class WorkerManager {
 
   private checkStale() {
     const now = Date.now();
+    const timeout = this.adaptiveStaleTimeout;
     for (const worker of this.workers.values()) {
       // Skip stale check for workers waiting on user input (plan approval, questions)
       if (worker.status === 'waiting') continue;
 
       if (worker.status === 'working') {
-        const timeout = 300_000; // 5 minutes
         if (now - worker.lastActivity > timeout) {
-          worker.status = 'stale';
-          this.emit({ type: 'worker_update', worker });
+          // Graduated recovery: if session is still alive, try a soft probe first
+          const session = this.sessions.get(worker.id);
+          if (session && !this.probedWorkers.has(worker.id)) {
+            this.probedWorkers.add(worker.id);
+            console.log(`[Worker ${worker.id}] Idle ${Math.round((now - worker.lastActivity) / 1000)}s — sending soft probe before marking stale`);
+            try {
+              session.inputStream.enqueue(buildUserMessage(
+                'You appear to have stalled. If you are still working, continue. If you are stuck, summarize what you have done and finish.',
+                { sessionId: worker.sessionId },
+              ));
+              worker.lastActivity = now;  // Give it another cycle to respond
+              worker.currentAction = 'Probed (idle recovery)';
+              this.addMilestone(worker, { type: 'status', label: 'Idle probe sent', ts: now });
+              this.emit({ type: 'worker_update', worker });
+            } catch {
+              // Session stream closed — fall through to stale
+              worker.status = 'stale';
+              this.emit({ type: 'worker_update', worker });
+            }
+          } else {
+            // Already probed or no session — mark stale
+            worker.status = 'stale';
+            this.probedWorkers.delete(worker.id);
+            this.emit({ type: 'worker_update', worker });
+          }
         }
       }
+    }
+  }
+
+  /** Record a completed worker's cycle time and recalculate adaptive stale timeout */
+  private recordCycleTime(worker: LocalWorker) {
+    const duration = (worker.completedAt || Date.now()) - worker.startedAt;
+    if (duration <= 0) return;
+
+    this.recentCycleTimes.push(duration);
+    // Keep last 20 cycle times
+    if (this.recentCycleTimes.length > 20) {
+      this.recentCycleTimes.shift();
+    }
+
+    // Need at least 3 samples before adapting
+    if (this.recentCycleTimes.length < 3) return;
+
+    // Median of recent cycle times
+    const sorted = [...this.recentCycleTimes].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    // Timeout = 50% of median cycle time (workers that go silent for half their
+    // typical total runtime are likely stuck), bounded [2 min, 10 min]
+    const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
+
+    // Only adjust on >20% change to prevent thrashing
+    if (Math.abs(newTimeout - this.adaptiveStaleTimeout) / this.adaptiveStaleTimeout > 0.2) {
+      console.log(`[Adaptive timeout] ${Math.round(this.adaptiveStaleTimeout / 1000)}s → ${Math.round(newTimeout / 1000)}s (median cycle: ${Math.round(median / 1000)}s, samples: ${this.recentCycleTimes.length})`);
+      this.adaptiveStaleTimeout = newTimeout;
     }
   }
 
@@ -948,6 +1005,7 @@ export class WorkerManager {
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
+      startedAt: Date.now(),
       lastActivity: Date.now(),
       milestones: [],
       currentAction: 'Starting...',
@@ -2223,6 +2281,8 @@ export class WorkerManager {
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        this.recordCycleTime(worker);
+        this.probedWorkers.delete(worker.id);  // Clean up probe tracking
         // Generate follow-up prompt suggestions if Stop hook didn't already
         if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
           worker.promptSuggestions = this.generatePromptSuggestions(worker);
@@ -2366,6 +2426,8 @@ export class WorkerManager {
     if (worker.status === 'stale') {
       worker.status = 'working';
     }
+    // Clear probe tracking when activity resumes (probe succeeded or agent was active)
+    this.probedWorkers.delete(worker.id);
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       worker.sessionId = msg.session_id;

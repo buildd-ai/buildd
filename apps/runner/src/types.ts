@@ -129,6 +129,7 @@ export interface LocalWorker {
   branch: string;
   status: WorkerStatus;
   hasNewActivity: boolean;  // Blue dot
+  startedAt: number;  // When worker was created (for cycle time tracking)
   lastActivity: number;
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
