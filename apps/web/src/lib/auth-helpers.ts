@@ -45,7 +45,12 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     };
   }
 
-  const session = await auth();
+  let session;
+  try {
+    session = await auth();
+  } catch {
+    return null;
+  }
   if (!session?.user?.id) return null;
 
   const user = await db.query.users.findFirst({
