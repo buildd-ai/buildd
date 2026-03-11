@@ -125,17 +125,35 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
+      - name: Set Vercel env vars for preview branch
+        run: |
+          GIT_BRANCH="${{ github.head_ref }}"
+
+          # Set DATABASE_URL for this branch's preview deployments
+          curl -sf -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\":\"DATABASE_URL\",\"value\":\"$DATABASE_URL\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
+
+          # Set AUTH_SECRET for this branch's preview deployments
+          curl -sf -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\":\"AUTH_SECRET\",\"value\":\"$AUTH_SECRET\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+
       - name: Deploy preview to Vercel
         id: vercel-deploy
         run: |
           npm i -g vercel@latest
 
-          # Neon clone already has all migrations — skip db:migrate, just build Next.js
-          # Use -e to set runtime env vars (DATABASE_URL points to the Neon clone)
           DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
-            -e DATABASE_URL="${{ steps.neon.outputs.database_url }}" \
-            -e AUTH_SECRET="${{ secrets.AUTH_SECRET }}" \
-            --build-env SKIP_MIGRATE=1 \
             --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
 
           echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
