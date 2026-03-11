@@ -424,6 +424,19 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
   const hiddenWorkspacesList = allSortedWorkspaces.filter(ws => hiddenWorkspaces[ws.id]);
   const hiddenCount = hiddenWorkspacesList.length;
 
+  // When not searching, separate quiet workspaces (only completed/empty) from active ones
+  const isFiltering = !!searchQuery || !!projectFilter;
+  const activeWorkspaces = isFiltering
+    ? sortedWorkspaces
+    : sortedWorkspaces.filter(ws =>
+        ws.tasks.some(t => ['running', 'assigned', 'waiting_input', 'pending', 'failed'].includes(t.status))
+      );
+  const quietWorkspaces = isFiltering
+    ? []
+    : sortedWorkspaces.filter(ws =>
+        !ws.tasks.some(t => ['running', 'assigned', 'waiting_input', 'pending', 'failed'].includes(t.status))
+      );
+
   return (
     <>
       <aside className="w-64 border-r border-border-default bg-surface-2 flex flex-col h-full">
@@ -508,13 +521,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
             <div className="text-sm text-text-secondary p-4 text-center">
               No workspaces yet
             </div>
-          ) : sortedWorkspaces.length === 0 ? (
+          ) : activeWorkspaces.length === 0 && quietWorkspaces.length === 0 && hiddenCount > 0 ? (
             <div className="text-sm text-text-secondary p-4 text-center">
               All workspaces hidden
             </div>
+          ) : activeWorkspaces.length === 0 && !isFiltering ? (
+            <div className="px-2 py-3 text-xs text-text-muted text-center">
+              No active tasks
+            </div>
           ) : (
             <div className="space-y-1">
-              {sortedWorkspaces.map((ws) => {
+              {activeWorkspaces.map((ws) => {
                 const isCollapsed = collapsed[ws.id];
                 const activeCount = ws.tasks.filter(
                   t => ['running', 'assigned', 'waiting_input'].includes(t.status)
@@ -730,6 +747,48 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Quiet workspaces — only completed/empty, collapsed by default */}
+          {quietWorkspaces.length > 0 && (
+            <div className="mt-3 pt-2 border-t border-border-default/50">
+              <button
+                onClick={() => setShowHiddenSection(!showHiddenSection)}
+                aria-expanded={showHiddenSection}
+                className="flex items-center gap-1.5 px-2 py-1.5 w-full text-[10px] font-mono text-text-muted hover:text-text-secondary transition-colors"
+              >
+                <span>{showHiddenSection ? '▼' : '›'}</span>
+                <span>{quietWorkspaces.length} quiet workspace{quietWorkspaces.length !== 1 ? 's' : ''}</span>
+              </button>
+              {showHiddenSection && (
+                <div className="mt-1 space-y-1">
+                  {quietWorkspaces.map((ws) => {
+                    const completedCount = ws.tasks.filter(t => t.status === 'completed' || t.status === 'failed').length;
+                    return (
+                      <div key={ws.id} className="flex items-center gap-1 group">
+                        <button
+                          onClick={() => toggleCollapse(ws.id)}
+                          className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm text-text-muted hover:bg-surface-3 rounded truncate"
+                        >
+                          <span className="text-text-muted w-4">{collapsed[ws.id] ? '›' : '▼'}</span>
+                          <span className="truncate flex-1 text-left">{ws.name}</span>
+                          {completedCount > 0 && (
+                            <span className="text-[10px] font-mono text-text-muted shrink-0">{completedCount}</span>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => setQuickCreateWorkspaceId(ws.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                          title="Quick create task"
+                        >
+                          +
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
