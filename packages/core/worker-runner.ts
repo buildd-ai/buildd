@@ -426,57 +426,77 @@ export class WorkerRunner extends EventEmitter {
         totalOutput += usage.outputTokens;
       }
 
-      await db.update(workers).set({
-        status: resultMsg.is_error ? 'error' : 'completed',
-        costUsd: this.costUsd.toString(),
-        turns,
-        completedAt: new Date(),
-        error: isBudgetExceeded
-          ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
-          : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
-        resultMeta,
-        ...(totalInput > 0 && { inputTokens: totalInput }),
-        ...(totalOutput > 0 && { outputTokens: totalOutput }),
-      }).where(eq(workers.id, this.workerId));
-
-      const worker = await db.query.workers.findFirst({
+      // Check if worker was already completed via PATCH API (e.g., agent called complete_task).
+      // If so, don't overwrite the status or task result — only update metadata.
+      const currentWorker = await db.query.workers.findFirst({
         where: eq(workers.id, this.workerId),
-        with: { account: true }
+        with: { account: true },
       });
+      const alreadyTerminal = currentWorker?.status === 'completed' || currentWorker?.status === 'error';
 
-      if (worker?.taskId) {
-        try {
-          const taskUpdate: Record<string, unknown> = {
-            status: resultMsg.is_error ? 'failed' : 'completed',
-            updatedAt: new Date(),
-          };
+      if (alreadyTerminal) {
+        // Worker was already completed by PATCH API — only update metadata (cost, tokens, resultMeta)
+        await db.update(workers).set({
+          costUsd: this.costUsd.toString(),
+          turns,
+          resultMeta,
+          ...(totalInput > 0 && { inputTokens: totalInput }),
+          ...(totalOutput > 0 && { outputTokens: totalOutput }),
+        }).where(eq(workers.id, this.workerId));
+      } else {
+        // Worker hasn't been completed yet — set status and update task
+        await db.update(workers).set({
+          status: resultMsg.is_error ? 'error' : 'completed',
+          costUsd: this.costUsd.toString(),
+          turns,
+          completedAt: new Date(),
+          error: isBudgetExceeded
+            ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
+            : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+          resultMeta,
+          ...(totalInput > 0 && { inputTokens: totalInput }),
+          ...(totalOutput > 0 && { outputTokens: totalOutput }),
+        }).where(eq(workers.id, this.workerId));
 
-          // Snapshot deliverables on completion
-          if (!resultMsg.is_error) {
-            taskUpdate.result = {
-              // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
-              ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
-              branch: worker.branch,
-              commits: worker.commitCount ?? 0,
-              sha: worker.lastCommitSha ?? undefined,
-              files: worker.filesChanged ?? 0,
-              added: worker.linesAdded ?? 0,
-              removed: worker.linesRemoved ?? 0,
-              prUrl: worker.prUrl ?? undefined,
-              prNumber: worker.prNumber ?? undefined,
-              // Include structured output from SDK if present
-              ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
-                ? { structuredOutput: resultMsg.structured_output }
-                : {}),
+        // Re-read worker for task update (need fresh data after our write)
+        const worker = currentWorker;
+
+        if (worker?.taskId) {
+          try {
+            const taskUpdate: Record<string, unknown> = {
+              status: resultMsg.is_error ? 'failed' : 'completed',
+              updatedAt: new Date(),
             };
-          }
 
-          await db.update(tasks).set(taskUpdate).where(eq(tasks.id, worker.taskId));
-        } catch (taskUpdateErr) {
-          // Non-fatal: worker is already marked completed, cleanup cron will reconcile
-          console.error(`[Worker ${this.workerId}] Failed to update task ${worker.taskId}:`, taskUpdateErr);
+            // Snapshot deliverables on completion
+            if (!resultMsg.is_error) {
+              taskUpdate.result = {
+                // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
+                ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
+                branch: worker.branch,
+                commits: worker.commitCount ?? 0,
+                sha: worker.lastCommitSha ?? undefined,
+                files: worker.filesChanged ?? 0,
+                added: worker.linesAdded ?? 0,
+                removed: worker.linesRemoved ?? 0,
+                prUrl: worker.prUrl ?? undefined,
+                prNumber: worker.prNumber ?? undefined,
+                // Include structured output from SDK if present
+                ...(resultMsg.structured_output && typeof resultMsg.structured_output === 'object'
+                  ? { structuredOutput: resultMsg.structured_output }
+                  : {}),
+              };
+            }
+
+            await db.update(tasks).set(taskUpdate).where(eq(tasks.id, worker.taskId));
+          } catch (taskUpdateErr) {
+            // Non-fatal: worker is already marked completed, cleanup cron will reconcile
+            console.error(`[Worker ${this.workerId}] Failed to update task ${worker.taskId}:`, taskUpdateErr);
+          }
         }
       }
+
+      const worker = currentWorker;
 
       // Update account stats based on auth type
       if (worker?.account) {

@@ -438,32 +438,44 @@ export default function ObjectivesList({
                   <p className="text-sm text-text-secondary mb-2 line-clamp-1">{obj.description}</p>
                 )}
 
-                <div className="flex items-center gap-4 text-xs text-text-muted">
+                <div className="flex items-center gap-3 text-xs text-text-muted flex-wrap">
                   {/* Progress bar */}
                   {obj.totalTasks > 0 && (
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 min-w-[80px] flex-1">
                       <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-primary rounded-full transition-all"
                           style={{ width: `${obj.progress}%` }}
                         />
                       </div>
-                      <span>{obj.completedTasks}/{obj.totalTasks}</span>
+                      <span className="shrink-0">{obj.completedTasks}/{obj.totalTasks}</span>
                     </div>
                   )}
                   {obj.totalTasks === 0 && (
-                    <span className="flex-1 text-text-muted">No tasks yet</span>
+                    <span className="flex-1">No tasks yet</span>
                   )}
 
                   {obj.workspace ? (
-                    <span className="shrink-0">{obj.workspace.name}</span>
+                    <span className="shrink-0 px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono">{obj.workspace.name}</span>
                   ) : (
-                    <span className="shrink-0 text-text-muted">All workspaces</span>
+                    <span className="shrink-0 text-text-muted text-[10px]">All workspaces</span>
                   )}
 
-                  {obj.cronExpression && (
-                    <span className="shrink-0" title={obj.cronExpression}>Scheduled</span>
-                  )}
+                  {(obj as any).isHeartbeat ? (
+                    <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-status-success/10 text-status-success text-[10px] font-medium">
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                      </svg>
+                      heartbeat
+                    </span>
+                  ) : obj.cronExpression ? (
+                    <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-medium" title={obj.cronExpression}>
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                      </svg>
+                      scheduled
+                    </span>
+                  ) : null}
                 </div>
               </Link>
             );

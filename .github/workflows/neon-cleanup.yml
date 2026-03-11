@@ -16,7 +16,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BRANCH_NAME="preview/pr-${{ github.event.pull_request.number }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
 
           # Find Neon branch
           BRANCH_ID=""
@@ -33,33 +33,30 @@ jobs:
             exit 1
           fi
 
-          BRANCH_ID=$(echo "$RESPONSE" | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
+          # Search for both naming patterns (preview/ from neon-preview, ci/ from build.yml)
+          BRANCH_IDS=$(echo "$RESPONSE" | jq -r --arg pr "$PR_NUM" \
+            '.branches[] | select(.name == "preview/pr-\($pr)" or .name == "ci/pr-\($pr)") | .id')
 
-          if [ -z "$BRANCH_ID" ] || [ "$BRANCH_ID" = "null" ]; then
-            echo "No Neon branch for this PR (not a schema-change PR)"
+          if [ -z "$BRANCH_IDS" ]; then
+            echo "No Neon branches for PR #$PR_NUM"
             exit 0
           fi
 
-          # Delete Neon branch with retries
-          DELETED=false
-          for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: Bearer $NEON_API_KEY" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID")
-
-            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-              echo "Deleted Neon branch: $BRANCH_NAME ($BRANCH_ID)"
-              DELETED=true
-              break
-            fi
-            echo "::warning::Neon branch delete attempt $attempt failed (HTTP $HTTP_CODE), retrying in $((attempt * 5))s..."
-            sleep $((attempt * 5))
-          done
-
-          if [ "$DELETED" != "true" ]; then
-            echo "::error::Failed to delete Neon branch $BRANCH_NAME ($BRANCH_ID) after 3 attempts"
-            exit 1
-          fi
+          # Delete all matching Neon branches
+          while IFS= read -r BRANCH_ID; do
+            [ -z "$BRANCH_ID" ] && continue
+            for attempt in 1 2 3; do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $NEON_API_KEY" \
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID")
+              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+                echo "Deleted Neon branch: $BRANCH_ID"
+                break
+              fi
+              echo "::warning::Delete attempt $attempt failed (HTTP $HTTP_CODE), retrying..."
+              sleep $((attempt * 5))
+            done
+          done <<< "$BRANCH_IDS"
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}

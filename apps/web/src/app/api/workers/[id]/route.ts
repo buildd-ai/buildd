@@ -75,14 +75,14 @@ export async function PATCH(
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,
   // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
-  if (worker.status === 'failed' || worker.status === 'completed') {
+  if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     const isCleanupExpiry = worker.error?.includes('expired') ||
       worker.error?.includes('timed out') ||
       worker.error?.includes('went offline') ||
       worker.error?.includes('runner restarted');
     if (body.status !== 'running' || isCleanupExpiry) {
       return NextResponse.json({
-        error: worker.status === 'failed'
+        error: (worker.status === 'failed' || worker.status === 'error')
           ? 'Worker was terminated - task may have been reassigned'
           : 'Worker already completed',
         abort: true,
@@ -141,8 +141,8 @@ export async function PATCH(
   if (status === 'running' && !worker.startedAt) {
     updates.startedAt = new Date();
   }
-  // Reactivation: clear completion state when worker resumes from completed/failed
-  if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed')) {
+  // Reactivation: clear completion state when worker resumes from completed/failed/error
+  if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed' || worker.status === 'error')) {
     updates.completedAt = null;
     updates.error = null;
 

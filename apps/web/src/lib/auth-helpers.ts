@@ -38,14 +38,19 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
     // Fallback to mock user
     return {
-      id: 'dev-user-id',
+      id: '00000000-0000-0000-0000-000000000001',
       email: 'dev@localhost',
       name: 'Dev User',
       image: null,
     };
   }
 
-  const session = await auth();
+  let session;
+  try {
+    session = await auth();
+  } catch {
+    return null;
+  }
   if (!session?.user?.id) return null;
 
   const user = await db.query.users.findFirst({
