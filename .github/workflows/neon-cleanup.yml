@@ -82,34 +82,31 @@ jobs:
             exit 1
           fi
 
-          EXISTING_ID=$(echo "$RESPONSE" | jq -r --arg branch "$GIT_BRANCH" \
-            '.envs[] | select(.key == "DATABASE_URL" and .gitBranch == $branch) | .id')
+          # Find and delete all branch-scoped env overrides
+          ENV_IDS=$(echo "$RESPONSE" | jq -r --arg branch "$GIT_BRANCH" \
+            '.envs[] | select(.gitBranch == $branch) | "\(.id) \(.key)"')
 
-          if [ -z "$EXISTING_ID" ] || [ "$EXISTING_ID" = "null" ]; then
-            echo "No Vercel DATABASE_URL override for branch $GIT_BRANCH"
+          if [ -z "$ENV_IDS" ]; then
+            echo "No Vercel env overrides for branch $GIT_BRANCH"
             exit 0
           fi
 
-          # Delete Vercel env override with retries
-          DELETED=false
-          for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$EXISTING_ID")
-
-            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-              echo "Removed Vercel DATABASE_URL override for branch $GIT_BRANCH"
-              DELETED=true
-              break
-            fi
-            echo "::warning::Vercel env delete attempt $attempt failed (HTTP $HTTP_CODE), retrying in $((attempt * 5))s..."
-            sleep $((attempt * 5))
-          done
-
-          if [ "$DELETED" != "true" ]; then
-            echo "::error::Failed to delete Vercel env override for branch $GIT_BRANCH after 3 attempts"
-            exit 1
-          fi
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            ENV_ID=$(echo "$line" | awk '{print $1}')
+            ENV_KEY=$(echo "$line" | awk '{print $2}')
+            for attempt in 1 2 3; do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$ENV_ID")
+              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+                echo "Removed Vercel $ENV_KEY override for branch $GIT_BRANCH"
+                break
+              fi
+              echo "::warning::Delete $ENV_KEY attempt $attempt failed (HTTP $HTTP_CODE), retrying..."
+              sleep $((attempt * 5))
+            done
+          done <<< "$ENV_IDS"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
