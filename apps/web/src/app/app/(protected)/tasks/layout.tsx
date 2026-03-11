@@ -1,9 +1,9 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, objectives } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserWorkspaceIds } from '@/lib/team-access';
 import WorkspaceSidebar from './WorkspaceSidebar';
 import MobileTasksLayout from './MobileTasksLayout';
 
@@ -38,15 +38,6 @@ export default async function TasksLayout({
     }>;
   }> = [];
 
-  let sidebarObjectives: Array<{
-    id: string;
-    title: string;
-    status: string;
-    priority: number;
-    totalTasks: number;
-    completedTasks: number;
-    progress: number;
-  }> = [];
 
   if (!isDev && user) {
     try {
@@ -122,27 +113,6 @@ export default async function TasksLayout({
         }));
       }
 
-      // Fetch active objectives for sidebar
-      const teamIds = await getUserTeamIds(user.id);
-      if (teamIds.length > 0) {
-        const activeObjectives = await db.query.objectives.findMany({
-          where: inArray(objectives.teamId, teamIds),
-          columns: { id: true, title: true, status: true, priority: true },
-          orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-          with: {
-            tasks: { columns: { id: true, status: true } },
-          },
-        });
-
-        sidebarObjectives = activeObjectives
-          .filter(obj => obj.status === 'active' || obj.status === 'paused')
-          .map(obj => {
-            const totalTasks = obj.tasks?.length || 0;
-            const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
-            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
-            return { id: obj.id, title: obj.title, status: obj.status, priority: obj.priority, totalTasks, completedTasks, progress };
-          });
-      }
     } catch (error) {
       console.error('Tasks layout query error:', error);
     }
@@ -150,7 +120,7 @@ export default async function TasksLayout({
 
   return (
     <MobileTasksLayout
-      sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} objectives={sidebarObjectives} />}
+      sidebar={<WorkspaceSidebar workspaces={workspacesWithTasks} />}
       workspaces={workspacesWithTasks.map(w => ({ id: w.id, name: w.name }))}
     >
       {children}

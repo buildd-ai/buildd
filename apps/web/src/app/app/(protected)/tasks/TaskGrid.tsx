@@ -198,8 +198,11 @@ function TaskTile({ task }: { task: GridTask }) {
       <Link
         href={`/app/tasks/${task.id}`}
         className={`
-          block relative w-full rounded-lg bg-surface-2 border border-border-default
-          hover:bg-surface-3 hover:border-text-muted/30 transition-all
+          block relative w-full rounded-xl bg-surface-2 border border-border-default
+          hover:bg-surface-3 hover:border-text-muted/30 transition-all duration-150
+          shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)]
+          hover:shadow-[0_4px_10px_rgba(0,0,0,0.1),0_2px_5px_rgba(0,0,0,0.06)]
+          hover:-translate-y-px
           ${outcomeRing}
           ${isRunning ? 'border-status-running/40' : ''}
           ${isWaiting ? 'border-status-warning/30' : ''}
@@ -218,7 +221,7 @@ function TaskTile({ task }: { task: GridTask }) {
 
         {/* Waiting: full amber top stripe overrides category */}
         {isWaiting && (
-          <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-lg bg-status-warning/70" />
+          <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-xl bg-status-warning/70" />
         )}
 
         {/* Content */}
