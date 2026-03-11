@@ -13,13 +13,6 @@ import {
   validateActiveHours,
 } from '@/lib/heartbeat-helpers';
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-status-success/15 text-status-success',
-  paused: 'bg-status-warning/15 text-status-warning',
-  completed: 'bg-primary/15 text-primary',
-  archived: 'bg-surface-3 text-text-muted',
-};
-
 const PRIORITY_LABELS: Record<number, { label: string; color: string }> = {
   0: { label: 'Low', color: 'text-text-muted' },
   5: { label: 'Medium', color: 'text-status-warning' },
@@ -39,18 +32,121 @@ interface ObjectiveItem {
   priority: number;
   workspaceId: string | null;
   cronExpression: string | null;
+  isHeartbeat: boolean | null;
   workspace?: { id: string; name: string } | null;
-  totalTasks: number;
-  completedTasks: number;
-  progress: number;
-  recentActivity?: {
+  lastOutput: {
     status: string;
-    completedAt: string | null;
+    updatedAt: string;
     prUrl: string | null;
+    prNumber: number | null;
   } | null;
 }
 
 const HOUR_OPTIONS = getHourOptions();
+
+function timeAgo(isoStr: string): string {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function PauseToggle({ id, status }: { id: string; status: string }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const isActive = status === 'active';
+
+  async function toggle(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextStatus = isActive ? 'paused' : 'active';
+    await fetch(`/api/objectives/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    startTransition(() => router.refresh());
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={isPending}
+      title={isActive ? 'Pause objective' : 'Resume objective'}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+        isActive ? 'bg-status-success/60' : 'bg-surface-4'
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+          isActive ? 'translate-x-[18px]' : 'translate-x-[3px]'
+        }`}
+      />
+    </button>
+  );
+}
+
+function LastOutputChip({ output }: { output: ObjectiveItem['lastOutput'] }) {
+  if (!output) return <span className="text-text-muted text-[11px] font-mono">no runs yet</span>;
+
+  const ago = timeAgo(output.updatedAt);
+
+  if (output.prUrl) {
+    return (
+      <a
+        href={output.prUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={e => e.stopPropagation()}
+        className="inline-flex items-center gap-1 text-[11px] font-mono text-status-success hover:underline"
+        title={`PR #${output.prNumber}`}
+      >
+        <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
+        </svg>
+        PR #{output.prNumber} · {ago}
+      </a>
+    );
+  }
+
+  if (output.status === 'completed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-mono text-status-success">
+        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+        done · {ago}
+      </span>
+    );
+  }
+
+  if (output.status === 'failed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-mono text-status-error">
+        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+        failed · {ago}
+      </span>
+    );
+  }
+
+  if (output.status === 'running' || output.status === 'claimed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-mono text-status-running animate-pulse">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-running inline-block" />
+        running
+      </span>
+    );
+  }
+
+  return <span className="text-[11px] font-mono text-text-muted">{output.status} · {ago}</span>;
+}
 
 export default function ObjectivesList({
   objectives,
@@ -65,6 +161,7 @@ export default function ObjectivesList({
   const [isPending, startTransition] = useTransition();
   const [creating, setCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [filterActive, setFilterActive] = useState(true);
   const browserTimezone = useBrowserTimezone();
 
   // Form fields
@@ -82,7 +179,6 @@ export default function ObjectivesList({
   const [activeHoursEnd, setActiveHoursEnd] = useState(22);
   const [activeHoursTimezone, setActiveHoursTimezone] = useState('');
 
-  // Set timezone from browser on first render (activeHoursTimezone default)
   const effectiveTimezone = activeHoursTimezone || browserTimezone;
 
   function resetForm() {
@@ -103,14 +199,8 @@ export default function ObjectivesList({
   function handleHeartbeatToggle(enabled: boolean) {
     setIsHeartbeat(enabled);
     if (enabled) {
-      // Pre-fill checklist if empty
-      if (!heartbeatChecklist) {
-        setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST);
-      }
-      // Default to "Every hour" cron if no cron set
-      if (!cronExpression) {
-        setCronExpression('0 * * * *');
-      }
+      if (!heartbeatChecklist) setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST);
+      if (!cronExpression) setCronExpression('0 * * * *');
     }
   }
 
@@ -165,18 +255,52 @@ export default function ObjectivesList({
 
   const cronPresets = isHeartbeat ? HEARTBEAT_CRON_PRESETS : OBJECTIVE_CRON_PRESETS;
 
+  const activeObjectives = objectives.filter(o => o.status === 'active');
+  const pausedObjectives = objectives.filter(o => o.status === 'paused');
+  const displayed = filterActive ? activeObjectives : objectives;
+
   return (
     <div>
-      {/* Create toggle / form */}
-      {!showForm ? (
-        <button
-          onClick={() => setShowForm(true)}
-          className="w-full mb-6 px-4 py-3 border border-dashed border-border-default rounded-lg text-sm text-text-secondary hover:border-primary/40 hover:text-primary transition-colors"
-        >
-          + New objective
-        </button>
-      ) : (
-        <form onSubmit={handleCreate} className="mb-6 p-4 bg-surface-2 border border-border-default rounded-lg space-y-3">
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-1 bg-surface-2 border border-border-default rounded-lg p-0.5">
+          <button
+            onClick={() => setFilterActive(true)}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              filterActive ? 'bg-surface-3 text-text-primary' : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            Active
+            {activeObjectives.length > 0 && (
+              <span className={`ml-1.5 text-[10px] font-mono ${filterActive ? 'text-text-muted' : 'text-text-muted'}`}>
+                {activeObjectives.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setFilterActive(false)}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              !filterActive ? 'bg-surface-3 text-text-primary' : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            All
+            <span className="ml-1.5 text-[10px] font-mono text-text-muted">{objectives.length}</span>
+          </button>
+        </div>
+
+        {!showForm && (
+          <button
+            onClick={() => setShowForm(true)}
+            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+          >
+            + New objective
+          </button>
+        )}
+      </div>
+
+      {/* Create form */}
+      {showForm && (
+        <form onSubmit={handleCreate} className="mb-5 p-4 bg-surface-2 border border-border-default rounded-xl space-y-3 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
           <input
             type="text"
             value={title}
@@ -217,9 +341,7 @@ export default function ObjectivesList({
               Heartbeat mode
             </label>
             {isHeartbeat && (
-              <span className="text-xs text-text-muted ml-1">
-                — recurring check-in with a checklist
-              </span>
+              <span className="text-xs text-text-muted ml-1">— recurring check-in with a checklist</span>
             )}
           </div>
 
@@ -241,7 +363,6 @@ export default function ObjectivesList({
           )}
 
           <div className="flex gap-3">
-            {/* Priority pills */}
             <div className="flex-1">
               <label className="block text-xs text-text-muted mb-1">Priority</label>
               <div className="flex gap-1.5">
@@ -262,7 +383,6 @@ export default function ObjectivesList({
               </div>
             </div>
 
-            {/* Workspace picker */}
             <div className="flex-1">
               <label className="block text-xs text-text-muted mb-1">Workspace</label>
               <Select
@@ -293,8 +413,7 @@ export default function ObjectivesList({
                 <span className="text-xs text-status-warning shrink-0">Needs workspace</span>
               )}
             </div>
-            {/* Cron presets */}
-            <div className="flex gap-1.5 mt-1.5">
+            <div className="flex gap-1.5 mt-1.5 flex-wrap">
               {cronPresets.map(preset => (
                 <button
                   key={preset.value}
@@ -405,81 +524,91 @@ export default function ObjectivesList({
           </div>
           <p>No objectives yet. Create one to get started.</p>
         </div>
+      ) : displayed.length === 0 ? (
+        <div className="text-center py-10 text-text-secondary text-sm">
+          No active objectives.{' '}
+          <button onClick={() => setFilterActive(false)} className="text-primary hover:underline">
+            Show all {objectives.length}
+          </button>
+        </div>
       ) : (
-        <div className="space-y-3">
-          {objectives.map(obj => {
+        <div className="space-y-2.5">
+          {displayed.map(obj => {
             const pri = PRIORITY_LABELS[obj.priority] || PRIORITY_LABELS[0];
+            const isPaused = obj.status === 'paused';
             return (
               <Link
                 key={obj.id}
                 href={`/app/objectives/${obj.id}`}
-                className="block p-4 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
+                className={`block p-4 bg-surface-2 border border-border-default rounded-xl transition-all duration-150 shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] hover:-translate-y-px hover:border-border-default/80 ${
+                  isPaused ? 'opacity-60' : ''
+                }`}
               >
-                <div className="flex items-center gap-3 mb-2">
-                  <h3 className="font-medium text-text-primary flex-1 truncate flex items-center gap-1.5">
-                    {(obj as any).isHeartbeat && (
-                      <svg className="w-4 h-4 text-status-success shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                {/* Top row: type badge + title + toggle */}
+                <div className="flex items-start gap-3">
+                  {/* Type icon */}
+                  <div className={`mt-0.5 w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
+                    obj.isHeartbeat
+                      ? 'bg-status-success/10 text-status-success'
+                      : obj.cronExpression
+                        ? 'bg-primary/10 text-primary'
+                        : 'bg-surface-3 text-text-muted'
+                  }`}>
+                    {obj.isHeartbeat ? (
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                       </svg>
-                    )}
-                    {obj.title}
-                  </h3>
-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[obj.status] || ''}`}>
-                    {obj.status}
-                  </span>
-                  {obj.priority > 0 && (
-                    <span className={`text-xs font-medium ${pri.color}`}>
-                      {pri.label}
-                    </span>
-                  )}
-                </div>
-
-                {obj.description && (
-                  <p className="text-sm text-text-secondary mb-2 line-clamp-1">{obj.description}</p>
-                )}
-
-                <div className="flex items-center gap-3 text-xs text-text-muted flex-wrap">
-                  {/* Progress bar */}
-                  {obj.totalTasks > 0 && (
-                    <div className="flex items-center gap-2 min-w-[80px] flex-1">
-                      <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${obj.progress}%` }}
-                        />
-                      </div>
-                      <span className="shrink-0">{obj.completedTasks}/{obj.totalTasks}</span>
-                    </div>
-                  )}
-                  {obj.totalTasks === 0 && (
-                    <span className="flex-1">No tasks yet</span>
-                  )}
-
-                  {obj.workspace ? (
-                    <span className="shrink-0 px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono">{obj.workspace.name}</span>
-                  ) : (
-                    <span className="shrink-0 text-text-muted text-[10px]">All workspaces</span>
-                  )}
-
-                  {(obj as any).isHeartbeat ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-status-success/10 text-status-success text-[10px] font-medium">
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                      </svg>
-                      heartbeat
-                    </span>
-                  ) : obj.cronExpression ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-medium" title={obj.cronExpression}>
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                    ) : obj.cronExpression ? (
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
                       </svg>
-                      scheduled
-                    </span>
-                  ) : null}
+                    ) : (
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    )}
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <h3 className="text-sm font-medium text-text-primary truncate">{obj.title}</h3>
+                      {obj.priority > 0 && (
+                        <span className={`text-[10px] font-mono shrink-0 ${pri.color}`}>{pri.label}</span>
+                      )}
+                    </div>
+                    {obj.description && (
+                      <p className="text-xs text-text-secondary line-clamp-1 mb-1">{obj.description}</p>
+                    )}
+                    {/* Footer: workspace + last output */}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      {obj.workspace && (
+                        <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded shrink-0">
+                          {obj.workspace.name}
+                        </span>
+                      )}
+                      <LastOutputChip output={obj.lastOutput} />
+                    </div>
+                  </div>
+
+                  {/* Pause toggle */}
+                  <div className="shrink-0 flex items-center pt-1">
+                    <PauseToggle id={obj.id} status={obj.status} />
+                  </div>
                 </div>
               </Link>
             );
           })}
+
+          {/* Paused hint when in active filter */}
+          {filterActive && pausedObjectives.length > 0 && (
+            <button
+              onClick={() => setFilterActive(false)}
+              className="w-full pt-1 text-xs text-text-muted hover:text-text-secondary transition-colors text-left pl-1"
+            >
+              + {pausedObjectives.length} paused
+            </button>
+          )}
         </div>
       )}
     </div>
