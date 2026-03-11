@@ -92,8 +92,10 @@ export async function POST(req: NextRequest) {
 
     if (hasActive) continue;
 
-    // Check if any worker completed — promote task to completed
-    const completedWorker = taskWorkers.find(w => w.status === 'completed');
+    // Check if any worker completed (or errored but delivered a PR) — promote task to completed
+    const completedWorker = taskWorkers.find(w =>
+      w.status === 'completed' || (w.status === 'error' && w.prUrl)
+    );
     if (completedWorker) {
       await db
         .update(tasks)
