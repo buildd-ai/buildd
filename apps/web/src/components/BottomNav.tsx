@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useNeedsInput } from './NeedsInputProvider';
 
 export const navTabs = [
   {
@@ -99,33 +98,21 @@ export const navTabs = [
 
 export default function BottomNav() {
   const pathname = usePathname();
-  const { count } = useNeedsInput();
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 h-16 bg-surface-2 border-t border-border-default pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-center justify-around h-full">
         {navTabs.map((tab) => {
           const isActive = pathname.startsWith(tab.href);
-          const showBadge = tab.href === '/app/tasks' && count > 0;
           return (
             <Link
               key={tab.href}
               href={tab.href}
-              className={`relative flex flex-col items-center justify-center gap-1 flex-1 h-full transition-colors duration-200 ${
+              className={`flex flex-col items-center justify-center gap-1 flex-1 h-full transition-colors duration-200 ${
                 isActive ? 'text-primary' : 'text-text-secondary'
               }`}
             >
-              <span className="relative">
-                {tab.icon(isActive)}
-                {showBadge && (
-                  <span
-                    data-testid="mobile-needs-input-badge"
-                    className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-warning text-white"
-                  >
-                    {count}
-                  </span>
-                )}
-              </span>
+              {tab.icon(isActive)}
               <span className="text-[10px] font-medium">{tab.label}</span>
             </Link>
           );

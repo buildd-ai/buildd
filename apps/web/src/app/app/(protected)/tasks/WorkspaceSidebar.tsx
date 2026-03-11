@@ -454,24 +454,7 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
               + New
             </Link>
           </div>
-          <div className="flex items-center gap-2 mt-2">
-            <h1 className="text-lg font-semibold">Tasks</h1>
-            {(() => {
-              const waitingCount = workspaces.flatMap(ws => ws.tasks).filter(t => t.status === 'waiting_input').length;
-              return waitingCount > 0 ? (
-                <span
-                  data-testid="sidebar-needs-input-badge"
-                  className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-status-warning/15 text-status-warning"
-                >
-                  <span className="relative flex h-1.5 w-1.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-status-warning" />
-                  </span>
-                  {waitingCount} needs input
-                </span>
-              ) : null;
-            })()}
-          </div>
+          <h1 className="text-lg font-semibold mt-2">Tasks</h1>
         </div>
 
         {/* Search */}

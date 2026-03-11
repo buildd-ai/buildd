@@ -5,10 +5,8 @@ import { TeamSwitcher } from '@/components/TeamSwitcher';
 import BottomNav from '@/components/BottomNav';
 import DesktopNav from '@/components/DesktopNav';
 import MobilePageHeader from '@/components/MobilePageHeader';
-import { NeedsInputProvider } from '@/components/NeedsInputProvider';
-import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function ProtectedLayout({
   children,
@@ -18,19 +16,12 @@ export default async function ProtectedLayout({
   const user = await getCurrentUser();
   let userTeams: { id: string; name: string; slug: string }[] = [];
   let currentTeamId: string | null = null;
-  let workspaceIds: string[] = [];
 
   if (user) {
     try {
       userTeams = await getUserTeamsWithDetails(user.id);
     } catch {
       // Teams will be empty, page still renders
-    }
-
-    try {
-      workspaceIds = await getUserWorkspaceIds(user.id);
-    } catch {
-      // Workspace IDs will be empty, notifications won't load
     }
 
     const cookieStore = await cookies();
@@ -46,35 +37,31 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
-      <NeedsInputProvider workspaceIds={workspaceIds}>
-        {/* Desktop top nav: logo | nav links | team switcher */}
-        <div className="hidden md:flex h-11 items-center border-b border-border-default bg-surface-2 px-6">
-          <div className="flex items-center gap-2 min-w-[140px]">
-            <Link href="/app/dashboard" className="text-sm font-bold tracking-tight text-text-primary hover:text-primary transition-colors">
-              buildd
-            </Link>
-          </div>
-          <div className="flex-1 flex justify-center">
-            <DesktopNav />
-          </div>
-          <div className="flex items-center justify-end min-w-[140px]">
-            {userTeams.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
-                <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
-              </div>
-            )}
-          </div>
+      {/* Desktop top nav: logo | nav links | team switcher */}
+      <div className="hidden md:flex h-11 items-center border-b border-border-default bg-surface-2 px-6">
+        <div className="flex items-center gap-2 min-w-[140px]">
+          <Link href="/app/dashboard" className="text-sm font-bold tracking-tight text-text-primary hover:text-primary transition-colors">
+            buildd
+          </Link>
         </div>
-        {/* Global notification banner for tasks needing input */}
-        <NeedsInputBanner />
-        {/* Mobile page header for non-tasks pages */}
-        <MobilePageHeader />
-        <div className="pb-16 md:pb-0">
-          {children}
+        <div className="flex-1 flex justify-center">
+          <DesktopNav />
         </div>
-        <BottomNav />
-      </NeedsInputProvider>
+        <div className="flex items-center justify-end min-w-[140px]">
+          {userTeams.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
+              <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
+            </div>
+          )}
+        </div>
+      </div>
+      {/* Mobile page header for non-tasks pages */}
+      <MobilePageHeader />
+      <div className="pb-16 md:pb-0">
+        {children}
+      </div>
+      <BottomNav />
     </AuthGuard>
   );
 }
