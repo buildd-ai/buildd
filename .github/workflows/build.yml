@@ -142,6 +142,7 @@ jobs:
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -5
+              test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
             "
           SCRIPT
 
@@ -224,6 +225,7 @@ jobs:
         timeout-minutes: 10
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333
+          BUILDD_RUNNER_SERVER: http://localhost:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
