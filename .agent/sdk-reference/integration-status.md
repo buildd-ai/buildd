@@ -2,7 +2,7 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.72)
+## Buildd Integration Status (v0.2.74)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
@@ -22,6 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.74`** | `autoMemoryDirectory` setting, `/context` optimization suggestions, managed policy `ask` rule enforcement, full model IDs in agent frontmatter, streaming memory leak fix, `SessionEnd` hook timeout config, `modelOverrides` setting, subagent model downgrade fix on Bedrock/Vertex, RTL text rendering fix, CPU freeze fix on complex bash permission prompts | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.72`** | Prompt cache fix (up to 12x input cost reduction), `ExitWorktree` tool, `Agent` model override restored, `/plan` with description, CLAUDE.md HTML comment hiding, worktree isolation fixes, parallel tool call fix, bash permission improvements | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.71`** | `/loop` command, cron scheduling, `SDKTaskStartedMessage.prompt` field, stdin freeze fix, background agent notification fix, `--print` hang fix, plugin fixes, CLI binary size reduction | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.70`** | API gateway compat, MCP cache fix, ToolSearch fix, compaction image preservation, reduced subagent token usage | **P1** | **Done** |
@@ -51,6 +52,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.74`** — All packages now pin `>=0.2.74`
 - **SDK pin `>=0.2.72`** — All packages now pin `>=0.2.72`
 - **SDK pin `>=0.2.71`** — All packages now pin `>=0.2.71`
 - **SDK pin `>=0.2.70`** — All packages now pin `>=0.2.70`
@@ -78,6 +80,8 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.74 | 0.2.74 | **`/context` optimization suggestions**; **`autoMemoryDirectory` setting**; streaming memory leak fix (unbounded RSS growth); **managed policy `ask` rule enforcement** (security fix — user `allow`/skill `allowed-tools` can no longer bypass); full model IDs in agent frontmatter; `SessionEnd` hook timeout config (`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`); MCP OAuth hang fix (port in use); RTL text rendering fix (Windows Terminal, VS Code); `--plugin-dir` local override behavior; LSP fix for Windows; voice mode macOS entitlement fix |
+| 2.1.73 | 0.2.73 | **`modelOverrides` setting** (custom provider model IDs, Bedrock ARNs); **CPU freeze fix** on complex bash permission prompts; **skill file deadlock fix**; subagent model downgrade fix on Bedrock/Vertex/Foundry; bash output fix for multi-session projects; background bash process cleanup on agent exit; `SessionStart` hook double-fire fix on resume; Linux sandbox ripgrep fix; default Opus model updated to 4.6 on Bedrock/Vertex/Foundry; `/effort` command works during response; `/output-style` deprecated for `/config` |
 | 2.1.72 | 0.2.72 | **Prompt cache fix** (up to 12x input cost reduction in `query()` calls); **`ExitWorktree` tool**; **`Agent` model override restored**; **`/plan` with description**; **CLAUDE.md HTML comment hiding**; **Simplified effort levels** (low/medium/high, removed max); **Bash permission improvements** (tree-sitter parsing, reduced false positives); **`/copy` write-to-file** (`w` key); **`CLAUDE_CODE_DISABLE_CRON`** env var; added `lsof`/`pgrep`/`tput`/`ss`/`fd`/`fdfind` to bash allowlist; parallel tool call fix (failed Read/WebFetch/Glob no longer cancels siblings); worktree isolation fixes (Task resume cwd, background notification paths); skill hooks double-fire fix; `/clear` no longer kills background agents; team agents inherit leader model; improved CPU utilization in long sessions; 510KB bundle size reduction; many plugin, voice, and permission rule fixes |
 | 2.1.71 | 0.2.71 | **`/loop` command** (recurring prompt interval); **cron scheduling tools**; **`SDKTaskStartedMessage.prompt`** field (subagent prompt exposure); **rebindable voice push-to-talk key**; **CLI binary size reduction** (~3-5%); stdin freeze fix in long sessions; 5-8s startup freeze fix (CoreAudio); OAuth token refresh startup freeze fix; forked conversation plan isolation fix; Read tool oversized image fix; background agent completion notification fix (missing output path); `--print` hang fix with team agents; plugin installation persistence fix; claude.ai connector reconnection fix; improved bridge session reconnection after wake; deferred native image processor loading |
 | 2.1.70 | 0.2.70 | **API gateway compat** (`ANTHROPIC_BASE_URL` proxy fix); **ToolSearch fix** (empty model responses after tool search); **MCP server cache fix** (prompt-cache bust with `instructions`); **Compaction image preservation** for prompt cache reuse; **Reduced subagent token usage** (more concise reports); **Remote Control poll rate** reduced ~300× (10min vs 1-2s); **Startup memory** reduced ~426KB; **Prompt input re-renders** reduced ~74%; VS Code spark icon + MCP management dialog; clipboard fix for CJK/emoji on Windows/WSL; Enter-over-SSH fix |
@@ -112,6 +116,12 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Streaming memory leak fix** — Streaming API response buffers now released when generators terminate early, preventing unbounded RSS growth (v0.2.74). Critical for long-running Buildd workers.
+- **Managed policy enforcement** — Managed policy `ask` rules can no longer be bypassed by user `allow` rules or skill `allowed-tools` (v0.2.74). Security fix for enterprise deployments.
+- **Full model IDs in agent frontmatter** — Full model IDs (e.g., `claude-opus-4-5`) now accepted in agent frontmatter/config instead of being silently ignored (v0.2.74). Enables precise model pinning for Buildd skills.
+- **CPU freeze fix** — Permission prompts for complex bash commands no longer trigger 100% CPU loops (v0.2.73). Improves reliability for workers executing complex shell commands.
+- **Subagent model fix on cloud providers** — Subagents with `model: opus`/`sonnet`/`haiku` no longer silently downgraded on Bedrock/Vertex/Foundry (v0.2.73). Important for Buildd workers using cloud API providers.
+- **Bash output multi-session fix** — Bash tool output no longer lost when running multiple sessions in same project directory (v0.2.73). Directly benefits concurrent Buildd workers.
 - **Prompt cache fix** — Fixed prompt cache invalidation in SDK `query()` calls, reducing input token costs up to 12x (v0.2.72). **Critical** for Buildd worker cost efficiency.
 - **Parallel tool call fix** — Failed Read/WebFetch/Glob no longer cancels sibling parallel tool calls (v0.2.72). Only Bash errors cascade. Improves reliability for workers running parallel searches.
 - **Worktree isolation fixes** — Task tool resume now restores cwd correctly, and background task notifications include `worktreePath`/`worktreeBranch` (v0.2.72). Important for subagent isolation.
