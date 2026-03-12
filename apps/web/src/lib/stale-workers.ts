@@ -129,7 +129,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
         lt(workers.updatedAt, heartbeatCutoff),
       ),
-      columns: { id: true, taskId: true },
+      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
     });
 
     if (orphanedByHeartbeat.length > 0) {
@@ -160,15 +160,37 @@ export async function cleanupStaleWorkers(accountId: string) {
           });
 
           if (otherActiveWorkers.length === 0) {
-            await db
-              .update(tasks)
-              .set({
-                status: 'pending',
-                claimedBy: null,
-                claimedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, taskId));
+            // Check if the orphaned worker actually produced deliverables
+            // If so, promote the task to completed instead of resetting to pending
+            const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === taskId);
+            let hasDeliverables = false;
+            if (orphanWorker) {
+              try {
+                const artifactCount = await getWorkerArtifactCount(orphanWorker.id);
+                const deliverables = checkWorkerDeliverables(orphanWorker, { artifactCount });
+                hasDeliverables = deliverables.hasAny;
+              } catch { /* non-fatal — default to pending */ }
+            }
+
+            if (hasDeliverables) {
+              await db
+                .update(tasks)
+                .set({
+                  status: 'completed',
+                  updatedAt: new Date(),
+                })
+                .where(eq(tasks.id, taskId));
+            } else {
+              await db
+                .update(tasks)
+                .set({
+                  status: 'pending',
+                  claimedBy: null,
+                  claimedAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(eq(tasks.id, taskId));
+            }
           }
         }
       }
