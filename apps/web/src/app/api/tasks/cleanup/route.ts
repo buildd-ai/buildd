@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
         inArray(workers.accountId, staleAccountIds),
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
       ),
-      columns: { id: true, taskId: true },
+      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
     });
 
     if (orphanedWorkers.length > 0) {
@@ -199,17 +199,39 @@ export async function POST(req: NextRequest) {
         })
         .where(inArray(workers.id, orphanWorkerIds));
 
-      // Reset associated tasks to pending so they can be re-claimed
+      // Check each task — promote to completed if worker had deliverables, else reset to pending
       if (orphanTaskIds.length > 0) {
-        await db
-          .update(tasks)
-          .set({
-            status: 'pending',
-            claimedBy: null,
-            claimedAt: null,
-            updatedAt: now,
-          })
-          .where(inArray(tasks.id, orphanTaskIds));
+        for (const taskId of orphanTaskIds) {
+          const orphanWorker = orphanedWorkers.find(w => w.taskId === taskId);
+          let hasDeliverables = false;
+          if (orphanWorker) {
+            try {
+              const artifactCount = await getWorkerArtifactCount(orphanWorker.id);
+              const deliverables = checkWorkerDeliverables(orphanWorker, { artifactCount });
+              hasDeliverables = deliverables.hasAny;
+            } catch { /* non-fatal */ }
+          }
+
+          if (hasDeliverables) {
+            await db
+              .update(tasks)
+              .set({
+                status: 'completed',
+                updatedAt: now,
+              })
+              .where(eq(tasks.id, taskId));
+          } else {
+            await db
+              .update(tasks)
+              .set({
+                status: 'pending',
+                claimedBy: null,
+                claimedAt: null,
+                updatedAt: now,
+              })
+              .where(eq(tasks.id, taskId));
+          }
+        }
       }
 
       heartbeatOrphans = orphanedWorkers.length;

@@ -443,33 +443,56 @@ export class WorkerRunner extends EventEmitter {
           ...(totalInput > 0 && { inputTokens: totalInput }),
           ...(totalOutput > 0 && { outputTokens: totalOutput }),
         }).where(eq(workers.id, this.workerId));
+
+        // Backfill task summary with lastAssistantMessage if the PATCH API didn't include one.
+        // This happens when the agent calls complete_task without a summary param —
+        // the Stop hook's last_assistant_message is a better summary than nothing.
+        if (this.lastAssistantMessage && currentWorker?.taskId) {
+          try {
+            const task = await db.query.tasks.findFirst({
+              where: eq(tasks.id, currentWorker.taskId),
+              columns: { result: true },
+            });
+            const taskResult = task?.result as Record<string, unknown> | null;
+            if (!taskResult?.summary) {
+              await db.update(tasks).set({
+                result: { ...(taskResult || {}), summary: this.lastAssistantMessage },
+              }).where(eq(tasks.id, currentWorker.taskId));
+            }
+          } catch { /* non-fatal */ }
+        }
       } else {
-        // Worker hasn't been completed yet — set status and update task
+        // Worker hasn't been completed yet — set status and update task.
+        // Key fix: if SDK errored but worker has deliverables (PR, commits),
+        // treat the worker as completed — the agent did real work before the SDK errored.
+        const hasDeliverables = !!currentWorker?.prUrl
+          || (typeof currentWorker?.commitCount === 'number' && currentWorker.commitCount > 0);
+        const effectiveError = resultMsg.is_error && !hasDeliverables;
+
         await db.update(workers).set({
-          status: resultMsg.is_error ? 'error' : 'completed',
+          status: effectiveError ? 'error' : 'completed',
           costUsd: this.costUsd.toString(),
           turns,
           completedAt: new Date(),
           error: isBudgetExceeded
             ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
-            : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+            : effectiveError ? (resultMsg.result || 'Unknown error') : null,
           resultMeta,
           ...(totalInput > 0 && { inputTokens: totalInput }),
           ...(totalOutput > 0 && { outputTokens: totalOutput }),
         }).where(eq(workers.id, this.workerId));
 
-        // Re-read worker for task update (need fresh data after our write)
         const worker = currentWorker;
 
         if (worker?.taskId) {
           try {
             const taskUpdate: Record<string, unknown> = {
-              status: resultMsg.is_error ? 'failed' : 'completed',
+              status: effectiveError ? 'failed' : 'completed',
               updatedAt: new Date(),
             };
 
-            // Snapshot deliverables on completion
-            if (!resultMsg.is_error) {
+            // Snapshot deliverables on completion (including when SDK errored but worker has deliverables)
+            if (!effectiveError) {
               taskUpdate.result = {
                 // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
                 ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
