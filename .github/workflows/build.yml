@@ -125,23 +125,41 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
-      - name: Set Vercel env vars for preview branch
+      - name: Set Vercel preview env vars
+        id: vercel-env
         run: |
-          GIT_BRANCH="${{ github.head_ref }}"
+          AUTH="Authorization: Bearer $VERCEL_TOKEN"
+          API="https://api.vercel.com"
 
-          # Set DATABASE_URL for this branch's preview deployments
-          curl -sf -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"key\":\"DATABASE_URL\",\"value\":\"$DATABASE_URL\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
-            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
+          # Helper: delete existing env var by key for preview target, then create new one
+          set_env() {
+            local KEY="$1" VALUE="$2"
 
-          # Set AUTH_SECRET for this branch's preview deployments
-          curl -sf -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"key\":\"AUTH_SECRET\",\"value\":\"$AUTH_SECRET\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
-            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
+            # Find and delete existing preview env var for this key
+            EXISTING=$(curl -s -H "$AUTH" "$API/v9/projects/$VERCEL_PROJECT_ID/env" \
+              | jq -r --arg k "$KEY" '.envs[] | select(.key == $k and (.target | index("preview"))) | .id')
+            for ID in $EXISTING; do
+              echo "Deleting existing $KEY ($ID)"
+              curl -s -X DELETE -H "$AUTH" "$API/v9/projects/$VERCEL_PROJECT_ID/env/$ID"
+            done
+
+            # Create new env var for preview
+            RESP=$(curl -s -w "\n%{http_code}" -X POST \
+              -H "$AUTH" -H "Content-Type: application/json" \
+              -d "$(jq -n --arg k "$KEY" --arg v "$VALUE" '{key:$k,value:$v,type:"encrypted",target:["preview"]}')" \
+              "$API/v10/projects/$VERCEL_PROJECT_ID/env")
+            HTTP=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+            if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
+              echo "Set $KEY for preview (HTTP $HTTP)"
+            else
+              echo "::error::Failed to set $KEY (HTTP $HTTP): $BODY"
+              exit 1
+            fi
+          }
+
+          set_env "DATABASE_URL" "$DATABASE_URL"
+          set_env "AUTH_SECRET" "$AUTH_SECRET"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

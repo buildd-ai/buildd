@@ -82,12 +82,15 @@ jobs:
             exit 1
           fi
 
-          # Find and delete all branch-scoped env overrides
+          # Find CI-managed preview env vars (branch-scoped OR unscoped preview-only DATABASE_URL/AUTH_SECRET)
           ENV_IDS=$(echo "$RESPONSE" | jq -r --arg branch "$GIT_BRANCH" \
-            '.envs[] | select(.gitBranch == $branch) | "\(.id) \(.key)"')
+            '.envs[] | select(
+              (.gitBranch == $branch) or
+              ((.key == "DATABASE_URL" or .key == "AUTH_SECRET") and (.target == ["preview"]) and (.gitBranch == null or .gitBranch == ""))
+            ) | "\(.id) \(.key)"')
 
           if [ -z "$ENV_IDS" ]; then
-            echo "No Vercel env overrides for branch $GIT_BRANCH"
+            echo "No Vercel env overrides to clean up"
             exit 0
           fi
 
