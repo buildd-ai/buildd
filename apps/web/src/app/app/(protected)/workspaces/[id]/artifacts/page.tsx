@@ -97,7 +97,7 @@ export default async function WorkspaceArtifactsPage({
           &larr; {workspace.name}
         </Link>
 
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold">Artifacts</h1>
             <p className="text-text-muted mt-1">

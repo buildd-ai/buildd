@@ -75,7 +75,7 @@ export default function ObjectiveActions({
   return (
     <div className="flex flex-col items-end gap-2">
       {/* Action buttons */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {/* Run Now */}
         {status === 'active' && hasWorkspace && (
           <button
@@ -145,7 +145,7 @@ export default function ObjectiveActions({
 
       {/* Inline cron editor */}
       {editingCron && (
-        <div className="flex items-center gap-2 p-2 bg-surface-2 border border-border-default rounded-lg">
+        <div className="flex flex-wrap items-center gap-2 p-2 bg-surface-2 border border-border-default rounded-lg">
           <input
             type="text"
             value={cronValue}

@@ -278,7 +278,7 @@ export default function SchedulesUnified({
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
             Set up heartbeats for periodic monitoring or schedule objectives to run automatically on a cron.
           </p>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
               href="/app/objectives?new=1"
               className="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-primary-hover transition-colors"
@@ -302,12 +302,12 @@ export default function SchedulesUnified({
   return (
     <div className="max-w-4xl mx-auto p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Schedules</h1>
           <p className="text-sm text-text-secondary mt-0.5">All automated task creation across your workspaces</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             href="/app/objectives"
             className="px-3 py-1.5 text-xs text-text-secondary bg-surface-3 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
@@ -326,7 +326,7 @@ export default function SchedulesUnified({
       </div>
 
       {/* Stats strip */}
-      <div className="flex gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
+      <div className="flex flex-wrap gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
         <div>
           <div className="text-xl font-semibold text-text-primary">{total}</div>
           <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
@@ -347,7 +347,7 @@ export default function SchedulesUnified({
             <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
           </div>
         )}
-        <div className="ml-auto flex gap-3 text-xs text-text-muted self-center">
+        <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
           {heartbeats > 0 && <span>{heartbeats} heartbeat{heartbeats !== 1 ? 's' : ''}</span>}
           {objectives > 0 && <span>{objectives} objective{objectives !== 1 ? 's' : ''}</span>}
           {scheduleCount > 0 && <span>{scheduleCount} workspace schedule{scheduleCount !== 1 ? 's' : ''}</span>}

@@ -98,7 +98,7 @@ export default async function ArtifactsPage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Artifacts</h1>
             <p className="text-text-muted mt-1">

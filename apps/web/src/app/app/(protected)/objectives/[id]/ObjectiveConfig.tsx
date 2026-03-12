@@ -253,7 +253,7 @@ export default function ObjectiveConfig({
         <div>
           <label className="block text-xs text-text-muted mb-1.5">Recipe</label>
           {editingRecipe ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 value={recipeId}
@@ -337,7 +337,7 @@ export default function ObjectiveConfig({
               {schemaError && (
                 <p className="text-xs text-status-error">{schemaError}</p>
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={handleSaveSchema}

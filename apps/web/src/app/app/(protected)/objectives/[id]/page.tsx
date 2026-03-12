@@ -187,9 +187,9 @@ export default async function ObjectiveDetailPage({
       </div>
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-4 mb-6">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3 mb-2">
+          <div className="flex flex-wrap items-center gap-3 mb-2">
             <EditableTitle objectiveId={objective.id} initialTitle={objective.title} />
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ${STATUS_STYLES[objective.status]?.bg || ''}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[objective.status]?.dot || ''}`} />
@@ -264,8 +264,8 @@ export default async function ObjectiveDetailPage({
       {/* Schedule */}
       {objective.cronExpression && (
         <div className="mb-6 p-3 bg-surface-2 rounded-lg border border-border-default">
-          <div className="flex items-center gap-2 text-sm">
-            <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="text-text-secondary">Schedule:</span>
@@ -402,7 +402,7 @@ export default async function ObjectiveDetailPage({
                     <p className="text-xs text-text-muted truncate mt-0.5">{w.currentAction}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-3 text-xs text-text-muted shrink-0">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted shrink-0">
                   {w.commitCount ? (
                     <span title={`${w.filesChanged || 0} files changed`}>
                       {w.commitCount} commit{w.commitCount !== 1 ? 's' : ''}
