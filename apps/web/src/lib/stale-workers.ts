@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { checkWorkerDeliverables } from '@/lib/worker-deliverables';
 
 /** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
@@ -33,7 +34,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
       ),
     ),
-    columns: { id: true, taskId: true },
+    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
   });
 
   if (staleWorkers.length > 0) {
@@ -71,15 +72,36 @@ export async function cleanupStaleWorkers(accountId: string) {
         });
 
         if (otherActiveWorkers.length === 0) {
-          await db
-            .update(tasks)
-            .set({
-              status: 'pending',
-              claimedBy: null,
-              claimedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(tasks.id, t.id));
+          // Check if the stale worker actually produced deliverables
+          // If so, promote the task to completed instead of resetting to pending
+          const staleWorker = staleWorkers.find(w => w.taskId === t.id);
+          let hasDeliverables = false;
+          if (staleWorker) {
+            try {
+              const deliverables = await checkWorkerDeliverables(staleWorker.id, staleWorker);
+              hasDeliverables = deliverables.hasAny;
+            } catch { /* non-fatal — default to pending */ }
+          }
+
+          if (hasDeliverables) {
+            await db
+              .update(tasks)
+              .set({
+                status: 'completed',
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, t.id));
+          } else {
+            await db
+              .update(tasks)
+              .set({
+                status: 'pending',
+                claimedBy: null,
+                claimedAt: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, t.id));
+          }
         }
 
         await resolveCompletedTask(t.id, t.workspaceId);

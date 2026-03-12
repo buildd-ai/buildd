@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // --- Mocks ---
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksFindFirst = mock(() => null as any);
+const mockTasksFindMany = mock(() => [] as any[]);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -22,7 +23,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
-      tasks: { findFirst: mockTasksFindFirst, findMany: mock(() => []) },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workerHeartbeats: { findFirst: mock(() => null) },
     },
     update: (table: any) => {
@@ -52,6 +53,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ args, type: 'or' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  not: (expr: any) => ({ expr, type: 'not' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
@@ -61,7 +63,14 @@ mock.module('@buildd/core/db/schema', () => ({
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
 }));
 
-import { cleanupStuckWaitingInput } from './stale-workers';
+const mockCheckWorkerDeliverables = mock(() => Promise.resolve({
+  hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+}));
+mock.module('@/lib/worker-deliverables', () => ({
+  checkWorkerDeliverables: mockCheckWorkerDeliverables,
+}));
+
+import { cleanupStaleWorkers, cleanupStuckWaitingInput } from './stale-workers';
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -266,5 +275,152 @@ describe('cleanupStuckWaitingInput', () => {
     await cleanupStuckWaitingInput();
 
     expect(capturedValues.description).toContain('What database should I use?');
+  });
+});
+
+describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockResolvedValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  it('promotes task to completed when stale worker has deliverables (PR)', async () => {
+    // Call 1: find stale workers
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, commitCount: 3 },
+      ])
+      // Call 2: other active workers for the task
+      .mockResolvedValueOnce([])
+      // Call 3: heartbeat orphans
+      .mockResolvedValueOnce([]);
+
+    // staleTasks query
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // Task lookup for dependency resolution
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    // Worker has a PR
+    mockCheckWorkerDeliverables.mockResolvedValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task should be promoted to completed, NOT reset to pending
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('promotes task to completed when stale worker has artifacts but no PR', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockResolvedValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '2 artifacts',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('promotes task to completed when stale worker has structured output', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockResolvedValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: true, hasCommits: false, hasAny: true, details: 'structured output',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('resets task to pending when stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockResolvedValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('does nothing when no stale workers exist', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await cleanupStaleWorkers('account-1');
+    expect(mockCheckWorkerDeliverables).not.toHaveBeenCalled();
   });
 });

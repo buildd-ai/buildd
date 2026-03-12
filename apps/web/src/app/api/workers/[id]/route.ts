@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { checkWorkerDeliverables } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { notifySlack } from '@/lib/slack-notify';
@@ -81,12 +82,17 @@ export async function PATCH(
       worker.error?.includes('went offline') ||
       worker.error?.includes('runner restarted');
     if (body.status !== 'running' || isCleanupExpiry) {
+      // Enrich 409 with deliverable info so the runner can distinguish
+      // "already completed successfully" from "genuinely terminated/reassigned"
+      const deliverables = await checkWorkerDeliverables(id, worker);
       return NextResponse.json({
         error: (worker.status === 'failed' || worker.status === 'error')
           ? 'Worker was terminated - task may have been reassigned'
           : 'Worker already completed',
         abort: true,
         reason: worker.error || worker.status,
+        actualStatus: worker.status,
+        hasDeliverables: deliverables.hasAny,
       }, { status: 409 });
     }
     // Reactivation: clear completion timestamp so worker can run again
@@ -136,6 +142,19 @@ export async function PATCH(
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
   if (resultMeta !== undefined) updates.resultMeta = resultMeta;
+
+  // Status audit trail: record terminal transitions in milestones for debugging
+  if (status === 'completed' || status === 'failed') {
+    const existingMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
+    const transition = {
+      type: 'statusTransition',
+      from: worker.status,
+      to: status,
+      ts: Date.now(),
+      source: 'api',
+    };
+    updates.milestones = [...existingMilestones, transition];
+  }
 
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {
