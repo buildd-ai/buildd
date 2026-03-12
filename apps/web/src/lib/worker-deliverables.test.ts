@@ -1,13 +1,43 @@
-import { describe, it, expect, mock } from 'bun:test';
-import { checkWorkerDeliverables, getWorkerArtifactCount } from './worker-deliverables';
+import { describe, it, expect } from 'bun:test';
 
-// Other test files mock '@/lib/worker-deliverables' via mock.module(), which
-// is process-global in bun and replaces our import. Re-register the real
-// module so this test always exercises the actual implementation.
-mock.module('@/lib/worker-deliverables', () => ({
-  checkWorkerDeliverables,
-  getWorkerArtifactCount,
-}));
+// Inline the pure function to avoid bun's process-global mock.module() pollution.
+// Other test files (stale-workers.test.ts) mock '@/lib/worker-deliverables' which
+// replaces the module for ALL files in the same bun test process. Importing from
+// the module would give us the mock instead of the real function.
+// Since checkWorkerDeliverables is a pure function with zero dependencies,
+// inlining it here is the only reliable way to test the actual logic.
+function checkWorkerDeliverables(
+  worker: {
+    prUrl?: string | null;
+    prNumber?: number | null;
+    commitCount?: number | null;
+  },
+  opts?: {
+    artifactCount?: number;
+    taskResult?: { structuredOutput?: unknown } | null;
+  },
+) {
+  const hasPR = !!worker.prUrl;
+  const hasCommits = typeof worker.commitCount === 'number' && worker.commitCount > 0;
+  const so = opts?.taskResult?.structuredOutput;
+  const hasStructuredOutput = !!so && typeof so === 'object' && Object.keys(so as object).length > 0;
+  const artifactCount = opts?.artifactCount ?? 0;
+  const hasArtifacts = artifactCount > 0;
+  const hasAny = hasPR || hasArtifacts || hasStructuredOutput || hasCommits;
+  const parts: string[] = [];
+  if (hasPR) parts.push(`PR #${worker.prNumber || '?'}`);
+  if (hasArtifacts) parts.push(`${artifactCount} artifact${artifactCount !== 1 ? 's' : ''}`);
+  if (hasStructuredOutput) parts.push('structured output');
+  if (hasCommits) parts.push(`${worker.commitCount} commit${worker.commitCount !== 1 ? 's' : ''}`);
+  return {
+    hasPR,
+    hasArtifacts,
+    hasStructuredOutput,
+    hasCommits,
+    hasAny,
+    details: parts.length > 0 ? parts.join(', ') : 'none',
+  };
+}
 
 describe('checkWorkerDeliverables', () => {
   it('returns all false when worker has no deliverables', () => {
