@@ -571,6 +571,7 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
       if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
+      if (params.workspaceId !== undefined) updateBody.workspaceId = params.workspaceId;
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
         const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
@@ -585,7 +586,7 @@ export async function handleBuilddAction(
       }
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs) must be provided');
+        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, workspaceId) must be provided');
       }
 
       const updated = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {
@@ -893,6 +894,7 @@ export async function handleBuilddAction(
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.workspaceId !== undefined) body.workspaceId = params.workspaceId;
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
           if (params.recipeId !== undefined) body.recipeId = params.recipeId;
           if (params.model !== undefined) body.model = params.model;

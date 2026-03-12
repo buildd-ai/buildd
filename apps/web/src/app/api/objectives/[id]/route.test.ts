@@ -187,6 +187,70 @@ describe('PATCH /api/objectives/[id]', () => {
     expect(body.error).toContain('activeHoursEnd');
   });
 
+  it('updates workspaceId', async () => {
+    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'ws-new' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData).not.toBeNull();
+    expect(updatedSetData.workspaceId).toBe('ws-new');
+  });
+
+  it('clears workspaceId with null', async () => {
+    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: null }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData).not.toBeNull();
+    expect(updatedSetData.workspaceId).toBeNull();
+  });
+
+  it('updates status to completed', async () => {
+    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData).not.toBeNull();
+    expect(updatedSetData.status).toBe('completed');
+  });
+
+  it('updates status to archived', async () => {
+    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData).not.toBeNull();
+    expect(updatedSetData.status).toBe('archived');
+  });
+
+  it('rejects invalid status', async () => {
+    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'invalid' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Invalid status');
+  });
+
   it('clears active hours with null', async () => {
     const req = new NextRequest('http://localhost/api/objectives/obj-1', {
       method: 'PATCH',

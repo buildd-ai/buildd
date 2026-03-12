@@ -81,6 +81,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     if (body.oneShot !== undefined) updates.oneShot = body.oneShot;
     if (body.maxConcurrentFromSchedule !== undefined) updates.maxConcurrentFromSchedule = body.maxConcurrentFromSchedule;
     if (body.pauseAfterFailures !== undefined) updates.pauseAfterFailures = body.pauseAfterFailures;
+    if (body.workspaceId !== undefined) updates.workspaceId = body.workspaceId;
 
     // If cron or timezone changed, recompute nextRunAt
     const newCron = body.cronExpression ?? existing.cronExpression;
