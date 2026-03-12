@@ -27,15 +27,6 @@ interface Task {
   resultSummary?: string | null;
 }
 
-interface ObjectiveItem {
-  id: string;
-  title: string;
-  status: string;
-  priority: number;
-  totalTasks: number;
-  completedTasks: number;
-  progress: number;
-}
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -66,7 +57,6 @@ interface Workspace {
 
 interface Props {
   workspaces: Workspace[];
-  objectives?: ObjectiveItem[];
 }
 
 function getStatusIndicator(status: string): React.ReactNode {
@@ -124,9 +114,8 @@ interface TaskCreated {
   };
 }
 
-const OBJECTIVES_COLLAPSED_KEY = 'buildd:objectivesCollapsed';
 
-export default function WorkspaceSidebar({ workspaces: initialWorkspaces, objectives = [] }: Props) {
+export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Props) {
   const pathname = usePathname();
   const router = useRouter();
   const [workspaces, setWorkspaces] = useState<Workspace[]>(initialWorkspaces);
@@ -140,7 +129,6 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const [projectRegistry, setProjectRegistry] = useState<Record<string, { name: string; color?: string }[]>>({});
-  const [objectivesCollapsed, setObjectivesCollapsed] = useState(false);
 
   // Update workspaces when props change (e.g., after navigation)
   useEffect(() => {
@@ -308,8 +296,6 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
       if (savedCompletedCollapsed) setCompletedCollapsed(JSON.parse(savedCompletedCollapsed));
       const savedHidden = localStorage.getItem(HIDDEN_WORKSPACES_KEY);
       if (savedHidden) setHiddenWorkspaces(JSON.parse(savedHidden));
-      const savedObjCollapsed = localStorage.getItem(OBJECTIVES_COLLAPSED_KEY);
-      if (savedObjCollapsed) setObjectivesCollapsed(JSON.parse(savedObjCollapsed));
     } catch {
       // ignore
     }
@@ -383,8 +369,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
     }
   };
 
-  // Build objective title lookup for task badges
-  const objectiveTitleMap = new Map(objectives.map(o => [o.id, o.title]));
+  // Build objective title lookup for task badges (from workspace tasks)
+  const objectiveTitleMap = new Map<string, string>();
 
   // Collect all distinct projects across all tasks for the filter
   const allProjects = new Map<string, string | undefined>();
@@ -438,23 +424,48 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
   const hiddenWorkspacesList = allSortedWorkspaces.filter(ws => hiddenWorkspaces[ws.id]);
   const hiddenCount = hiddenWorkspacesList.length;
 
+  // When not searching, separate quiet workspaces (only completed/empty) from active ones
+  const isFiltering = !!searchQuery || !!projectFilter;
+  const activeWorkspaces = isFiltering
+    ? sortedWorkspaces
+    : sortedWorkspaces.filter(ws =>
+        ws.tasks.some(t => ['running', 'assigned', 'waiting_input', 'pending', 'failed'].includes(t.status))
+      );
+  const quietWorkspaces = isFiltering
+    ? []
+    : sortedWorkspaces.filter(ws =>
+        !ws.tasks.some(t => ['running', 'assigned', 'waiting_input', 'pending', 'failed'].includes(t.status))
+      );
+
   return (
     <>
       <aside className="w-64 border-r border-border-default bg-surface-2 flex flex-col h-full">
         {/* Header */}
-        <div className="p-4 border-b border-border-default">
-          <div className="flex items-center justify-between">
-            <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary">
-              &larr; Dashboard
-            </Link>
-            <Link
-              href="/app/tasks/new"
-              className="text-xs px-2 py-1 bg-primary text-white rounded hover:bg-primary-hover"
-            >
-              + New
-            </Link>
+        <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-text-primary">Tasks</span>
+            {(() => {
+              const waitingCount = workspaces.flatMap(ws => ws.tasks).filter(t => t.status === 'waiting_input').length;
+              return waitingCount > 0 ? (
+                <span
+                  data-testid="sidebar-needs-input-badge"
+                  className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-status-warning/15 text-status-warning"
+                >
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-status-warning" />
+                  </span>
+                  {waitingCount}
+                </span>
+              ) : null;
+            })()}
           </div>
-          <h1 className="text-lg font-semibold mt-2">Tasks</h1>
+          <Link
+            href="/app/tasks/new"
+            className="text-xs px-2.5 py-1 bg-primary text-white rounded-md hover:bg-primary-hover"
+          >
+            + New
+          </Link>
         </div>
 
         {/* Search */}
@@ -503,66 +514,6 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
           </div>
         )}
 
-        {/* Objectives section */}
-        {objectives.length > 0 && (
-          <div className="px-2 pb-1 border-b border-border-default">
-            <button
-              onClick={() => {
-                const next = !objectivesCollapsed;
-                setObjectivesCollapsed(next);
-                localStorage.setItem(OBJECTIVES_COLLAPSED_KEY, JSON.stringify(next));
-              }}
-              aria-expanded={!objectivesCollapsed}
-              className="flex items-center gap-1.5 w-full px-1 py-1.5 text-xs font-semibold text-text-secondary uppercase tracking-wider hover:text-text-primary"
-            >
-              <span className="text-[10px]">{objectivesCollapsed ? '›' : '▼'}</span>
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Objectives
-              <span className="ml-auto text-[10px] font-mono text-text-muted normal-case">{objectives.length}</span>
-            </button>
-            {!objectivesCollapsed && (
-              <div className="space-y-1 pb-2">
-                {objectives.map(obj => (
-                  <Link
-                    key={obj.id}
-                    href={`/app/objectives/${obj.id}`}
-                    className="block px-2 py-1.5 rounded hover:bg-surface-3 transition-colors group"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        obj.status === 'active' ? 'bg-status-success' : 'bg-status-warning'
-                      }`} />
-                      <span className="text-sm text-text-secondary group-hover:text-text-primary truncate flex-1">
-                        {obj.title}
-                      </span>
-                      {obj.totalTasks > 0 && (
-                        <span className="text-[10px] font-mono text-text-muted shrink-0">
-                          {obj.completedTasks}/{obj.totalTasks}
-                        </span>
-                      )}
-                    </div>
-                    {obj.totalTasks > 0 && (
-                      <div className="mt-1 ml-3 h-1 bg-surface-3 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${obj.progress}%` }}
-                        />
-                      </div>
-                    )}
-                  </Link>
-                ))}
-                <Link
-                  href="/app/objectives"
-                  className="block px-2 py-1 text-xs text-text-muted hover:text-primary transition-colors"
-                >
-                  View all objectives
-                </Link>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Workspace list */}
         <nav className="flex-1 overflow-y-auto p-2">
@@ -570,13 +521,17 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
             <div className="text-sm text-text-secondary p-4 text-center">
               No workspaces yet
             </div>
-          ) : sortedWorkspaces.length === 0 ? (
+          ) : activeWorkspaces.length === 0 && quietWorkspaces.length === 0 && hiddenCount > 0 ? (
             <div className="text-sm text-text-secondary p-4 text-center">
               All workspaces hidden
             </div>
+          ) : activeWorkspaces.length === 0 && !isFiltering ? (
+            <div className="px-2 py-3 text-xs text-text-muted text-center">
+              No active tasks
+            </div>
           ) : (
             <div className="space-y-1">
-              {sortedWorkspaces.map((ws) => {
+              {activeWorkspaces.map((ws) => {
                 const isCollapsed = collapsed[ws.id];
                 const activeCount = ws.tasks.filter(
                   t => ['running', 'assigned', 'waiting_input'].includes(t.status)
@@ -792,6 +747,48 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces, object
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Quiet workspaces — only completed/empty, collapsed by default */}
+          {quietWorkspaces.length > 0 && (
+            <div className="mt-3 pt-2 border-t border-border-default/50">
+              <button
+                onClick={() => setShowHiddenSection(!showHiddenSection)}
+                aria-expanded={showHiddenSection}
+                className="flex items-center gap-1.5 px-2 py-1.5 w-full text-[10px] font-mono text-text-muted hover:text-text-secondary transition-colors"
+              >
+                <span>{showHiddenSection ? '▼' : '›'}</span>
+                <span>{quietWorkspaces.length} quiet workspace{quietWorkspaces.length !== 1 ? 's' : ''}</span>
+              </button>
+              {showHiddenSection && (
+                <div className="mt-1 space-y-1">
+                  {quietWorkspaces.map((ws) => {
+                    const completedCount = ws.tasks.filter(t => t.status === 'completed' || t.status === 'failed').length;
+                    return (
+                      <div key={ws.id} className="flex items-center gap-1 group">
+                        <button
+                          onClick={() => toggleCollapse(ws.id)}
+                          className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm text-text-muted hover:bg-surface-3 rounded truncate"
+                        >
+                          <span className="text-text-muted w-4">{collapsed[ws.id] ? '›' : '▼'}</span>
+                          <span className="truncate flex-1 text-left">{ws.name}</span>
+                          {completedCount > 0 && (
+                            <span className="text-[10px] font-mono text-text-muted shrink-0">{completedCount}</span>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => setQuickCreateWorkspaceId(ws.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
+                          title="Quick create task"
+                        >
+                          +
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

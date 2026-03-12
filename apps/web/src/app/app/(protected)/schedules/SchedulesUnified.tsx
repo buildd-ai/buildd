@@ -125,7 +125,7 @@ function ScheduleRow({
   const hasFailures = item.consecutiveFailures > 0;
 
   return (
-    <div className={`group flex items-center gap-3 p-4 bg-surface-2 border rounded-lg transition-colors hover:border-primary/20 ${
+    <div className={`group flex items-center gap-3 p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
       !item.isEnabled ? 'opacity-60' : ''
     } ${isOverdue ? 'border-status-warning/30' : 'border-border-default'}`}>
       {/* Toggle */}
