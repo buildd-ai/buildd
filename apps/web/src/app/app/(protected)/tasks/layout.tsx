@@ -35,6 +35,9 @@ export default async function TasksLayout({
       waitingFor?: { type: string; prompt: string; options?: string[] } | null;
       objectiveId?: string | null;
       resultSummary?: string | null;
+      prUrl?: string | null;
+      prNumber?: number | null;
+      hasArtifact?: boolean;
     }>;
   }> = [];
 
@@ -81,12 +84,12 @@ export default async function TasksLayout({
         }
 
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; description?: string | null; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null; resultSummary?: string | null };
+        type TaskSummary = { id: string; title: string; description?: string | null; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null; resultSummary?: string | null; prUrl?: string | null; prNumber?: number | null; hasArtifact?: boolean };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           // Only override status with waiting_input if the task isn't already completed/failed
           const isTerminal = task.status === 'completed' || task.status === 'failed';
-          const taskResult = task.result as { summary?: string; prUrl?: string } | null;
+          const taskResult = task.result as { summary?: string; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown>; files?: string[] } | null;
           acc[task.workspaceId].push({
             id: task.id,
             title: task.title,
@@ -98,6 +101,9 @@ export default async function TasksLayout({
             waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
             objectiveId: task.objectiveId,
             resultSummary: taskResult?.summary || null,
+            prUrl: taskResult?.prUrl || null,
+            prNumber: taskResult?.prNumber || null,
+            hasArtifact: !!taskResult?.structuredOutput || (taskResult?.files?.length ?? 0) > 0,
           });
           return acc;
         }, {} as Record<string, TaskSummary[]>);

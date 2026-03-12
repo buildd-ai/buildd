@@ -25,25 +25,39 @@ interface Task {
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
   objectiveId?: string | null;
   resultSummary?: string | null;
+  prUrl?: string | null;
+  prNumber?: number | null;
+  hasArtifact?: boolean;
 }
 
 
-const CATEGORY_COLORS: Record<string, string> = {
-  bug: 'bg-cat-bug/15 text-cat-bug',
-  feature: 'bg-cat-feature/15 text-cat-feature',
-  refactor: 'bg-cat-refactor/15 text-cat-refactor',
-  chore: 'bg-cat-chore/15 text-cat-chore',
-  docs: 'bg-cat-docs/15 text-cat-docs',
-  test: 'bg-cat-test/15 text-cat-test',
-  infra: 'bg-cat-infra/15 text-cat-infra',
-  design: 'bg-cat-design/15 text-cat-design',
-};
-
-function CategoryBadge({ category }: { category: string }) {
-  const colors = CATEGORY_COLORS[category] || 'bg-cat-chore/15 text-cat-chore';
+/** PR badge for sidebar task items */
+function PrBadge({ prNumber, prUrl }: { prNumber?: number | null; prUrl?: string | null }) {
   return (
-    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${colors} shrink-0`}>
-      {category}
+    <a
+      href={prUrl || '#'}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-mono rounded bg-status-success/10 text-status-success hover:bg-status-success/20 shrink-0"
+    >
+      <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
+      </svg>
+      PR{prNumber ? ` #${prNumber}` : ''}
+    </a>
+  );
+}
+
+/** Artifact/document badge for sidebar task items */
+function ArtifactBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-mono rounded bg-primary/10 text-primary shrink-0">
+      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      doc
     </span>
   );
 }
@@ -646,7 +660,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                           </svg>
                                         </span>
                                       )}
-                                      {task.category && <CategoryBadge category={task.category} />}
+                                      {task.prUrl && <PrBadge prNumber={task.prNumber} prUrl={task.prUrl} />}
+                                      {task.hasArtifact && !task.prUrl && <ArtifactBadge />}
                                       {task.project && (
                                         <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0 flex items-center gap-0.5">
                                           {(() => {
@@ -711,7 +726,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                               )}
                                             </button>
                                           )}
-                                          {task.category && <CategoryBadge category={task.category} />}
+                                          {task.prUrl && <PrBadge prNumber={task.prNumber} prUrl={task.prUrl} />}
+                                          {task.hasArtifact && !task.prUrl && <ArtifactBadge />}
                                           {task.project && (
                                             <span className="px-1 py-0.5 text-[9px] font-medium rounded bg-primary/10 text-primary shrink-0">
                                               {task.project}

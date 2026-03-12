@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 interface GridTask {
   id: string;
@@ -42,17 +43,6 @@ interface WorkspaceRow {
   hasActive: boolean;
   latestUpdate: string;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  bug: 'var(--cat-bug)',
-  feature: 'var(--cat-feature)',
-  refactor: 'var(--cat-refactor)',
-  chore: 'var(--cat-chore)',
-  docs: 'var(--cat-docs)',
-  test: 'var(--cat-test)',
-  infra: 'var(--cat-infra)',
-  design: 'var(--cat-design)',
-};
 
 function getStatusDotClass(status: string): string {
   switch (status) {
@@ -177,24 +167,131 @@ function buildWorkspaceRows(tasks: GridTask[]): { needsInput: GridTask[]; worksp
   return { needsInput, workspaceRows };
 }
 
-function TaskTile({ task }: { task: GridTask }) {
-  const catColor = task.category ? CATEGORY_COLORS[task.category] : undefined;
+/** PR icon — git merge/PR symbol */
+function PrIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
+    </svg>
+  );
+}
+
+/** Document icon — for artifacts */
+function DocIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+    </svg>
+  );
+}
+
+/** Artifact viewer modal — full screen formatted markdown */
+function ArtifactViewer({ taskId, title, onClose }: { taskId: string; title: string; onClose: () => void }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/tasks/${taskId}/artifacts`)
+      .then(res => res.json())
+      .then(data => {
+        // Find first content/report/summary artifact
+        const artifacts = data.artifacts || [];
+        const textArtifact = artifacts.find((a: { type: string }) =>
+          ['content', 'report', 'summary'].includes(a.type)
+        );
+        setContent(textArtifact?.content || null);
+      })
+      .catch(() => setContent(null))
+      .finally(() => setLoading(false));
+  }, [taskId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="bg-surface-2 rounded-xl border border-border-default shadow-2xl w-full max-w-2xl max-h-[85vh] mx-4 flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border-default shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <DocIcon className="w-4 h-4 text-primary shrink-0" />
+            <span className="text-sm font-semibold text-text-primary truncate">{title}</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-text-muted hover:text-text-primary hover:bg-surface-3 rounded-lg"
+            aria-label="Close"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-5">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <span className="w-5 h-5 border-2 border-text-muted border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : content ? (
+            <div className="prose prose-sm prose-invert max-w-none text-text-primary
+              prose-headings:text-text-primary prose-p:text-text-secondary
+              prose-a:text-primary prose-strong:text-text-primary
+              prose-code:text-primary prose-code:bg-surface-3 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
+              prose-pre:bg-surface-3 prose-pre:border prose-pre:border-border-default
+              prose-li:text-text-secondary
+              whitespace-pre-wrap leading-relaxed text-sm"
+            >
+              {content}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-text-muted text-sm">No artifact content available.</p>
+              <Link
+                href={`/app/tasks/${taskId}`}
+                className="text-primary text-sm hover:underline mt-2 inline-block"
+                onClick={onClose}
+              >
+                View task details
+              </Link>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskTile({ task, onViewArtifact }: { task: GridTask; onViewArtifact?: (taskId: string, title: string) => void }) {
   const hasPR = !!task.prUrl;
   const [showTooltip, setShowTooltip] = useState(false);
   const isWaiting = task.status === 'waiting_input';
   const isRunning = task.status === 'in_progress' || task.status === 'assigned';
 
-  // Outcome ring: amber+pulse = needs input, green = PR, amber = artifact
+  // Outcome ring: amber+pulse = needs input, green = PR, primary = artifact
   const outcomeRing = isWaiting
     ? 'ring-1 ring-status-warning/50'
     : hasPR
       ? 'ring-1 ring-status-success/40'
       : task.hasArtifact
-        ? 'ring-1 ring-status-warning/40'
+        ? 'ring-1 ring-primary/30'
         : '';
 
   return (
-    <div className="relative group shrink-0 w-[180px]">
+    <div className="relative group shrink-0 w-[calc(50%-4px)] md:w-[180px]">
       <Link
         href={`/app/tasks/${task.id}`}
         className={`
@@ -211,15 +308,12 @@ function TaskTile({ task }: { task: GridTask }) {
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
-        {/* Category accent — top stripe */}
-        {catColor && !isWaiting && (
-          <div
-            className="absolute top-0 left-2 right-2 h-[2px] rounded-b"
-            style={{ backgroundColor: catColor, opacity: 0.6 }}
-          />
+        {/* Running: animated top stripe */}
+        {isRunning && (
+          <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-xl bg-status-running/70" />
         )}
 
-        {/* Waiting: full amber top stripe overrides category */}
+        {/* Waiting: full amber top stripe */}
         {isWaiting && (
           <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-xl bg-status-warning/70" />
         )}
@@ -241,7 +335,7 @@ function TaskTile({ task }: { task: GridTask }) {
             </div>
           )}
 
-          {/* Bottom row: outcome badges */}
+          {/* Bottom row: output type badges + timestamp */}
           <div className="flex items-center gap-1.5 mt-auto">
             {isWaiting && (
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono rounded bg-status-warning/10 text-status-warning">
@@ -261,16 +355,22 @@ function TaskTile({ task }: { task: GridTask }) {
                 onClick={(e) => e.stopPropagation()}
                 className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-mono rounded bg-status-success/10 text-status-success hover:bg-status-success/20 transition-colors"
               >
-                <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
-                </svg>
+                <PrIcon className="w-2.5 h-2.5" />
                 PR{task.prNumber ? ` #${task.prNumber}` : ''}
               </a>
             )}
             {!isWaiting && task.hasArtifact && !hasPR && (
-              <span className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-mono rounded bg-status-warning/10 text-status-warning">
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onViewArtifact?.(task.id, task.title);
+                }}
+                className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-mono rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+              >
+                <DocIcon className="w-2.5 h-2.5" />
                 artifact
-              </span>
+              </button>
             )}
             <span className="ml-auto text-[9px] font-mono text-text-muted">
               {timeAgo(task.updatedAt)}
@@ -281,7 +381,7 @@ function TaskTile({ task }: { task: GridTask }) {
 
       {/* Tooltip on hover */}
       {showTooltip && (task.summary || task.waitingPrompt) && (
-        <div className="absolute z-50 bottom-full left-0 mb-2 w-64 p-3 rounded-lg bg-surface-3 border border-border-default shadow-lg pointer-events-none">
+        <div className="hidden md:block absolute z-50 bottom-full left-0 mb-2 w-64 p-3 rounded-lg bg-surface-3 border border-border-default shadow-lg pointer-events-none">
           {/* Show waiting prompt in full on hover */}
           {isWaiting && task.waitingPrompt && (
             <div className="text-[11px] text-status-warning leading-relaxed mb-2">
@@ -295,14 +395,6 @@ function TaskTile({ task }: { task: GridTask }) {
           )}
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default">
             <span className="text-[9px] font-mono text-text-muted">{task.workspaceName}</span>
-            {task.category && (
-              <span
-                className="text-[9px] font-mono px-1 rounded"
-                style={{ color: CATEGORY_COLORS[task.category], backgroundColor: `${CATEGORY_COLORS[task.category]}15` }}
-              >
-                {task.category}
-              </span>
-            )}
             {task.filesChanged && (
               <span className="text-[9px] font-mono text-text-muted">{task.filesChanged} files</span>
             )}
@@ -317,7 +409,7 @@ function CollapsedTile({ group }: { group: CollapsedGroup }) {
   const [showTooltip, setShowTooltip] = useState(false);
 
   return (
-    <div className="relative group shrink-0 w-[180px]">
+    <div className="relative group shrink-0 w-[calc(50%-4px)] md:w-[180px]">
       <Link
         href={`/app/objectives/${group.objectiveId}`}
         className="block relative w-full rounded-lg h-[72px] transition-all hover:border-text-muted/30"
@@ -354,7 +446,7 @@ function CollapsedTile({ group }: { group: CollapsedGroup }) {
 
       {/* Tooltip on hover */}
       {showTooltip && (
-        <div className="absolute z-50 bottom-full left-0 mb-2 w-64 p-3 rounded-lg bg-surface-3 border border-border-default shadow-lg pointer-events-none">
+        <div className="hidden md:block absolute z-50 bottom-full left-0 mb-2 w-64 p-3 rounded-lg bg-surface-3 border border-border-default shadow-lg pointer-events-none">
           <div className="text-[11px] text-text-primary font-medium mb-1">
             {group.objectiveTitle}
           </div>
@@ -375,6 +467,12 @@ type FilterStatus = 'all' | 'needs_input' | 'active' | 'completed' | 'failed';
 
 export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
   const [filter, setFilter] = useState<FilterStatus>('all');
+  const [artifactViewer, setArtifactViewer] = useState<{ taskId: string; title: string } | null>(null);
+  const router = useRouter();
+
+  const handleViewArtifact = useCallback((taskId: string, title: string) => {
+    setArtifactViewer({ taskId, title });
+  }, []);
 
   const filtered = useMemo(() => {
     if (filter === 'all') return tasks;
@@ -428,14 +526,14 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-[1400px] mx-auto p-6">
+      <div className="max-w-[1400px] mx-auto p-3 md:p-6">
         {/* Header stats */}
-        <div className="flex items-center gap-6 mb-6">
+        <div className="flex items-center gap-4 md:gap-6 mb-4 md:mb-6">
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-text-muted">Last 30 days</div>
-            <div className="text-2xl font-semibold text-text-primary mt-0.5">{tasks.length} <span className="text-sm font-normal text-text-secondary">tasks</span></div>
+            <div className="text-xl md:text-2xl font-semibold text-text-primary mt-0.5">{tasks.length} <span className="text-sm font-normal text-text-secondary">tasks</span></div>
           </div>
-          <div className="flex gap-4 ml-auto text-center">
+          <div className="flex gap-3 md:gap-4 ml-auto text-center">
             {waitingCount > 0 && (
               <button onClick={() => setFilter('needs_input')} className="text-center hover:opacity-80 transition-opacity">
                 <div className="text-lg font-semibold text-status-warning">{waitingCount}</div>
@@ -459,13 +557,13 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="flex gap-1.5 mb-5">
+        {/* Filters — horizontally scrollable on mobile */}
+        <div className="flex gap-1.5 mb-4 md:mb-5 overflow-x-auto pb-1 -mx-3 px-3 md:mx-0 md:px-0">
           {filters.map((f) => (
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
-              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center gap-1.5 shrink-0 ${
                 filter === f.key
                   ? f.key === 'needs_input' ? 'bg-status-warning/15 text-status-warning' : 'bg-primary/15 text-primary'
                   : 'text-text-muted hover:text-text-secondary hover:bg-surface-3'
@@ -481,14 +579,14 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
 
         {/* Needs input — pinned section above workspace rows */}
         {needsInput.length > 0 && (
-          <div className="mb-6">
+          <div className="mb-5 md:mb-6">
             <div className="text-[10px] font-mono uppercase tracking-[2.5px] mb-3 pb-1.5 border-b text-status-warning border-status-warning/20">
               Needs input
               <span className="ml-2 normal-case tracking-normal">{needsInput.length}</span>
             </div>
-            <div className="flex gap-2 overflow-x-auto pb-2">
+            <div className="flex gap-2 overflow-x-auto pb-2 flex-wrap md:flex-nowrap">
               {needsInput.map((task) => (
-                <TaskTile key={task.id} task={task} />
+                <TaskTile key={task.id} task={task} onViewArtifact={handleViewArtifact} />
               ))}
             </div>
           </div>
@@ -498,9 +596,26 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
         <div className="space-y-5">
           {workspaceRows.map((row) => (
             <div key={row.workspaceName} className="group/row">
+              {/* Mobile: workspace header as a row above tiles */}
+              <div className="md:hidden flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wide">
+                    {row.workspaceName}
+                  </span>
+                  {row.hasActive && (
+                    <span className="flex items-center gap-1">
+                      <span className="glow-dot glow-dot-running" />
+                    </span>
+                  )}
+                  <span className="text-[9px] font-mono text-text-muted">
+                    {row.items.length}
+                  </span>
+                </div>
+              </div>
+
               <div className="flex items-start gap-4">
-                {/* Workspace label */}
-                <div className="shrink-0 w-[100px] pt-5">
+                {/* Desktop: Workspace label */}
+                <div className="hidden md:block shrink-0 w-[100px] pt-5">
                   <div className="text-[10px] font-mono uppercase tracking-[2.5px] text-text-muted leading-tight">
                     {row.workspaceName}
                   </div>
@@ -509,14 +624,14 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
                   </div>
                 </div>
 
-                {/* Tiles — horizontal scroll */}
+                {/* Tiles — wrap on mobile, horizontal scroll on desktop */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex gap-2 overflow-x-auto pb-2 pt-1">
+                  <div className="flex gap-2 flex-wrap md:flex-nowrap md:overflow-x-auto pb-2 pt-1">
                     {row.items.map((item) =>
                       item.type === 'collapsed' ? (
                         <CollapsedTile key={`obj-${item.objectiveId}`} group={item} />
                       ) : (
-                        <TaskTile key={item.task.id} task={item.task} />
+                        <TaskTile key={item.task.id} task={item.task} onViewArtifact={handleViewArtifact} />
                       )
                     )}
                   </div>
@@ -533,6 +648,15 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
           </div>
         )}
       </div>
+
+      {/* Artifact viewer modal */}
+      {artifactViewer && (
+        <ArtifactViewer
+          taskId={artifactViewer.taskId}
+          title={artifactViewer.title}
+          onClose={() => setArtifactViewer(null)}
+        />
+      )}
     </div>
   );
 }

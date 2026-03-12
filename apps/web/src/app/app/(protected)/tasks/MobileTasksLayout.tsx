@@ -12,19 +12,14 @@ interface Props {
 
 export default function MobileTasksLayout({ sidebar, workspaces, children }: Props) {
   const pathname = usePathname();
-  // Auto-open sidebar on mobile when on the tasks index route (no task selected)
-  const isIndexRoute = pathname === '/app/tasks';
-  const [sidebarOpen, setSidebarOpen] = useState(isIndexRoute);
+  // On mobile, keep sidebar closed by default — TaskGrid is the primary view
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const router = useRouter();
 
-  // Close sidebar on navigation (mobile) — but re-open if navigating back to index
+  // Close sidebar on navigation (mobile)
   useEffect(() => {
-    if (pathname === '/app/tasks') {
-      setSidebarOpen(true);
-    } else {
-      setSidebarOpen(false);
-    }
+    setSidebarOpen(false);
   }, [pathname]);
 
   // Close sidebar on escape key
