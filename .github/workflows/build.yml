@@ -144,10 +144,13 @@ jobs:
             done
 
             # Create new env var for preview
+            PAYLOAD=$(mktemp)
+            jq -n --arg k "$KEY" --arg v "$VALUE" '{key:$k,value:$v,type:"encrypted",target:["preview"]}' > "$PAYLOAD"
             RESP=$(curl -s -w "\n%{http_code}" -X POST \
               -H "$AUTH" -H "Content-Type: application/json" \
-              -d "$(jq -n --arg k "$KEY" --arg v "$VALUE" '{key:$k,value:$v,type:"encrypted",target:["preview"]}')" \
+              -d @"$PAYLOAD" \
               "$API/v10/projects/$VERCEL_PROJECT_ID/env")
+            rm -f "$PAYLOAD"
             HTTP=$(echo "$RESP" | tail -1)
             BODY=$(echo "$RESP" | sed '$d')
             if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
