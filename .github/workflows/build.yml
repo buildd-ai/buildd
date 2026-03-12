@@ -125,79 +125,6 @@ jobs:
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
-      - name: Set Vercel preview env vars
-        id: vercel-env
-        run: |
-          AUTH="Authorization: Bearer $VERCEL_TOKEN"
-          API="https://api.vercel.com"
-
-          # Helper: delete existing env var by key for preview target, then create new one
-          set_env() {
-            local KEY="$1" VALUE="$2"
-
-            # Find and delete existing preview env var for this key
-            EXISTING=$(curl -s -H "$AUTH" "$API/v9/projects/$VERCEL_PROJECT_ID/env" \
-              | jq -r --arg k "$KEY" '.envs[] | select(.key == $k and (.target | index("preview"))) | .id')
-            for ID in $EXISTING; do
-              echo "Deleting existing $KEY ($ID)"
-              curl -s -X DELETE -H "$AUTH" "$API/v9/projects/$VERCEL_PROJECT_ID/env/$ID"
-            done
-
-            # Create new env var for preview
-            PAYLOAD=$(mktemp)
-            jq -n --arg k "$KEY" --arg v "$VALUE" '{key:$k,value:$v,type:"encrypted",target:["preview"]}' > "$PAYLOAD"
-            RESP=$(curl -s -w "\n%{http_code}" -X POST \
-              -H "$AUTH" -H "Content-Type: application/json" \
-              -d @"$PAYLOAD" \
-              "$API/v10/projects/$VERCEL_PROJECT_ID/env")
-            rm -f "$PAYLOAD"
-            HTTP=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | sed '$d')
-            if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
-              echo "Set $KEY for preview (HTTP $HTTP)"
-            else
-              echo "::error::Failed to set $KEY (HTTP $HTTP): $BODY"
-              exit 1
-            fi
-          }
-
-          set_env "DATABASE_URL" "$DATABASE_URL"
-          set_env "AUTH_SECRET" "$AUTH_SECRET"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
-          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-
-      - name: Deploy preview to Vercel
-        id: vercel-deploy
-        run: |
-          npm i -g vercel@latest
-
-          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
-            --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
-
-          echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
-          echo "Deployed to: $DEPLOY_URL"
-          for i in $(seq 1 30); do
-            BODY=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
-            if echo "$BODY" | jq -e . >/dev/null 2>&1; then
-              echo "Deployment ready: $BODY"
-              break
-            fi
-            echo "Waiting for deployment... (attempt $i)"
-            sleep 10
-          done
-          # Final check
-          FINAL=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
-          if ! echo "$FINAL" | jq -e . >/dev/null 2>&1; then
-            echo "::error::Deployment never became ready. Last response: $(echo "$FINAL" | head -5)"
-            exit 1
-          fi
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -205,7 +132,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Sync branch code to test machine
+      - name: Sync code and build on test machine
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
@@ -214,12 +141,46 @@ jobs:
               rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
+              cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -5
             "
           SCRIPT
 
+      - name: Start preview server
+        run: |
+          # Pipe env vars to a file on the remote — avoids all escaping issues
+          printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
+            tailscale ssh ubuntu@100.82.109.19 \
+              "docker exec -i coder-ai-run-my-claude-workspace bash -c 'cat > /tmp/buildd-ci/.env.test'"
+
+          # Start Next.js server with real env vars
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            docker exec coder-ai-run-my-claude-workspace bash -c '
+              export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
+              screen -X -S buildd-web quit 2>/dev/null || true
+              screen -dmS buildd-web bash -c "
+                export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
+                set -a; source /tmp/buildd-ci/.env.test; set +a
+                export PORT=3333
+                cd /tmp/buildd-ci/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
+              "
+            '
+          SCRIPT
+
+          # Wait for server
+          for i in $(seq 1 30); do
+            if curl -s http://100.82.109.19:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            echo "Waiting for server... (attempt $i)"
+            sleep 5
+          done
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+
       - name: Start preview runner
         run: |
-          DEPLOY_URL="${{ steps.vercel-deploy.outputs.url }}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
               export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
@@ -228,7 +189,7 @@ jobs:
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
-                export BUILDD_SERVER=$DEPLOY_URL
+                export BUILDD_SERVER=http://localhost:3333
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
@@ -246,7 +207,7 @@ jobs:
                apps/web/tests/integration/recipes.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
-          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
+          BUILDD_TEST_SERVER: http://100.82.109.19:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
@@ -255,15 +216,19 @@ jobs:
         run: bun test tests/e2e/server-worker-flow.test.ts
         timeout-minutes: 10
         env:
-          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
+          BUILDD_TEST_SERVER: http://100.82.109.19:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
 
-      - name: Cleanup preview runner
+      - name: Cleanup
         if: always()
         run: |
-          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "screen -X -S buildd-test quit 2>/dev/null; rm -rf /tmp/buildd-ci"' || true
+          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
+            screen -X -S buildd-web quit 2>/dev/null
+            screen -X -S buildd-test quit 2>/dev/null
+            rm -rf /tmp/buildd-ci
+          "' || true
 
       - name: Cleanup Neon branch
         if: always()
