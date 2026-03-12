@@ -942,7 +942,7 @@ const server = Bun.serve({
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
-        await fetchAccountInfo();
+        fetchAccountInfo(); // fire-and-forget — don't block the response
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
           outbox.flush();

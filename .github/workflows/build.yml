@@ -142,6 +142,7 @@ jobs:
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -5
+              test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
             "
           SCRIPT
 
@@ -171,6 +172,13 @@ jobs:
             if curl -s http://100.82.109.19:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
               echo "Server ready"
               break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Preview server failed to start after 150s"
+              echo "--- /tmp/buildd-web.log ---"
+              tailscale ssh ubuntu@100.82.109.19 \
+                "docker exec coder-ai-run-my-claude-workspace cat /tmp/buildd-web.log 2>/dev/null" || true
+              exit 1
             fi
             echo "Waiting for server... (attempt $i)"
             sleep 5
@@ -217,6 +225,7 @@ jobs:
         timeout-minutes: 10
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333
+          BUILDD_RUNNER_SERVER: http://localhost:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"

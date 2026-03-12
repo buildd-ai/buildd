@@ -120,10 +120,13 @@ beforeAll(async () => {
   } catch { /* best effort */ }
 
   // 5. Sync runner's server URL to match this test's target
+  // BUILDD_RUNNER_SERVER overrides the URL set on the runner itself — use when the runner
+  // reaches the server via a different address than the test client (e.g. localhost vs Tailscale IP)
+  const runnerServer = process.env.BUILDD_RUNNER_SERVER || BUILDD_SERVER;
   originalServer = cfg.builddServer;
-  if (cfg.builddServer !== BUILDD_SERVER) {
-    console.log(`  Syncing runner server: ${cfg.builddServer} → ${BUILDD_SERVER}`);
-    await localUI.setServer(BUILDD_SERVER);
+  if (cfg.builddServer !== runnerServer) {
+    console.log(`  Syncing runner server: ${cfg.builddServer} → ${runnerServer}`);
+    await localUI.setServer(runnerServer);
   }
 
   // 6. Disable Pusher auto-pickup so the test controls claim timing
