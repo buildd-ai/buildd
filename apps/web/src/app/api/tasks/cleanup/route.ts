@@ -5,6 +5,7 @@ import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
+import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
 // POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
 // Admin auth only (session or admin-level API key)
@@ -92,10 +93,21 @@ export async function POST(req: NextRequest) {
 
     if (hasActive) continue;
 
-    // Check if any worker completed (or errored but delivered a PR) — promote task to completed
-    const completedWorker = taskWorkers.find(w =>
-      w.status === 'completed' || (w.status === 'error' && w.prUrl)
-    );
+    // Check if any worker completed or has deliverables (PR, artifacts, structured output, commits)
+    let completedWorker = taskWorkers.find(w => w.status === 'completed');
+    if (!completedWorker) {
+      // Check errored workers for deliverables
+      for (const w of taskWorkers.filter(w => w.status === 'error' || w.status === 'failed')) {
+        try {
+          const artifactCount = await getWorkerArtifactCount(w.id);
+          const deliverables = checkWorkerDeliverables(w, { artifactCount });
+          if (deliverables.hasAny) {
+            completedWorker = w;
+            break;
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
     if (completedWorker) {
       await db
         .update(tasks)

@@ -469,6 +469,33 @@ export class WorkerManager {
       console.log(`Command received for worker ${workerId}:`, data);
       this.handleCommand(workerId, data);
     });
+
+    // Resolution signals: server pushes completion/failure events so the runner
+    // can immediately reconcile local state without waiting for the next sync.
+    channel.bind('worker:completed', () => {
+      const worker = this.workers.get(workerId);
+      if (worker && worker.status !== 'done') {
+        console.log(`[Worker ${workerId}] Pusher resolution: server confirmed completed`);
+        worker.status = 'done';
+        worker.completedAt = worker.completedAt || Date.now();
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+      }
+    });
+
+    channel.bind('worker:failed', (data: any) => {
+      const worker = this.workers.get(workerId);
+      // Only apply if worker hasn't already completed locally
+      if (worker && worker.status !== 'done' && worker.status !== 'error') {
+        console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
+        worker.status = 'error';
+        worker.error = data?.error || 'Task failed on server';
+        worker.completedAt = worker.completedAt || Date.now();
+        this.emit({ type: 'worker_update', worker });
+        this.abort(workerId).catch(() => {});
+      }
+    });
+
     this.pusherChannels.set(workerId, channel);
   }
 
@@ -554,8 +581,20 @@ export class WorkerManager {
       }
       const response = await this.buildd.updateWorker(worker.id, update);
 
-      // Server says worker was already terminated — abort locally
+      // Server says worker was already terminated
       if (response?.abort) {
+        // If the server says the worker already completed (or has deliverables),
+        // this is just a race with the agent's complete_task call — NOT a real abort.
+        // Accept the server's completion state and let the SDK session finish naturally.
+        if (response.actualStatus === 'completed' || response.hasDeliverables) {
+          console.log(`[Worker ${worker.id}] Server confirms completed (sync race) — skipping abort`);
+          worker.status = 'done';
+          worker.completedAt = worker.completedAt || Date.now();
+          this.emit({ type: 'worker_update', worker });
+          return;
+        }
+
+        // Genuinely terminated (reassigned, admin killed, stale cleanup, etc.)
         console.log(`[Worker ${worker.id}] Server says worker terminated: ${response.reason}`);
         worker.status = 'error';
         worker.error = response.reason || 'Terminated by server';
@@ -2355,6 +2394,21 @@ export class WorkerManager {
       // Check if this is an expected abort (from loop detection or user)
       const isAbortError = error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
+
+      // Before marking as failed, check if server already has this as completed.
+      // This handles the race where complete_task succeeded but sync abort threw.
+      try {
+        const remote = await this.buildd.getWorkerRemote(worker.id);
+        if (remote?.status === 'completed') {
+          console.log(`[Worker ${worker.id}] Server shows completed despite local error — honoring server state`);
+          sessionLog(worker.id, 'info', 'session_reconciled', 'Server confirms completed, local error ignored', worker.taskId);
+          worker.status = 'done';
+          worker.completedAt = worker.completedAt || Date.now();
+          this.emit({ type: 'worker_update', worker });
+          storeSaveWorker(worker);
+          return;
+        }
+      } catch { /* non-fatal — proceed with fail */ }
 
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
