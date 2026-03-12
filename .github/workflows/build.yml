@@ -172,6 +172,10 @@ jobs:
               echo "Server ready"
               break
             fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Preview server failed to start after 150s"
+              exit 1
+            fi
             echo "Waiting for server... (attempt $i)"
             sleep 5
           done
