@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'bun:test';
-import { checkWorkerDeliverables } from './worker-deliverables';
+import { describe, it, expect, mock } from 'bun:test';
+import { checkWorkerDeliverables, getWorkerArtifactCount } from './worker-deliverables';
+
+// Other test files mock '@/lib/worker-deliverables' via mock.module(), which
+// is process-global in bun and replaces our import. Re-register the real
+// module so this test always exercises the actual implementation.
+mock.module('@/lib/worker-deliverables', () => ({
+  checkWorkerDeliverables,
+  getWorkerArtifactCount,
+}));
 
 describe('checkWorkerDeliverables', () => {
   it('returns all false when worker has no deliverables', () => {
