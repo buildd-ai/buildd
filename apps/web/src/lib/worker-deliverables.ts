@@ -1,7 +1,3 @@
-import { db } from '@buildd/core/db';
-import { artifacts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-
 export interface DeliverableCheck {
   hasPR: boolean;
   hasArtifacts: boolean;
@@ -16,38 +12,32 @@ export interface DeliverableCheck {
 /**
  * Check what deliverables a worker has produced.
  *
- * Single source of truth for "did this worker produce meaningful output?"
- * Used by the PATCH handler, cleanup cron, and stale worker cleanup to
- * make completion decisions across ALL output types (PR, artifacts,
- * structured output, commits).
+ * Pure function — single source of truth for "did this worker produce
+ * meaningful output?" Used by the PATCH handler, cleanup cron, and stale
+ * worker cleanup to make completion decisions across ALL output types
+ * (PR, artifacts, structured output, commits).
+ *
+ * Callers must query artifact count themselves and pass it in.
  */
-export async function checkWorkerDeliverables(
-  workerId: string,
+export function checkWorkerDeliverables(
   worker: {
     prUrl?: string | null;
     prNumber?: number | null;
     commitCount?: number | null;
   },
-  taskResult?: { structuredOutput?: unknown } | null,
-): Promise<DeliverableCheck> {
+  opts?: {
+    artifactCount?: number;
+    taskResult?: { structuredOutput?: unknown } | null;
+  },
+): DeliverableCheck {
   const hasPR = !!worker.prUrl;
   const hasCommits = typeof worker.commitCount === 'number' && worker.commitCount > 0;
 
   // Check structured output — must be non-empty object
-  const so = taskResult?.structuredOutput;
+  const so = opts?.taskResult?.structuredOutput;
   const hasStructuredOutput = !!so && typeof so === 'object' && Object.keys(so as object).length > 0;
 
-  // Query artifacts table (non-fatal on error)
-  let artifactCount = 0;
-  try {
-    const workerArtifacts = await db.query.artifacts.findMany({
-      where: eq(artifacts.workerId, workerId),
-      columns: { id: true },
-    });
-    artifactCount = workerArtifacts.length;
-  } catch {
-    // Non-fatal — treat as no artifacts
-  }
+  const artifactCount = opts?.artifactCount ?? 0;
   const hasArtifacts = artifactCount > 0;
 
   const hasAny = hasPR || hasArtifacts || hasStructuredOutput || hasCommits;
@@ -67,4 +57,23 @@ export async function checkWorkerDeliverables(
     hasAny,
     details: parts.length > 0 ? parts.join(', ') : 'none',
   };
+}
+
+/**
+ * Query artifact count for a worker from the database.
+ * Non-fatal — returns 0 on error.
+ */
+export async function getWorkerArtifactCount(workerId: string): Promise<number> {
+  try {
+    const { db } = await import('@buildd/core/db');
+    const { artifacts } = await import('@buildd/core/db/schema');
+    const { eq } = await import('drizzle-orm');
+    const workerArtifacts = await db.query.artifacts.findMany({
+      where: eq(artifacts.workerId, workerId),
+      columns: { id: true },
+    });
+    return workerArtifacts.length;
+  } catch {
+    return 0;
+  }
 }

@@ -63,11 +63,13 @@ mock.module('@buildd/core/db/schema', () => ({
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
 }));
 
-const mockCheckWorkerDeliverables = mock(() => Promise.resolve({
+const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
+const mockCheckWorkerDeliverables = mock(() => ({
   hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
 }));
 mock.module('@/lib/worker-deliverables', () => ({
   checkWorkerDeliverables: mockCheckWorkerDeliverables,
+  getWorkerArtifactCount: mockGetWorkerArtifactCount,
 }));
 
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from './stale-workers';
@@ -286,7 +288,9 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockCheckWorkerDeliverables.mockResolvedValue({
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
     mockWorkersUpdate.mockReturnValue({
@@ -318,7 +322,7 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
 
     // Worker has a PR
-    mockCheckWorkerDeliverables.mockResolvedValue({
+    mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
     });
 
@@ -346,7 +350,7 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
 
-    mockCheckWorkerDeliverables.mockResolvedValue({
+    mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '2 artifacts',
     });
 
@@ -373,7 +377,7 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
 
-    mockCheckWorkerDeliverables.mockResolvedValue({
+    mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: true, hasCommits: false, hasAny: true, details: 'structured output',
     });
 
@@ -400,7 +404,7 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
 
-    mockCheckWorkerDeliverables.mockResolvedValue({
+    mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
 

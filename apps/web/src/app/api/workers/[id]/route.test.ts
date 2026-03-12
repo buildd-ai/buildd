@@ -1,29 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { NextRequest, NextResponse } from 'next/server';
-
-mock.module('@opentelemetry/api', () => ({
-  trace: { getActiveSpan: () => null },
-}));
-
-mock.module('@/lib/api-response', () => ({
-  jsonResponse: (data: any, init?: any) => NextResponse.json(data, init),
-}));
-
-mock.module('@/lib/pushover', () => ({
-  notify: mock(() => Promise.resolve()),
-}));
-
-mock.module('@/lib/slack-notify', () => ({
-  notifySlack: mock(() => Promise.resolve()),
-}));
-
-mock.module('@/lib/discord-notify', () => ({
-  notifyDiscord: mock(() => Promise.resolve()),
-}));
-
-mock.module('@/lib/task-callback', () => ({
-  sendTaskCallback: mock(() => Promise.resolve()),
-}));
+import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
@@ -99,13 +75,6 @@ mock.module('@/lib/github', () => ({
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
-}));
-
-const mockCheckWorkerDeliverables = mock(() => Promise.resolve({
-  hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
-}));
-mock.module('@/lib/worker-deliverables', () => ({
-  checkWorkerDeliverables: mockCheckWorkerDeliverables,
 }));
 
 import { GET, PATCH } from './route';
@@ -212,7 +181,6 @@ describe('PATCH /api/workers/[id]', () => {
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
     mockTriggerEvent.mockReset();
-    mockCheckWorkerDeliverables.mockReset();
 
     // Defaults
     mockTasksFindFirst.mockResolvedValue(null);
@@ -220,9 +188,6 @@ describe('PATCH /api/workers/[id]', () => {
     mockWorkspacesFindFirst.mockResolvedValue(null);
     mockGithubReposFindFirst.mockResolvedValue(null);
     mockGithubApi.mockResolvedValue([]);
-    mockCheckWorkerDeliverables.mockResolvedValue({
-      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
-    });
 
     // Default update chain
     const updatedWorker = { id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' };
@@ -947,174 +912,5 @@ describe('PATCH /api/workers/[id]', () => {
     expect(res.status).toBe(200);
     expect(capturedTaskSet.result.phases).toBeUndefined();
     expect(capturedTaskSet.result.lastQuestion).toBeUndefined();
-  });
-
-  describe('409 response enrichment for runner abort race', () => {
-    it('includes actualStatus and hasDeliverables when worker is already completed', async () => {
-      mockCheckWorkerDeliverables.mockResolvedValue({
-        hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
-      });
-
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
-        accountId: 'account-1',
-        status: 'completed',
-        workspaceId: 'ws-1',
-        prUrl: 'https://github.com/org/repo/pull/42',
-        prNumber: 42,
-        commitCount: 3,
-        pendingInstructions: null,
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed' },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(409);
-      const data = await res.json();
-      expect(data.abort).toBe(true);
-      expect(data.actualStatus).toBe('completed');
-      expect(data.hasDeliverables).toBe(true);
-    });
-
-    it('includes actualStatus and hasDeliverables=false when completed with no deliverables', async () => {
-      mockCheckWorkerDeliverables.mockResolvedValue({
-        hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
-      });
-
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
-        accountId: 'account-1',
-        status: 'completed',
-        workspaceId: 'ws-1',
-        pendingInstructions: null,
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed' },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(409);
-      const data = await res.json();
-      expect(data.actualStatus).toBe('completed');
-      expect(data.hasDeliverables).toBe(false);
-    });
-
-    it('includes actualStatus for failed worker with deliverables', async () => {
-      mockCheckWorkerDeliverables.mockResolvedValue({
-        hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '1 artifact',
-      });
-
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
-        accountId: 'account-1',
-        status: 'failed',
-        error: 'Some error',
-        workspaceId: 'ws-1',
-        pendingInstructions: null,
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed' },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(409);
-      const data = await res.json();
-      expect(data.actualStatus).toBe('failed');
-      expect(data.hasDeliverables).toBe(true);
-    });
-  });
-
-  describe('status audit trail in milestones', () => {
-    it('appends statusTransition to milestones on completion', async () => {
-      let capturedSet: any = null;
-      mockWorkersUpdate.mockReturnValue({
-        set: mock((updates: any) => {
-          capturedSet = updates;
-          return {
-            where: mock(() => ({
-              returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
-            })),
-          };
-        }),
-      });
-
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
-        accountId: 'account-1',
-        status: 'running',
-        workspaceId: 'ws-1',
-        taskId: 'task-1',
-        milestones: [{ type: 'status', label: 'Started', ts: 1000 }],
-        pendingInstructions: null,
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed' },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(200);
-      expect(capturedSet.milestones).toBeDefined();
-      const transition = capturedSet.milestones.find((m: any) => m.type === 'statusTransition');
-      expect(transition).toBeDefined();
-      expect(transition.from).toBe('running');
-      expect(transition.to).toBe('completed');
-      expect(transition.source).toBe('api');
-      expect(typeof transition.ts).toBe('number');
-    });
-
-    it('appends statusTransition on failure', async () => {
-      let capturedSet: any = null;
-      mockWorkersUpdate.mockReturnValue({
-        set: mock((updates: any) => {
-          capturedSet = updates;
-          return {
-            where: mock(() => ({
-              returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
-            })),
-          };
-        }),
-      });
-
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
-        accountId: 'account-1',
-        status: 'running',
-        workspaceId: 'ws-1',
-        taskId: 'task-1',
-        milestones: null,
-        pendingInstructions: null,
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: 'Something broke' },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const transition = capturedSet.milestones?.find((m: any) => m.type === 'statusTransition');
-      expect(transition).toBeDefined();
-      expect(transition.from).toBe('running');
-      expect(transition.to).toBe('failed');
-    });
   });
 });

@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { checkWorkerDeliverables } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
 /** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
@@ -78,7 +78,8 @@ export async function cleanupStaleWorkers(accountId: string) {
           let hasDeliverables = false;
           if (staleWorker) {
             try {
-              const deliverables = await checkWorkerDeliverables(staleWorker.id, staleWorker);
+              const artifactCount = await getWorkerArtifactCount(staleWorker.id);
+              const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
               hasDeliverables = deliverables.hasAny;
             } catch { /* non-fatal — default to pending */ }
           }

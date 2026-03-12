@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { checkWorkerDeliverables } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { notifySlack } from '@/lib/slack-notify';
@@ -84,7 +84,8 @@ export async function PATCH(
     if (body.status !== 'running' || isCleanupExpiry) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
-      const deliverables = await checkWorkerDeliverables(id, worker);
+      const artifactCount = await getWorkerArtifactCount(id);
+      const deliverables = checkWorkerDeliverables(worker, { artifactCount });
       return NextResponse.json({
         error: (worker.status === 'failed' || worker.status === 'error')
           ? 'Worker was terminated - task may have been reassigned'
