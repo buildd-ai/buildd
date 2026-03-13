@@ -111,7 +111,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
         <div key={schedule.id} className="p-4">
           <div className="flex items-start justify-between">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-medium truncate">{schedule.name}</h3>
                 {!schedule.enabled && (
                   <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">
@@ -146,7 +146,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                   )}
                 </p>
               )}
-              <div className="flex items-center gap-4 mt-1 text-xs text-text-muted">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-text-muted">
                 <span>Next: {formatRelative(schedule.nextRunAt)}</span>
                 <span>Last: {formatRelative(schedule.lastRunAt)}</span>
                 <span>{schedule.totalRuns} total runs</span>

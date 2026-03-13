@@ -456,7 +456,7 @@ export default function ObjectivesList({
               </div>
 
               {activeHoursEnabled && (
-                <div className="flex items-end gap-2 pl-11">
+                <div className="flex flex-wrap items-end gap-2 sm:pl-11">
                   <div>
                     <label className="block text-xs text-text-muted mb-1">Start</label>
                     <Select
