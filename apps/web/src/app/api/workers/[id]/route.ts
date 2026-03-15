@@ -102,6 +102,7 @@ export async function PATCH(
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
+    appendMcpCalls,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -131,6 +132,12 @@ export async function PATCH(
     const existing = (worker.milestones as any[]) || [];
     const merged = [...existing, ...appendMilestones];
     updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
+  }
+  // appendMcpCalls: merge new MCP tool calls into existing log
+  if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
+    const existing = (worker.mcpCalls as any[]) || [];
+    const merged = [...existing, ...appendMcpCalls];
+    updates.mcpCalls = merged.length > 100 ? merged.slice(-100) : merged;
   }
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
@@ -307,6 +314,12 @@ export async function PATCH(
           // Structured output from SDK (validated JSON matching task.outputSchema)
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
         };
+
+        // Snapshot unique MCP servers into task result
+        const allMcpCalls = (updates.mcpCalls ?? worker.mcpCalls ?? []) as any[];
+        if (allMcpCalls.length > 0) {
+          (taskUpdate.result as any).mcpServers = [...new Set(allMcpCalls.map((c: any) => c.server))];
+        }
       }
 
       await db

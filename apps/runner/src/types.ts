@@ -146,6 +146,7 @@ export interface LocalWorker {
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
+  pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
@@ -162,6 +163,8 @@ export interface LocalWorker {
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
   lastAssistantMessage?: string;
+  // Verification command from task context (Ralph loop)
+  verificationCommand?: string;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;

@@ -4,6 +4,7 @@ import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@b
 import { and, eq, sql } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { buildCIRetryTask } from '@/lib/ci-retry';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -222,16 +223,22 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   const { action, check_suite, repository, installation } = event;
 
-  // Only process completed, successful check suites
-  if (action !== 'completed' || check_suite.conclusion !== 'success') {
-    return;
-  }
-
-  if (!installation) {
+  if (action !== 'completed' || !installation) {
     return;
   }
 
   const headSha = check_suite.head_sha;
+
+  // Handle CI failures — create retry tasks for buildd worker PRs
+  if (check_suite.conclusion === 'failure') {
+    await handleCheckSuiteFailure(check_suite, repository);
+    return;
+  }
+
+  // Handle CI success — auto-merge if enabled
+  if (check_suite.conclusion !== 'success') {
+    return;
+  }
 
   for (const pr of check_suite.pull_requests) {
     try {
@@ -285,6 +292,84 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       }
     } catch (error) {
       console.error(`Error processing check_suite for PR #${pr.number} on ${repository.full_name}:`, error);
+    }
+  }
+}
+
+/**
+ * Handle CI check suite failure — create a retry task for the buildd worker's PR.
+ * Part of the Ralph loop: CI fails → retry task created → agent fixes → CI re-runs.
+ */
+async function handleCheckSuiteFailure(
+  checkSuite: GitHubCheckSuiteEvent['check_suite'],
+  repository: GitHubCheckSuiteEvent['repository'],
+) {
+  for (const pr of checkSuite.pull_requests) {
+    try {
+      // Find the buildd worker that owns this PR
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.prNumber, pr.number),
+        with: { task: true },
+      });
+
+      if (!worker?.task) {
+        continue;
+      }
+
+      const task = worker.task;
+
+      // Build the retry task data
+      const retryTask = buildCIRetryTask({
+        originalTask: {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          workspaceId: task.workspaceId,
+          context: (task.context as Record<string, unknown>) || {},
+        },
+        worker: {
+          id: worker.id,
+          branch: worker.branch,
+          prNumber: worker.prNumber,
+        },
+        failureContext: `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`,
+        repoFullName: repository.full_name,
+      });
+
+      if (!retryTask) {
+        console.log(`Max retry iterations reached for task ${task.id} on ${repository.full_name}#${pr.number}`);
+        continue;
+      }
+
+      // Create the retry task
+      const [newTask] = await db
+        .insert(tasks)
+        .values({
+          workspaceId: retryTask.workspaceId,
+          title: retryTask.title,
+          description: retryTask.description,
+          parentTaskId: retryTask.parentTaskId,
+          context: retryTask.context,
+          creationSource: retryTask.creationSource,
+          status: 'pending',
+          priority: 7, // High priority — CI fix is urgent
+        })
+        .returning();
+
+      if (newTask) {
+        // Find workspace for dispatch
+        const workspace = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, retryTask.workspaceId),
+        });
+
+        if (workspace) {
+          await dispatchNewTask(newTask, workspace);
+        }
+
+        console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+      }
+    } catch (error) {
+      console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
     }
   }
 }

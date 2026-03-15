@@ -286,3 +286,58 @@ describe('Git URL Matching Scenarios', () => {
     expect(org1).not.toBe(org2);
   });
 });
+
+// --- Clone Endpoint: Existing Repo Detection ---
+
+describe('Clone Existing Repo Detection', () => {
+  test('HTTPS clone URL matches SSH remote on disk', () => {
+    // Simulates: user clones via HTTPS slug, but repo on disk has SSH remote
+    const cloneUrl = 'https://github.com/buildd-ai/buildd.git';
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedClone = normalizeGitUrl(cloneUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedClone).toBe(normalizedExisting);
+    expect(normalizedClone).toBe('buildd-ai/buildd');
+  });
+
+  test('GitHub slug normalizes to match full URL', () => {
+    // The clone endpoint normalizes "owner/repo" to "https://github.com/owner/repo.git"
+    const slug = 'buildd-ai/buildd';
+    const fullUrl = `https://github.com/${slug}.git`;
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedFull = normalizeGitUrl(fullUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedFull).toBe(normalizedExisting);
+  });
+
+  test('detects conflict when different repo occupies path', () => {
+    const requestedUrl = 'https://github.com/org/repo-a.git';
+    const existingRemote = 'https://github.com/org/repo-b.git';
+
+    const normalizedRequested = normalizeGitUrl(requestedUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedRequested).not.toBe(normalizedExisting);
+  });
+
+  test('case-insensitive matching for existing repo', () => {
+    const cloneUrl = 'https://github.com/Buildd-AI/Buildd.git';
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedClone = normalizeGitUrl(cloneUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedClone).toBe(normalizedExisting);
+  });
+
+  test('matching with and without .git suffix', () => {
+    const cloneUrl = 'https://github.com/org/repo';
+    const existingRemote = 'https://github.com/org/repo.git';
+
+    expect(normalizeGitUrl(cloneUrl)).toBe(normalizeGitUrl(existingRemote));
+  });
+});

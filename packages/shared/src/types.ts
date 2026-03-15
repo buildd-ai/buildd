@@ -253,6 +253,14 @@ export interface Objective {
   completedTasks?: number;
 }
 
+export interface McpToolCall {
+  server: string;
+  tool: string;
+  ts: number;
+  ok: boolean;
+  durationMs?: number;
+}
+
 export interface TaskResult {
   summary?: string;
   branch?: string;
@@ -264,6 +272,7 @@ export interface TaskResult {
   prUrl?: string;
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
+  mcpServers?: string[];
 }
 
 export interface Task {
@@ -326,6 +335,7 @@ export interface Worker {
   error: string | null;
   createdAt: Date;
   updatedAt: Date;
+  mcpCalls?: McpToolCall[];
   task?: Task;
   workspace?: Workspace;
   account?: Account;
