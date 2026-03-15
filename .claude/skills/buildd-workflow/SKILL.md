@@ -17,7 +17,7 @@ Enforced workflow for agents working in buildd. Not suggestions — process.
 ## Task Lifecycle
 
 ```
-claim → understand → plan → implement (TDD) → verify → PR → complete
+claim → understand → plan → implement (TDD) → verify → PR → document → complete
 ```
 
 ---
@@ -156,7 +156,60 @@ buildd action=create_pr params={
 - Target `dev` for features, `main` only for hotfixes
 - Keep PRs under 400 lines when possible — split larger changes
 
-## Step 7: Complete the Task
+## Step 7: Document What You Did
+
+**Gate: No task completion without a summary artifact and relevant memory entries.**
+
+Before calling `complete_task`, capture what you did so future agents and reviewers can understand the work without reading every commit.
+
+### Write a Summary Artifact
+
+Create a summary artifact that captures the key decisions, changes, and gotchas:
+
+```
+buildd action=create_artifact params={
+  "type": "summary",
+  "title": "Summary: <task title>",
+  "content": "## What Changed\n- <file/area>: <what and why>\n\n## Key Decisions\n- <decision>: <reasoning>\n\n## Gotchas / Things to Know\n- <anything surprising or non-obvious>\n\n## Files Changed\n- `path/to/file.ts` — <what changed>\n\n## Testing\n- <what was tested and how>"
+}
+```
+
+The summary should answer: *What changed? Why this approach? What should the next person know?*
+
+### Save Workspace Memories
+
+Save anything you learned that future agents should know — patterns, gotchas, architectural decisions:
+
+```
+buildd_memory action=save params={
+  "type": "discovery",
+  "title": "How X works in this codebase",
+  "content": "Explanation of the pattern, gotcha, or insight",
+  "files": ["path/to/relevant/file.ts"],
+  "tags": ["relevant", "tags"]
+}
+```
+
+**What to save as memory:**
+- Non-obvious patterns you discovered (type: `pattern`)
+- Gotchas that tripped you up or almost did (type: `gotcha`)
+- Architecture decisions you made or uncovered (type: `architecture`)
+- Discoveries about how something works (type: `discovery`)
+
+**What NOT to save:**
+- Task-specific details (that's what the summary artifact is for)
+- Things already documented in code comments or docs
+- Obvious patterns any agent would find by reading the code
+
+### Skip Conditions
+
+You can skip the summary artifact for:
+- Trivial changes (typo fixes, config tweaks, single-line changes)
+- Failed tasks (the error message in `complete_task` is sufficient)
+
+You should still save memories even for trivial tasks if you discovered something non-obvious.
+
+## Step 8: Complete the Task
 
 ```
 buildd action=complete_task params={
@@ -244,6 +297,7 @@ When claim_task returns Open PRs:
 | `buildd action=claim_task` | Start of work |
 | `buildd action=update_progress` | At 10% (understood), 25% (tests written), 50% (implementation), 75% (verified) |
 | `buildd action=create_pr` | After pushing commits |
-| `buildd action=complete_task` | After PR is created |
+| `buildd action=create_artifact` | After PR, before completing — write a summary of what changed and why |
+| `buildd action=complete_task` | After summary artifact is created |
 | `buildd_memory action=search` | Before starting, when stuck |
-| `buildd_memory action=save` | After discovering something useful |
+| `buildd_memory action=save` | After discovering something useful — patterns, gotchas, decisions |

@@ -202,11 +202,15 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 **Worker workflow:**
 1. \`buildd\` action=claim_task → checkout the returned branch → do the work.
 2. Report progress at milestones (25%, 50%, 75%) via action=update_progress.
-3. When done: push commits → action=create_pr → action=complete_task (with summary).
+3. When done: push commits → action=create_pr.
+4. Before completing: write a summary artifact (\`buildd\` action=create_artifact, type=summary) and save relevant memories (\`buildd_memory\` action=save).
+5. \`buildd\` action=complete_task (with summary).
 
 **Note:** This is a remote MCP server. register_skill with filePath/repo is not supported — use content param instead.
 
-**Memory:** Use \`buildd_memory\` to search, save, update, or delete workspace observations.`,
+**Memory:** Use \`buildd_memory\` to search, save, update, or delete workspace observations.
+
+**Artifacts:** Use \`buildd\` action=create_artifact to attach deliverables (summaries, reports, data) to your task.`,
     }
   );
 
