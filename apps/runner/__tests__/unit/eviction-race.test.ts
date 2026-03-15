@@ -121,6 +121,7 @@ mock.module('../../src/session-logger', () => ({
   sessionLog: () => {},
   readSessionLogs: () => [],
   cleanupOldLogs: () => {},
+  claimLog: () => {},
 }));
 
 mock.module('../../src/env-scan', () => ({

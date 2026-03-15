@@ -147,6 +147,19 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
+/**
+ * Check if a branch name indicates an ephemeral e2e test worktree.
+ * These are created by e2e/integration tests and should be cleaned up
+ * immediately (0 retention) to prevent worktree accumulation.
+ *
+ * E2E test tasks have titles like "[E2E-TEST] Echo ..." which get sanitized
+ * to branch names containing "--e2e-test-".
+ */
+export function isEphemeralTestBranch(branch: string | undefined): boolean {
+  if (!branch) return false;
+  return branch.includes('--e2e-test-');
+}
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -704,9 +717,11 @@ export class WorkerManager {
     const RETENTION_MS = 10 * 60 * 1000;
     const now = Date.now();
     for (const [id, worker] of this.workers.entries()) {
+      // E2E test workers get 0 retention — clean up immediately to prevent worktree accumulation
+      const retention = isEphemeralTestBranch(worker.branch) ? 0 : RETENTION_MS;
       if (
         (worker.status === 'done' || worker.status === 'error') &&
-        now - worker.lastActivity > RETENTION_MS
+        now - worker.lastActivity >= retention
       ) {
         // Clean up worktree if it still exists (completed workers keep worktree for resume)
         if (worker.worktreePath && existsSync(worker.worktreePath)) {
@@ -2573,7 +2588,9 @@ export class WorkerManager {
         // Only clean up worktree immediately on error/abort — completed and waiting
         // workers keep worktree alive for session resume (follow-up messages / user answers).
         // Worktrees for these workers get cleaned up during eviction.
-        if (worker.worktreePath && worker.status !== 'done' && worker.status !== 'waiting') {
+        // Exception: e2e test worktrees are always cleaned up immediately (ephemeral).
+        const isEphemeral = isEphemeralTestBranch(worker.branch);
+        if (worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
           await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
