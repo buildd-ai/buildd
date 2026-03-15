@@ -6,7 +6,7 @@ import { Suspense } from 'react';
 
 function SignInContent() {
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get('callbackUrl') || '/app';
+  const callbackUrl = searchParams.get('callbackUrl') || '/app/home';
   const error = searchParams.get('error');
 
   return (
