@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { PageContent } from '@/components/PageContent';
 
 export default async function WorkersPage() {
   const isDev = process.env.NODE_ENV === 'development';
@@ -46,8 +47,7 @@ export default async function WorkersPage() {
   const completedWorkers = allWorkers.filter(w => !['running', 'starting', 'waiting_input'].includes(w.status));
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <div className="mb-8">
           <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
             ← Dashboard
@@ -133,7 +133,6 @@ export default async function WorkersPage() {
             </div>
           </div>
         )}
-      </div>
-    </main>
+    </PageContent>
   );
 }

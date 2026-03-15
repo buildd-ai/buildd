@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import TeamDetailClient from './TeamDetailClient';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,8 +62,7 @@ export default async function TeamDetailPage({
   const canManage = currentUserRole === 'owner' || currentUserRole === 'admin';
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
@@ -80,7 +80,6 @@ export default async function TeamDetailPage({
           isPersonal={isPersonal}
           canManage={canManage}
         />
-      </div>
-    </main>
+    </PageContent>
   );
 }

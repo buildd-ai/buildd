@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
+import { PageContent } from '@/components/PageContent';
 
 interface Team {
   id: string;
@@ -135,8 +136,7 @@ export default function NewAccountPage() {
   }
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-xl mx-auto">
+    <PageContent>
         <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
@@ -343,7 +343,6 @@ export default function NewAccountPage() {
             </Link>
           </div>
         </form>
-      </div>
 
       {/* API Key modal */}
       {createdAccount && (
@@ -357,6 +356,6 @@ export default function NewAccountPage() {
           }}
         />
       )}
-    </main>
+    </PageContent>
   );
 }

@@ -196,6 +196,21 @@ body {
 }
 
 @layer components {
+  .page-content {
+    width: 100%;
+    max-width: 64rem; /* 1024px — matches Tailwind max-w-5xl */
+    margin-left: auto;
+    margin-right: auto;
+    padding: 1.25rem 1.5rem 2rem; /* mobile: pt-5 px-6 pb-8 */
+  }
+  @media (min-width: 768px) {
+    .page-content {
+      padding: 2rem 2.5rem; /* desktop: p-8/10 */
+    }
+  }
+}
+
+@layer components {
   .section-label {
     font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
     font-size: 11px;

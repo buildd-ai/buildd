@@ -11,6 +11,7 @@ import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import DashboardStartTask from './DashboardStartTask';
 import OnboardingChecklist from './OnboardingChecklist';
 import RetryTaskButton from './RetryTaskButton';
+import { PageContent } from '@/components/PageContent';
 
 const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -223,8 +224,7 @@ export default async function DashboardPage() {
   const DEFAULT_ICON = TASK_ICONS.pending;
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
+    <PageContent>
 
         {/* Header — hidden on mobile (bottom nav has Settings, email is redundant) */}
         <div className="hidden md:flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
@@ -720,7 +720,6 @@ export default async function DashboardPage() {
           </div>
         )}
 
-      </div>
-    </main>
+    </PageContent>
   );
 }

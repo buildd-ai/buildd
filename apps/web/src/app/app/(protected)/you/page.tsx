@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds, type UserTeam } from '@/lib/team-access';
 import SignOutButton from './SignOutButton';
 import Link from 'next/link';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,8 +92,7 @@ export default async function YouPage() {
   const currentTeam = userTeams[0];
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-2xl mx-auto space-y-8">
+    <PageContent className="space-y-8">
 
         {/* Profile Section */}
         <section>
@@ -284,7 +284,6 @@ export default async function YouPage() {
           </div>
         </section>
 
-      </div>
-    </main>
+    </PageContent>
   );
 }

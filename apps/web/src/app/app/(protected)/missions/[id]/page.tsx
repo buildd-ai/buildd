@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -167,7 +168,7 @@ export default async function MissionDetailPage({
   );
 
   return (
-    <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
+    <PageContent>
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
         <Link href="/app/missions" className="hover:text-text-secondary transition-colors">
@@ -460,6 +461,6 @@ export default async function MissionDetailPage({
           Coming soon — quick-add tasks to this mission.
         </p>
       </div>
-    </div>
+    </PageContent>
   );
 }

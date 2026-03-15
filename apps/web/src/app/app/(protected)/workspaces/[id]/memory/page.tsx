@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { MemoryClient, type Memory } from '@buildd/core/memory-client';
 import ObservationList from './ObservationList';
+import { PageContent } from '@/components/PageContent';
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
   const url = process.env.MEMORY_API_URL;
@@ -44,11 +45,9 @@ export default async function WorkspaceMemoryPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
+      <PageContent>
           <p className="text-text-muted">Development mode - no database</p>
-        </div>
-      </main>
+      </PageContent>
     );
   }
 
@@ -71,8 +70,7 @@ export default async function WorkspaceMemoryPage({
   const { memories, total } = await fetchInitialMemories(id);
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; {workspace.name}
         </Link>
@@ -99,7 +97,6 @@ export default async function WorkspaceMemoryPage({
             createdAt: m.createdAt,
           }))}
         />
-      </div>
-    </main>
+    </PageContent>
   );
 }

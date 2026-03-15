@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { PageContent } from '@/components/PageContent';
 
 interface Runner {
   id: string;
@@ -68,8 +69,7 @@ export default function RunnersPage() {
   }, [workspaceId]);
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <Link href={`/app/workspaces/${workspaceId}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Back to workspace
         </Link>
@@ -162,7 +162,6 @@ export default function RunnersPage() {
             </div>
           </div>
         )}
-      </div>
-    </main>
+    </PageContent>
   );
 }

@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import SchedulesUnified, { type UnifiedScheduleItem } from './SchedulesUnified';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,10 +20,10 @@ export default async function SchedulesPage() {
 
   if (teamIds.length === 0 || wsIds.length === 0) {
     return (
-      <div className="max-w-4xl mx-auto p-6">
+      <PageContent>
         <h1 className="text-2xl font-bold text-text-primary mb-2">Schedules</h1>
         <p className="text-text-secondary">No workspaces found. Create a workspace to get started.</p>
-      </div>
+      </PageContent>
     );
   }
 

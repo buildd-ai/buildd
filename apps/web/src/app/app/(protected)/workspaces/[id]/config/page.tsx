@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
 import { TeamTransferSection } from './TeamTransferSection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
+import { PageContent } from '@/components/PageContent';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -43,17 +44,14 @@ export default async function WorkspaceConfigPage({
     }
     if (isDev) {
         return (
-            <main className="min-h-screen p-8">
-                <div className="max-w-2xl mx-auto">
+            <PageContent>
                     <p className="text-text-muted">Development mode - no database</p>
-                </div>
-            </main>
+            </PageContent>
         );
     }
 
     return (
-        <main className="min-h-screen p-8">
-            <div className="max-w-2xl mx-auto">
+        <PageContent>
                 <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
                     &larr; Back to {workspace.name}
                 </Link>
@@ -79,7 +77,6 @@ export default async function WorkspaceConfigPage({
                         teams={userTeams}
                     />
                 )}
-            </div>
-        </main>
+        </PageContent>
     );
 }

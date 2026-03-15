@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,7 +38,7 @@ export default async function MissionsPage() {
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
     return (
-      <div className="px-7 md:px-10 pt-5 md:pt-8">
+      <PageContent>
         <div className="flex items-baseline justify-between mb-6">
           <h1 className="text-xl font-semibold text-text-primary">Missions</h1>
           <span className="text-xs text-text-secondary font-light">0 active</span>
@@ -46,7 +47,7 @@ export default async function MissionsPage() {
           <p className="text-sm text-text-secondary mb-1">No team found.</p>
           <p className="text-xs text-text-muted">Create a workspace to get started.</p>
         </div>
-      </div>
+      </PageContent>
     );
   }
 
@@ -122,7 +123,7 @@ export default async function MissionsPage() {
   ).length;
 
   return (
-    <div className="px-7 md:px-10 pt-5 md:pt-8">
+    <PageContent>
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
@@ -154,7 +155,7 @@ export default async function MissionsPage() {
           })}
         </div>
       )}
-    </div>
+    </PageContent>
   );
 }
 

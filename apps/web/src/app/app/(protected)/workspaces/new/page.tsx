@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import RepoPicker from './RepoPicker';
+import { PageContent } from '@/components/PageContent';
 
 interface Installation {
   id: string;
@@ -408,8 +409,7 @@ export default function NewWorkspacePage() {
   const hasGitHub = githubConfigured && installations.length > 0;
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-xl mx-auto">
+    <PageContent>
         <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Workspaces
         </Link>
@@ -660,7 +660,6 @@ export default function NewWorkspacePage() {
             onClose={() => setShowNameModal(false)}
           />
         )}
-      </div>
-    </main>
+    </PageContent>
   );
 }

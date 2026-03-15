@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails } from '@/lib/team-access';
 import WorkspaceList from './WorkspaceList';
+import { PageContent } from '@/components/PageContent';
 
 interface WorkspaceWithRunners {
   id: string;
@@ -124,8 +125,7 @@ export default async function WorkspacesPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <div className="flex justify-between items-center mb-8">
           <div>
             <Link href="/app/dashboard" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
@@ -142,7 +142,6 @@ export default async function WorkspacesPage() {
         </div>
 
         <WorkspaceList workspaces={allWorkspaces} teams={userTeams} />
-      </div>
-    </main>
+    </PageContent>
   );
 }

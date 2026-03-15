@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import MarkdownContent from '@/components/MarkdownContent';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,8 +79,7 @@ export default async function ArtifactDetailPage({
   const shareUrl = artifact.shareToken ? `${baseUrl}/share/${artifact.shareToken}` : null;
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         {/* Breadcrumb */}
         <Link href="/app/artifacts" className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
           &larr; Artifacts
@@ -202,7 +202,6 @@ export default async function ArtifactDetailPage({
             <p className="text-text-muted text-sm">No content</p>
           )}
         </div>
-      </div>
-    </main>
+    </PageContent>
   );
 }

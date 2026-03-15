@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/l
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,8 +74,7 @@ export default async function SettingsPage() {
   };
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-2xl mx-auto space-y-12">
+    <PageContent className="space-y-12">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         </div>
@@ -180,7 +180,6 @@ export default async function SettingsPage() {
             </div>
           </section>
         )}
-      </div>
-    </main>
+    </PageContent>
   );
 }

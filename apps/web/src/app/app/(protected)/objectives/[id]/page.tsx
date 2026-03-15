@@ -18,6 +18,7 @@ import ActiveHoursConfig from './ActiveHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from './heartbeat-helpers';
 import PrLink from './PrLink';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -176,7 +177,7 @@ export default async function ObjectiveDetailPage({
     .slice(0, 8) || [];
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <PageContent>
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-sm text-text-secondary mb-4">
         <Link href="/app/objectives" className="hover:text-text-primary">
@@ -557,6 +558,6 @@ export default async function ObjectiveDetailPage({
           </div>
         </div>
       )}
-    </div>
+    </PageContent>
   );
 }

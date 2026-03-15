@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import ArtifactList from '@/components/ArtifactList';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,12 +21,10 @@ export default async function ArtifactsPage() {
 
   if (wsIds.length === 0) {
     return (
-      <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-        <div className="max-w-4xl mx-auto">
+      <PageContent>
           <h1 className="text-2xl font-semibold tracking-tight mb-2">Artifacts</h1>
           <p className="text-text-muted">No workspaces found. Create a workspace to get started.</p>
-        </div>
-      </main>
+      </PageContent>
     );
   }
 

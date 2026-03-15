@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { PageContent } from '@/components/PageContent';
 
 function slugify(name: string): string {
   return name
@@ -49,8 +50,7 @@ export default function NewTeamPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-xl mx-auto">
+    <PageContent>
         <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
@@ -122,7 +122,6 @@ export default function NewTeamPage() {
             </Link>
           </div>
         </form>
-      </div>
-    </main>
+    </PageContent>
   );
 }

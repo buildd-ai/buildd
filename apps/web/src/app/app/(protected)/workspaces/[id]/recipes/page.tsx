@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { RecipeList } from './RecipeList';
 import { RecipeForm } from './RecipeForm';
+import { PageContent } from '@/components/PageContent';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,8 +46,7 @@ export default async function RecipesPage({
   });
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; {workspace.name}
         </Link>
@@ -75,7 +75,6 @@ export default async function RecipesPage({
         )}
 
         <RecipeList workspaceId={id} initialRecipes={JSON.parse(JSON.stringify(recipes))} />
-      </div>
-    </main>
+    </PageContent>
   );
 }

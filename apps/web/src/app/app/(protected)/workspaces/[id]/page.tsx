@@ -8,6 +8,7 @@ import { ConnectRunnerSection } from './connect-runner';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { PageContent } from '@/components/PageContent';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -20,11 +21,9 @@ export default async function WorkspaceDetailPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
+      <PageContent>
           <p className="text-text-muted">Development mode - no database</p>
-        </div>
-      </main>
+      </PageContent>
     );
   }
 
@@ -121,8 +120,7 @@ export default async function WorkspaceDetailPage({
   }
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+    <PageContent>
         <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Workspaces
         </Link>
@@ -262,7 +260,6 @@ export default async function WorkspaceDetailPage({
             </div>
           </div>
         )}
-      </div>
-    </main>
+    </PageContent>
   );
 }
