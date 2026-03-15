@@ -13,6 +13,7 @@ const DELIVERABLE_TYPES = new Set([
   ArtifactType.DATA,
   ArtifactType.LINK,
   ArtifactType.SUMMARY,
+  ArtifactType.FILE,
 ]);
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
@@ -44,7 +45,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, storageKey } = body;
 
   if (!type || !DELIVERABLE_TYPES.has(type)) {
     return NextResponse.json(
@@ -88,6 +89,7 @@ export async function POST(
         .set({
           title,
           content: content || null,
+          storageKey: storageKey || existing.storageKey || null,
           metadata: artifactMetadata,
           workerId: id,
           type,
@@ -131,6 +133,7 @@ export async function POST(
       type,
       title,
       content: content || null,
+      storageKey: storageKey || null,
       shareToken,
       metadata: artifactMetadata,
     })

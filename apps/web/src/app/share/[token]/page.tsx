@@ -39,7 +39,17 @@ export default async function SharePage({
     data: 'Data',
     link: 'Link',
     summary: 'Summary',
+    file: 'File',
   };
+
+  const fileMimeType = metadata?.mimeType as string | undefined;
+  const fileName = metadata?.filename as string | undefined;
+  const fileSizeBytes = metadata?.sizeBytes as number | undefined;
+  const isImage = artifact.storageKey && fileMimeType?.startsWith('image/');
+  const isFile = artifact.storageKey && !isImage;
+  const downloadUrl = artifact.storageKey
+    ? `/api/artifacts/${artifact.id}/download?token=${artifact.shareToken}`
+    : undefined;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5]">
@@ -101,6 +111,43 @@ export default async function SharePage({
                 }
               })()}
             </pre>
+          </div>
+        )}
+
+        {isImage && downloadUrl && (
+          <div className="mb-8">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={downloadUrl}
+              alt={artifact.title || fileName || 'Image'}
+              className="max-w-full rounded-lg border border-[#222]"
+            />
+            {artifact.content && (
+              <div className="mt-4 p-6 bg-[#111] border border-[#222] rounded-lg">
+                <MarkdownContent content={artifact.content} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {isFile && downloadUrl && (
+          <div className="p-6 bg-[#111] border border-[#222] rounded-lg mb-8 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">{fileName || 'File'}</p>
+              {fileSizeBytes && (
+                <p className="text-xs text-[#888] mt-1">
+                  {fileSizeBytes < 1024 * 1024
+                    ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
+                    : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`}
+                </p>
+              )}
+            </div>
+            <a
+              href={downloadUrl}
+              className="px-4 py-2 bg-[#222] hover:bg-[#333] text-sm rounded-md transition-colors"
+            >
+              Download
+            </a>
           </div>
         )}
       </main>
