@@ -409,9 +409,10 @@ export default function NewTaskPage() {
         <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
           <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
           <span className="mx-2">/</span>
-          <span className="text-text-primary">New Task</span>
+          <span className="text-text-primary">New</span>
         </nav>
-        <h1 className="text-2xl font-bold mb-6">New Task</h1>
+        <h1 className="text-2xl font-bold mb-1">Set a mission</h1>
+        <p className="text-sm text-text-secondary mb-6">Describe what you want done. The system handles the rest.</p>
 
         {workspaces.length === 0 && !loadingWorkspaces ? (
           <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
@@ -530,11 +531,6 @@ export default function NewTaskPage() {
               })()}
             </div>
 
-            {/* Workflow selector (one-time tasks only) */}
-            {!recurring && (
-              <WorkflowSelector value={workflowType} onChange={setWorkflowType} />
-            )}
-
             {/* Schedule name (recurring only) */}
             {recurring && (
               <div>
@@ -553,10 +549,10 @@ export default function NewTaskPage() {
               </div>
             )}
 
-            {/* Title */}
+            {/* Title — hero input */}
             <div>
               <label htmlFor="title" className="block text-sm font-medium mb-2">
-                Task Title
+                {recurring ? 'Task Title' : 'What do you want to accomplish?'}
               </label>
               <input
                 type="text"
@@ -568,11 +564,10 @@ export default function NewTaskPage() {
                 placeholder={
                   recurring
                     ? "Run full test suite"
-                    : showDescription
-                      ? "Brief title"
-                      : "What needs to be done? Be specific."
+                    : "e.g. Migrate auth to NextAuth v5, Fix the checkout flow bug, Add dark mode..."
                 }
-                className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                className="w-full px-4 py-3 text-base border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                autoFocus
               />
               {/* Legibility hint when description is collapsed and title is short */}
               {!showDescription && titleValue.length > 0 && titleValue.length < 40 && (
@@ -580,99 +575,6 @@ export default function NewTaskPage() {
                   Tip: be descriptive — the agent only sees this title
                 </p>
               )}
-            </div>
-
-            {/* Category selector */}
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Category <span className="text-text-muted font-normal">(auto-detected if empty)</span>
-              </label>
-              <div className="flex flex-wrap gap-1.5">
-                {CATEGORY_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setSelectedCategory(selectedCategory === opt.value ? null : opt.value)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                      selectedCategory === opt.value
-                        ? opt.color + ' border-current'
-                        : 'bg-surface-3 text-text-secondary border-transparent hover:bg-surface-4'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Objective picker */}
-            {availableObjectives.length > 0 && (
-              <div>
-                <label htmlFor="objectiveId" className="block text-sm font-medium mb-2">
-                  Objective <span className="text-text-muted font-normal">(optional)</span>
-                </label>
-                <Select
-                  id="objectiveId"
-                  value={objectiveId}
-                  onChange={setObjectiveId}
-                  placeholder="Link to an objective..."
-                  options={[
-                    { value: '', label: 'None' },
-                    ...availableObjectives.map(o => ({
-                      value: o.id,
-                      label: `${o.status === 'paused' ? '⏸ ' : ''}${o.title}`,
-                    })),
-                  ]}
-                />
-              </div>
-            )}
-
-            {/* Project typeahead */}
-            <div>
-              <label htmlFor="project" className="block text-sm font-medium mb-2">
-                Project <span className="text-text-muted font-normal">(optional)</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  id="project"
-                  value={project}
-                  onChange={(e) => {
-                    setProject(e.target.value);
-                    setShowProjectSuggestions(true);
-                  }}
-                  onFocus={() => setShowProjectSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowProjectSuggestions(false), 150)}
-                  placeholder="e.g. frontend, api, infra"
-                  className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
-                />
-                {showProjectSuggestions && projectSuggestions.length > 0 && (
-                  <div className="absolute z-10 mt-1 w-full bg-surface-2 border border-border-default rounded-md shadow-lg max-h-40 overflow-y-auto">
-                    {projectSuggestions
-                      .filter(p => !project || p.name.toLowerCase().includes(project.toLowerCase()))
-                      .map(p => (
-                        <button
-                          key={p.name}
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            setProject(p.name);
-                            setShowProjectSuggestions(false);
-                          }}
-                          className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center gap-2"
-                        >
-                          {p.color && (
-                            <span
-                              className="w-2 h-2 rounded-full shrink-0"
-                              style={{ backgroundColor: p.color }}
-                            />
-                          )}
-                          {p.name}
-                        </button>
-                      ))}
-                  </div>
-                )}
-              </div>
             </div>
 
             {/* Expandable description */}
@@ -755,13 +657,111 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || runnerPreference !== 'any') && (
+                {(selectedCategory || workflowType !== 'single' || project || objectiveId || useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || runnerPreference !== 'any') && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
 
               {showAdvanced && (
                 <div className="mt-4 space-y-6">
+                  {/* Category selector */}
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Category <span className="text-text-muted font-normal">(auto-detected if empty)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {CATEGORY_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => setSelectedCategory(selectedCategory === opt.value ? null : opt.value)}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                            selectedCategory === opt.value
+                              ? opt.color + ' border-current'
+                              : 'bg-surface-3 text-text-secondary border-transparent hover:bg-surface-4'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Workflow selector (one-time tasks only) */}
+                  {!recurring && (
+                    <WorkflowSelector value={workflowType} onChange={setWorkflowType} />
+                  )}
+
+                  {/* Project typeahead */}
+                  <div>
+                    <label htmlFor="project" className="block text-sm font-medium mb-2">
+                      Project <span className="text-text-muted font-normal">(optional)</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        id="project"
+                        value={project}
+                        onChange={(e) => {
+                          setProject(e.target.value);
+                          setShowProjectSuggestions(true);
+                        }}
+                        onFocus={() => setShowProjectSuggestions(true)}
+                        onBlur={() => setTimeout(() => setShowProjectSuggestions(false), 150)}
+                        placeholder="e.g. frontend, api, infra"
+                        className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                      />
+                      {showProjectSuggestions && projectSuggestions.length > 0 && (
+                        <div className="absolute z-10 mt-1 w-full bg-surface-2 border border-border-default rounded-md shadow-lg max-h-40 overflow-y-auto">
+                          {projectSuggestions
+                            .filter(p => !project || p.name.toLowerCase().includes(project.toLowerCase()))
+                            .map(p => (
+                              <button
+                                key={p.name}
+                                type="button"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  setProject(p.name);
+                                  setShowProjectSuggestions(false);
+                                }}
+                                className="w-full px-3 py-2 text-left text-sm hover:bg-surface-3 flex items-center gap-2"
+                              >
+                                {p.color && (
+                                  <span
+                                    className="w-2 h-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: p.color }}
+                                  />
+                                )}
+                                {p.name}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Objective picker */}
+                  {availableObjectives.length > 0 && (
+                    <div>
+                      <label htmlFor="objectiveId" className="block text-sm font-medium mb-2">
+                        Mission <span className="text-text-muted font-normal">(optional)</span>
+                      </label>
+                      <Select
+                        id="objectiveId"
+                        value={objectiveId}
+                        onChange={setObjectiveId}
+                        placeholder="Link to a mission..."
+                        options={[
+                          { value: '', label: 'None' },
+                          ...availableObjectives.map(o => ({
+                            value: o.id,
+                            label: `${o.status === 'paused' ? '⏸ ' : ''}${o.title}`,
+                          })),
+                        ]}
+                      />
+                    </div>
+                  )}
+
                   {/* Priority — hidden input always present for form submission */}
                   <div>
                     <label htmlFor="priority" className="block text-sm font-medium mb-2">
@@ -953,8 +953,8 @@ export default function NewTaskPage() {
                 className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
               >
                 {loading
-                  ? (recurring ? 'Creating Schedule...' : 'Creating...')
-                  : (recurring ? 'Create Schedule' : 'Create Task')
+                  ? (recurring ? 'Creating Schedule...' : 'Launching...')
+                  : (recurring ? 'Create Schedule' : 'Launch Mission')
                 }
               </button>
               <Link
