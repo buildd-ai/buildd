@@ -98,6 +98,7 @@ export class BuilddClient {
     localUiUrl?: string;
     currentAction?: string;
     milestones?: any[];
+    appendMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;
     waitingFor?: { type: string; prompt: string; options?: string[] } | null;
     // Git stats
     lastCommitSha?: string;
