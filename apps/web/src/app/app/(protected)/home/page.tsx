@@ -5,15 +5,9 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { Greeting } from './greeting';
 
 // --- Helpers ---
-
-function getGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
-}
 
 function getFirstName(name: string | null, email: string): string {
   if (name) {
@@ -236,7 +230,6 @@ export default async function HomePage() {
   }
 
   const firstName = user ? getFirstName(user.name, user.email) : 'there';
-  const greeting = getGreeting();
   const subheading = completedLast12h > 0
     ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} overnight`
     : 'Your agents are standing by';
@@ -250,9 +243,7 @@ export default async function HomePage() {
           <div className="md:w-[60%] md:pr-8">
             {/* Greeting */}
             <div className="mb-8 md:mb-10">
-              <h1 className="text-[32px] md:text-[30px] font-light italic text-text-primary leading-tight">
-                {greeting}, {firstName}
-              </h1>
+              <Greeting firstName={firstName} />
               <p className="text-[15px] text-text-secondary font-light mt-1.5">
                 {subheading}
               </p>
