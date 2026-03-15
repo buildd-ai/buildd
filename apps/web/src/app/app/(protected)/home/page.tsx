@@ -79,6 +79,16 @@ export default async function HomePage() {
     objectiveTitle: string | null;
   }[] = [];
 
+  let missions: {
+    id: string;
+    title: string;
+    description: string | null;
+    isHeartbeat: boolean;
+    totalTasks: number;
+    completedTasks: number;
+    activeWorkers: number;
+  }[] = [];
+
   let completedLast12h = 0;
 
   if (!isDev) {
@@ -164,6 +174,61 @@ export default async function HomePage() {
           timestamp: w.completedAt || w.updatedAt,
           objectiveTitle: (w.task as any)?.objective?.title || null,
         }));
+
+        // Active objectives (missions) with task progress
+        const teamIds = await getUserTeamIds(user.id);
+        if (teamIds.length > 0) {
+          const activeObjectives = await db.query.objectives.findMany({
+            where: and(
+              inArray(objectives.teamId, teamIds),
+              eq(objectives.status, 'active')
+            ),
+            orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+            columns: { id: true, title: true, description: true, isHeartbeat: true },
+            with: {
+              tasks: {
+                columns: { id: true, status: true },
+              },
+            },
+            limit: 10,
+          });
+
+          // Count active workers per objective
+          const objectiveIds = activeObjectives.map(o => o.id);
+          let activeWorkerCounts: Record<string, number> = {};
+          if (objectiveIds.length > 0) {
+            const workerCounts = await db
+              .select({
+                objectiveId: tasks.objectiveId,
+                activeCount: sql<number>`count(distinct ${workers.id})::int`,
+              })
+              .from(workers)
+              .innerJoin(tasks, eq(workers.taskId, tasks.id))
+              .where(
+                and(
+                  inArray(tasks.objectiveId, objectiveIds),
+                  inArray(workers.status, ['running', 'starting', 'waiting_input'])
+                )
+              )
+              .groupBy(tasks.objectiveId);
+
+            for (const row of workerCounts) {
+              if (row.objectiveId) {
+                activeWorkerCounts[row.objectiveId] = row.activeCount;
+              }
+            }
+          }
+
+          missions = activeObjectives.map(obj => ({
+            id: obj.id,
+            title: obj.title,
+            description: obj.description,
+            isHeartbeat: obj.isHeartbeat,
+            totalTasks: obj.tasks.length,
+            completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
+            activeWorkers: activeWorkerCounts[obj.id] || 0,
+          }));
+        }
       }
     } catch (error) {
       console.error('Home page query error:', error);
@@ -234,22 +299,87 @@ export default async function HomePage() {
               )}
             </div>
 
-            {/* Missions summary — link to objectives */}
+            {/* Missions */}
             <div className="mb-8 md:mb-0">
-              <div className="section-label mb-4">Missions</div>
-              <Link
-                href="/app/objectives"
-                className="block card card-interactive px-4 py-3 hover:bg-surface-3 transition-colors"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[14px] text-text-secondary">
-                    View all objectives and missions
-                  </span>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
+              <div className="flex items-center justify-between mb-4">
+                <div className="section-label">Missions</div>
+                {missions.length > 0 && (
+                  <Link href="/app/objectives" className="text-xs text-text-muted hover:text-text-secondary">
+                    {missions.length} active
+                  </Link>
+                )}
+              </div>
+              {missions.length === 0 ? (
+                <div className="border border-dashed border-border-default rounded-[10px] p-6">
+                  <p className="text-[14px] text-text-secondary">
+                    No active missions. <Link href="/app/objectives" className="text-primary hover:underline">Create one</Link> to organize your work.
+                  </p>
                 </div>
-              </Link>
+              ) : (
+                <div className="space-y-2">
+                  {missions.map((mission) => {
+                    const pct = mission.totalTasks > 0
+                      ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
+                      : 0;
+                    const typeLabel = mission.isHeartbeat
+                      ? { label: 'WATCH', className: 'type-label type-label-watch' }
+                      : { label: 'BUILD', className: 'type-label type-label-build' };
+
+                    return (
+                      <Link
+                        key={mission.id}
+                        href={`/app/objectives/${mission.id}`}
+                        className="block card card-interactive p-4 hover:bg-surface-3/50 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={typeLabel.className}>{typeLabel.label}</span>
+                            <span className="text-[15px] font-medium text-text-primary truncate">
+                              {mission.title}
+                            </span>
+                          </div>
+                          {pct > 0 && (
+                            <span className="text-[20px] font-semibold text-primary tabular-nums flex-shrink-0">
+                              {pct}%
+                            </span>
+                          )}
+                        </div>
+                        {mission.description && (
+                          <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
+                            {mission.description}
+                          </p>
+                        )}
+                        {mission.totalTasks > 0 && (
+                          <div className="mb-2">
+                            <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-primary rounded-full transition-all"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3 text-[11px] text-text-muted">
+                          {mission.totalTasks > 0 && (
+                            <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
+                          )}
+                          {mission.activeWorkers > 0 && (
+                            <span className="text-primary font-medium">
+                              {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
+                            </span>
+                          )}
+                        </div>
+                      </Link>
+                    );
+                  })}
+                  <Link
+                    href="/app/objectives"
+                    className="block text-center text-xs text-text-muted hover:text-text-secondary py-2"
+                  >
+                    View all objectives
+                  </Link>
+                </div>
+              )}
             </div>
           </div>
 

@@ -8,7 +8,7 @@ export default function NotFound() {
         The page you&apos;re looking for doesn&apos;t exist.
       </p>
       <Link
-        href="/app/dashboard"
+        href="/app/home"
         style={{
           display: 'inline-block',
           marginTop: '1rem',
@@ -19,7 +19,7 @@ export default function NotFound() {
           textDecoration: 'none',
         }}
       >
-        Go to Dashboard
+        Go Home
       </Link>
     </div>
   );
