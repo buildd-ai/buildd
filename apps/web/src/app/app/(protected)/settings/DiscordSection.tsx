@@ -73,9 +73,9 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
   if (workspaces.length === 0) {
     return (
       <section>
-        <h2 className="text-lg font-semibold mb-4">Discord</h2>
-        <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-          <p className="text-text-secondary text-sm">Create a workspace first to configure Discord integration</p>
+        <h2 className="section-label mb-4">Discord</h2>
+        <div className="card p-6 text-center">
+          <p className="text-text-muted text-sm">Create a workspace first to configure Discord integration</p>
         </div>
       </section>
     );
@@ -83,7 +83,7 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
 
   return (
     <section>
-      <h2 className="text-lg font-semibold mb-4">Discord</h2>
+      <h2 className="section-label mb-4">Discord</h2>
 
       {message && (
         <div className={`mb-4 p-3 rounded-lg text-sm ${
@@ -116,7 +116,7 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
       {loading ? (
         <div className="text-text-secondary text-sm">Loading...</div>
       ) : (
-        <div className="border border-border-default rounded-lg p-4 space-y-4">
+        <div className="card p-4 space-y-4">
           {/* Enable toggle */}
           <div className="flex items-center justify-between">
             <div>

@@ -89,10 +89,10 @@ export default function GitHubSection() {
   return (
     <section>
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">GitHub</h2>
+        <h2 className="section-label">GitHub</h2>
         <a
           href="/api/github/install"
-          className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
+          className="text-sm text-text-secondary hover:text-text-primary transition-colors"
         >
           + Connect Org
         </a>
@@ -111,8 +111,8 @@ export default function GitHubSection() {
       {loading ? (
         <div className="text-text-secondary text-sm">Loading...</div>
       ) : installations.length === 0 ? (
-        <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-          <p className="text-text-secondary mb-3 text-sm">No GitHub organizations connected</p>
+        <div className="card p-6 text-center">
+          <p className="text-text-muted mb-3 text-sm">No GitHub organizations connected</p>
           <a
             href="/api/github/install"
             className="text-sm text-primary hover:underline"
@@ -121,9 +121,9 @@ export default function GitHubSection() {
           </a>
         </div>
       ) : (
-        <div className="border border-border-default rounded-lg divide-y divide-border-default">
+        <div className="card divide-y divide-border-default">
           {installations.map((inst) => (
-            <div key={inst.id} className="p-4">
+            <div key={inst.id} className="p-4 first:rounded-t-[10px] last:rounded-b-[10px]">
               <div className="flex items-center gap-4">
                 {inst.accountAvatarUrl && (
                   <img
@@ -158,7 +158,7 @@ export default function GitHubSection() {
                   </button>
                   <button
                     onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                    className="px-3 py-1.5 text-sm text-status-error border border-status-error/30 rounded-md hover:bg-status-error/10"
+                    className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
                   >
                     Disconnect
                   </button>

@@ -130,22 +130,19 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
   return (
     <section>
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">API Keys</h2>
+        <h2 className="section-label">API Keys</h2>
         <Link
           href="/app/accounts/new"
-          className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
+          className="text-sm text-text-secondary hover:text-text-primary transition-colors"
         >
           + New Account
         </Link>
       </div>
 
       {accounts.length === 0 ? (
-        <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-          <p className="text-text-secondary mb-3 text-sm">No accounts yet</p>
-          <Link
-            href="/app/accounts/new"
-            className="text-sm text-primary hover:underline"
-          >
+        <div className="card p-6 text-center">
+          <p className="text-text-muted text-sm mb-3">No accounts yet</p>
+          <Link href="/app/accounts/new" className="text-sm text-primary hover:underline">
             Create an account to get an API key
           </Link>
         </div>
@@ -154,7 +151,7 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
           {accounts.map((account) => (
             <div
               key={account.id}
-              className="border border-border-default rounded-lg p-4"
+              className="card p-4"
             >
               <div className="flex justify-between items-start mb-2">
                 <div>

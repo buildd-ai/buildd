@@ -82,120 +82,101 @@ export default async function SettingsPage() {
   };
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-2xl mx-auto">
-        <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          &larr; Dashboard
-        </Link>
-        <h1 className="text-2xl font-semibold tracking-tight mb-8">Settings</h1>
+    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+      <div className="max-w-2xl mx-auto space-y-12">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+          <p className="text-sm text-text-muted mt-1">Manage connections, keys, and integrations</p>
+        </div>
 
-        <div className="space-y-10">
-          {/* Team Switcher (mobile only) */}
-          {userTeams.length > 1 && (
-            <section className="md:hidden">
-              <h2 className="text-lg font-semibold mb-3">Switch Team</h2>
-              <div className="bg-surface-2 border border-border-default rounded-lg p-3">
-                <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
-              </div>
-            </section>
-          )}
+        {/* Team Switcher (mobile only) */}
+        {userTeams.length > 1 && (
+          <section className="md:hidden">
+            <h2 className="section-label mb-3">Switch Team</h2>
+            <div className="card p-3">
+              <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
+            </div>
+          </section>
+        )}
 
-          {/* GitHub */}
-          <GitHubSection />
+        {/* GitHub */}
+        <GitHubSection />
 
-          <hr className="border-border-default" />
+        {/* API Keys */}
+        <ApiKeysSection
+          accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
+          workspaces={userWorkspaces}
+        />
 
-          {/* API Keys */}
-          <ApiKeysSection
-            accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
-            workspaces={userWorkspaces}
-          />
+        {/* Teams */}
+        <section>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="section-label">Teams</h2>
+            <Link
+              href="/app/teams/new"
+              className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+            >
+              + New Team
+            </Link>
+          </div>
 
-          <hr className="border-border-default" />
-
-          {/* Teams */}
-          <section>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold">Teams</h2>
-              <Link
-                href="/app/teams/new"
-                className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
-              >
-                + New Team
+          {teamsError ? (
+            <div className="card p-6 text-center">
+              <p className="text-text-muted text-sm mb-3">Failed to load teams</p>
+              <Link href="/app/settings" className="text-sm text-primary hover:underline">
+                Retry
               </Link>
             </div>
-
-            {teamsError ? (
-              <div className="border border-dashed border-status-error/30 rounded-lg p-6 text-center">
-                <p className="text-text-secondary mb-3 text-sm">Failed to load teams</p>
-                <Link
-                  href="/app/settings"
-                  className="text-sm text-primary hover:underline"
-                >
-                  Retry
-                </Link>
-              </div>
-            ) : userTeams.length === 0 ? (
-              <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-                <p className="text-text-secondary mb-3 text-sm">No teams yet</p>
-                <Link
-                  href="/app/teams/new"
-                  className="text-sm text-primary hover:underline"
-                >
-                  Create a team
-                </Link>
-              </div>
-            ) : (
-              <div className="border border-border-default rounded-lg divide-y divide-border-default">
-                {userTeams.map((team) => {
-                  const isPersonal = team.slug.startsWith('personal-');
-                  return (
-                    <Link
-                      key={team.id}
-                      href={`/app/teams/${team.id}`}
-                      className="block p-4 hover:bg-surface-3"
-                    >
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <h3 className="font-medium truncate">{team.name}</h3>
-                          {isPersonal && (
-                            <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded flex-shrink-0">
-                              Personal
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 text-sm flex-shrink-0">
-                          <span className="text-text-secondary">
-                            {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
+          ) : userTeams.length === 0 ? (
+            <div className="card p-6 text-center">
+              <p className="text-text-muted text-sm mb-3">No teams yet</p>
+              <Link href="/app/teams/new" className="text-sm text-primary hover:underline">
+                Create a team
+              </Link>
+            </div>
+          ) : (
+            <div className="card divide-y divide-border-default">
+              {userTeams.map((team) => {
+                const isPersonal = team.slug.startsWith('personal-');
+                return (
+                  <Link
+                    key={team.id}
+                    href={`/app/teams/${team.id}`}
+                    className="block p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
+                  >
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="font-medium truncate">{team.name}</h3>
+                        {isPersonal && (
+                          <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-muted rounded flex-shrink-0">
+                            Personal
                           </span>
-                          <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>
-                            {team.role}
-                          </span>
-                        </div>
+                        )}
                       </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+                      <div className="flex items-center gap-3 text-sm flex-shrink-0">
+                        <span className="text-text-muted">
+                          {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
+                        </span>
+                        <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>
+                          {team.role}
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </section>
 
-          <hr className="border-border-default" />
+        {/* Slack */}
+        <SlackSection workspaces={userWorkspaces} />
 
-          {/* Slack */}
-          <SlackSection workspaces={userWorkspaces} />
+        {/* Discord */}
+        <DiscordSection workspaces={userWorkspaces} />
 
-          <hr className="border-border-default" />
-
-          {/* Discord */}
-          <DiscordSection workspaces={userWorkspaces} />
-
-          <hr className="border-border-default" />
-
-          {/* Skills */}
-          <SkillsSection workspaces={userWorkspaces} />
-
-        </div>
+        {/* Skills */}
+        <SkillsSection workspaces={userWorkspaces} />
       </div>
     </main>
   );
