@@ -2312,7 +2312,7 @@ export class WorkerManager {
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
       const taskTitle = worker.taskTitle || 'Untitled task';
-      const maxReviewIterations = (fullTask.context as any)?.maxReviewIterations ?? 0;
+      const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 0;
       let reviewIteration = 0;
 
       for await (const msg of queryInstance) {
