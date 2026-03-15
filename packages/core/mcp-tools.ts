@@ -83,7 +83,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), parentTaskId? (link retry to original task), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -448,6 +448,9 @@ export async function handleBuilddAction(
         creationSource: 'mcp',
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
+      if (params.parentTaskId && typeof params.parentTaskId === 'string') {
+        taskBody.parentTaskId = params.parentTaskId;
+      }
       if (params.category) taskBody.category = params.category;
       // outputRequirement inheritance from objective is handled by the API route;
       // only pass through if explicitly provided by the caller.
@@ -484,6 +487,22 @@ export async function handleBuilddAction(
       if (params.effort && typeof params.effort === 'string') {
         taskContext.effort = params.effort;
       }
+      // Ralph loop fields — branch continuity, verification, and retry metadata
+      if (params.baseBranch && typeof params.baseBranch === 'string') {
+        taskContext.baseBranch = params.baseBranch;
+      }
+      if (params.verificationCommand && typeof params.verificationCommand === 'string') {
+        taskContext.verificationCommand = params.verificationCommand;
+      }
+      if (typeof params.iteration === 'number') {
+        taskContext.iteration = params.iteration;
+      }
+      if (typeof params.maxIterations === 'number') {
+        taskContext.maxIterations = params.maxIterations;
+      }
+      if (params.failureContext && typeof params.failureContext === 'string') {
+        taskContext.failureContext = params.failureContext;
+      }
       if (params.callbackUrl && typeof params.callbackUrl === 'string') {
         if (!params.callbackUrl.startsWith('https://')) {
           throw new Error('callbackUrl must use HTTPS');
@@ -504,7 +523,7 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.objectiveId ? `\nLinked to objective: ${taskBody.objectiveId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.objectiveId ? `\nLinked to objective: ${taskBody.objectiveId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
