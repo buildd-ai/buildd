@@ -524,7 +524,7 @@ export default async function TaskDetailPage({
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,
-                localUiUrl: activeWorker.localUiUrl,
+                localUiUrl: null,
                 commitCount: activeWorker.commitCount,
                 filesChanged: activeWorker.filesChanged,
                 linesAdded: activeWorker.linesAdded,
@@ -746,16 +746,6 @@ export default async function TaskDetailPage({
                           className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
                         >
                           PR #{worker.prNumber}
-                        </a>
-                      )}
-                      {worker.localUiUrl && (
-                        <a
-                          href={`${worker.localUiUrl}/worker/${worker.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
-                        >
-                          View
                         </a>
                       )}
                     </div>

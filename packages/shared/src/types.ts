@@ -73,6 +73,7 @@ export const ArtifactType = {
   RECOMMENDATION: 'recommendation',
   ALERT: 'alert',
   CALENDAR_EVENT: 'calendar_event',
+  FILE: 'file',
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];

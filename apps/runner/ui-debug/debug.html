@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>buildd debug</title>
+  <style>
+    /* ── Design Tokens ── */
+    :root {
+      --bg: #1a1816;
+      --bg-elevated: #211f1c;
+      --card: #2a2724;
+      --card-hover: #302c28;
+      --text-primary: #ede8e2;
+      --text-secondary: #a89f96;
+      --text-muted: #5e5850;
+      --accent: #c8956a;
+      --success: #5ec495;
+      --running: #c8956a;
+      --warning: #e0b35a;
+      --error: #d4736a;
+      --border: rgba(255, 245, 230, 0.07);
+      --border-strong: rgba(255, 245, 230, 0.12);
+      --font-body: system-ui, -apple-system, sans-serif;
+      --font-mono: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+    }
+
+    /* ── Reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text-primary);
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Layout ── */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+    }
+
+    header .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--text-primary);
+    }
+
+    header .brand .tag {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--accent);
+      background: rgba(200, 149, 106, 0.12);
+      padding: 2px 7px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    header .status {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header .status .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    header .status .dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(94, 196, 149, 0.4);
+    }
+
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar: Worker List ── */
+    .sidebar {
+      width: 320px;
+      border-right: 1px solid var(--border);
+      background: var(--bg-elevated);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .sidebar-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 10px;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+
+    .worker-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .worker-list::-webkit-scrollbar { width: 4px; }
+    .worker-list::-webkit-scrollbar-track { background: transparent; }
+    .worker-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+
+    .worker-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    .worker-item:hover { background: var(--card); }
+    .worker-item.active { background: var(--card); border-left: 2px solid var(--accent); padding-left: 14px; }
+
+    .worker-item .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .worker-item .status-dot.working {
+      background: var(--success);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .worker-item .status-dot.waiting { background: var(--warning); }
+    .worker-item .status-dot.done { background: var(--text-muted); }
+    .worker-item .status-dot.error { background: var(--error); }
+    .worker-item .status-dot.idle { background: var(--text-muted); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(94, 196, 149, 0.4); }
+      50% { opacity: 0.7; box-shadow: 0 0 8px 2px rgba(94, 196, 149, 0.3); }
+    }
+
+    .worker-item .info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .worker-item .info .name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .worker-item .info .meta {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    .worker-item .elapsed {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      gap: 8px;
+    }
+
+    .empty-state .icon {
+      font-size: 28px;
+      opacity: 0.5;
+      margin-bottom: 4px;
+    }
+
+    /* ── Detail Panel ── */
+    .detail {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .detail-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      color: var(--text-muted);
+      font-size: 14px;
+      gap: 8px;
+    }
+
+    .detail-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+      gap: 16px;
+    }
+
+    .detail-header .title-group {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .detail-header .title-group h2 {
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .detail-header .title-group .detail-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 4px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .detail-header .title-group .detail-meta .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--card);
+      border: 1px solid var(--border);
+    }
+
+    .detail-header .actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--card);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 500;
+      font-family: var(--font-body);
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { background: var(--card-hover); }
+
+    .btn-danger {
+      border-color: rgba(212, 115, 106, 0.3);
+      color: var(--error);
+    }
+
+    .btn-danger:hover {
+      background: rgba(212, 115, 106, 0.1);
+      border-color: rgba(212, 115, 106, 0.5);
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+      padding: 0 20px;
+    }
+
+    .tab {
+      padding: 10px 16px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      font-family: var(--font-body);
+    }
+
+    .tab:hover { color: var(--text-secondary); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Message Stream ── */
+    .message-stream {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .message-stream::-webkit-scrollbar { width: 6px; }
+    .message-stream::-webkit-scrollbar-track { background: transparent; }
+    .message-stream::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    .msg {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 2px 0;
+    }
+
+    .msg.text { color: var(--text-secondary); }
+
+    .msg.tool-use {
+      color: var(--accent);
+      padding: 3px 8px;
+      background: rgba(200, 149, 106, 0.06);
+      border-radius: 4px;
+      border-left: 2px solid rgba(200, 149, 106, 0.3);
+      margin: 2px 0;
+    }
+
+    .msg.tool-use .tool-name {
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .msg.tool-use .tool-input {
+      color: var(--text-muted);
+      font-size: 11px;
+      margin-top: 2px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 60px;
+      overflow: hidden;
+    }
+
+    .msg.tool-use .tool-input.expanded {
+      max-height: none;
+    }
+
+    .msg.user-msg {
+      color: var(--success);
+      padding: 3px 8px;
+      background: rgba(94, 196, 149, 0.06);
+      border-radius: 4px;
+      border-left: 2px solid rgba(94, 196, 149, 0.3);
+      margin: 2px 0;
+    }
+
+    .msg .timestamp {
+      color: var(--text-muted);
+      font-size: 10px;
+      margin-right: 8px;
+      opacity: 0.7;
+    }
+
+    /* ── Verification Output ── */
+    .verification-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+
+    .verification-panel pre {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .verification-panel .empty {
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 40px 0;
+      text-align: center;
+    }
+
+    /* ── Info Panel ── */
+    .info-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 16px;
+      font-size: 12px;
+    }
+
+    .info-grid .label {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .info-grid .value {
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      word-break: break-all;
+    }
+
+    .info-grid .value.path {
+      font-size: 11px;
+    }
+
+    /* ── Input Bar ── */
+    .input-bar {
+      display: flex;
+      gap: 8px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+    }
+
+    .input-bar input {
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-family: var(--font-mono);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .input-bar input:focus {
+      border-color: var(--accent);
+    }
+
+    .input-bar input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-bar button {
+      padding: 8px 16px;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: var(--font-body);
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .input-bar button:hover { opacity: 0.85; }
+    .input-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Milestones in info tab ── */
+    .milestone-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .milestone-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .milestone-item .ms-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .milestone-item .ms-time {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; }
+      .main { flex-direction: column; }
+      .detail { display: none; }
+      .detail.visible { display: flex; }
+      .sidebar.hidden { display: none; }
+
+      .mobile-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        border: none;
+        background: none;
+        color: var(--accent);
+        font-size: 12px;
+        font-family: var(--font-body);
+        cursor: pointer;
+      }
+    }
+
+    @media (min-width: 769px) {
+      .mobile-back { display: none; }
+    }
+
+    /* ── Scrollbar for detail ── */
+    .detail::-webkit-scrollbar { width: 6px; }
+    .detail::-webkit-scrollbar-track { background: transparent; }
+    .detail::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    /* ── Toast notifications ── */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--card);
+      border: 1px solid var(--border-strong);
+      color: var(--text-primary);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s;
+      z-index: 1000;
+      pointer-events: none;
+    }
+
+    .toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.error {
+      border-color: rgba(212, 115, 106, 0.4);
+      color: var(--error);
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        buildd
+        <span class="tag">debug</span>
+      </div>
+      <div class="status">
+        <span class="dot" id="connDot"></span>
+        <span id="connLabel">connecting...</span>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <div class="main">
+      <!-- Sidebar: worker list -->
+      <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          Active Workers
+          <span id="workerCount"></span>
+        </div>
+        <div class="worker-list" id="workerList">
+          <div class="empty-state" id="emptyWorkers">
+            <div class="icon">&#9671;</div>
+            No active workers
+            <div style="font-size: 11px; color: var(--text-muted);">Workers will appear here when tasks are running</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail panel -->
+      <div class="detail" id="detail">
+        <div class="detail-empty" id="detailEmpty">
+          <div style="font-size: 24px; opacity: 0.4;">&#9656;</div>
+          Select a worker to view details
+        </div>
+        <div id="detailContent" style="display: none; flex-direction: column; flex: 1; overflow: hidden;">
+          <!-- Detail header -->
+          <div class="detail-header">
+            <div class="title-group">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button class="mobile-back" id="mobileBack" onclick="showSidebar()">&#8592; Back</button>
+                <h2 id="detailTitle">Worker</h2>
+              </div>
+              <div class="detail-meta" id="detailMeta"></div>
+            </div>
+            <div class="actions">
+              <button class="btn btn-danger" id="abortBtn" onclick="abortWorker()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                </svg>
+                Abort
+              </button>
+            </div>
+          </div>
+
+          <!-- Tabs -->
+          <div class="tabs">
+            <button class="tab active" data-tab="messages" onclick="switchTab('messages')">Messages</button>
+            <button class="tab" data-tab="verification" onclick="switchTab('verification')">Verification</button>
+            <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
+          </div>
+
+          <!-- Tab: Messages -->
+          <div class="message-stream" id="messagesTab"></div>
+
+          <!-- Tab: Verification -->
+          <div class="verification-panel" id="verificationTab" style="display: none;"></div>
+
+          <!-- Tab: Info -->
+          <div class="info-panel" id="infoTab" style="display: none;"></div>
+
+          <!-- Input bar -->
+          <div class="input-bar" id="inputBar">
+            <input
+              type="text"
+              id="msgInput"
+              placeholder="Send instruction to agent..."
+              autocomplete="off"
+              onkeydown="if(event.key==='Enter')sendInstruction()"
+            >
+            <button onclick="sendInstruction()" id="sendBtn">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ── State ──
+    let workers = [];
+    let selectedWorkerId = null;
+    let currentTab = 'messages';
+    let autoScroll = true;
+    let eventSource = null;
+    let elapsedTimers = new Map();
+
+    // ── DOM refs ──
+    const $workerList = document.getElementById('workerList');
+    const $emptyWorkers = document.getElementById('emptyWorkers');
+    const $detail = document.getElementById('detail');
+    const $detailEmpty = document.getElementById('detailEmpty');
+    const $detailContent = document.getElementById('detailContent');
+    const $detailTitle = document.getElementById('detailTitle');
+    const $detailMeta = document.getElementById('detailMeta');
+    const $messagesTab = document.getElementById('messagesTab');
+    const $verificationTab = document.getElementById('verificationTab');
+    const $infoTab = document.getElementById('infoTab');
+    const $msgInput = document.getElementById('msgInput');
+    const $connDot = document.getElementById('connDot');
+    const $connLabel = document.getElementById('connLabel');
+    const $workerCount = document.getElementById('workerCount');
+    const $abortBtn = document.getElementById('abortBtn');
+    const $toast = document.getElementById('toast');
+    const $sidebar = document.getElementById('sidebar');
+
+    // ── SSE Connection ──
+    function connect() {
+      if (eventSource) {
+        eventSource.close();
+      }
+
+      eventSource = new EventSource('/api/events');
+
+      eventSource.onopen = () => {
+        $connDot.classList.add('connected');
+        $connLabel.textContent = 'connected';
+      };
+
+      eventSource.onerror = () => {
+        $connDot.classList.remove('connected');
+        $connLabel.textContent = 'reconnecting...';
+      };
+
+      eventSource.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          handleEvent(event);
+        } catch (err) {
+          console.error('SSE parse error:', err);
+        }
+      };
+    }
+
+    function handleEvent(event) {
+      switch (event.type) {
+        case 'init':
+          workers = sanitizeWorkers(event.workers || []);
+          renderWorkerList();
+          if (selectedWorkerId) renderDetail();
+          break;
+
+        case 'workers':
+          workers = sanitizeWorkers(event.workers || []);
+          renderWorkerList();
+          if (selectedWorkerId) renderDetail();
+          break;
+
+        case 'worker_update': {
+          const w = sanitizeWorker(event.worker);
+          const idx = workers.findIndex(x => x.id === w.id);
+          if (idx >= 0) workers[idx] = w;
+          else workers.push(w);
+          renderWorkerList();
+          if (selectedWorkerId === w.id) renderDetail();
+          break;
+        }
+
+        case 'output': {
+          // Append output line to the worker
+          const w = workers.find(x => x.id === event.workerId);
+          if (w) {
+            if (!w.output) w.output = [];
+            w.output.push(event.line);
+            if (selectedWorkerId === event.workerId && currentTab === 'messages') {
+              appendOutputLine(event.line);
+            }
+          }
+          break;
+        }
+
+        case 'milestone': {
+          const w = workers.find(x => x.id === event.workerId);
+          if (w) {
+            if (!w.milestones) w.milestones = [];
+            w.milestones.push(event.milestone);
+          }
+          break;
+        }
+      }
+    }
+
+    // LocalWorker has a Set for checkpointEvents which JSON doesn't serialize well
+    function sanitizeWorkers(list) {
+      return list.map(sanitizeWorker);
+    }
+
+    function sanitizeWorker(w) {
+      // Ensure arrays exist
+      if (!w.messages) w.messages = [];
+      if (!w.output) w.output = [];
+      if (!w.milestones) w.milestones = [];
+      if (!w.commits) w.commits = [];
+      if (!w.toolCalls) w.toolCalls = [];
+      if (!w.subagentTasks) w.subagentTasks = [];
+      return w;
+    }
+
+    // ── Render: Worker List ──
+    function renderWorkerList() {
+      // Sort: working first, then waiting, then others
+      const order = { working: 0, waiting: 1, idle: 2, done: 3, error: 4, stale: 5 };
+      const sorted = [...workers].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+
+      $emptyWorkers.style.display = sorted.length ? 'none' : 'flex';
+      $workerCount.textContent = sorted.length ? ` (${sorted.length})` : '';
+
+      // Preserve selection
+      const items = sorted.map(w => {
+        const isActive = w.id === selectedWorkerId;
+        const div = document.createElement('div');
+        div.className = 'worker-item' + (isActive ? ' active' : '');
+        div.onclick = () => selectWorker(w.id);
+
+        const dotClass = w.status || 'idle';
+        const branch = w.branch || '';
+        const elapsed = formatElapsed(w.startedAt);
+
+        div.innerHTML = `
+          <div class="status-dot ${dotClass}"></div>
+          <div class="info">
+            <div class="name">${esc(w.taskTitle || w.id)}</div>
+            <div class="meta">${esc(branch)}${w.workspaceName ? ' \u00b7 ' + esc(w.workspaceName) : ''}</div>
+          </div>
+          <div class="elapsed" data-started="${w.startedAt || 0}">${elapsed}</div>
+        `;
+        return div;
+      });
+
+      // Replace children
+      $workerList.innerHTML = '';
+      if (sorted.length === 0) {
+        $workerList.appendChild($emptyWorkers);
+      } else {
+        items.forEach(el => $workerList.appendChild(el));
+      }
+    }
+
+    // ── Select Worker ──
+    function selectWorker(id) {
+      selectedWorkerId = id;
+      renderWorkerList();
+      renderDetail();
+
+      // Mobile: show detail
+      if (window.innerWidth <= 768) {
+        $sidebar.classList.add('hidden');
+        $detail.classList.add('visible');
+      }
+    }
+
+    function showSidebar() {
+      selectedWorkerId = null;
+      $sidebar.classList.remove('hidden');
+      $detail.classList.remove('visible');
+      $detailContent.style.display = 'none';
+      $detailEmpty.style.display = 'flex';
+      renderWorkerList();
+    }
+
+    // ── Render: Detail ──
+    function renderDetail() {
+      const w = workers.find(x => x.id === selectedWorkerId);
+      if (!w) {
+        $detailContent.style.display = 'none';
+        $detailEmpty.style.display = 'flex';
+        return;
+      }
+
+      $detailContent.style.display = 'flex';
+      $detailEmpty.style.display = 'none';
+
+      $detailTitle.textContent = w.taskTitle || w.id;
+
+      // Meta badges
+      const metaParts = [];
+      if (w.status) {
+        metaParts.push(`<span class="badge"><span class="status-dot ${w.status}" style="width:6px;height:6px;border-radius:50%;display:inline-block;"></span> ${w.status}</span>`);
+      }
+      if (w.branch) {
+        metaParts.push(`<span class="badge">${esc(w.branch)}</span>`);
+      }
+      if (w.startedAt) {
+        metaParts.push(`<span>${formatElapsed(w.startedAt)}</span>`);
+      }
+      $detailMeta.innerHTML = metaParts.join('');
+
+      // Show/hide abort based on status
+      const canAbort = w.status === 'working' || w.status === 'waiting' || w.status === 'idle';
+      $abortBtn.style.display = canAbort ? 'inline-flex' : 'none';
+
+      // Show/hide input bar based on status
+      const canMessage = w.status === 'working' || w.status === 'waiting';
+      document.getElementById('inputBar').style.display = canMessage ? 'flex' : 'none';
+
+      // Render active tab
+      if (currentTab === 'messages') renderMessages(w);
+      else if (currentTab === 'verification') renderVerification(w);
+      else if (currentTab === 'info') renderInfo(w);
+    }
+
+    // ── Render: Messages ──
+    function renderMessages(w) {
+      const stream = $messagesTab;
+      const wasAtBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
+
+      stream.innerHTML = '';
+
+      // Merge messages and output into chronological view
+      const entries = [];
+
+      // Chat messages (from agent)
+      for (const msg of w.messages) {
+        entries.push({ ts: msg.timestamp, kind: msg.type, data: msg });
+      }
+
+      // Sort by timestamp
+      entries.sort((a, b) => a.ts - b.ts);
+
+      if (entries.length === 0 && w.output.length === 0) {
+        stream.innerHTML = '<div class="empty-state" style="padding: 60px 20px;"><div class="icon">&#9671;</div>No messages yet</div>';
+        return;
+      }
+
+      // Render chat messages
+      for (const entry of entries) {
+        const el = createMessageEl(entry.data);
+        stream.appendChild(el);
+      }
+
+      // If we have raw output lines not covered by messages, show them at the end
+      // (output lines are typically lower-level than chat messages)
+
+      if (wasAtBottom || autoScroll) {
+        stream.scrollTop = stream.scrollHeight;
+      }
+    }
+
+    function createMessageEl(msg) {
+      const div = document.createElement('div');
+      const time = formatTime(msg.timestamp);
+
+      switch (msg.type) {
+        case 'text':
+          div.className = 'msg text';
+          div.innerHTML = `<span class="timestamp">${time}</span>${esc(msg.content)}`;
+          break;
+
+        case 'tool_use':
+          div.className = 'msg tool-use';
+          const inputStr = msg.input ? formatToolInput(msg.name, msg.input) : '';
+          div.innerHTML = `<span class="timestamp">${time}</span><span class="tool-name">${esc(msg.name)}</span>${inputStr ? `<div class="tool-input" onclick="this.classList.toggle('expanded')">${esc(inputStr)}</div>` : ''}`;
+          break;
+
+        case 'user':
+          div.className = 'msg user-msg';
+          div.innerHTML = `<span class="timestamp">${time}</span><strong>user:</strong> ${esc(msg.content)}`;
+          break;
+
+        default:
+          div.className = 'msg text';
+          div.innerHTML = `<span class="timestamp">${time}</span>${esc(JSON.stringify(msg))}`;
+      }
+
+      return div;
+    }
+
+    function appendOutputLine(line) {
+      const stream = $messagesTab;
+      const wasAtBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
+
+      const div = document.createElement('div');
+      div.className = 'msg text';
+      div.textContent = line;
+      stream.appendChild(div);
+
+      if (wasAtBottom) {
+        stream.scrollTop = stream.scrollHeight;
+      }
+    }
+
+    function formatToolInput(name, input) {
+      if (!input) return '';
+      // Show compact summary for common tools
+      if (typeof input === 'object') {
+        if (input.command) return input.command;
+        if (input.file_path) return input.file_path;
+        if (input.pattern) return input.pattern;
+        if (input.content && input.content.length > 120) return input.content.substring(0, 120) + '...';
+        try {
+          const s = JSON.stringify(input);
+          return s.length > 200 ? s.substring(0, 200) + '...' : s;
+        } catch { return ''; }
+      }
+      return String(input);
+    }
+
+    // ── Render: Verification ──
+    function renderVerification(w) {
+      const panel = $verificationTab;
+      // Check for verification result in output or worker fields
+      const verificationResult = w.verificationResult;
+      if (verificationResult) {
+        panel.innerHTML = `<pre>${esc(typeof verificationResult === 'string' ? verificationResult : JSON.stringify(verificationResult, null, 2))}</pre>`;
+      } else {
+        // Look for verification output in messages (tool_use for bash with test/build)
+        const verifyMsgs = w.messages.filter(m =>
+          m.type === 'tool_use' &&
+          m.name === 'Bash' &&
+          m.input?.command &&
+          (m.input.command.includes('test') || m.input.command.includes('build'))
+        );
+        if (verifyMsgs.length > 0) {
+          const content = verifyMsgs.map(m => `$ ${m.input.command}`).join('\n\n');
+          panel.innerHTML = `<pre>${esc(content)}</pre>`;
+        } else {
+          panel.innerHTML = '<div class="empty">No verification output available</div>';
+        }
+      }
+    }
+
+    // ── Render: Info ──
+    function renderInfo(w) {
+      const panel = $infoTab;
+      let html = '<div class="info-grid">';
+
+      const fields = [
+        ['Worker ID', w.id],
+        ['Task ID', w.taskId],
+        ['Status', w.status],
+        ['Workspace', w.workspaceName],
+        ['Branch', w.branch],
+        ['Worktree', w.worktreePath],
+        ['Session ID', w.sessionId],
+        ['Started', w.startedAt ? new Date(w.startedAt).toLocaleString() : '-'],
+        ['Completed', w.completedAt ? new Date(w.completedAt).toLocaleString() : '-'],
+        ['Current Action', w.currentAction],
+        ['Commits', w.commits.length > 0 ? w.commits.map(c => c.message).join(', ') : '-'],
+        ['Tool Calls', w.toolCalls.length.toString()],
+        ['Error', w.error],
+      ];
+
+      for (const [label, value] of fields) {
+        if (!value) continue;
+        const isPath = label === 'Worktree';
+        html += `<div class="label">${esc(label)}</div><div class="value${isPath ? ' path' : ''}">${esc(String(value))}</div>`;
+      }
+
+      html += '</div>';
+
+      // Result metadata
+      if (w.resultMeta) {
+        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Result</h3>';
+        html += '<div class="info-grid">';
+        const meta = w.resultMeta;
+        html += `<div class="label">Duration</div><div class="value">${Math.round((meta.durationMs || 0) / 1000)}s</div>`;
+        html += `<div class="label">API Duration</div><div class="value">${Math.round((meta.durationApiMs || 0) / 1000)}s</div>`;
+        html += `<div class="label">Turns</div><div class="value">${meta.numTurns || 0}</div>`;
+        html += `<div class="label">Stop Reason</div><div class="value">${esc(meta.stopReason || '-')}</div>`;
+        if (meta.modelUsage) {
+          for (const [model, usage] of Object.entries(meta.modelUsage)) {
+            html += `<div class="label">${esc(model)}</div><div class="value">in: ${usage.inputTokens?.toLocaleString() || 0} / out: ${usage.outputTokens?.toLocaleString() || 0} / $${(usage.costUSD || 0).toFixed(4)}</div>`;
+          }
+        }
+        html += '</div>';
+      }
+
+      // Milestones
+      if (w.milestones.length > 0) {
+        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Milestones</h3>';
+        html += '<div class="milestone-list">';
+        for (const ms of w.milestones) {
+          const time = ms.ts ? formatTime(ms.ts) : '';
+          html += `<div class="milestone-item"><div class="ms-dot"></div><span>${esc(ms.label || ms.event || ms.type)}</span><span class="ms-time">${time}</span></div>`;
+        }
+        html += '</div>';
+      }
+
+      // Subagent tasks
+      if (w.subagentTasks.length > 0) {
+        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Subagents</h3>';
+        html += '<div class="milestone-list">';
+        for (const sa of w.subagentTasks) {
+          const statusColor = sa.status === 'running' ? 'var(--running)' : sa.status === 'completed' ? 'var(--success)' : 'var(--error)';
+          html += `<div class="milestone-item"><div class="ms-dot" style="background:${statusColor}"></div><span>${esc(sa.description || sa.taskType)} (${sa.status})</span></div>`;
+        }
+        html += '</div>';
+      }
+
+      panel.innerHTML = html;
+    }
+
+    // ── Tabs ──
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+      });
+
+      $messagesTab.style.display = tab === 'messages' ? 'flex' : 'none';
+      $verificationTab.style.display = tab === 'verification' ? 'block' : 'none';
+      $infoTab.style.display = tab === 'info' ? 'block' : 'none';
+
+      if (selectedWorkerId) renderDetail();
+    }
+
+    // ── Actions ──
+    async function sendInstruction() {
+      const text = $msgInput.value.trim();
+      if (!text || !selectedWorkerId) return;
+
+      $msgInput.value = '';
+
+      try {
+        const res = await fetch(`/api/workers/${selectedWorkerId}/cmd`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'message', text }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showToast(data.error || 'Failed to send', true);
+        }
+      } catch (err) {
+        showToast('Network error', true);
+      }
+    }
+
+    async function abortWorker() {
+      if (!selectedWorkerId) return;
+
+      const w = workers.find(x => x.id === selectedWorkerId);
+      if (!confirm(`Abort worker for "${w?.taskTitle || selectedWorkerId}"?`)) return;
+
+      try {
+        const res = await fetch('/api/abort', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workerId: selectedWorkerId }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showToast(data.error || 'Failed to abort', true);
+        } else {
+          showToast('Worker aborted');
+        }
+      } catch (err) {
+        showToast('Network error', true);
+      }
+    }
+
+    // ── Helpers ──
+    function formatElapsed(startedAt) {
+      if (!startedAt) return '-';
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      if (minutes < 60) return `${minutes}m ${secs}s`;
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      return `${hours}h ${mins}m`;
+    }
+
+    function formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function esc(str) {
+      if (!str) return '';
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function showToast(msg, isError) {
+      $toast.textContent = msg;
+      $toast.className = 'toast visible' + (isError ? ' error' : '');
+      clearTimeout($toast._timer);
+      $toast._timer = setTimeout(() => {
+        $toast.className = 'toast';
+      }, 3000);
+    }
+
+    // ── Elapsed Time Updater ──
+    setInterval(() => {
+      // Update elapsed times in sidebar
+      document.querySelectorAll('.worker-item .elapsed').forEach(el => {
+        const started = parseInt(el.dataset.started);
+        if (started) el.textContent = formatElapsed(started);
+      });
+
+      // Update elapsed in detail meta
+      if (selectedWorkerId) {
+        const w = workers.find(x => x.id === selectedWorkerId);
+        if (w) {
+          renderDetail();
+        }
+      }
+    }, 5000);
+
+    // ── Auto-scroll detection ──
+    $messagesTab.addEventListener('scroll', () => {
+      const stream = $messagesTab;
+      autoScroll = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
+    });
+
+    // ── Init ──
+    connect();
+
+    // Also do an initial fetch in case SSE is slow
+    fetch('/api/workers')
+      .then(r => r.json())
+      .then(data => {
+        if (data.workers && data.workers.length > 0 && workers.length === 0) {
+          workers = sanitizeWorkers(data.workers);
+          renderWorkerList();
+        }
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>
