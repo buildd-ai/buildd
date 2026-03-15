@@ -138,9 +138,13 @@ jobs:
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-              rm -rf /tmp/buildd-ci
+              # Kill any stale processes using the old checkout
+              fuser -k /tmp/buildd-ci 2>/dev/null || true
+              # Force-remove old checkout (handle locked bun node_modules)
+              chmod -R u+w /tmp/buildd-ci 2>/dev/null || true
+              rm -rf /tmp/buildd-ci || { sleep 1 && rm -rf /tmp/buildd-ci; }
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
-              rm -rf ~/.bun/install/cache
+              rm -rf ~/.bun/install/cache 2>/dev/null || true
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
               test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
@@ -242,6 +246,7 @@ jobs:
           tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
             screen -X -S buildd-web quit 2>/dev/null
             screen -X -S buildd-test quit 2>/dev/null
+            chmod -R u+w /tmp/buildd-ci 2>/dev/null
             rm -rf /tmp/buildd-ci
           "' || true
 
