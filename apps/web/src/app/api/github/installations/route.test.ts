@@ -50,7 +50,7 @@ mock.module('drizzle-orm', () => ({
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { createdAt: 'createdAt', id: 'id' },
-  workspaces: { id: 'id' },
+  workspaces: { id: 'id', githubInstallationId: 'githubInstallationId' },
 }));
 
 // Import handler AFTER mocks
