@@ -165,8 +165,6 @@ export interface LocalWorker {
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
   lastAssistantMessage?: string;
-  // Verification command from task context (Ralph loop)
-  verificationCommand?: string;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;

@@ -1091,12 +1091,6 @@ export class WorkerManager {
       phaseTools: [],
     };
 
-    // Attach verification command from task context (Ralph loop)
-    const verificationCmd = fullTask.context?.verificationCommand;
-    if (verificationCmd && typeof verificationCmd === 'string') {
-      worker.verificationCommand = verificationCmd;
-    }
-
     // Attach server-managed credentials if redeemed
     if (serverApiKey) {
       worker.serverApiKey = serverApiKey;
@@ -2420,50 +2414,9 @@ export class WorkerManager {
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
       } else {
-        // Actually completed - collect git stats before reporting
+        // Actually completed
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
-
-        // Run verification command if configured (Ralph loop)
-        if (worker.verificationCommand) {
-          const sessionData = this.sessions.get(worker.id);
-          const verifyCwd = sessionData?.cwd || worker.worktreePath;
-          if (verifyCwd) {
-            this.addMilestone(worker, { type: 'status', label: 'Running verification...', ts: Date.now() });
-            worker.currentAction = 'Running verification command...';
-            this.emit({ type: 'worker_update', worker });
-
-            const { runVerificationCommand } = await import('./verification');
-            const verifyResult = await runVerificationCommand(worker.verificationCommand, verifyCwd);
-
-            if (!verifyResult.success) {
-              // Verification failed — report task as failed with verification output
-              sessionLog(worker.id, 'error', 'verification_failed',
-                `exitCode=${verifyResult.exitCode} duration=${verifyResult.durationMs}ms`, worker.taskId);
-              this.addMilestone(worker, { type: 'status', label: `Verification failed (exit ${verifyResult.exitCode})`, ts: Date.now() });
-              this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-              worker.status = 'error';
-              worker.error = 'Verification command failed';
-              worker.currentAction = 'Verification failed';
-              worker.hasNewActivity = true;
-              worker.completedAt = Date.now();
-              await this.buildd.updateWorker(worker.id, {
-                status: 'failed',
-                error: `Verification failed: ${verifyResult.output.slice(0, 500)}`,
-                milestones: worker.milestones,
-                ...gitStats,
-              });
-              this.emit({ type: 'worker_update', worker });
-              storeSaveWorker(worker);
-              return; // Skip normal completion flow
-            }
-
-            // Verification passed
-            this.addMilestone(worker, { type: 'status', label: `Verification passed (${verifyResult.durationMs}ms)`, ts: Date.now() });
-            sessionLog(worker.id, 'info', 'verification_passed',
-              `duration=${verifyResult.durationMs}ms`, worker.taskId);
-          }
-        }
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
