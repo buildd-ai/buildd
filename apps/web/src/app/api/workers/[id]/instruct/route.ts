@@ -86,17 +86,19 @@ export async function POST(
     updatedHistory.splice(0, updatedHistory.length - 30);
   }
 
+  // Urgent messages are delivered instantly via Pusher — don't also queue as
+  // pendingInstructions, otherwise the runner processes the same message twice
+  // (once via Pusher, once on the next sync poll), producing duplicate milestones.
   const [updated] = await db
     .update(workers)
     .set({
-      pendingInstructions: pendingPayload,
+      pendingInstructions: priority === 'urgent' ? null : pendingPayload,
       instructionHistory: updatedHistory,
       updatedAt: new Date(),
     })
     .where(eq(workers.id, id))
     .returning();
 
-  // Urgent priority: bridge to Pusher for instant delivery via runner's handleCommand
   if (priority === 'urgent') {
     await triggerEvent(
       channels.worker(id),
