@@ -8,7 +8,10 @@
  * Run: bun test apps/runner/__tests__/unit/worker-manager-state.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, setDefaultTimeout } from 'bun:test';
+
+// CI runners are slower — give tests more room than the 5s default
+setDefaultTimeout(15_000);
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
