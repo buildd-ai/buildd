@@ -1,12 +1,20 @@
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
 
+export interface McpServerInfo {
+  name: string;
+  requiredVars: string[];
+  resolved: boolean;
+}
+
 export interface ScanConfig {
   extraEnvKeys?: string[];
   extraTools?: Array<{ name: string; cmd: string }>;
+  /** Repo root paths to scan for .mcp.json files */
+  repoRoots?: string[];
 }
 
 const DEFAULT_TOOLS = [
@@ -86,6 +94,115 @@ function scanMcpServers(): string[] {
   return [...new Set(servers)];
 }
 
+/** Extract all ${VAR} references from a string */
+export function extractVarReferences(str: string): string[] {
+  const matches = str.matchAll(/\$\{([^}]+)\}/g);
+  const vars = new Set<string>();
+  for (const m of matches) {
+    vars.add(m[1]);
+  }
+  return [...vars];
+}
+
+/** Recursively collect all ${VAR} references from any value (string, array, object) */
+function collectVarsFromValue(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return extractVarReferences(value);
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(v => collectVarsFromValue(v));
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).flatMap(v => collectVarsFromValue(v));
+  }
+  return [];
+}
+
+/** Parse .mcp.json content and extract server names + required env vars */
+export function parseMcpJsonContent(content: string): McpServerInfo[] {
+  try {
+    const parsed = JSON.parse(content);
+    if (!parsed.mcpServers || typeof parsed.mcpServers !== 'object') {
+      return [];
+    }
+
+    const servers: McpServerInfo[] = [];
+    for (const [name, config] of Object.entries(parsed.mcpServers)) {
+      const vars = [...new Set(collectVarsFromValue(config))];
+      servers.push({
+        name,
+        requiredVars: vars,
+        resolved: false, // Will be set by scanMcpServersRich
+      });
+    }
+    return servers;
+  } catch {
+    return [];
+  }
+}
+
+/** Parse a .mcp.json file and extract server names + required env vars */
+export function parseMcpJson(filePath: string): McpServerInfo[] {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    return parseMcpJsonContent(content);
+  } catch {
+    return [];
+  }
+}
+
+/** Scan .mcp.json files and return rich server info with resolved status */
+export function scanMcpServersRich(
+  mcpJsonPaths: string[],
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): McpServerInfo[] {
+  const serverMap = new Map<string, Set<string>>();
+
+  for (const filePath of mcpJsonPaths) {
+    const servers = parseMcpJson(filePath);
+    for (const server of servers) {
+      const existing = serverMap.get(server.name);
+      if (existing) {
+        for (const v of server.requiredVars) existing.add(v);
+      } else {
+        serverMap.set(server.name, new Set(server.requiredVars));
+      }
+    }
+  }
+
+  const result: McpServerInfo[] = [];
+  for (const [name, vars] of serverMap) {
+    const requiredVars = [...vars];
+    const resolved = requiredVars.every(v => env[v] !== undefined && env[v] !== '');
+    result.push({ name, requiredVars, resolved });
+  }
+  return result;
+}
+
+/** Pre-flight check: verify all MCP server env vars are present. Returns warnings (non-blocking). */
+export function checkMcpPreFlight(
+  mcpJsonPath: string,
+  env: Record<string, string | undefined>,
+): { missing: string[]; warnings: string[] } {
+  if (!existsSync(mcpJsonPath)) {
+    return { missing: [], warnings: [] };
+  }
+
+  const servers = parseMcpJson(mcpJsonPath);
+  const allMissing: string[] = [];
+  const warnings: string[] = [];
+
+  for (const server of servers) {
+    const missing = server.requiredVars.filter(v => !env[v] || env[v] === '');
+    if (missing.length > 0) {
+      allMissing.push(...missing);
+      warnings.push(`MCP server "${server.name}" missing env vars: ${missing.join(', ')}`);
+    }
+  }
+
+  return { missing: [...new Set(allMissing)], warnings };
+}
+
 export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
   const tools: WorkerTool[] = [];
 
@@ -101,10 +218,29 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
     }
   }
 
+  // Scan .mcp.json files from repo roots
+  const mcpJsonPaths: string[] = [];
+  if (config?.repoRoots) {
+    for (const root of config.repoRoots) {
+      const mcpPath = join(root, '.mcp.json');
+      if (existsSync(mcpPath)) {
+        mcpJsonPaths.push(mcpPath);
+      }
+    }
+  }
+  // Also check cwd
+  const cwdMcpPath = join(process.cwd(), '.mcp.json');
+  if (existsSync(cwdMcpPath) && !mcpJsonPaths.includes(cwdMcpPath)) {
+    mcpJsonPaths.push(cwdMcpPath);
+  }
+
+  const mcpServers = scanMcpServersRich(mcpJsonPaths);
+
   return {
     tools,
     envKeys: scanEnvKeys(config?.extraEnvKeys),
     mcp: scanMcpServers(),
+    mcpServers,
     labels: {
       type: 'local',
       os: platform(),

@@ -11,7 +11,7 @@ import { syncSkillToLocal } from './skills.js';
 import { resolveWorktreeBase } from './worktree-utils';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
-import { scanEnvironment } from './env-scan';
+import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
 import type { WorkerEnvironment } from '@buildd/shared';
@@ -218,7 +218,8 @@ export class WorkerManager {
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
       this.environment = scanEnvironment();
-      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${this.environment.mcp.length} MCP servers`);
+      const mcpCount = this.environment.mcpServers?.length || this.environment.mcp.length;
+      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${mcpCount} MCP servers`);
     } catch (err) {
       console.warn('Environment scan failed:', err);
     }
@@ -1134,6 +1135,13 @@ export class WorkerManager {
         console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to main repo`);
         this.addMilestone(worker, { type: 'status', label: 'Worktree failed, using repo', ts: Date.now() });
       }
+    }
+
+    // Pre-flight check: warn about missing MCP server env vars (non-blocking)
+    const mcpJsonPath = join(sessionCwd, '.mcp.json');
+    const { warnings } = checkMcpPreFlight(mcpJsonPath, process.env as Record<string, string | undefined>);
+    for (const warning of warnings) {
+      console.warn(`[Worker ${worker.id}] ${warning}`);
     }
 
     // Start SDK session (async, runs in background)

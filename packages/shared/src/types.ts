@@ -516,10 +516,17 @@ export interface WorkerTool {
   version?: string;
 }
 
+export interface McpServerInfo {
+  name: string;
+  requiredVars: string[];
+  resolved: boolean;
+}
+
 export interface WorkerEnvironment {
   tools: WorkerTool[];
   envKeys: string[];
-  mcp: string[];
+  mcp: string[] | McpServerInfo[];
+  mcpServers?: McpServerInfo[];
   labels: Record<string, string>;
   scannedAt: string;
 }
