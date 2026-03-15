@@ -5,6 +5,9 @@
  * (e.g., `bun test && bun run build`) to validate the output. If verification
  * fails, the task is marked as failed with the verification output, enabling
  * the retry loop.
+ *
+ * Uses Bun.spawnSync instead of child_process.execSync to avoid mock.module
+ * pollution from other test files in the Bun test runner.
  */
 
 export interface VerificationResult {
@@ -34,47 +37,52 @@ export async function runVerificationCommand(
   cwd: string,
   options: VerificationOptions = {},
 ): Promise<VerificationResult> {
-  const { execSync } = await import('child_process');
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const start = Date.now();
 
   try {
-    const output = execSync(command, {
+    const proc = Bun.spawnSync(['/bin/bash', '-c', command], {
       cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
       timeout: timeoutMs,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: '/bin/bash',
     });
 
-    return {
-      success: true,
-      output: truncateOutput(output || ''),
-      exitCode: 0,
-      durationMs: Date.now() - start,
-    };
-  } catch (err: any) {
+    const stdout = proc.stdout?.toString() || '';
+    const stderr = proc.stderr?.toString() || '';
     const durationMs = Date.now() - start;
 
-    // Check if it was a timeout
-    if (err.killed || err.signal === 'SIGTERM') {
+    if (proc.signalCode === 'SIGTERM' || proc.signalCode === 'SIGKILL') {
       return {
         success: false,
-        output: truncateOutput(`Verification command timed out after ${timeoutMs}ms\n${err.stdout || ''}${err.stderr || ''}`),
+        output: truncateOutput(`Verification command timed out after ${timeoutMs}ms\n${stdout}${stderr}`),
         exitCode: null,
         durationMs,
       };
     }
 
-    // Command failed with non-zero exit
-    const stdout = err.stdout || '';
-    const stderr = err.stderr || '';
-    const combined = `${stdout}${stderr ? '\n--- stderr ---\n' + stderr : ''}`;
+    if (proc.exitCode === 0) {
+      return {
+        success: true,
+        output: truncateOutput(stdout || ''),
+        exitCode: 0,
+        durationMs,
+      };
+    }
 
+    const combined = `${stdout}${stderr ? '\n--- stderr ---\n' + stderr : ''}`;
     return {
       success: false,
-      output: truncateOutput(combined || `Command failed with exit code ${err.status}`),
-      exitCode: err.status ?? null,
+      output: truncateOutput(combined || `Command failed with exit code ${proc.exitCode}`),
+      exitCode: proc.exitCode ?? null,
+      durationMs,
+    };
+  } catch (err: any) {
+    const durationMs = Date.now() - start;
+    return {
+      success: false,
+      output: truncateOutput(err.message || 'Unknown error'),
+      exitCode: null,
       durationMs,
     };
   }
