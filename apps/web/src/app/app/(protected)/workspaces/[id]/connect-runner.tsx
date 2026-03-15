@@ -107,9 +107,9 @@ The workflow should:
 
           <div className="space-y-4">
             <div>
-              <div className="text-sm font-medium mb-2">Step 1: Create an Action account &amp; get OAuth token</div>
+              <div className="text-sm font-medium mb-2">Step 1: Create an Action API key &amp; get OAuth token</div>
               <p className="text-sm text-text-secondary mb-2">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Settings &rarr; New API Key</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
               </p>
               <p className="text-sm text-text-secondary">
                 You&apos;ll also need a <code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription for the official <code className="bg-surface-4 px-1 rounded">claude-code-action</code>.
@@ -225,9 +225,9 @@ jobs:
 
           <div className="space-y-4">
             <div>
-              <div className="text-sm font-medium mb-2">Step 1: Create a Service account</div>
+              <div className="text-sm font-medium mb-2">Step 1: Create a Service API key</div>
               <p className="text-sm text-text-secondary">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Settings &rarr; New API Key</a> and select &quot;Service - Always-on server/VM&quot; as the type.
               </p>
             </div>
 
@@ -276,9 +276,9 @@ WantedBy=multi-user.target`}
 
           <div className="space-y-4">
             <div>
-              <div className="text-sm font-medium mb-2">Step 1: Create a User account</div>
+              <div className="text-sm font-medium mb-2">Step 1: Create a User API key</div>
               <p className="text-sm text-text-secondary">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
+                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Settings &rarr; New API Key</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
               </p>
             </div>
 

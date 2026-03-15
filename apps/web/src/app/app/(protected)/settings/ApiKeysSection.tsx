@@ -125,20 +125,23 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
   return (
     <section>
       <div className="flex justify-between items-center mb-4">
-        <h2 className="section-label">API Keys</h2>
+        <div>
+          <h2 className="section-label">API Keys</h2>
+          <p className="text-xs text-text-muted mt-1">For MCP servers, CI/CD, and programmatic access</p>
+        </div>
         <Link
           href="/app/accounts/new"
           className="text-sm text-text-secondary hover:text-text-primary transition-colors"
         >
-          + New Account
+          + New API Key
         </Link>
       </div>
 
       {accounts.length === 0 ? (
         <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No accounts yet</p>
+          <p className="text-text-muted text-sm mb-3">No API keys yet</p>
           <Link href="/app/accounts/new" className="text-sm text-primary hover:underline">
-            Create an account to get an API key
+            Create an API key
           </Link>
         </div>
       ) : (

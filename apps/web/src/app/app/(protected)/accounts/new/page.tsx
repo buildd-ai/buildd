@@ -80,7 +80,11 @@ export default function NewAccountPage() {
         const res = await fetch('/api/workspaces');
         if (res.ok) {
           const data = await res.json();
-          setWorkspaces(data.workspaces || []);
+          const wsList = data.workspaces || [];
+          setWorkspaces(wsList);
+          if (wsList.length === 1) {
+            setSelectedWorkspaceId(wsList[0].id);
+          }
         }
       } catch {
         // Workspaces not available
@@ -140,7 +144,11 @@ export default function NewAccountPage() {
         <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
-        <h1 className="text-2xl font-semibold mb-8">New Account</h1>
+        <h1 className="text-2xl font-semibold mb-2">New API Key</h1>
+        <p className="text-sm text-text-secondary mb-8">
+          Create an API key for MCP servers, GitHub Actions, or programmatic access.
+          If you&apos;re using the buildd runner on your machine, you don&apos;t need this — use <code className="bg-surface-4 px-1 rounded">buildd login</code> instead.
+        </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
@@ -164,23 +172,26 @@ export default function NewAccountPage() {
                 }))}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Which team owns this account
+                Which team owns this API key
               </p>
             </div>
           )}
 
           <div>
             <label htmlFor="name" className="block text-sm font-medium mb-2">
-              Account Name
+              Name
             </label>
             <input
               type="text"
               id="name"
               name="name"
               required
-              placeholder="my-laptop-agent"
+              placeholder="e.g. claude-code-mcp, ci-runner"
               className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
             />
+            <p className="text-xs text-text-secondary mt-1">
+              A label to identify this key — e.g. the machine or service using it
+            </p>
           </div>
 
           {workspaces.length > 0 && (
@@ -201,7 +212,7 @@ export default function NewAccountPage() {
                 ]}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Auto-link this account to a workspace so the API key works immediately
+                Link to a workspace so the key can claim and create tasks immediately
               </p>
             </div>
           )}
@@ -333,7 +344,7 @@ export default function NewAccountPage() {
               disabled={loading}
               className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
             >
-              {loading ? 'Creating...' : 'Create Account'}
+              {loading ? 'Creating...' : 'Create API Key'}
             </button>
             <Link
               href="/app/settings"

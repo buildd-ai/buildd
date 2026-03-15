@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
+import ConnectRunnerSection from './ConnectRunnerSection';
 import ApiKeysSection from './ApiKeysSection';
 
 export const dynamic = 'force-dynamic';
@@ -92,7 +93,10 @@ export default async function SettingsPage() {
         {/* GitHub */}
         <GitHubSection />
 
-        {/* API Keys — compact view */}
+        {/* Connect Runner — buildd login flow */}
+        <ConnectRunnerSection />
+
+        {/* API Keys — for MCP / programmatic access */}
         <ApiKeysSection
           accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
           workspaces={userWorkspaces}
