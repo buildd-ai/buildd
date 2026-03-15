@@ -167,14 +167,14 @@ export default async function SettingsPage() {
               {userWorkspaces.map((ws) => (
                 <Link
                   key={ws.id}
-                  href={`/app/workspaces/${ws.id}/skills`}
+                  href={`/app/workspaces/${ws.id}`}
                   className="flex items-center justify-between p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">{ws.name}</p>
                     {ws.repo && <p className="text-xs text-text-muted truncate">{ws.repo}</p>}
                   </div>
-                  <span className="text-xs text-text-muted flex-shrink-0">Skills, Slack, Discord</span>
+                  <span className="text-xs text-text-muted flex-shrink-0">View workspace</span>
                 </Link>
               ))}
             </div>

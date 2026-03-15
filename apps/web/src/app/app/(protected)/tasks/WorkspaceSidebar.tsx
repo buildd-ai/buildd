@@ -544,19 +544,25 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                       <button
                         onClick={() => toggleCollapse(ws.id)}
                         aria-expanded={!isCollapsed}
-                        className="flex items-center gap-1 flex-1 px-2 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-3 rounded"
+                        className="flex items-center gap-1 px-2 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-3 rounded shrink-0"
                       >
                         <span className="text-text-muted w-4">
                           {isCollapsed ? '›' : '▼'}
                         </span>
+                      </button>
+                      <Link
+                        href={`/app/workspaces/${ws.id}`}
+                        className="flex items-center gap-1 flex-1 min-w-0 py-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
+                        title={`Open ${ws.name} workspace`}
+                      >
                         <span className="truncate">{ws.name}</span>
                         {activeCount > 0 && (
-                          <span className="ml-auto flex items-center gap-1.5">
+                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
                             <span className="glow-dot glow-dot-running" />
                             <span className="text-[10px] font-mono text-status-running">{activeCount}</span>
                           </span>
                         )}
-                      </button>
+                      </Link>
                       <button
                         onClick={() => setQuickCreateWorkspaceId(ws.id)}
                         className="opacity-100 md:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-text-muted hover:text-text-primary rounded hover:bg-surface-3"
