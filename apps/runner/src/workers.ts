@@ -572,6 +572,7 @@ export class WorkerManager {
         milestones,
         localUiUrl: this.config.localUiUrl,
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
+        ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
@@ -581,6 +582,11 @@ export class WorkerManager {
         };
       }
       const response = await this.buildd.updateWorker(worker.id, update);
+
+      // Clear MCP call buffer after successful sync
+      if (worker.pendingMcpCalls?.length) {
+        worker.pendingMcpCalls = [];
+      }
 
       // Server says worker was already terminated
       if (response?.abort) {
@@ -1056,6 +1062,7 @@ export class WorkerManager {
       checkpoints: [],
       subagentTasks: [],
       checkpointEvents: new Set<CheckpointEventType>(),
+      pendingMcpCalls: [],
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -1281,6 +1288,31 @@ export class WorkerManager {
         });
         this.addMilestone(worker, { type: 'status', label: `Subagent: ${agentName}`, ts: Date.now() });
         console.log(`[Worker ${worker.id}] Subagent spawned: ${agentName}`);
+      }
+
+      return {};
+    };
+  }
+
+  // Create a PostToolUseFailure hook that marks MCP calls as failed.
+  // Purely observational — returns {} and never blocks or modifies tool execution.
+  private createMcpFailureHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
+
+      const toolName = (input as any).tool_name as string;
+
+      // Only care about MCP tool failures
+      if (toolName?.startsWith('mcp__') && worker.pendingMcpCalls?.length) {
+        // Find the last matching pending call and mark it as failed
+        for (let i = worker.pendingMcpCalls.length - 1; i >= 0; i--) {
+          const call = worker.pendingMcpCalls[i];
+          const expectedPrefix = `mcp__${call.server}__`;
+          if (toolName.startsWith(expectedPrefix) && call.ok) {
+            call.ok = false;
+            break;
+          }
+        }
       }
 
       return {};
@@ -2190,6 +2222,7 @@ export class WorkerManager {
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.createPermissionHook(worker, { inputPolicy })] }],
         PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
+        PostToolUseFailure: [{ hooks: [this.createMcpFailureHook(worker)] }],
         Notification: [{ hooks: [this.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
@@ -2700,6 +2733,20 @@ export class WorkerManager {
           });
           if (worker.toolCalls.length > 200) {
             worker.toolCalls.shift();
+          }
+
+          // Track MCP tool calls for server sync
+          if (toolName.startsWith('mcp__')) {
+            const parts = toolName.split('__');
+            const server = parts[1] || 'unknown';
+            const tool = parts.slice(2).join('__') || toolName;
+            if (!worker.pendingMcpCalls) worker.pendingMcpCalls = [];
+            worker.pendingMcpCalls.push({
+              server,
+              tool,
+              ts: Date.now(),
+              ok: true,
+            });
           }
 
           // Check for repetitive tool calls (infinite loop detection)
