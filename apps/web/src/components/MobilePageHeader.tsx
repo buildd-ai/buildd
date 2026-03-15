@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 const PAGE_TITLES: Record<string, string> = {
   '/app/dashboard': 'Dashboard',
   '/app/artifacts': 'Artifacts',
-  '/app/settings': 'Settings',
+  '/app/you': 'Account',
 };
 
 export default function MobilePageHeader() {

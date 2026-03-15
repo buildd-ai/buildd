@@ -123,7 +123,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to delete team');
       }
 
-      router.push('/app/settings');
+      router.push('/app/you');
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');

@@ -238,7 +238,7 @@ export default async function DashboardPage() {
             {githubConfigured && (
               githubOrgs.length > 0 ? (
                 <Link
-                  href="/app/settings"
+                  href="/app/you"
                   className="flex items-center gap-2 px-3 py-[5px] text-xs bg-status-success/10 border border-status-success/20 rounded-[6px] hover:bg-status-success/15"
                 >
                   <svg className="w-4 h-4 text-status-success" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -261,9 +261,9 @@ export default async function DashboardPage() {
               )
             )}
             <Link
-              href="/app/settings"
+              href="/app/you"
               className="p-1.5 rounded-[6px] hover:bg-surface-3 text-text-secondary hover:text-text-primary"
-              title="Settings"
+              title="Account"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />

@@ -76,22 +76,17 @@ export const navTabs = [
     ),
   },
   {
-    label: 'Settings',
-    href: '/app/settings',
+    label: 'Account',
+    href: '/app/you',
     icon: (active: boolean) => (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth={active ? 2.5 : 2}
-          d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+          d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"
         />
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={active ? 2.5 : 2}
-          d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-        />
+        <circle cx="12" cy="7" r="4" strokeWidth={active ? 2.5 : 2} />
       </svg>
     ),
   },
