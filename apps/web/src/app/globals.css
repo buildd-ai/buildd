@@ -10,78 +10,67 @@
  * z-50: Modals, dialogs, dropdowns (highest layer)
  */
 
-/* ── Buildd Design Tokens ── */
+/* ── Buildd Design Tokens — Warm Charcoal ── */
 
 :root {
-  /* Light mode */
-  --surface-1: #f8fafc;
-  --surface-2: #ffffff;
-  --surface-3: #f1f5f9;
-  --surface-4: #e2e8f0;
-  --text-primary: #0f172a;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
-  --border: #e2e8f0;
+  /* Surfaces — paper on a dark desk */
+  --surface-1: #1a1816;
+  --surface-2: #211f1c;
+  --surface-3: #2a2724;
+  --surface-4: #302c28;
 
-  /* Primary (shared) */
-  --primary: #7c3aed;
-  --primary-hover: #6d28d9;
-  --primary-subtle: rgba(124, 58, 237, 0.08);
-  --primary-ring: rgba(124, 58, 237, 0.25);
+  /* Card tiers — opacity through color, not blur */
+  --card: #2a2724;
+  --card-hover: #302c28;
+  --card-finding: #252220;
+  --card-rightnow: #1f1d1a;
+  --card-border: rgba(255, 245, 230, 0.06);
+  --card-shadow: 0 1px 4px rgba(12, 10, 8, 0.35);
 
-  /* Status (shared) */
-  --status-success: #34d399;
-  --status-running: #a78bfa;
-  --status-warning: #fbbf24;
-  --status-error: #f87171;
-  --status-info: #60a5fa;
+  /* Text — warm whites */
+  --text-primary: #ede8e2;
+  --text-secondary: #a89f96;
+  --text-muted: #5e5850;
+  --text-desc: #8a827a;
+
+  /* Borders — warm tint */
+  --border: rgba(255, 245, 230, 0.07);
+  --border-strong: rgba(255, 245, 230, 0.12);
+
+  /* Accent — warm amber */
+  --accent: #c8956a;
+  --accent-soft: rgba(200, 149, 106, 0.12);
+  --accent-text: #d4a574;
+
+  /* Primary (mapped to accent for backward compat) */
+  --primary: #c8956a;
+  --primary-hover: #b8854f;
+  --primary-subtle: rgba(200, 149, 106, 0.08);
+  --primary-ring: rgba(200, 149, 106, 0.25);
+
+  /* Status — same signals, warmer cast */
+  --status-success: #5ec495;
+  --status-running: #c8956a;
+  --status-warning: #e0b35a;
+  --status-error: #d4736a;
+  --status-info: #7aacca;
 
   /* Category (shared) */
-  --cat-bug: #f87171;
-  --cat-feature: #60a5fa;
+  --cat-bug: #d4736a;
+  --cat-feature: #7aacca;
   --cat-refactor: #a78bfa;
-  --cat-chore: #a1a1aa;
-  --cat-docs: #2dd4bf;
-  --cat-test: #fbbf24;
-  --cat-infra: #fb923c;
-  --cat-design: #f472b6;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-1: #16171f;
-    --surface-2: #1e1f2b;
-    --surface-3: #282a3a;
-    --surface-4: #323447;
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #475569;
-    --border: #334155;
-  }
-}
-
-/* Mobile: force dark mode */
-@media (max-width: 767px) {
-  :root {
-    --surface-1: #16171f;
-    --surface-2: #1e1f2b;
-    --surface-3: #282a3a;
-    --surface-4: #323447;
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #475569;
-    --border: #334155;
-  }
-
-  body {
-    color-scheme: dark;
-  }
+  --cat-chore: #8a827a;
+  --cat-docs: #5ec495;
+  --cat-test: #e0b35a;
+  --cat-infra: #c8956a;
+  --cat-design: #d4a574;
 }
 
 body {
-  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  font-family: var(--font-outfit), system-ui, sans-serif;
   background-color: var(--surface-1);
   color: var(--text-primary);
+  color-scheme: dark;
 }
 
 /* Status dot pulse animation */
@@ -94,29 +83,20 @@ body {
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
-/* ── Glass Panels ──
- * Semi-transparent surfaces with backdrop blur for elevated depth.
- * Use on cards, modals, and panels over --surface-1 backgrounds.
- */
-@layer components {
-  .glass-panel {
-    background: rgba(30, 31, 43, 0.6);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
-  }
-  .glass-panel-light {
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    border-radius: 10px;
-  }
+/* Faint grain texture — dark linen feel */
+.grain-texture::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: inherit;
 }
 
 /* ── Status Glow Dots ──
- * Targeted neon glow on status indicators. Color earns its place.
+ * Targeted glow on status indicators. Color earns its place.
  */
 @keyframes glow-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--glow-color); }
@@ -132,80 +112,77 @@ body {
   }
   .glow-dot-success {
     background: var(--status-success);
-    --glow-color: rgba(52, 211, 153, 0.4);
+    --glow-color: rgba(94, 196, 149, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
   .glow-dot-running {
     background: var(--status-running);
-    --glow-color: rgba(167, 139, 250, 0.4);
+    --glow-color: rgba(200, 149, 106, 0.4);
     animation: glow-pulse 1.5s ease-in-out infinite;
   }
   .glow-dot-warning {
     background: var(--status-warning);
-    --glow-color: rgba(251, 191, 36, 0.4);
+    --glow-color: rgba(224, 179, 90, 0.4);
     animation: glow-pulse 1.5s ease-in-out infinite;
   }
   .glow-dot-error {
     background: var(--status-error);
-    --glow-color: rgba(248, 113, 113, 0.4);
+    --glow-color: rgba(212, 115, 106, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
   .glow-dot-info {
     background: var(--status-info);
-    --glow-color: rgba(96, 165, 250, 0.4);
+    --glow-color: rgba(122, 172, 202, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
 }
 
-/* ── Cards & Elevation ──
- * Subtle depth for interactive containers. Hover lifts cards slightly.
- */
+/* ── Cards & Elevation ── */
 @layer components {
   .card {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
-    transition: box-shadow 150ms ease, transform 150ms ease;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    box-shadow: var(--card-shadow);
+    transition: background 150ms ease, transform 150ms ease;
   }
   .card-interactive:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-    transform: translateY(-1px);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  @layer components {
-    .card {
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
-    }
-    .card-interactive:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
-    }
-  }
-}
-
-@media (max-width: 767px) {
-  @layer components {
-    .card {
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
-    }
-    .card-interactive:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
-    }
+    background: var(--card-hover);
+    transform: translateY(-0.5px);
   }
 }
 
 /* ── Section Labels ──
- * JetBrains Mono uppercase micro-labels for sidebar sections and panels.
+ * IBM Plex Mono uppercase micro-labels for sidebar sections and panels.
  */
 @layer components {
   .section-label {
-    font-family: var(--font-jetbrains), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 11px;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 2px;
     color: var(--text-muted);
   }
+}
+
+/* ── Mission type labels ── */
+@layer components {
+  .type-label {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+  .type-label-build { color: var(--status-success); }
+  .type-label-watch { color: var(--status-warning); }
+  .type-label-brief { color: var(--accent-text); }
+}
+
+/* ── Mission card borders ── */
+@layer components {
+  .mission-build { border-left: 2px solid var(--status-success); }
+  .mission-watch { border-left: 2px solid var(--status-warning); }
+  .mission-brief { border-left: 2px solid var(--accent-text); }
 }
