@@ -48,6 +48,39 @@ export default function TeamDetailClient({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'admin' | 'member'>('member');
+  const [inviting, setInviting] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [showInvite, setShowInvite] = useState(false);
+
+  async function handleInvite() {
+    if (!inviteEmail) return;
+    setInviting(true);
+    setError('');
+    setInviteUrl(null);
+
+    try {
+      const res = await fetch(`/api/teams/${team.id}/invitations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to send invitation');
+      }
+
+      const data = await res.json();
+      setInviteUrl(data.inviteUrl);
+      setInviteEmail('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to invite');
+    } finally {
+      setInviting(false);
+    }
+  }
 
   async function handleSaveEdit() {
     setSaving(true);
@@ -287,6 +320,62 @@ export default function TeamDetailClient({
             </div>
           ))}
         </div>
+
+        {/* Invite */}
+        {canManage && (
+          <div className="mt-4">
+            {!showInvite ? (
+              <button
+                onClick={() => setShowInvite(true)}
+                className="text-sm text-primary hover:underline"
+              >
+                + Invite someone
+              </button>
+            ) : (
+              <div className="card p-4 space-y-3">
+                <h3 className="text-sm font-medium">Invite a team member</h3>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    placeholder="Email address"
+                    className="flex-1 px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm"
+                    autoFocus
+                  />
+                  <Select
+                    value={inviteRole}
+                    onChange={(v) => setInviteRole(v as 'admin' | 'member')}
+                    options={[
+                      { value: 'member', label: 'member' },
+                      { value: 'admin', label: 'admin' },
+                    ]}
+                    size="sm"
+                  />
+                  <button
+                    onClick={handleInvite}
+                    disabled={inviting || !inviteEmail}
+                    className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {inviting ? 'Sending...' : 'Invite'}
+                  </button>
+                </div>
+                {inviteUrl && (
+                  <div className="p-3 bg-surface-3 rounded-md">
+                    <p className="text-xs text-text-secondary mb-1">Share this invite link (expires in 7 days):</p>
+                    <code className="text-xs text-text-primary break-all select-all">{inviteUrl}</code>
+                  </div>
+                )}
+                <button
+                  onClick={() => { setShowInvite(false); setInviteUrl(null); }}
+                  className="text-xs text-text-muted hover:text-text-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
