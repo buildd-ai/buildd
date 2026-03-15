@@ -138,11 +138,14 @@ jobs:
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-              # Kill leftover screen sessions from previous runs to release file locks
+              # Kill leftover screen sessions and any child processes from previous runs
               screen -X -S buildd-web quit 2>/dev/null || true
               screen -X -S buildd-test quit 2>/dev/null || true
-              sleep 1
-              rm -rf /tmp/buildd-ci || { sleep 2 && rm -rf /tmp/buildd-ci; }
+              # Kill any processes still using files in /tmp/buildd-ci
+              fuser -k /tmp/buildd-ci 2>/dev/null || true
+              pkill -f '/tmp/buildd-ci' 2>/dev/null || true
+              sleep 2
+              rm -rf /tmp/buildd-ci
               set -e
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
@@ -246,6 +249,8 @@ jobs:
           tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
             screen -X -S buildd-web quit 2>/dev/null
             screen -X -S buildd-test quit 2>/dev/null
+            pkill -f /tmp/buildd-ci 2>/dev/null || true
+            sleep 1
             rm -rf /tmp/buildd-ci
           "' || true
 
