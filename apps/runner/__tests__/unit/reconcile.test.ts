@@ -73,6 +73,7 @@ mock.module('../../src/worker-store', () => ({
 
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
 }));
 
 mock.module('../../src/session-logger', () => ({

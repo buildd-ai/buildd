@@ -129,6 +129,7 @@ mock.module('../../src/skills.js', () => ({
 // Mock env-scan
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
 }));
 
 // Import WorkerManager after all mocks
