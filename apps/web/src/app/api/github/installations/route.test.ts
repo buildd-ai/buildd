@@ -9,6 +9,8 @@ import { NextRequest } from 'next/server';
 const mockAuth = mock(() => null as any);
 const mockIsGitHubAppConfigured = mock(() => false as boolean);
 const mockFindMany = mock(() => [] as any[]);
+const mockWorkspacesFindMany = mock(() => [] as any[]);
+const mockGetUserWorkspaceIds = mock(() => [] as string[]);
 
 // Mock @/auth
 mock.module('@/auth', () => ({
@@ -20,12 +22,20 @@ mock.module('@/lib/github', () => ({
   isGitHubAppConfigured: mockIsGitHubAppConfigured,
 }));
 
+// Mock @/lib/team-access
+mock.module('@/lib/team-access', () => ({
+  getUserWorkspaceIds: mockGetUserWorkspaceIds,
+}));
+
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       githubInstallations: {
         findMany: mockFindMany,
+      },
+      workspaces: {
+        findMany: mockWorkspacesFindMany,
       },
     },
   },
@@ -34,11 +44,13 @@ mock.module('@buildd/core/db', () => ({
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { createdAt: 'createdAt', id: 'id' },
+  workspaces: { id: 'id' },
 }));
 
 // Import handler AFTER mocks
@@ -57,6 +69,8 @@ describe('GET /api/github/installations', () => {
     mockAuth.mockReset();
     mockIsGitHubAppConfigured.mockReset();
     mockFindMany.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
     // Keep production mode for each test
     process.env.NODE_ENV = 'production';
   });
@@ -95,8 +109,10 @@ describe('GET /api/github/installations', () => {
   });
 
   it('returns installations list successfully', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com', id: 'user-1' } });
     mockIsGitHubAppConfigured.mockReturnValue(true);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany.mockResolvedValue([{ githubInstallationId: 'inst-1' }]);
     mockFindMany.mockResolvedValue([
       {
         id: 'inst-1',
@@ -122,9 +138,9 @@ describe('GET /api/github/installations', () => {
   });
 
   it('returns 500 on DB error', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com', id: 'user-1' } });
     mockIsGitHubAppConfigured.mockReturnValue(true);
-    mockFindMany.mockRejectedValue(new Error('DB connection failed'));
+    mockGetUserWorkspaceIds.mockRejectedValue(new Error('DB connection failed'));
 
     const response = await GET(createRequest());
     expect(response.status).toBe(500);
