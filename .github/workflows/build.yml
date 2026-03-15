@@ -140,6 +140,7 @@ jobs:
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
               rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
+              rm -rf ~/.bun/install/cache
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
               test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
