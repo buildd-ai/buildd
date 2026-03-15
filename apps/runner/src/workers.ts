@@ -2303,6 +2303,28 @@ export class WorkerManager {
         return;
       }
 
+      // inputAsRetry: AskUserQuestion triggered an abort — mark as failed with structured context.
+      // The waiting_input notification was already synced in handleMessage.
+      if (worker.error?.startsWith('needs_input')) {
+        console.log(`[Worker ${worker.id}] inputAsRetry: marking as failed — ${worker.error}`);
+        sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        worker.status = 'error';
+        worker.currentAction = 'Needs input';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: worker.error,
+          milestones: worker.milestones,
+          ...gitStats,
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+        return;
+      }
+
       // If the worker is waiting for user input (e.g. AskUserQuestion set status to 'waiting'),
       // don't overwrite that state with 'done'. The session ended naturally but the worker
       // needs human input before it can proceed.
@@ -2828,27 +2850,53 @@ export class WorkerManager {
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
             const firstQuestion = questions?.[0];
             const toolUseId = block.id as string | undefined;
-            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${firstQuestion?.question?.slice(0, 60)}"`);
-            worker.status = 'waiting';
+            const questionText = firstQuestion?.question || 'Awaiting input';
+            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
             worker.waitingFor = {
               type: 'question',
-              prompt: firstQuestion?.question || 'Awaiting input',
+              prompt: questionText,
               options: firstQuestion?.options,
               toolUseId,
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
-            // Immediately sync waiting state to server and disk
-            this.buildd.updateWorker(worker.id, {
-              status: 'waiting_input',
-              currentAction: worker.currentAction,
-              waitingFor: {
-                type: 'question',
-                prompt: firstQuestion?.question || 'Awaiting input',
-                options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-              },
-            }).catch(() => {});
-            storeSaveWorker(worker);
+
+            if (this.config.inputAsRetry) {
+              // inputAsRetry mode: snapshot state, sync notification, then abort.
+              // The ralph-loop retry system will create a follow-up task with the user's answer.
+              console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
+              worker.error = `needs_input: ${questionText}`;
+              // Sync waiting_input to server (triggers Pushover notification) before marking failed
+              this.buildd.updateWorker(worker.id, {
+                status: 'waiting_input',
+                currentAction: worker.currentAction,
+                waitingFor: {
+                  type: 'question',
+                  prompt: questionText,
+                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                },
+              }).catch(() => {});
+              storeSaveWorker(worker);
+              // Abort the subprocess — the post-loop cleanup will detect worker.error
+              // and mark the worker as failed with the needs_input context.
+              const session = this.sessions.get(worker.id);
+              if (session) {
+                session.abortController.abort();
+              }
+            } else {
+              // Default mode: block and wait for user input via the debug UI
+              worker.status = 'waiting';
+              this.buildd.updateWorker(worker.id, {
+                status: 'waiting_input',
+                currentAction: worker.currentAction,
+                waitingFor: {
+                  type: 'question',
+                  prompt: questionText,
+                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                },
+              }).catch(() => {});
+              storeSaveWorker(worker);
+            }
           }
         }
       }

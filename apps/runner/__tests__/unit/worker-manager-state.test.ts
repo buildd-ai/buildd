@@ -393,6 +393,173 @@ describe('WorkerManager — state transitions', () => {
     });
   });
 
+  describe('AskUserQuestion — inputAsRetry mode', () => {
+    test('aborts session and marks worker as error with needs_input reason', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-retry-1' },
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: 'I have a question.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_retry_1',
+                name: 'AskUserQuestion',
+                input: {
+                  questions: [{
+                    question: 'Should I use TypeScript or JavaScript?',
+                    header: 'Language choice',
+                    options: [
+                      { label: 'TypeScript' },
+                      { label: 'JavaScript' },
+                    ],
+                  }],
+                },
+              },
+            ],
+          },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-retry-1' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-retry-1',
+        branch: 'buildd/retry-test',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      const worker = manager.getWorker('w-retry-1');
+      expect(worker?.status).toBe('error');
+      expect(worker?.error).toContain('needs_input');
+      expect(worker?.waitingFor?.prompt).toBe('Should I use TypeScript or JavaScript?');
+    });
+
+    test('syncs waiting_input to server before marking failed', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-retry-2' },
+        {
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'toolu_retry_2',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [{ question: 'Pick a color?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] }],
+              },
+            }],
+          },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-retry-2' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-retry-2',
+        branch: 'buildd/retry-sync',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      // Should have synced waiting_input status first (triggers notification)
+      const waitingCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input'
+      );
+      expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
+
+      // Then should have synced failed status
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed' && call[1]?.error?.includes('needs_input')
+      );
+      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('preserves waiting behavior when inputAsRetry is false', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-no-retry' },
+        {
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'toolu_no_retry',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [{ question: 'Pick one?', header: 'Choice' }],
+              },
+            }],
+          },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-no-retry' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-no-retry',
+        branch: 'buildd/no-retry',
+        task: makeTask(),
+      }] }));
+
+      // Default (no inputAsRetry) — should use existing waiting behavior
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 100));
+
+      const worker = manager.getWorker('w-no-retry');
+      // Should be waiting (not error) — existing behavior preserved
+      expect(worker?.status).toBe('waiting');
+      expect(worker?.waitingFor?.prompt).toBe('Pick one?');
+    });
+
+    test('includes branch in error context for retry', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-retry-branch' },
+        {
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'toolu_retry_b',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [{ question: 'What should I name the file?', header: 'Filename' }],
+              },
+            }],
+          },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-retry-branch' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-retry-branch',
+        branch: 'buildd/my-feature-branch',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      // The failed update should include waitingFor context
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed' && call[1]?.error?.includes('needs_input')
+      );
+      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
+      // The waitingFor should have been synced in the waiting_input call
+      const waitingCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.waitingFor
+      );
+      expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
+      expect(waitingCalls[0][1].waitingFor.prompt).toBe('What should I name the file?');
+    });
+  });
+
   describe('Stale recovery', () => {
     test('recovers from stale to working when activity resumes', async () => {
       // Create a worker that will receive messages over time
