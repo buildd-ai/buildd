@@ -77,10 +77,9 @@ export default async function SettingsPage() {
     ? user.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
     : user.email[0].toUpperCase();
 
-  // Determine if advanced sections have meaningful content
-  const hasMultipleTeams = userTeams.length > 1;
+  // Always show the advanced section — GitHub, teams, and workspaces
+  // are discoverable via the collapsed toggle
   const hasWorkspaces = userWorkspaces.length > 0;
-  const showAdvanced = hasMultipleTeams || hasWorkspaces || !teamsError;
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
@@ -131,8 +130,7 @@ export default async function SettingsPage() {
         />
 
         {/* Advanced Settings — collapsed by default for progressive disclosure */}
-        {showAdvanced && (
-          <details className="group">
+        <details className="group">
             <summary className="flex items-center gap-2 cursor-pointer text-sm text-text-secondary hover:text-text-primary transition-colors select-none list-none [&::-webkit-details-marker]:hidden">
               <svg className="w-4 h-4 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -228,8 +226,7 @@ export default async function SettingsPage() {
                 </section>
               )}
             </div>
-          </details>
-        )}
+        </details>
       </div>
     </main>
   );
