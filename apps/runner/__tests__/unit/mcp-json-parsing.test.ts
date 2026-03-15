@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { parseMcpJsonContent, extractVarReferences, scanMcpServersRich, checkMcpPreFlight, type McpServerInfo } from '../../src/env-scan';
+
+// Dynamic import avoids mock.module() pollution from other test files that mock env-scan
+const envScan = await import('../../src/env-scan');
+const { parseMcpJsonContent, extractVarReferences, checkMcpPreFlight } = envScan;
+type McpServerInfo = { name: string; requiredVars: string[]; resolved: boolean };
 
 describe('extractVarReferences', () => {
   it('extracts ${VAR} from a string', () => {
