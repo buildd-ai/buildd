@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ThemeToggle from './ThemeToggle';
+import UserAvatarMenu from './UserAvatarMenu';
 
 const sidebarItems = [
   {
@@ -121,12 +122,7 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
 
       <ThemeToggle />
 
-      <Link
-        href="/app/you"
-        className="w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-xs font-semibold text-accent-text border border-border-default mt-2 cursor-pointer hover:border-border-strong transition-colors"
-      >
-        {userInitial}
-      </Link>
+      <UserAvatarMenu userInitial={userInitial} />
     </div>
   );
 }
