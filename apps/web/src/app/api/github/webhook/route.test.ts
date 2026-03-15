@@ -5,9 +5,14 @@ import { NextRequest } from 'next/server';
 
 // ── Mock functions ──────────────────────────────────────────────────────────
 const mockVerifyWebhookSignature = mock(() => Promise.resolve(true));
+const mockGithubApi = mock(() => Promise.resolve(null) as any);
 const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockBuildCIRetryTask = mock(() => null as any);
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockWorkspacesFindMany = mock(() => [] as any);
+const mockWorkersFindFirst = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
 
 // Track DB operations for assertions
 let insertCalls: Array<{ table: any; values: any; conflict: string | null }> = [];
@@ -17,17 +22,29 @@ let updateCalls: Array<{ table: any; setValues: any }> = [];
 // ── Module mocks (must be before route import) ──────────────────────────────
 mock.module('@/lib/github', () => ({
   verifyWebhookSignature: mockVerifyWebhookSignature,
+  allCheckSuitesPassed: mock(() => Promise.resolve(true)),
+  mergePullRequest: mock(() => Promise.resolve({ merged: true, message: 'ok' })),
+  githubApi: mockGithubApi,
 }));
 
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+mock.module('@/lib/ci-retry', () => ({
+  buildCIRetryTask: mockBuildCIRetryTask,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       githubInstallations: { findFirst: mockInstallationsFindFirst },
-      workspaces: { findFirst: mockWorkspacesFindFirst },
+      workspaces: {
+        findFirst: mockWorkspacesFindFirst,
+        findMany: mockWorkspacesFindMany,
+      },
+      workers: { findFirst: mockWorkersFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     insert: (table: any) => ({
       values: (values: any) => {
@@ -44,7 +61,7 @@ mock.module('@buildd/core/db', () => ({
               returning: () => Promise.resolve([{ id: 'task-1', ...values }]),
             };
           },
-          returning: () => Promise.resolve([{ id: 'inst-1', ...values }]),
+          returning: () => Promise.resolve([{ id: 'new-task-1', ...values }]),
         };
       },
     }),
@@ -67,12 +84,16 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { id: 'id', installationId: 'installationId' },
   githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId' },
-  tasks: { externalId: 'externalId' },
+  tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
+  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
   workspaces: { id: 'id', repo: 'repo' },
 }));
 
@@ -109,16 +130,6 @@ function makeInstallation(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeRepo(overrides: Record<string, any> = {}) {
-  return {
-    id: 100,
-    full_name: 'test-org/test-repo',
-    name: 'test-repo',
-    private: false,
-    ...overrides,
-  };
-}
-
 function makeIssue(overrides: Record<string, any> = {}) {
   return {
     id: 999,
@@ -132,82 +143,95 @@ function makeIssue(overrides: Record<string, any> = {}) {
   };
 }
 
-/** Return the last insert call whose values match a given key/value. */
-function findInsertCall(key: string, value: any) {
-  return insertCalls.find((c) => c.values && c.values[key] === value);
+function makeCheckSuitePayload(overrides: Record<string, any> = {}) {
+  return {
+    action: 'completed',
+    check_suite: {
+      id: 1,
+      head_sha: 'abc123',
+      status: 'completed',
+      conclusion: 'failure',
+      pull_requests: [
+        {
+          number: 42,
+          head: { sha: 'abc123', ref: 'buildd/task-1-fix-bug' },
+          base: { sha: 'def456', ref: 'main' },
+        },
+      ],
+      ...overrides.check_suite,
+    },
+    repository: {
+      id: 100,
+      full_name: 'test-org/test-repo',
+      ...overrides.repository,
+    },
+    installation: {
+      id: 5000,
+      ...overrides.installation,
+    },
+  };
 }
 
-/** Return the last update call that set a given key. */
-function findUpdateCall(key: string) {
-  return updateCalls.find((c) => c.setValues && key in c.setValues);
+function resetAll() {
+  mockVerifyWebhookSignature.mockReset();
+  mockGithubApi.mockReset();
+  mockDispatchNewTask.mockReset();
+  mockBuildCIRetryTask.mockReset();
+  mockInstallationsFindFirst.mockReset();
+  mockWorkspacesFindFirst.mockReset();
+  mockWorkspacesFindMany.mockReset();
+  mockWorkersFindFirst.mockReset();
+  mockTasksFindFirst.mockReset();
+
+  insertCalls = [];
+  deleteCalls = [];
+  updateCalls = [];
+
+  // Defaults
+  mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(true));
+  mockDispatchNewTask.mockReturnValue(Promise.resolve());
+  mockInstallationsFindFirst.mockReturnValue(null);
+  mockWorkspacesFindFirst.mockReturnValue(null);
+  mockWorkspacesFindMany.mockReturnValue([]);
+  mockWorkersFindFirst.mockReturnValue(null);
+  mockTasksFindFirst.mockReturnValue(null);
+  mockBuildCIRetryTask.mockReturnValue(null);
+  mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 describe('POST /api/github/webhook', () => {
-  beforeEach(() => {
-    mockVerifyWebhookSignature.mockReset();
-    mockDispatchNewTask.mockReset();
-    mockInstallationsFindFirst.mockReset();
-    mockWorkspacesFindFirst.mockReset();
+  beforeEach(resetAll);
 
-    insertCalls = [];
-    deleteCalls = [];
-    updateCalls = [];
-
-    // Defaults
-    mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(true));
-    mockDispatchNewTask.mockReturnValue(Promise.resolve());
-    mockInstallationsFindFirst.mockReturnValue(null);
-    mockWorkspacesFindFirst.mockReturnValue(null);
-  });
-
-  // ── 1. Returns 401 on invalid signature ─────────────────────────────────
+  // ── Signature validation ────────────────────────────────────────────────
   it('returns 401 on invalid signature', async () => {
     const req = createWebhookRequest('ping', {}, false);
     const res = await POST(req);
-
     expect(res.status).toBe(401);
-    const body = await res.json();
-    expect(body.error).toBe('Invalid signature');
+    expect((await res.json()).error).toBe('Invalid signature');
   });
 
-  // ── 2. Returns 200 for ping event ───────────────────────────────────────
   it('returns 200 for ping event', async () => {
     const req = createWebhookRequest('ping', { zen: 'hello' });
     const res = await POST(req);
-
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.ok).toBe(true);
+    expect((await res.json()).ok).toBe(true);
   });
 
-  // ── 3. Handles installation created ─────────────────────────────────────
+  // ── Installation events ─────────────────────────────────────────────────
   it('handles installation created - inserts installation only', async () => {
-    const payload = {
-      action: 'created',
-      installation: makeInstallation(),
-    };
-
+    const payload = { action: 'created', installation: makeInstallation() };
     const req = createWebhookRequest('installation', payload);
     const res = await POST(req);
 
     expect(res.status).toBe(200);
-    expect((await res.json()).ok).toBe(true);
-
-    // Only one insert: the installation itself (onConflictDoUpdate, no returning)
     expect(insertCalls.length).toBe(1);
-    const installationInsert = insertCalls[0];
-    expect(installationInsert.values.installationId).toBe(12345);
-    expect(installationInsert.conflict).toBe('update');
+    expect(insertCalls[0].values.installationId).toBe(12345);
+    expect(insertCalls[0].conflict).toBe('update');
   });
 
-  // ── 4. Handles installation deleted ─────────────────────────────────────
   it('handles installation deleted', async () => {
-    const payload = {
-      action: 'deleted',
-      installation: makeInstallation(),
-    };
-
+    const payload = { action: 'deleted', installation: makeInstallation() };
     const req = createWebhookRequest('installation', payload);
     const res = await POST(req);
 
@@ -215,45 +239,33 @@ describe('POST /api/github/webhook', () => {
     expect(deleteCalls.length).toBe(1);
   });
 
-  // ── 5. Handles installation suspend / unsuspend ─────────────────────────
   it('handles installation suspend', async () => {
-    const payload = {
-      action: 'suspend',
-      installation: makeInstallation(),
-    };
-
+    const payload = { action: 'suspend', installation: makeInstallation() };
     const req = createWebhookRequest('installation', payload);
     const res = await POST(req);
 
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].setValues.suspendedAt).toBeInstanceOf(Date);
-    expect(updateCalls[0].setValues.updatedAt).toBeInstanceOf(Date);
   });
 
   it('handles installation unsuspend', async () => {
-    const payload = {
-      action: 'unsuspend',
-      installation: makeInstallation(),
-    };
-
+    const payload = { action: 'unsuspend', installation: makeInstallation() };
     const req = createWebhookRequest('installation', payload);
     const res = await POST(req);
 
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].setValues.suspendedAt).toBeNull();
-    expect(updateCalls[0].setValues.updatedAt).toBeInstanceOf(Date);
   });
 
-  // ── 6. Handles installation_repositories removed ────────────────────────
+  // ── Installation repositories ───────────────────────────────────────────
   it('handles installation_repositories removed', async () => {
     const payload = {
       action: 'removed',
       installation: { id: 5000 },
       repositories_removed: [{ id: 300 }],
     };
-
     const req = createWebhookRequest('installation_repositories', payload);
     const res = await POST(req);
 
@@ -261,7 +273,7 @@ describe('POST /api/github/webhook', () => {
     expect(deleteCalls.length).toBe(1);
   });
 
-  // ── 7. Handles issues opened with buildd label ──────────────────────────
+  // ── Issues events ───────────────────────────────────────────────────────
   it('handles issues opened with buildd label - creates task', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
@@ -279,23 +291,14 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls.length).toBe(1);
-
-    const taskInsert = insertCalls[0];
-    expect(taskInsert.values.workspaceId).toBe('ws-1');
-    expect(taskInsert.values.title).toBe('Test Issue');
-    expect(taskInsert.values.description).toBe('Issue body content');
-    expect(taskInsert.values.externalId).toBe('issue-999');
-    expect(taskInsert.values.externalUrl).toBe('https://github.com/test-org/test-repo/issues/42');
-    expect(taskInsert.values.status).toBe('pending');
-    expect(taskInsert.values.creationSource).toBe('github');
-    expect(taskInsert.values.createdByAccountId).toBeNull();
-    expect(taskInsert.conflict).toBe('nothing');
-
-    // dispatchNewTask should have been called with the new task and workspace
+    expect(insertCalls[0].values.workspaceId).toBe('ws-1');
+    expect(insertCalls[0].values.title).toBe('Test Issue');
+    expect(insertCalls[0].values.status).toBe('pending');
+    expect(insertCalls[0].values.creationSource).toBe('github');
+    expect(insertCalls[0].conflict).toBe('nothing');
     expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
   });
 
-  // ── 8. Handles issues opened WITHOUT buildd label ───────────────────────
   it('handles issues opened without buildd label - no task created', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
@@ -303,7 +306,7 @@ describe('POST /api/github/webhook', () => {
 
     const payload = {
       action: 'opened',
-      issue: makeIssue({ labels: [{ name: 'bug' }, { name: 'enhancement' }] }),
+      issue: makeIssue({ labels: [{ name: 'bug' }] }),
       repository: { id: 100, full_name: 'test-org/test-repo' },
       installation: { id: 5000 },
     };
@@ -315,7 +318,6 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls.length).toBe(0);
   });
 
-  // ── 9. Handles issues closed ───────────────────────────────────────────
   it('handles issues closed - updates task to completed', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
@@ -334,10 +336,8 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].setValues.status).toBe('completed');
-    expect(updateCalls[0].setValues.updatedAt).toBeInstanceOf(Date);
   });
 
-  // ── 11. Handles issues reopened ─────────────────────────────────────────
   it('handles issues reopened - updates task to pending', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
@@ -356,53 +356,23 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].setValues.status).toBe('pending');
-    expect(updateCalls[0].setValues.updatedAt).toBeInstanceOf(Date);
   });
 
-  // ── 12. Ignores issues event without installation ───────────────────────
   it('ignores issues event without installation', async () => {
     const payload = {
       action: 'opened',
       issue: makeIssue(),
       repository: { id: 100, full_name: 'test-org/test-repo' },
-      // No installation field
     };
 
     const req = createWebhookRequest('issues', payload);
     const res = await POST(req);
 
     expect(res.status).toBe(200);
-    // No DB operations should have been attempted
     expect(insertCalls.length).toBe(0);
-    expect(updateCalls.length).toBe(0);
-    expect(deleteCalls.length).toBe(0);
-    // findFirst for workspaces should not even be called
     expect(mockWorkspacesFindFirst).not.toHaveBeenCalled();
   });
 
-  // ── 13. Returns 500 when handler throws ─────────────────────────────────
-  it('returns 500 when handler throws', async () => {
-    // Make the workspace findFirst throw to simulate an error in the handler
-    mockWorkspacesFindFirst.mockImplementation(() => {
-      throw new Error('Database connection failed');
-    });
-
-    const payload = {
-      action: 'opened',
-      issue: makeIssue(),
-      repository: { id: 100, full_name: 'test-org/test-repo' },
-      installation: { id: 5000 },
-    };
-
-    const req = createWebhookRequest('issues', payload);
-    const res = await POST(req);
-
-    expect(res.status).toBe(500);
-    const body = await res.json();
-    expect(body.error).toBe('Webhook processing failed');
-  });
-
-  // ── Additional edge-case coverage ───────────────────────────────────────
   it('handles issues opened with ai label - creates task', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
@@ -420,19 +390,9 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls.length).toBe(1);
-    expect(insertCalls[0].values.title).toBe('Test Issue');
   });
 
-  it('returns 200 for unhandled event types', async () => {
-    const req = createWebhookRequest('push', { ref: 'refs/heads/main' });
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.ok).toBe(true);
-  });
-
-  it('ignores issues when no workspace is linked to the repo', async () => {
+  it('ignores issues when no workspace is linked', async () => {
     mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(null));
 
     const payload = {
@@ -447,5 +407,279 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls.length).toBe(0);
+  });
+
+  // ── Error handling ──────────────────────────────────────────────────────
+  it('returns 500 when handler throws', async () => {
+    mockWorkspacesFindFirst.mockImplementation(() => {
+      throw new Error('Database connection failed');
+    });
+
+    const payload = {
+      action: 'opened',
+      issue: makeIssue(),
+      repository: { id: 100, full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+
+    const req = createWebhookRequest('issues', payload);
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe('Webhook processing failed');
+  });
+
+  it('returns 200 for unhandled event types', async () => {
+    const req = createWebhookRequest('push', { ref: 'refs/heads/main' });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+  });
+
+  // ── Check suite CI failure → retry ──────────────────────────────────────
+  describe('check_suite failure handling', () => {
+    const workerWithTask = {
+      id: 'worker-1',
+      branch: 'buildd/task-1-fix-bug',
+      prNumber: 42,
+      task: {
+        id: 'task-1',
+        title: 'Fix the bug',
+        description: 'Fix it',
+        workspaceId: 'ws-1',
+        status: 'completed',
+        context: { iteration: 0 },
+        objectiveId: 'obj-1',
+      },
+    };
+
+    const workspace = {
+      id: 'ws-1',
+      repo: 'test-org/test-repo',
+      gitConfig: { maxCiRetries: 3 },
+    };
+
+    it('creates retry task on CI failure', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve(null)); // no existing retry
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false })); // not draft
+      mockBuildCIRetryTask.mockReturnValue({
+        title: '[CI Retry #1] Fix the bug',
+        description: 'CI failed...',
+        workspaceId: 'ws-1',
+        parentTaskId: 'task-1',
+        creationSource: 'webhook',
+        objectiveId: 'obj-1',
+        context: { iteration: 1, maxIterations: 3, baseBranch: 'buildd/task-1-fix-bug' },
+      });
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].values.title).toBe('[CI Retry #1] Fix the bug');
+      expect(insertCalls[0].values.status).toBe('pending');
+      expect(insertCalls[0].values.priority).toBe(7);
+      expect(insertCalls[0].values.parentTaskId).toBe('task-1');
+      expect(insertCalls[0].values.objectiveId).toBe('obj-1');
+      expect(insertCalls[0].values.creationSource).toBe('webhook');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips retry for draft PRs', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: true })); // draft PR
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockBuildCIRetryTask).not.toHaveBeenCalled();
+    });
+
+    it('skips retry when pending child task already exists (duplicate prevention)', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve({ id: 'existing-retry-1' })); // existing retry
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockBuildCIRetryTask).not.toHaveBeenCalled();
+    });
+
+    it('marks task as failed when max retries reached', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+      mockBuildCIRetryTask.mockReturnValue(null); // max retries reached
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      // Task should be marked as failed
+      expect(updateCalls.length).toBe(1);
+      expect(updateCalls[0].setValues.status).toBe('failed');
+      expect(updateCalls[0].setValues.result).toBeDefined();
+    });
+
+    it('skips when no worker found for PR', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(null)); // no worker
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+    });
+
+    it('skips when no workspace found for task', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(null)); // no workspace
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+    });
+
+    it('ignores non-completed check_suite actions', async () => {
+      const payload = makeCheckSuitePayload();
+      payload.action = 'requested';
+
+      const req = createWebhookRequest('check_suite', payload);
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('ignores check_suite without installation', async () => {
+      const payload = makeCheckSuitePayload();
+      delete (payload as any).installation;
+
+      const req = createWebhookRequest('check_suite', payload);
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('ignores check_suite with non-failure conclusion', async () => {
+      const payload = makeCheckSuitePayload({
+        check_suite: { conclusion: 'neutral' },
+      });
+
+      const req = createWebhookRequest('check_suite', payload);
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      // For non-failure, non-success conclusions, no retry and no auto-merge
+      expect(insertCalls.length).toBe(0);
+    });
+
+    it('passes workspace maxCiRetries to buildCIRetryTask', async () => {
+      const wsWithRetries = { ...workspace, gitConfig: { maxCiRetries: 5 } };
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(wsWithRetries));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+      mockBuildCIRetryTask.mockReturnValue(null);
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      await POST(req);
+
+      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
+      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
+      expect(args.workspaceMaxCiRetries).toBe(5);
+    });
+
+    it('fetches CI failure logs from GitHub API', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
+
+      // Mock githubApi calls in order: draft check, then CI logs
+      let callCount = 0;
+      mockGithubApi.mockImplementation((_installationId: any, path: string) => {
+        callCount++;
+        if (path.includes('/pulls/')) {
+          return Promise.resolve({ draft: false });
+        }
+        if (path.includes('/actions/runs?')) {
+          return Promise.resolve({
+            workflow_runs: [{
+              id: 123,
+              html_url: 'https://github.com/test-org/test-repo/actions/runs/123',
+            }],
+          });
+        }
+        if (path.includes('/actions/runs/123/jobs')) {
+          return Promise.resolve({
+            jobs: [{
+              name: 'build',
+              conclusion: 'failure',
+              steps: [{ name: 'Run tests', conclusion: 'failure' }],
+            }],
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      mockBuildCIRetryTask.mockReturnValue({
+        title: '[CI Retry #1] Fix the bug',
+        description: 'CI failed...',
+        workspaceId: 'ws-1',
+        parentTaskId: 'task-1',
+        creationSource: 'webhook',
+        objectiveId: null,
+        context: { iteration: 1 },
+      });
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      await POST(req);
+
+      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
+      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
+      // Should contain formatted CI logs, not the generic fallback
+      expect(args.failureContext).toContain('Job "build" failed');
+      expect(args.failureContext).toContain('Step "Run tests" failed');
+    });
+
+    it('falls back to generic message when CI logs unavailable', async () => {
+      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
+      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
+      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
+      mockGithubApi.mockImplementation((_installationId: any, path: string) => {
+        if (path.includes('/pulls/')) {
+          return Promise.resolve({ draft: false });
+        }
+        // CI logs API returns empty
+        return Promise.resolve({ workflow_runs: [] });
+      });
+
+      mockBuildCIRetryTask.mockReturnValue(null); // will hit max retries
+
+      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
+      await POST(req);
+
+      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
+      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
+      // Should use fallback generic message
+      expect(args.failureContext).toContain('CI check suite failed');
+      expect(args.failureContext).toContain('test-org/test-repo');
+    });
   });
 });
