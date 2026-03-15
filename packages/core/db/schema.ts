@@ -228,6 +228,7 @@ export interface TaskResult {
   prUrl?: string;
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
+  mcpServers?: string[];
 }
 
 // Per-model token usage from SDK result
@@ -417,6 +418,14 @@ export const workers = pgTable('workers', {
   }>>(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
+  // MCP tool call log - appended by runner during execution
+  mcpCalls: jsonb('mcp_calls').default([]).$type<Array<{
+    server: string;
+    tool: string;
+    ts: number;
+    ok: boolean;
+    durationMs?: number;
+  }>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

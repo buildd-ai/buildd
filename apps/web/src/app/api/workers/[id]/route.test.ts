@@ -934,6 +934,180 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBeUndefined();
   });
 
+  describe('appendMcpCalls', () => {
+    it('merges new MCP calls with existing', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: [{ server: 'github', tool: 'list_issues', ts: 1000, ok: true }],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [{ server: 'slack', tool: 'send_message', ts: 2000, ok: true, durationMs: 150 }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.mcpCalls).toHaveLength(2);
+      expect(capturedSet.mcpCalls[0].server).toBe('github');
+      expect(capturedSet.mcpCalls[1].server).toBe('slack');
+      expect(capturedSet.mcpCalls[1].durationMs).toBe(150);
+    });
+
+    it('caps MCP calls at 100 entries', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      const existing = Array.from({ length: 98 }, (_, i) => ({ server: 'gh', tool: `t${i}`, ts: i, ok: true }));
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: existing,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [
+            { server: 'slack', tool: 'a', ts: 200, ok: true },
+            { server: 'slack', tool: 'b', ts: 201, ok: true },
+            { server: 'slack', tool: 'c', ts: 202, ok: false },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // 98 + 3 = 101, capped to last 100
+      expect(capturedSet.mcpCalls).toHaveLength(100);
+      expect(capturedSet.mcpCalls[99].tool).toBe('c');
+    });
+
+    it('handles null existing mcpCalls', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: null,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [{ server: 'github', tool: 'create_pr', ts: 1000, ok: true }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.mcpCalls).toHaveLength(1);
+      expect(capturedSet.mcpCalls[0].server).toBe('github');
+    });
+
+    it('snapshots unique mcpServers into task.result on completion', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return {
+            where: mock(() => Promise.resolve()),
+          };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        mcpCalls: [
+          { server: 'github', tool: 'list_issues', ts: 1000, ok: true },
+          { server: 'slack', tool: 'send_message', ts: 2000, ok: true },
+          { server: 'github', tool: 'create_pr', ts: 3000, ok: true },
+        ],
+        milestones: null,
+        waitingFor: null,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet).not.toBeNull();
+      expect(capturedTaskSet.result.mcpServers).toEqual(['github', 'slack']);
+    });
+  });
+
   describe('auto-artifact creation', () => {
     it('auto-creates artifact on heartbeat task completion', async () => {
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
