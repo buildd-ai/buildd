@@ -9,11 +9,11 @@ export default function SkillsSection({ workspaces }: { workspaces: Workspace[] 
   return (
     <section>
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">Skills</h2>
+        <h2 className="section-label">Skills</h2>
       </div>
 
-      <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-        <p className="text-text-secondary text-sm">Skills are managed per workspace</p>
+      <div className="card p-6 text-center">
+        <p className="text-text-muted text-sm">Skills are managed per workspace</p>
         <p className="text-xs text-text-muted mt-1">
           Skills are reusable agent instructions (SKILL.md files) that give workers domain-specific expertise.
         </p>
