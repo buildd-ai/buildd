@@ -222,20 +222,7 @@ if (envApiKey) {
   apiKeySource = 'config';
 }
 
-// Log config source clearly
-console.log('');
-console.log('Config:');
-console.log(`  File: ${CONFIG_FILE}`);
-if (apiKeySource === 'env') {
-  console.log(`  API Key: from BUILDD_API_KEY env var (${resolvedApiKey.slice(0, 10)}...${resolvedApiKey.slice(-4)})`);
-  console.log('  Note: Env var overrides config.json. Unset BUILDD_API_KEY to use saved config.');
-} else if (apiKeySource === 'config') {
-  console.log(`  API Key: from config.json (${resolvedApiKey.slice(0, 10)}...${resolvedApiKey.slice(-4)})`);
-} else {
-  console.log('  API Key: not configured');
-}
-console.log(`  Serverless: ${savedConfig.serverless || false}`);
-console.log('');
+// Config source logged in startup banner below
 
 // Repos cache
 interface CachedRepo {
@@ -251,7 +238,7 @@ function loadReposCache(): CachedRepo[] | null {
     if (existsSync(REPOS_CACHE_FILE)) {
       const data = JSON.parse(readFileSync(REPOS_CACHE_FILE, 'utf-8'));
       if (data.repos && Array.isArray(data.repos)) {
-        console.log(`Loaded ${data.repos.length} repos from cache`);
+        // Loaded from cache (shown in banner)
         return data.repos;
       }
     }
@@ -390,6 +377,53 @@ const config: LocalUIConfig = {
 };
 
 const resolver = createWorkspaceResolver(projectRoots);
+const localUrl = `http://localhost:${PORT}`;
+
+// ── Startup banner ──────────────────────────────────────────────────────────
+{
+  const DIM = '\x1b[2m';
+  const RESET = '\x1b[0m';
+  const BOLD = '\x1b[1m';
+  const WARM = '\x1b[38;2;138;132;128m';
+  const GREEN = '\x1b[38;2;52;211;153m';
+  const RED = '\x1b[38;2;248;113;113m';
+  const AMBER = '\x1b[38;2;200;149;106m';
+
+  const repos = getRepos();
+
+  console.log('');
+  console.log(`   ${DIM}buildd${RESET} ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${RESET}`);
+  console.log(`${DIM}   ${'─'.repeat(40)}${RESET}`);
+
+  const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${DIM}headless${RESET}`;
+  const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
+  console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
+  console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
+
+  const keyDisplay = config.apiKey
+    ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
+    : `${RED}not set${RESET}`;
+  console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
+
+  if (DEBUG_MODE) {
+    console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
+    if (config.localUiUrl && config.localUiUrl !== localUrl) {
+      console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
+    }
+  }
+
+  console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
+
+  if (!config.apiKey && !config.serverless) {
+    console.log('');
+    if (DEBUG_MODE) {
+      console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
+    } else {
+      console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
+    }
+  }
+  console.log('');
+}
 
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
@@ -2127,67 +2161,7 @@ const server = DEBUG_MODE ? Bun.serve({
   },
 }) : null;
 
-const localUrl = `http://localhost:${PORT}`;
-
-// ── Startup banner ──────────────────────────────────────────────────────────
-
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const AMBER = '\x1b[38;2;200;149;106m';   // warm charcoal accent #c8956a
-const WARM = '\x1b[38;2;138;132;128m';     // muted warm gray
-const GREEN = '\x1b[38;2;52;211;153m';     // status-success
-const RED = '\x1b[38;2;248;113;113m';      // status-error
-
-const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
-
-// Amber gradient hero — each line subtly shifts warmth
-const A1 = '\x1b[38;2;210;160;110m';
-const A2 = '\x1b[38;2;200;149;106m';
-const A3 = '\x1b[38;2;185;138;100m';
-const A4 = '\x1b[38;2;168;126;92m';
-const A5 = '\x1b[38;2;148;112;82m';
-
-console.log('');
-console.log(`${A1}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
-console.log(`${A2}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
-console.log(`${A3}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A4}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A5}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
-console.log(`${DIM}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
-console.log('');
-console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
-console.log(`${DIM}   ${'─'.repeat(48)}${RESET}`);
-
-// Status lines
-const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;
-const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
-console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
-console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
-const keyDisplay = config.apiKey
-  ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
-  : `${RED}not set${RESET}`;
-console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
-if (DEBUG_MODE) {
-  console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
-  if (config.localUiUrl && config.localUiUrl !== localUrl) {
-    console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
-  }
-}
-
-const repos = getRepos(); // Use cached, will scan only if no cache
-console.log('');
-console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
-
-if (!config.apiKey && !config.serverless) {
-  console.log('');
-  if (DEBUG_MODE) {
-    console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
-  } else {
-    console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
-  }
-}
-console.log('');
+// (banner printed at startup above)
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)
 async function autoInstallMcp() {
