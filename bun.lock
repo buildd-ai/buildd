@@ -17,7 +17,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.37.0",
+      "version": "0.41.3",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.76",
         "@buildd/shared": "workspace:*",
@@ -32,7 +32,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.37.0",
+      "version": "0.41.3",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
@@ -56,6 +56,7 @@
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "react-markdown": "^10.1.0",
+        "zod-to-json-schema": "^3.25.1",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -70,7 +71,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.37.0",
+      "version": "0.41.3",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.2.76",
         "@buildd/shared": "workspace:*",
@@ -97,7 +98,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.37.0",
+      "version": "0.41.3",
       "devDependencies": {
         "typescript": "^5.4.0",
       },
