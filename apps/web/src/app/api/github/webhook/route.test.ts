@@ -7,7 +7,6 @@ import { NextRequest } from 'next/server';
 const mockVerifyWebhookSignature = mock(() => Promise.resolve(true));
 const mockGithubApi = mock(() => Promise.resolve(null) as any);
 const mockDispatchNewTask = mock(() => Promise.resolve());
-const mockBuildCIRetryTask = mock(() => null as any);
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any);
@@ -29,10 +28,6 @@ mock.module('@/lib/github', () => ({
 
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
-}));
-
-mock.module('@/lib/ci-retry', () => ({
-  buildCIRetryTask: mockBuildCIRetryTask,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -86,7 +81,6 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
-  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -176,7 +170,6 @@ function resetAll() {
   mockVerifyWebhookSignature.mockReset();
   mockGithubApi.mockReset();
   mockDispatchNewTask.mockReset();
-  mockBuildCIRetryTask.mockReset();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
   mockWorkspacesFindMany.mockReset();
@@ -195,7 +188,6 @@ function resetAll() {
   mockWorkspacesFindMany.mockReturnValue([]);
   mockWorkersFindFirst.mockReturnValue(null);
   mockTasksFindFirst.mockReturnValue(null);
-  mockBuildCIRetryTask.mockReturnValue(null);
   mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
 }
 
@@ -437,122 +429,16 @@ describe('POST /api/github/webhook', () => {
     expect((await res.json()).ok).toBe(true);
   });
 
-  // ── Check suite CI failure → retry ──────────────────────────────────────
-  describe('check_suite failure handling', () => {
-    const workerWithTask = {
-      id: 'worker-1',
-      branch: 'buildd/task-1-fix-bug',
-      prNumber: 42,
-      task: {
-        id: 'task-1',
-        title: 'Fix the bug',
-        description: 'Fix it',
-        workspaceId: 'ws-1',
-        status: 'completed',
-        context: { iteration: 0 },
-        objectiveId: 'obj-1',
-      },
-    };
-
-    const workspace = {
-      id: 'ws-1',
-      repo: 'test-org/test-repo',
-      gitConfig: { maxCiRetries: 3 },
-    };
-
-    it('creates retry task on CI failure', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve(null)); // no existing retry
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false })); // not draft
-      mockBuildCIRetryTask.mockReturnValue({
-        title: '[CI Retry #1] Fix the bug',
-        description: 'CI failed...',
-        workspaceId: 'ws-1',
-        parentTaskId: 'task-1',
-        creationSource: 'webhook',
-        objectiveId: 'obj-1',
-        context: { iteration: 1, maxIterations: 3, baseBranch: 'buildd/task-1-fix-bug' },
-      });
-
+  // ── Check suite handling ────────────────────────────────────────────────
+  describe('check_suite handling', () => {
+    it('logs CI failure without creating retry tasks', async () => {
       const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
       const res = await POST(req);
 
       expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(1);
-      expect(insertCalls[0].values.title).toBe('[CI Retry #1] Fix the bug');
-      expect(insertCalls[0].values.status).toBe('pending');
-      expect(insertCalls[0].values.priority).toBe(7);
-      expect(insertCalls[0].values.parentTaskId).toBe('task-1');
-      expect(insertCalls[0].values.objectiveId).toBe('obj-1');
-      expect(insertCalls[0].values.creationSource).toBe('webhook');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
-    });
-
-    it('skips retry for draft PRs', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: true })); // draft PR
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      const res = await POST(req);
-
-      expect(res.status).toBe(200);
+      // No retry tasks created — CI retry infrastructure removed
       expect(insertCalls.length).toBe(0);
-      expect(mockBuildCIRetryTask).not.toHaveBeenCalled();
-    });
-
-    it('skips retry when pending child task already exists (duplicate prevention)', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve({ id: 'existing-retry-1' })); // existing retry
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      const res = await POST(req);
-
-      expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
-      expect(mockBuildCIRetryTask).not.toHaveBeenCalled();
-    });
-
-    it('marks task as failed when max retries reached', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
-      mockBuildCIRetryTask.mockReturnValue(null); // max retries reached
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      const res = await POST(req);
-
-      expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
-      // Task should be marked as failed
-      expect(updateCalls.length).toBe(1);
-      expect(updateCalls[0].setValues.status).toBe('failed');
-      expect(updateCalls[0].setValues.result).toBeDefined();
-    });
-
-    it('skips when no worker found for PR', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(null)); // no worker
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      const res = await POST(req);
-
-      expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
-    });
-
-    it('skips when no workspace found for task', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(null)); // no workspace
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      const res = await POST(req);
-
-      expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
 
     it('ignores non-completed check_suite actions', async () => {
@@ -563,7 +449,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(req);
 
       expect(res.status).toBe(200);
-      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+      expect(insertCalls.length).toBe(0);
     });
 
     it('ignores check_suite without installation', async () => {
@@ -574,7 +460,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(req);
 
       expect(res.status).toBe(200);
-      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+      expect(insertCalls.length).toBe(0);
     });
 
     it('ignores check_suite with non-failure conclusion', async () => {
@@ -586,100 +472,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(req);
 
       expect(res.status).toBe(200);
-      // For non-failure, non-success conclusions, no retry and no auto-merge
       expect(insertCalls.length).toBe(0);
-    });
-
-    it('passes workspace maxCiRetries to buildCIRetryTask', async () => {
-      const wsWithRetries = { ...workspace, gitConfig: { maxCiRetries: 5 } };
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(wsWithRetries));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
-      mockBuildCIRetryTask.mockReturnValue(null);
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      await POST(req);
-
-      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
-      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
-      expect(args.workspaceMaxCiRetries).toBe(5);
-    });
-
-    it('fetches CI failure logs from GitHub API', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
-
-      // Mock githubApi calls in order: draft check, then CI logs
-      let callCount = 0;
-      mockGithubApi.mockImplementation((_installationId: any, path: string) => {
-        callCount++;
-        if (path.includes('/pulls/')) {
-          return Promise.resolve({ draft: false });
-        }
-        if (path.includes('/actions/runs?')) {
-          return Promise.resolve({
-            workflow_runs: [{
-              id: 123,
-              html_url: 'https://github.com/test-org/test-repo/actions/runs/123',
-            }],
-          });
-        }
-        if (path.includes('/actions/runs/123/jobs')) {
-          return Promise.resolve({
-            jobs: [{
-              name: 'build',
-              conclusion: 'failure',
-              steps: [{ name: 'Run tests', conclusion: 'failure' }],
-            }],
-          });
-        }
-        return Promise.resolve(null);
-      });
-
-      mockBuildCIRetryTask.mockReturnValue({
-        title: '[CI Retry #1] Fix the bug',
-        description: 'CI failed...',
-        workspaceId: 'ws-1',
-        parentTaskId: 'task-1',
-        creationSource: 'webhook',
-        objectiveId: null,
-        context: { iteration: 1 },
-      });
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      await POST(req);
-
-      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
-      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
-      // Should contain formatted CI logs, not the generic fallback
-      expect(args.failureContext).toContain('Job "build" failed');
-      expect(args.failureContext).toContain('Step "Run tests" failed');
-    });
-
-    it('falls back to generic message when CI logs unavailable', async () => {
-      mockWorkersFindFirst.mockReturnValue(Promise.resolve(workerWithTask));
-      mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(workspace));
-      mockTasksFindFirst.mockReturnValue(Promise.resolve(null));
-      mockGithubApi.mockImplementation((_installationId: any, path: string) => {
-        if (path.includes('/pulls/')) {
-          return Promise.resolve({ draft: false });
-        }
-        // CI logs API returns empty
-        return Promise.resolve({ workflow_runs: [] });
-      });
-
-      mockBuildCIRetryTask.mockReturnValue(null); // will hit max retries
-
-      const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
-      await POST(req);
-
-      expect(mockBuildCIRetryTask).toHaveBeenCalledTimes(1);
-      const args = mockBuildCIRetryTask.mock.calls[0][0] as any;
-      // Should use fallback generic message
-      expect(args.failureContext).toContain('CI check suite failed');
-      expect(args.failureContext).toContain('test-org/test-repo');
     });
   });
 });
