@@ -15,6 +15,7 @@ export interface CIRetryParams {
     description: string | null;
     workspaceId: string;
     context: Record<string, unknown> | null;
+    objectiveId?: string | null;
   };
   worker: {
     id: string;
@@ -23,6 +24,8 @@ export interface CIRetryParams {
   };
   failureContext: string;
   repoFullName: string;
+  /** Workspace-level max CI retries (from gitConfig.maxCiRetries). Overrides task-level maxIterations. */
+  workspaceMaxCiRetries?: number;
 }
 
 export interface CIRetryTask {
@@ -31,6 +34,7 @@ export interface CIRetryTask {
   workspaceId: string;
   parentTaskId: string;
   creationSource: 'webhook';
+  objectiveId: string | null;
   context: Record<string, unknown>;
 }
 
@@ -40,11 +44,12 @@ export interface CIRetryTask {
  * Returns null if the max iteration count has been reached (prevents infinite loops).
  */
 export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
-  const { originalTask, worker, failureContext, repoFullName } = params;
+  const { originalTask, worker, failureContext, repoFullName, workspaceMaxCiRetries } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
-  const maxIterations = typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_ITERATIONS;
+  // Priority: workspace gitConfig.maxCiRetries > task context.maxIterations > default 3
+  const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_ITERATIONS);
 
   // Guard against infinite retry loops
   if (currentIteration >= maxIterations) {
@@ -64,6 +69,8 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
+    // Inherit objectiveId from original task (mission awareness)
+    objectiveId: originalTask.objectiveId ?? null,
     context: {
       // Branch continuity — new worker starts from previous attempt's branch
       baseBranch: worker.branch,

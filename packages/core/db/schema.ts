@@ -171,6 +171,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task via task.context.useBackgroundAgents.
   useBackgroundAgents?: boolean;
 
+  // CI failure auto-retry: max number of retry attempts when CI fails on a worker's PR
+  // Defaults to 3 if not set. Set to 0 to disable CI retries entirely.
+  maxCiRetries?: number;
+
   // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
