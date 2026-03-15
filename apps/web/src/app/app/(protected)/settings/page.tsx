@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/l
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
+import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -180,6 +181,17 @@ export default async function SettingsPage() {
             </div>
           </section>
         )}
+        {/* Sign Out */}
+        <section>
+          <h2 className="section-label mb-4">Account</h2>
+          <div className="card p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Sign out</p>
+              <p className="text-xs text-text-muted mt-0.5">Sign out of your account on this device</p>
+            </div>
+            <SignOutButton />
+          </div>
+        </section>
       </div>
     </main>
   );

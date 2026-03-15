@@ -10,6 +10,7 @@ coverage/
 .next/
 .vercel
 .claude/
+.mcp.json
 *.tsbuildinfo
 .plan
 .buildd-worktrees/
