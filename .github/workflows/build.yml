@@ -137,8 +137,10 @@ jobs:
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
+              set -e
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-              rm -rf /tmp/buildd-ci || { chmod -R u+rwx /tmp/buildd-ci && rm -rf /tmp/buildd-ci; }
+              chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true
+              rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
