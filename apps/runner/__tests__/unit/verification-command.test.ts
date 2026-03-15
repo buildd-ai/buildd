@@ -1,5 +1,5 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { runVerificationCommand, type VerificationResult } from '../../src/verification';
+import { describe, it, expect } from 'bun:test';
+import { runVerificationCommand } from '../../src/verification';
 
 describe('runVerificationCommand', () => {
   it('returns success when command exits with 0', async () => {

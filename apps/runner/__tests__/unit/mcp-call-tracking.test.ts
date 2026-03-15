@@ -86,6 +86,11 @@ mock.module('../../src/history', () => ({
 
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [], labels: { type: 'local' } }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  extractVarReferences: () => [],
+  parseMcpJsonContent: () => [],
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
 }));
 
 import { WorkerManager } from '../../src/workers';
