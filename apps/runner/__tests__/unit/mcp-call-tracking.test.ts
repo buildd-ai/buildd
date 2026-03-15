@@ -84,6 +84,10 @@ mock.module('../../src/history', () => ({
   },
 }));
 
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [], labels: { type: 'local' } }),
+}));
+
 import { WorkerManager } from '../../src/workers';
 
 // ─── Helper to create a minimal WorkerManager and worker ─────────────────────
@@ -173,7 +177,7 @@ describe('MCP call tracking in worker lifecycle', () => {
   });
 
   afterEach(() => {
-    // WorkerManager doesn't have a shutdown method; just let GC handle it
+    manager.destroy();
   });
 
   test('MCP tool_use adds to pendingMcpCalls', async () => {
