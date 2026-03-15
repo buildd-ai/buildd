@@ -26,6 +26,8 @@ const mockAccountsUpdate = mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -44,6 +46,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
+      secrets: { findMany: mockSecretsFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -74,6 +77,21 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
+  secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label' },
+}));
+
+mock.module('@buildd/core/secrets', () => ({
+  getSecretsProvider: () => ({
+    get: mockSecretsProviderGet,
+  }),
+}));
+
+// Stub non-critical modules used by claim route
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+}));
+mock.module('@/lib/notify', () => ({
+  notify: mock(() => {}),
 }));
 
 import { POST } from './route';
@@ -103,9 +121,13 @@ describe('POST /api/workers/claim', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
     mockHeartbeatsFindFirst.mockReset();
+    mockSecretsFindMany.mockReset();
+    mockSecretsProviderGet.mockReset();
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no secrets
+    mockSecretsFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
     // Default: no workspace permissions
@@ -697,5 +719,158 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers.length).toBe(1);
     expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('attaches mcpSecrets when mcp_credential secrets exist for account', async () => {
+    // Set ENCRYPTION_KEY so secrets branch executes
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    // Mock secrets: return mcp_credential secrets for the account
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'secret-1', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
+      { id: 'secret-2', purpose: 'mcp_credential', label: 'SLACK_TOKEN' },
+    ]);
+
+    // provider.get called for each mcp_credential secret (no api_key/oauth found)
+    mockSecretsProviderGet
+      .mockResolvedValueOnce('decrypted-dispatch-key')
+      .mockResolvedValueOnce('decrypted-slack-token');
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].mcpSecrets).toEqual({
+      DISPATCH_API_KEY: 'decrypted-dispatch-key',
+      SLACK_TOKEN: 'decrypted-slack-token',
+    });
+
+    // Restore
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('does not include mcpSecrets when no mcp_credential secrets exist', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockWorkersInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{
+          id: 'worker-1',
+          taskId: 'task-1',
+          branch: 'buildd/test',
+          status: 'idle',
+        }]),
+      })),
+    });
+
+    // No secrets at all
+    mockSecretsFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
   });
 });

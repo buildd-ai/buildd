@@ -1017,7 +1017,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string> },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1089,6 +1089,10 @@ export class WorkerManager {
     }
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
+    }
+    if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
+      worker.mcpSecrets = claimedWorker.mcpSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
     }
 
     this.workers.set(worker.id, worker);
@@ -2094,6 +2098,19 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
 
+      // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
+      if (this.config.apiKey) {
+        cleanEnv.BUILDD_API_KEY = this.config.apiKey;
+      }
+
+      // Inject MCP credential secrets (env vars for MCP server authentication)
+      if (worker.mcpSecrets) {
+        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
+          cleanEnv[envVar] = value;
+        }
+        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
+      }
+
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
@@ -2315,6 +2332,28 @@ export class WorkerManager {
       if (currentSession && currentSession.generation !== generation) {
         console.log(`[Worker ${worker.id}] Session generation mismatch (${generation} vs ${currentSession.generation}) — skipping post-loop cleanup`);
         sessionLog(worker.id, 'info', 'session_superseded', `gen=${generation} replaced by gen=${currentSession.generation}`, worker.taskId);
+        return;
+      }
+
+      // inputAsRetry: AskUserQuestion triggered an abort — mark as failed with structured context.
+      // The waiting_input notification was already synced in handleMessage.
+      if (worker.error?.startsWith('needs_input')) {
+        console.log(`[Worker ${worker.id}] inputAsRetry: marking as failed — ${worker.error}`);
+        sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        worker.status = 'error';
+        worker.currentAction = 'Needs input';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: worker.error,
+          milestones: worker.milestones,
+          ...gitStats,
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
         return;
       }
 
@@ -2843,27 +2882,53 @@ export class WorkerManager {
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
             const firstQuestion = questions?.[0];
             const toolUseId = block.id as string | undefined;
-            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${firstQuestion?.question?.slice(0, 60)}"`);
-            worker.status = 'waiting';
+            const questionText = firstQuestion?.question || 'Awaiting input';
+            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
             worker.waitingFor = {
               type: 'question',
-              prompt: firstQuestion?.question || 'Awaiting input',
+              prompt: questionText,
               options: firstQuestion?.options,
               toolUseId,
             };
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
-            // Immediately sync waiting state to server and disk
-            this.buildd.updateWorker(worker.id, {
-              status: 'waiting_input',
-              currentAction: worker.currentAction,
-              waitingFor: {
-                type: 'question',
-                prompt: firstQuestion?.question || 'Awaiting input',
-                options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-              },
-            }).catch(() => {});
-            storeSaveWorker(worker);
+
+            if (this.config.inputAsRetry) {
+              // inputAsRetry mode: snapshot state, sync notification, then abort.
+              // The ralph-loop retry system will create a follow-up task with the user's answer.
+              console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
+              worker.error = `needs_input: ${questionText}`;
+              // Sync waiting_input to server (triggers Pushover notification) before marking failed
+              this.buildd.updateWorker(worker.id, {
+                status: 'waiting_input',
+                currentAction: worker.currentAction,
+                waitingFor: {
+                  type: 'question',
+                  prompt: questionText,
+                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                },
+              }).catch(() => {});
+              storeSaveWorker(worker);
+              // Abort the subprocess — the post-loop cleanup will detect worker.error
+              // and mark the worker as failed with the needs_input context.
+              const session = this.sessions.get(worker.id);
+              if (session) {
+                session.abortController.abort();
+              }
+            } else {
+              // Default mode: block and wait for user input via the debug UI
+              worker.status = 'waiting';
+              this.buildd.updateWorker(worker.id, {
+                status: 'waiting_input',
+                currentAction: worker.currentAction,
+                waitingFor: {
+                  type: 'question',
+                  prompt: questionText,
+                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                },
+              }).catch(() => {});
+              storeSaveWorker(worker);
+            }
           }
         }
       }

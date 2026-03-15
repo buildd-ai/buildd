@@ -159,6 +159,8 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (redeemed from oauthSecretRef, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // Server-managed MCP credential secrets (label/env var name → decrypted value)
+  mcpSecrets?: Record<string, string>;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
@@ -349,4 +351,9 @@ export interface LocalUIConfig {
   maxBudgetUsd?: number;
   // Maximum turns per worker session (default: no limit)
   maxTurns?: number;
+  // When true, AskUserQuestion triggers abort+retry instead of blocking.
+  // The worker is marked failed with failReason 'needs_input' so the
+  // ralph-loop retry system can create a follow-up task with the user's answer.
+  // When false (default), the existing waiting_input blocking behavior is preserved.
+  inputAsRetry?: boolean;
 }

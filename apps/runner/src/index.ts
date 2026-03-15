@@ -2186,7 +2186,7 @@ async function autoInstallMcp() {
           existing.mcpServers.buildd = {
             type: 'http',
             url: desiredUrl,
-            headers: { Authorization: `Bearer ${config.apiKey}` },
+            headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
           };
           writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2) + '\n');
           console.log(`  Updated MCP config: ${mcpJsonPath}`);
@@ -2202,7 +2202,7 @@ async function autoInstallMcp() {
           buildd: {
             type: 'http',
             url: desiredUrl,
-            headers: { Authorization: `Bearer ${config.apiKey}` },
+            headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
           },
         },
       };

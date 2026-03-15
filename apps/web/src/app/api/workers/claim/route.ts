@@ -485,21 +485,32 @@ export async function POST(req: NextRequest) {
       const accountSecrets = await db.query.secrets.findMany({
         where: and(
           eq(secrets.accountId, account.id),
-          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token']),
+          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
         ),
-        columns: { id: true, purpose: true },
+        columns: { id: true, purpose: true, label: true },
       });
 
       if (accountSecrets.length > 0) {
         const provider = getSecretsProvider();
         const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
         const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
+        const mcpSecrets = accountSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
 
         // Decrypt once, attach to all claimed workers
-        const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
+        const [decryptedApiKey, decryptedOauthToken, ...decryptedMcpValues] = await Promise.all([
           apiKeySecret ? provider.get(apiKeySecret.id) : null,
           oauthSecret ? provider.get(oauthSecret.id) : null,
+          ...mcpSecrets.map(s => provider.get(s.id)),
         ]);
+
+        // Build MCP secrets map: label (env var name) → decrypted value
+        const mcpSecretsMap: Record<string, string> = {};
+        mcpSecrets.forEach((s, i) => {
+          const val = decryptedMcpValues[i];
+          if (val && s.label) {
+            mcpSecretsMap[s.label] = val;
+          }
+        });
 
         for (const cw of claimedWorkers) {
           if (decryptedApiKey) {
@@ -507,6 +518,9 @@ export async function POST(req: NextRequest) {
           }
           if (decryptedOauthToken) {
             (cw as any).serverOauthToken = decryptedOauthToken;
+          }
+          if (Object.keys(mcpSecretsMap).length > 0) {
+            (cw as any).mcpSecrets = mcpSecretsMap;
           }
         }
       }
