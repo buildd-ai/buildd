@@ -1,13 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
-import TeamPanel from './TeamPanel';
-import SessionHistoryPanel from './SessionHistoryPanel';
 
 
 type Milestone =
@@ -55,87 +53,6 @@ interface Props {
   statusColors?: Record<string, string>;
 }
 
-// Probe direct connection to runner and cache viewer token
-function useDirectConnect(localUiUrl: string | null) {
-  const [status, setStatus] = useState<'checking' | 'connected' | 'unavailable'>('checking');
-  const viewerTokenRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!localUiUrl) {
-      setStatus('unavailable');
-      return;
-    }
-
-    // Mixed content: HTTPS dashboard can't reach HTTP runner
-    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && localUiUrl.startsWith('http://')) {
-      setStatus('unavailable');
-      return;
-    }
-
-    let cancelled = false;
-
-    const url = localUiUrl; // capture for closure narrowing
-
-    async function probe() {
-      try {
-        // Fetch viewer token from heartbeat data
-        const activeRes = await fetch('/api/workers/active');
-        if (activeRes.ok) {
-          const data = await activeRes.json();
-          const match = (data.activeLocalUis || []).find(
-            (ui: { localUiUrl: string; viewerToken?: string }) => ui.localUiUrl === url
-          );
-          if (match?.viewerToken) {
-            viewerTokenRef.current = match.viewerToken;
-          }
-        }
-
-        // Ping runner health endpoint
-        const healthUrl = new URL('/health', url);
-        if (viewerTokenRef.current) {
-          healthUrl.searchParams.set('token', viewerTokenRef.current);
-        }
-        const res = await fetch(healthUrl.toString(), {
-          signal: AbortSignal.timeout(3000),
-          mode: 'cors',
-        });
-        if (!cancelled && res.ok) {
-          setStatus('connected');
-        } else if (!cancelled) {
-          setStatus('unavailable');
-        }
-      } catch {
-        if (!cancelled) setStatus('unavailable');
-      }
-    }
-
-    probe();
-    return () => { cancelled = true; };
-  }, [localUiUrl]);
-
-  // Send message directly to runner, returns true on success
-  const sendDirect = useCallback(async (workerId: string, message: string): Promise<boolean> => {
-    if (status !== 'connected' || !localUiUrl) return false;
-    try {
-      const sendUrl = new URL(`/api/workers/${workerId}/send`, localUiUrl);
-      if (viewerTokenRef.current) {
-        sendUrl.searchParams.set('token', viewerTokenRef.current);
-      }
-      const res = await fetch(sendUrl.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-        signal: AbortSignal.timeout(5000),
-        mode: 'cors',
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }, [status, localUiUrl]);
-
-  return { status, sendDirect, viewerToken: viewerTokenRef.current, localUiUrl };
-}
 
 interface TaskProgressEntry {
   taskId: string;
@@ -155,7 +72,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [interruptMode, setInterruptMode] = useState(false);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
-  const { status: directStatus, sendDirect, viewerToken, localUiUrl: resolvedLocalUiUrl } = useDirectConnect(worker.localUiUrl);
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -195,20 +111,10 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   }, [worker.id]);
 
-  // Send answer: try direct connect first, fall back to server instruct
+  // Send answer via server instruct endpoint with urgent priority
   async function handleAnswer(option: string) {
     setAnswerSending(option);
     try {
-      // Try direct connection first (instant delivery via Tailscale/LAN)
-      const directOk = await sendDirect(worker.id, option);
-      if (directOk) {
-        answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
-        setAnswerSent(true);
-        return;
-      }
-
-      // Fall back to server-side instruct endpoint with urgent priority
-      // so the runner gets the message instantly via Pusher (not queued for next sync)
       const res = await fetch(`/api/workers/${worker.id}/instruct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -313,27 +219,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               )}
             </>
           )}
-          {worker.localUiUrl && (
-            <div className={`flex items-center gap-1.5${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:flex' : ''}`}>
-              {directStatus === 'connected' && (
-                <span
-                  className="flex items-center gap-1 px-2 py-1 text-[10px] text-status-success bg-status-success/10 border border-status-success/20 rounded-full font-mono"
-                  title="Direct connection to runner available (Tailscale/LAN)"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
-                  Direct
-                </span>
-              )}
-              <a
-                href={`${worker.localUiUrl}/worker/${worker.id}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3 py-1 text-xs bg-surface-3 text-text-secondary rounded-full hover:bg-surface-4"
-              >
-                Open Terminal
-              </a>
-            </div>
-          )}
         </div>
       </div>
 
@@ -421,9 +306,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
             </span>
             <span data-testid="worker-needs-input-label" className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
-            {directStatus === 'connected' && (
-              <span className="text-[10px] text-status-success font-mono">instant delivery</span>
-            )}
           </div>
           <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
           {answerSent ? (
@@ -459,23 +341,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         currentAction={isActive ? worker.currentAction : undefined}
       />
 
-      {/* Team Panel (P2P — fetches directly from runner) */}
-      {directStatus === 'connected' && resolvedLocalUiUrl && (
-        <TeamPanel
-          localUiUrl={resolvedLocalUiUrl}
-          viewerToken={viewerToken}
-          workerId={worker.id}
-        />
-      )}
-
-      {/* Session History (P2P — fetches directly from runner) */}
-      {directStatus === 'connected' && resolvedLocalUiUrl && (
-        <SessionHistoryPanel
-          localUiUrl={resolvedLocalUiUrl}
-          viewerToken={viewerToken}
-          workerId={worker.id}
-        />
-      )}
 
       {/* Stats row */}
       <div className="flex items-center gap-4 mt-3 font-mono text-xs text-text-muted">

@@ -9,7 +9,6 @@ import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import DashboardStartTask from './DashboardStartTask';
-import DiscoveredRepos from './DiscoveredRepos';
 import OnboardingChecklist from './OnboardingChecklist';
 import RetryTaskButton from './RetryTaskButton';
 
@@ -468,21 +467,6 @@ export default async function DashboardPage() {
                           PR #{worker.prNumber}
                         </a>
                       )}
-                      {worker.localUiUrl && (() => {
-                        const isOnline = worker.accountId ? connectedAccountIds.has(worker.accountId) : false;
-                        return (
-                          <a
-                            href={`${worker.localUiUrl}/worker/${worker.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={`px-3 py-[5px] text-xs rounded-[6px] ${isOnline ? 'bg-status-info/10 text-status-info hover:bg-status-info/20' : 'bg-surface-3 text-text-muted hover:bg-surface-4'}`}
-                            title={isOnline ? undefined : 'Runner may be offline'}
-                          >
-                            {!isOnline && <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-muted mr-1.5 align-middle" />}
-                            Open Terminal
-                          </a>
-                        );
-                      })()}
                     </div>
                   </div>
                 );
@@ -673,14 +657,9 @@ export default async function DashboardPage() {
                       ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
                       : 'At capacity'}
                   </span>
-                  <a
-                    href={agent.localUiUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
-                  >
-                    Open
-                  </a>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {timeAgo(agent.lastHeartbeat)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -713,15 +692,6 @@ export default async function DashboardPage() {
           )}
         </div>
 
-        {/* Discovered Repos (client-side, fetches from connected agents) */}
-        {connectedAgents.length > 0 && (
-          <DiscoveredRepos
-            agents={connectedAgents.map(a => ({
-              localUiUrl: a.localUiUrl,
-              accountName: a.accountName,
-            }))}
-          />
-        )}
 
         {/* Empty Workers State */}
         {activeWorkers.length === 0 && (

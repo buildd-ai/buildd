@@ -684,7 +684,6 @@ export class WorkerManager {
 
   // Send heartbeat to server announcing this runner instance is alive and ready
   private async sendHeartbeat() {
-    if (!this.config.localUiUrl) return;
     try {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'

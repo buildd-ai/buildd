@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
@@ -15,6 +15,9 @@ const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json')
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+
+// --debug flag: opt-in to HTTP server + debug UI (default: headless)
+const DEBUG_MODE = process.argv.includes('--debug');
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
@@ -325,7 +328,12 @@ function detectTailscaleIp(): string | null {
 }
 
 // Resolve localUiUrl: env var > config.json > Tailscale auto-detect > localhost
+// In headless mode (no --debug), returns a sentinel for heartbeat identification only
 function resolveLocalUiUrl(): string {
+  if (!DEBUG_MODE) {
+    // Headless sentinel — unique per host, used as heartbeat upsert key only
+    return `headless://${hostname()}`;
+  }
   if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
   if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
   const tsIp = detectTailscaleIp();
@@ -643,8 +651,13 @@ async function parseBody(req: Request) {
   }
 }
 
-// Handle requests
-const server = Bun.serve({
+// Handle requests — HTTP server only starts in --debug mode
+if (!DEBUG_MODE) {
+  // Headless mode: no HTTP server, no UI. Runner operates purely as a background daemon.
+  // Tasks are claimed from and reported to the buildd server; the dashboard is the only UI.
+}
+
+const server = DEBUG_MODE ? Bun.serve({
   port: PORT,
   development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
   idleTimeout: 120, // 2 minutes for long-running requests
@@ -2083,29 +2096,22 @@ const server = Bun.serve({
       return Response.json({ ok: true, overrides: resolver.getPathOverrides() }, { headers: corsHeaders });
     }
 
-    // Static files
+    // Static files — serve debug UI (single HTML file)
     if (path === '/' || path === '/index.html') {
-      return serveStatic('index.html', req);
+      const debugHtml = join(import.meta.dir, '..', 'ui-debug', 'debug.html');
+      try {
+        const content = readFileSync(debugHtml);
+        return new Response(content, {
+          headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+        });
+      } catch {
+        return new Response('Debug UI not found', { status: 404 });
+      }
     }
-    if (path === '/styles.css') {
-      return serveStatic('styles.css', req);
-    }
-    if (path === '/app.js') {
-      return serveStatic('app.js', req);
-    }
+
+    // Legacy static files (kept for API endpoints above)
     if (path === '/icon.png') {
       return serveStatic('icon.png', req);
-    }
-
-    // ES modules: /modules/**/*.js
-    if (path.startsWith('/modules/') && path.endsWith('.js')) {
-      return serveStatic(path.slice(1), req);
-    }
-
-    // SPA routing: /worker/:id routes to index.html (client handles routing)
-    // Exclude /worker/api/ to avoid silently serving HTML for misrouted API calls
-    if (path.startsWith('/worker/') && !path.includes('/api/')) {
-      return serveStatic('index.html', req);
     }
 
     return new Response('Not found', { status: 404 });
@@ -2118,32 +2124,69 @@ const server = Bun.serve({
       { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } },
     );
   },
-});
+}) : null;
 
 const localUrl = `http://localhost:${PORT}`;
 
+// ── Startup banner ──────────────────────────────────────────────────────────
+
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const AMBER = '\x1b[38;2;200;149;106m';   // warm charcoal accent #c8956a
+const WARM = '\x1b[38;2;138;132;128m';     // muted warm gray
+const GREEN = '\x1b[38;2;52;211;153m';     // status-success
+const RED = '\x1b[38;2;248;113;113m';      // status-error
+
+const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
+
+// Amber gradient hero — each line subtly shifts warmth
+const A1 = '\x1b[38;2;210;160;110m';
+const A2 = '\x1b[38;2;200;149;106m';
+const A3 = '\x1b[38;2;185;138;100m';
+const A4 = '\x1b[38;2;168;126;92m';
+const A5 = '\x1b[38;2;148;112;82m';
+
 console.log('');
-const versionStr = `v${PKG_VERSION}${updateState.currentCommit ? ` (${updateState.currentCommit.slice(0, 7)})` : ''}`;
-console.log(`╔════════════════════════════════════════════╗`);
-console.log(`║  buildd runner ${versionStr.padEnd(27)}║`);
-console.log(`╚════════════════════════════════════════════╝`);
-console.log(`  URL:        ${terminalLink(localUrl)}`);
-if (config.localUiUrl && config.localUiUrl !== localUrl) {
-  console.log(`  External:   ${terminalLink(config.localUiUrl)}`);
+console.log(`${A1}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
+console.log(`${A2}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
+console.log(`${A3}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${A4}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${A5}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
+console.log(`${DIM}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
+console.log('');
+console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
+console.log(`${DIM}   ${'─'.repeat(48)}${RESET}`);
+
+// Status lines
+const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;
+const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
+console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
+console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
+const keyDisplay = config.apiKey
+  ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
+  : `${RED}not set${RESET}`;
+console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
+if (DEBUG_MODE) {
+  console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
+  if (config.localUiUrl && config.localUiUrl !== localUrl) {
+    console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
+  }
 }
-console.log(`  Server:     ${config.builddServer}`);
-console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
-console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
-console.log(`  Config:     ${CONFIG_FILE}`);
-console.log('');
-console.log(`Project root(s): ${projectRoots.join(', ')}`);
+
 const repos = getRepos(); // Use cached, will scan only if no cache
-console.log(`${repos.length} git repositories${reposLoadedFromCache ? ' (cached)' : ''}`);
+console.log('');
+console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
 
 if (!config.apiKey && !config.serverless) {
   console.log('');
-  console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
+  if (DEBUG_MODE) {
+    console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
+  } else {
+    console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
+  }
 }
+console.log('');
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)
 async function autoInstallMcp() {
@@ -2235,6 +2278,9 @@ function markBrowserOpened() {
 }
 
 (async () => {
+  // Browser auto-open only in debug mode
+  if (!DEBUG_MODE) return;
+
   // Check if this is first run (openBrowser preference not set)
   if (savedConfig.openBrowser === undefined) {
     // Skip interactive prompt when running without a TTY (e.g. in screen, CI)
@@ -2306,22 +2352,25 @@ setInterval(async () => {
       await installProc.exited;
       await initCurrentCommit();
 
-      // Health check on temp port
-      const healthPort = PORT + 1;
-      const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts'], {
-        cwd: join(import.meta.dir, '..'),
-        env: { ...process.env, PORT: String(healthPort) },
-        stdout: 'pipe', stderr: 'pipe',
-      });
-      let healthOk = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        try {
-          const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
-          if (res.ok) { healthOk = true; break; }
-        } catch { /* retry */ }
+      // Health check on temp port (only meaningful in debug mode with HTTP server)
+      let healthOk = true; // Default to true for headless mode
+      if (DEBUG_MODE) {
+        const healthPort = PORT + 1;
+        const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts', '--debug'], {
+          cwd: join(import.meta.dir, '..'),
+          env: { ...process.env, PORT: String(healthPort) },
+          stdout: 'pipe', stderr: 'pipe',
+        });
+        healthOk = false;
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          try {
+            const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
+            if (res.ok) { healthOk = true; break; }
+          } catch { /* retry */ }
+        }
+        healthProc.kill();
       }
-      healthProc.kill();
 
       if (!healthOk && prevCommit) {
         await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
