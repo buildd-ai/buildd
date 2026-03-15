@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
-import { createWorkspaceResolver, parseProjectRoots } from './workspace';
+import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
@@ -1776,7 +1776,36 @@ const server = Bun.serve({
 
       try {
         const { execSync } = require('child_process');
+
+        // Check if the target directory already exists
+        if (existsSync(clonePath)) {
+          const existingRemote = getGitRemote(clonePath);
+          if (existingRemote) {
+            // Compare normalized URLs to see if it's the same repo
+            const normalizedExisting = normalizeGitUrl(existingRemote);
+            const normalizedRequested = normalizeGitUrl(cloneUrl);
+            if (normalizedExisting && normalizedRequested && normalizedExisting === normalizedRequested) {
+              // Same repo already exists - invalidate caches so it's discoverable
+              cachedRepos = null;
+              resolver.scanGitRepos();
+              return Response.json({ ok: true, path: clonePath, alreadyExists: true, message: 'Repository already exists at path' }, { headers: corsHeaders });
+            } else {
+              return Response.json({
+                error: `Directory already exists with a different remote (existing: ${existingRemote}, requested: ${cloneUrl})`,
+              }, { status: 409, headers: corsHeaders });
+            }
+          } else {
+            return Response.json({
+              error: `Directory already exists at ${clonePath} but is not a git repository`,
+            }, { status: 409, headers: corsHeaders });
+          }
+        }
+
         execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+
+        // Invalidate caches so the new repo is immediately discoverable
+        cachedRepos = null;
+        resolver.scanGitRepos();
 
         return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
       } catch (err: any) {

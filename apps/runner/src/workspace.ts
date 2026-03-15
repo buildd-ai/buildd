@@ -86,7 +86,7 @@ const pathOverrides: Record<string, string> = {};
 let gitRemoteCache: Map<string, string | null> | null = null;
 
 // Normalize git URL to comparable format (owner/repo)
-function normalizeGitUrl(url: string | null | undefined): string | null {
+export function normalizeGitUrl(url: string | null | undefined): string | null {
   if (!url) return null;
 
   // Handle various formats:
@@ -109,7 +109,7 @@ function normalizeGitUrl(url: string | null | undefined): string | null {
 }
 
 // Get git remote URL for a directory
-function getGitRemote(dirPath: string): string | null {
+export function getGitRemote(dirPath: string): string | null {
   try {
     const result = execSync('git remote get-url origin', {
       cwd: dirPath,
