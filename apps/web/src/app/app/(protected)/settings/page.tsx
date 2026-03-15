@@ -9,11 +9,6 @@ import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/l
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
-import SkillsSection from './SkillsSection';
-import SlackSection from './SlackSection';
-import DiscordSection from './DiscordSection';
-
-
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +24,6 @@ export default async function SettingsPage() {
   let teamsError = false;
   let userWorkspaces: { id: string; name: string; repo: string | null }[] = [];
 
-  // Fetch teams - uses React cache() so shared with layout
   try {
     userTeams = await getUserTeamsWithDetails(user.id);
   } catch (error) {
@@ -39,14 +33,12 @@ export default async function SettingsPage() {
 
   const teamIds = userTeams.map(t => t.id);
 
-  // Resolve current team for mobile switcher
   const cookieStore = await cookies();
   const teamCookie = cookieStore.get('buildd-team')?.value;
   const currentTeamId = (teamCookie && userTeams.some(t => t.id === teamCookie))
     ? teamCookie
     : userTeams[0]?.id || null;
 
-  // Fetch accounts
   try {
     if (teamIds.length > 0) {
       allAccounts = await db.query.accounts.findMany({
@@ -62,7 +54,6 @@ export default async function SettingsPage() {
     console.error('Settings: accounts query error:', error);
   }
 
-  // Fetch workspaces for skill management link
   try {
     const wsIds = await getUserWorkspaceIds(user.id);
     if (wsIds.length > 0) {
@@ -86,7 +77,6 @@ export default async function SettingsPage() {
       <div className="max-w-2xl mx-auto space-y-12">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-          <p className="text-sm text-text-muted mt-1">Manage connections, keys, and integrations</p>
         </div>
 
         {/* Team Switcher (mobile only) */}
@@ -102,7 +92,7 @@ export default async function SettingsPage() {
         {/* GitHub */}
         <GitHubSection />
 
-        {/* API Keys */}
+        {/* API Keys — compact view */}
         <ApiKeysSection
           accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
           workspaces={userWorkspaces}
@@ -169,14 +159,27 @@ export default async function SettingsPage() {
           )}
         </section>
 
-        {/* Slack */}
-        <SlackSection workspaces={userWorkspaces} />
-
-        {/* Discord */}
-        <DiscordSection workspaces={userWorkspaces} />
-
-        {/* Skills */}
-        <SkillsSection workspaces={userWorkspaces} />
+        {/* Workspaces — links to per-workspace settings */}
+        {userWorkspaces.length > 0 && (
+          <section>
+            <h2 className="section-label mb-4">Workspaces</h2>
+            <div className="card divide-y divide-border-default">
+              {userWorkspaces.map((ws) => (
+                <Link
+                  key={ws.id}
+                  href={`/app/workspaces/${ws.id}/skills`}
+                  className="flex items-center justify-between p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{ws.name}</p>
+                    {ws.repo && <p className="text-xs text-text-muted truncate">{ws.repo}</p>}
+                  </div>
+                  <span className="text-xs text-text-muted flex-shrink-0">Skills, Slack, Discord</span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );

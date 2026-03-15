@@ -24,12 +24,6 @@ interface Account {
   accountWorkspaces?: { workspaceId: string }[];
 }
 
-const typeColors: Record<string, string> = {
-  user: 'bg-status-info/10 text-status-info',
-  service: 'bg-primary/10 text-primary',
-  action: 'bg-status-warning/10 text-status-warning',
-};
-
 interface Workspace {
   id: string;
   name: string;
@@ -38,6 +32,7 @@ interface Workspace {
 
 export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [regenerateTarget, setRegenerateTarget] = useState<Account | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
@@ -147,98 +142,100 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
           </Link>
         </div>
       ) : (
-        <div className="space-y-3">
-          {accounts.map((account) => (
-            <div
-              key={account.id}
-              className="card p-4"
-            >
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-medium">{account.name}</h3>
-                    {account.team?.name && (
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">{account.team.name}</span>
-                    )}
+        <div className="card divide-y divide-border-default">
+          {accounts.map((account) => {
+            const isExpanded = expandedId === account.id;
+            const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
+
+            return (
+              <div key={account.id}>
+                {/* Compact row */}
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : account.id)}
+                  className="w-full flex items-center gap-3 p-3 hover:bg-surface-3/50 transition-colors text-left first:rounded-t-[10px] last:rounded-b-[10px]"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium truncate">{account.name}</span>
+                      {account.team?.name && (
+                        <span className="text-[11px] text-text-muted truncate flex-shrink-0">{account.team.name}</span>
+                      )}
+                      {hasWarning && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-status-warning flex-shrink-0" title="No workspace linked" />
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${typeColors[account.type]}`}>
-                      {account.type}
-                    </span>
-                    {account.accountWorkspaces && account.accountWorkspaces.length === 0 && (
-                      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-status-warning/10 text-status-warning" title="This account has no workspace links. API key won't be able to claim tasks or create tasks in any workspace.">
-                        No workspace linked
-                      </span>
-                    )}
+                  <code className="text-xs text-text-muted font-mono flex-shrink-0">
+                    {account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : '—'}
+                  </code>
+                  <svg className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div className="px-3 pb-3 space-y-3">
+                    <div className="bg-surface-3/50 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-xs text-text-muted">
+                        <span>Auth: {account.authType}</span>
+                        <span>·</span>
+                        <span>Type: {account.type}</span>
+                        <span>·</span>
+                        <span>Workers: {account.maxConcurrentWorkers}</span>
+                        {account.authType === 'api' && (
+                          <><span>·</span><span>Cost: ${account.totalCost}</span></>
+                        )}
+                        {account.authType === 'oauth' && (
+                          <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '\u221E'}</span></>
+                        )}
+                      </div>
+
+                      {hasWarning && (
+                        <p className="text-xs text-status-warning">No workspace linked — API key can&apos;t claim or create tasks.</p>
+                      )}
+
+                      {account.authType === 'oauth' && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className={account.hasOauthToken ? 'text-status-success' : 'text-status-warning'}>
+                            {account.hasOauthToken ? 'Token set' : 'No token'}
+                          </span>
+                          <button
+                            onClick={() => { setOauthError(null); setOauthTokenInput(''); setOauthTarget(account); }}
+                            className="text-text-secondary hover:text-text-primary"
+                          >
+                            {account.hasOauthToken ? 'Rotate' : 'Set token'}
+                          </button>
+                          {account.hasOauthToken && (
+                            <button
+                              onClick={() => setRevokeTarget(account)}
+                              className="text-text-muted hover:text-status-error"
+                            >
+                              Revoke
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-3 text-xs">
+                        <button
+                          onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
+                          className="text-text-secondary hover:text-text-primary"
+                        >
+                          Regenerate key
+                        </button>
+                        <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="text-right text-sm text-text-secondary">
-                  <div>Workers: {account.maxConcurrentWorkers}</div>
-                  <div>Tasks: {account.totalTasks}</div>
-                </div>
+                )}
               </div>
-
-              <div className="bg-surface-3 rounded p-2 font-mono text-sm break-all">
-                <code>{account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : '(hashed)'}</code>
-              </div>
-
-              {account.authType === 'oauth' && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-full ${
-                    account.hasOauthToken
-                      ? 'bg-status-success/10 text-status-success'
-                      : 'bg-status-warning/10 text-status-warning'
-                  }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${
-                      account.hasOauthToken ? 'bg-status-success' : 'bg-status-warning'
-                    }`} />
-                    {account.hasOauthToken ? 'Token configured' : 'No token set'}
-                  </span>
-                  <button
-                    onClick={() => {
-                      setOauthError(null);
-                      setOauthTokenInput('');
-                      setOauthTarget(account);
-                    }}
-                    className="text-text-secondary hover:text-text-primary text-xs"
-                  >
-                    {account.hasOauthToken ? 'Rotate' : 'Set token'}
-                  </button>
-                  {account.hasOauthToken && (
-                    <button
-                      onClick={() => setRevokeTarget(account)}
-                      className="text-status-error/70 hover:text-status-error text-xs"
-                    >
-                      Revoke
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-2 flex justify-between items-center">
-                <span className="text-xs text-text-secondary">
-                  Auth: {account.authType} |
-                  {account.authType === 'api' && ` Cost: $${account.totalCost}`}
-                  {account.authType === 'oauth' && ` Sessions: ${account.activeSessions}/${account.maxConcurrentSessions || '\u221E'}`}
-                </span>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => {
-                      setRegenerateError(null);
-                      setRegenerateTarget(account);
-                    }}
-                    className="text-text-secondary hover:text-text-primary text-sm"
-                  >
-                    Regenerate
-                  </button>
-                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
+      {/* MCP setup — collapsed */}
       <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} workspaces={workspaces} />
 
       {/* Regenerate confirmation dialog */}
@@ -333,48 +330,45 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
   );
 }
 
-// ── MCP Setup Section ────────────────────────────────────────────────────────
+// ── MCP Setup Section (collapsed by default) ────────────────────────────
 
 function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; workspaces?: Workspace[] }) {
   const key = apiKey ? `${apiKey}...` : 'YOUR_API_KEY';
   const reposWithWorkspaces = workspaces.filter(w => w.repo);
 
-  function mcpUrl(repo?: string) {
-    const base = 'https://buildd.dev/api/mcp';
-    return repo ? `${base}?repo=${repo}` : base;
-  }
-
   function mcpCommand(repo?: string) {
-    return `claude mcp add --transport http buildd "${mcpUrl(repo)}" --header "Authorization: Bearer ${key}"`;
+    const base = 'https://buildd.dev/api/mcp';
+    const url = repo ? `${base}?repo=${repo}` : base;
+    return `claude mcp add --transport http buildd "${url}" --header "Authorization: Bearer ${key}"`;
   }
 
   return (
-    <div className="mt-4 space-y-3">
-      <h3 className="font-medium text-sm">Connect to buildd</h3>
-
-      {reposWithWorkspaces.length > 0 ? (
-        reposWithWorkspaces.map(w => (
-          <div key={w.id} className="card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
-              <span className="text-xs text-text-secondary">· {w.repo}</span>
+    <details className="mt-4">
+      <summary className="text-xs text-text-muted cursor-pointer hover:text-text-secondary">
+        Connect to buildd (MCP setup)
+      </summary>
+      <div className="mt-3 space-y-3">
+        {reposWithWorkspaces.length > 0 ? (
+          reposWithWorkspaces.map(w => (
+            <div key={w.id} className="card p-4 space-y-3">
+              <div className="text-xs text-text-muted">{w.repo}</div>
+              <CopyBlock text={mcpCommand(w.repo!)} />
             </div>
-            <CopyBlock text={mcpCommand(w.repo!)} />
+          ))
+        ) : (
+          <div className="card p-4 space-y-3">
+            <div className="text-xs text-text-muted">Claude Code</div>
+            <CopyBlock text={mcpCommand()} />
           </div>
-        ))
-      ) : (
-        <div className="card p-4 space-y-3">
-          <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Claude Code</div>
-          <CopyBlock text={mcpCommand()} />
-        </div>
-      )}
+        )}
 
-      <details className="card p-4">
-        <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer">REST API</summary>
-        <div className="mt-3">
-          <CopyBlock text={`curl -X POST https://buildd.dev/api/workers/claim \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"maxTasks": 1}'`} />
-        </div>
-      </details>
-    </div>
+        <details className="card p-4">
+          <summary className="text-xs font-medium text-text-muted cursor-pointer">REST API</summary>
+          <div className="mt-3">
+            <CopyBlock text={`curl -X POST https://buildd.dev/api/workers/claim \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"maxTasks": 1}'`} />
+          </div>
+        </details>
+      </div>
+    </details>
   );
 }
