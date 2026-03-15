@@ -141,10 +141,15 @@ jobs:
               rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
-              cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -5
+              cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
               test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
             "
           SCRIPT
+
+      - name: Run migrations on Neon preview branch
+        run: cd packages/core && bun db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Start preview server
         run: |
