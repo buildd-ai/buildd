@@ -17,7 +17,8 @@ const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
 
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
-const DEBUG_MODE = process.argv.includes('--debug');
+// Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
+const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
