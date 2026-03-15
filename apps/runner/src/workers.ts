@@ -1016,7 +1016,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string> },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1088,6 +1088,10 @@ export class WorkerManager {
     }
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
+    }
+    if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
+      worker.mcpSecrets = claimedWorker.mcpSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
     }
 
     this.workers.set(worker.id, worker);
@@ -2089,6 +2093,14 @@ export class WorkerManager {
       // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
       if (this.config.apiKey) {
         cleanEnv.BUILDD_API_KEY = this.config.apiKey;
+      }
+
+      // Inject MCP credential secrets (env vars for MCP server authentication)
+      if (worker.mcpSecrets) {
+        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
+          cleanEnv[envVar] = value;
+        }
+        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)

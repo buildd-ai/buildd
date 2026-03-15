@@ -648,6 +648,8 @@ export interface ClaimTasksResponse {
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline, no redemption needed) */
     serverOauthToken?: string;
+    /** Decrypted MCP credential secrets mapped by label (env var name) → value */
+    mcpSecrets?: Record<string, string>;
   }>;
   diagnostics?: ClaimDiagnostics;
 }

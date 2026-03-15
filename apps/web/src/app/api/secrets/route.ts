@@ -22,6 +22,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'webhook_token', 'custom', 'mcp_credential'];
+  if (!validPurposes.includes(purpose)) {
+    return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
+  }
+
+  // MCP credentials require a label (env var name)
+  if (purpose === 'mcp_credential' && !label) {
+    return NextResponse.json({ error: 'label is required for mcp_credential secrets' }, { status: 400 });
+  }
+
   // Verify the requested team belongs to the user
   const targetTeamId = teamId || teamIds[0];
   if (!teamIds.includes(targetTeamId)) {

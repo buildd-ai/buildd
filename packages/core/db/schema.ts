@@ -618,14 +618,14 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: index('secrets_team_idx').on(t.teamId),
-  accountPurposeIdx: uniqueIndex('secrets_account_purpose_idx').on(t.accountId, t.purpose),
+  accountPurposeLabelIdx: uniqueIndex('secrets_account_purpose_label_idx').on(t.accountId, t.purpose, t.label),
 }));
 
 // Single-use secret references for worker credential delivery
