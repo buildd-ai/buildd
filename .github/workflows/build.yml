@@ -146,6 +146,11 @@ jobs:
             "
           SCRIPT
 
+      - name: Run migrations on Neon preview branch
+        run: cd packages/core && bun db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
       - name: Start preview server
         run: |
           # Pipe env vars to a file on the remote — avoids all escaping issues
