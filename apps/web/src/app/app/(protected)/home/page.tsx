@@ -1,0 +1,297 @@
+import { db } from '@buildd/core/db';
+import { tasks, workers, objectives } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, sql } from 'drizzle-orm';
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+
+// --- Helpers ---
+
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function getFirstName(name: string | null, email: string): string {
+  if (name) {
+    return name.split(' ')[0];
+  }
+  return email.split('@')[0];
+}
+
+function timeAgo(date: Date | string): string {
+  const now = Date.now();
+  const then = new Date(date).getTime();
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatTime(date: Date | string): string {
+  return new Date(date).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function getTaskTypeLabel(task: { mode?: string; category?: string | null }): { label: string; className: string } {
+  if (task.mode === 'planning') {
+    return { label: 'BRIEF', className: 'type-label type-label-brief' };
+  }
+  if (task.category === 'chore' || task.category === 'infra') {
+    return { label: 'WATCH', className: 'type-label type-label-watch' };
+  }
+  return { label: 'BUILD', className: 'type-label type-label-build' };
+}
+
+export default async function HomePage() {
+  const user = await getCurrentUser();
+
+  const isDev = process.env.NODE_ENV === 'development';
+
+  let activeItems: {
+    id: string;
+    taskId: string;
+    taskTitle: string;
+    objectiveTitle: string | null;
+    workerName: string;
+    status: string;
+    startedAt: Date | null;
+    mode: string;
+    category: string | null;
+  }[] = [];
+
+  let recentActivity: {
+    id: string;
+    type: 'completed' | 'started' | 'failed';
+    title: string;
+    workerName: string;
+    timestamp: Date;
+    objectiveTitle: string | null;
+  }[] = [];
+
+  let completedLast12h = 0;
+
+  if (!isDev) {
+    if (!user) {
+      redirect('/app/auth/signin');
+    }
+
+    try {
+      const wsIds = await getUserWorkspaceIds(user.id);
+
+      if (wsIds.length > 0) {
+        // Count tasks completed in last 12 hours for the subheading
+        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+        const countResult = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(workers)
+          .where(
+            and(
+              inArray(workers.workspaceId, wsIds),
+              eq(workers.status, 'completed'),
+              gte(workers.completedAt, twelveHoursAgo)
+            )
+          );
+        completedLast12h = countResult[0]?.count || 0;
+
+        // Active workers with their tasks and objectives
+        const activeWorkers = await db.query.workers.findMany({
+          where: and(
+            inArray(workers.workspaceId, wsIds),
+            inArray(workers.status, ['running', 'starting', 'waiting_input'])
+          ),
+          orderBy: desc(workers.createdAt),
+          limit: 10,
+          with: {
+            task: {
+              columns: { id: true, title: true, mode: true, category: true, objectiveId: true },
+              with: {
+                objective: {
+                  columns: { title: true },
+                },
+              },
+            },
+          },
+        });
+
+        activeItems = activeWorkers.map((w: any) => ({
+          id: w.id,
+          taskId: w.task?.id || '',
+          taskTitle: w.task?.title || w.name,
+          objectiveTitle: (w.task as any)?.objective?.title || null,
+          workerName: w.name,
+          status: w.status,
+          startedAt: w.startedAt,
+          mode: w.task?.mode || 'execution',
+          category: w.task?.category || null,
+        }));
+
+        // Recent completed/failed workers for activity feed
+        const recentWorkers = await db.query.workers.findMany({
+          where: and(
+            inArray(workers.workspaceId, wsIds),
+            inArray(workers.status, ['completed', 'failed'])
+          ),
+          orderBy: desc(workers.completedAt),
+          limit: 6,
+          with: {
+            task: {
+              columns: { id: true, title: true, objectiveId: true },
+              with: {
+                objective: {
+                  columns: { title: true },
+                },
+              },
+            },
+          },
+        });
+
+        recentActivity = recentWorkers.map((w: any) => ({
+          id: w.id,
+          type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
+          title: w.task?.title || w.name,
+          workerName: w.name,
+          timestamp: w.completedAt || w.updatedAt,
+          objectiveTitle: (w.task as any)?.objective?.title || null,
+        }));
+      }
+    } catch (error) {
+      console.error('Home page query error:', error);
+    }
+  }
+
+  const firstName = user ? getFirstName(user.name, user.email) : 'there';
+  const greeting = getGreeting();
+  const subheading = completedLast12h > 0
+    ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} overnight`
+    : 'Your agents are standing by';
+
+  return (
+    <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
+      <div className="max-w-5xl mx-auto">
+        {/* Desktop two-column layout */}
+        <div className="md:flex md:gap-0">
+          {/* Left column: Greeting + Right Now */}
+          <div className="md:w-[60%] md:pr-8">
+            {/* Greeting */}
+            <div className="mb-8 md:mb-10">
+              <h1 className="text-[32px] md:text-[30px] font-light italic text-text-primary leading-tight">
+                {greeting}, {firstName}
+              </h1>
+              <p className="text-[15px] text-text-secondary font-light mt-1.5">
+                {subheading}
+              </p>
+            </div>
+
+            {/* Right Now */}
+            <div className="mb-8">
+              <div className="section-label mb-4">Right Now</div>
+              {activeItems.length === 0 ? (
+                <div className="border border-dashed border-border-default rounded-[10px] p-6">
+                  <p className="text-[14px] text-text-secondary">
+                    No active tasks. <Link href="/app/tasks/new" className="text-primary hover:underline">Create one</Link> to get started.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {activeItems.map((item) => {
+                    const typeLabel = getTaskTypeLabel({ mode: item.mode, category: item.category });
+                    return (
+                      <Link
+                        key={item.id}
+                        href={`/app/tasks/${item.taskId}`}
+                        className="block border-l-2 border-accent bg-card-rightnow rounded-r-[10px] px-4 py-3 hover:bg-surface-3 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[15px] font-medium text-text-primary truncate">
+                              {item.taskTitle}
+                            </div>
+                            <div className="text-[12px] font-light text-text-secondary mt-0.5 truncate">
+                              {item.workerName}
+                              {item.startedAt && ` \u00B7 ${timeAgo(item.startedAt)}`}
+                              {item.objectiveTitle && ` \u00B7 ${item.objectiveTitle}`}
+                            </div>
+                          </div>
+                          <span className={typeLabel.className}>
+                            {typeLabel.label}
+                          </span>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Missions summary — link to objectives */}
+            <div className="mb-8 md:mb-0">
+              <div className="section-label mb-4">Missions</div>
+              <Link
+                href="/app/objectives"
+                className="block card card-interactive px-4 py-3 hover:bg-surface-3 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[14px] text-text-secondary">
+                    View all objectives and missions
+                  </span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </div>
+              </Link>
+            </div>
+          </div>
+
+          {/* Right column: Activity rail */}
+          <div className="md:w-[40%] md:border-l md:border-border-default md:pl-8">
+            <div className="section-label mb-4">Activity</div>
+            {recentActivity.length === 0 ? (
+              <p className="text-[14px] text-text-secondary">
+                No recent activity yet.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {recentActivity.map((event) => {
+                  const dotColor = event.type === 'completed'
+                    ? 'bg-status-success'
+                    : 'bg-status-error';
+
+                  return (
+                    <div key={event.id} className="flex items-start gap-3">
+                      <div className="flex flex-col items-center pt-1.5">
+                        <div className={`w-[7px] h-[7px] rounded-full ${dotColor} flex-shrink-0`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[14px] text-text-primary truncate">
+                          {event.title}
+                        </div>
+                        <div className="text-[10px] text-text-muted mt-0.5">
+                          via {event.workerName}
+                          {event.objectiveTitle && ` \u00B7 ${event.objectiveTitle}`}
+                        </div>
+                      </div>
+                      <span className="font-mono text-[11px] text-text-muted whitespace-nowrap flex-shrink-0 pt-0.5">
+                        {formatTime(event.timestamp)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}

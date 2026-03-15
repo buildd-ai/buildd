@@ -129,7 +129,6 @@ export default function RunnersPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-muted">
-                          <span className="font-mono">{runner.localUiUrl}</span>
                           <span>Last heartbeat: {timeAgo(runner.lastHeartbeatAt)}</span>
                         </div>
                       </div>

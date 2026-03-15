@@ -1,9 +1,8 @@
-import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { AuthGuard } from '@/components/AuthGuard';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
-import BottomNav from '@/components/BottomNav';
-import DesktopNav from '@/components/DesktopNav';
+import MissionsBottomNav from '@/components/MissionsBottomNav';
+import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
@@ -44,36 +43,29 @@ export default async function ProtectedLayout({
     }
   }
 
+  const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
+
   return (
     <AuthGuard>
       <NeedsInputProvider workspaceIds={workspaceIds}>
-        {/* Desktop top nav: logo | nav links | team switcher */}
-        <div className="hidden md:flex h-11 items-center border-b border-border-default bg-surface-2 px-6">
-          <div className="flex items-center gap-2 min-w-[140px]">
-            <Link href="/app/dashboard" className="text-sm font-bold tracking-tight text-text-primary hover:text-primary transition-colors">
-              buildd
-            </Link>
-          </div>
-          <div className="flex-1 flex justify-center">
-            <DesktopNav />
-          </div>
-          <div className="flex items-center justify-end min-w-[140px]">
-            {userTeams.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-text-muted uppercase tracking-[2.5px]">Team</span>
-                <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
-              </div>
-            )}
+        <div className="flex h-screen overflow-hidden">
+          {/* Desktop: collapsed icon sidebar */}
+          <MissionsSidebar userInitial={userInitial} />
+
+          {/* Main content area */}
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+            {/* Global notification banner for tasks needing input */}
+            <NeedsInputBanner />
+            {/* Mobile page header for non-tasks pages */}
+            <MobilePageHeader />
+            <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
+              {children}
+            </main>
           </div>
         </div>
-        {/* Global notification banner for tasks needing input */}
-        <NeedsInputBanner />
-        {/* Mobile page header for non-tasks pages */}
-        <MobilePageHeader />
-        <div className="pb-16 md:pb-0">
-          {children}
-        </div>
-        <BottomNav />
+
+        {/* Mobile: bottom tab nav */}
+        <MissionsBottomNav />
       </NeedsInputProvider>
     </AuthGuard>
   );
