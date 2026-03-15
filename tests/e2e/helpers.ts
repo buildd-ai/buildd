@@ -234,7 +234,7 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
           return null;
         }
       },
-      { timeout: 30_000, interval: 1_000, label: 'runner reachability' },
+      { timeout: 120_000, interval: 2_000, label: 'runner reachability' },
     );
     console.log('  Runner is reachable');
     return;
