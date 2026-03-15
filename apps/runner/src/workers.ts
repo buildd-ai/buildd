@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
+import { resolveWorktreeBase } from './worktree-utils';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
@@ -1101,6 +1102,7 @@ export class WorkerManager {
         claimedWorker.branch,
         defaultBranch,
         worker.id,
+        fullTask.context,
       );
 
       if (worktreePath) {
@@ -3662,6 +3664,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     branch: string,
     defaultBranch: string,
     workerId: string,
+    taskContext?: Record<string, unknown>,
   ): Promise<string | null> {
     const { execSync } = await import('child_process');
     const fs = await import('fs');
@@ -3712,8 +3715,8 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
         // Branch doesn't exist locally, that's fine
       }
 
-      // Create worktree with new branch from latest remote default branch
-      const base = `origin/${defaultBranch}`;
+      // Create worktree with new branch — from baseBranch (retry) or default branch (fresh)
+      const base = resolveWorktreeBase(defaultBranch, taskContext);
       console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
       execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
 
