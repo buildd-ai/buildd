@@ -2086,6 +2086,11 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
 
+      // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
+      if (this.config.apiKey) {
+        cleanEnv.BUILDD_API_KEY = this.config.apiKey;
+      }
+
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
