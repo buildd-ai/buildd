@@ -1016,25 +1016,32 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
 
-    // Redeem server-managed secrets if provided and no local credentials
+    // Use server-managed secrets: prefer inline (no roundtrip), fall back to ref redemption
     let serverApiKey: string | undefined;
     let serverOauthToken: string | undefined;
     if (!this.hasCredentials) {
-      if (claimedWorker.secretRef) {
+      // Prefer inline secrets (new servers send these directly)
+      if (claimedWorker.serverApiKey) {
+        serverApiKey = claimedWorker.serverApiKey;
+        console.log(`[Worker ${claimedWorker.id}] Using inline server-managed API key`);
+      } else if (claimedWorker.secretRef) {
         serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
         if (serverApiKey) {
-          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key`);
+          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key via ref`);
         }
       }
-      if (claimedWorker.oauthSecretRef) {
+      if (claimedWorker.serverOauthToken) {
+        serverOauthToken = claimedWorker.serverOauthToken;
+        console.log(`[Worker ${claimedWorker.id}] Using inline server-managed OAuth token`);
+      } else if (claimedWorker.oauthSecretRef) {
         serverOauthToken = await this.buildd.redeemSecret(claimedWorker.oauthSecretRef, claimedWorker.id) || undefined;
         if (serverOauthToken) {
-          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed OAuth token`);
+          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed OAuth token via ref`);
         }
       }
     }
