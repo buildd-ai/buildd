@@ -2308,9 +2308,12 @@ export class WorkerManager {
         extendedContext,
       });
 
-      // Stream responses
+      // Stream responses (with optional ralph self-review loop)
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
+      const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 0;
+      let reviewIteration = 0;
+
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
         if (msg.type === 'result') {
@@ -2330,6 +2333,45 @@ export class WorkerManager {
 
         // Break on result - the query is complete
         if (msg.type === 'result') {
+          // Ralph self-review: if enabled, feed failure output back into session
+          if (maxReviewIterations > 0 && reviewIteration < maxReviewIterations
+              && worker.status !== 'waiting' && worker.status !== 'error') {
+            const lastMsg = worker.lastAssistantMessage || '';
+            if (!lastMsg.includes('<promise>DONE</promise>')) {
+              reviewIteration++;
+              const taskTitle = worker.taskTitle || 'Untitled task';
+              const taskDesc = task.description || task.title;
+              const reviewPrompt = `Before completing, review your work against the original objective.
+
+**Task:** ${taskTitle}
+**Description:** ${taskDesc}
+
+Check your implementation:
+- Did you fully implement what was asked, or take shortcuts?
+- Any TODO comments, stubs, or placeholder code left behind?
+- Any features described in the task that you skipped or only partially implemented?
+- Did you remove or break existing functionality unnecessarily?
+
+If everything is complete and meets the objective, respond with exactly: <promise>DONE</promise>
+If something is missing or incomplete, describe what and fix it now.`;
+
+              this.addMilestone(worker, { type: 'status', label: `Self-review ${reviewIteration}/${maxReviewIterations}`, ts: Date.now() });
+              sessionLog(worker.id, 'info', 'ralph_review_start', `iteration=${reviewIteration}`, worker.taskId);
+              worker.currentAction = `Self-review (${reviewIteration}/${maxReviewIterations})`;
+              this.emit({ type: 'worker_update', worker });
+
+              const session = this.sessions.get(worker.id);
+              if (session) {
+                session.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
+              }
+              continue; // Keep streaming the agent's response
+            }
+            // Agent said DONE — self-review passed
+            if (reviewIteration > 0) {
+              this.addMilestone(worker, { type: 'status', label: `Self-review passed (iteration ${reviewIteration})`, ts: Date.now() });
+              sessionLog(worker.id, 'info', 'ralph_review_passed', `iteration=${reviewIteration}`, worker.taskId);
+            }
+          }
           break;
         }
       }
