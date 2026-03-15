@@ -2312,7 +2312,7 @@ export class WorkerManager {
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
       const taskTitle = worker.taskTitle || 'Untitled task';
-      const maxReviewIterations = (fullTask.context as any)?.maxReviewIterations ?? 0;
+      const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 0;
       let reviewIteration = 0;
 
       for await (const msg of queryInstance) {
@@ -2332,8 +2332,13 @@ export class WorkerManager {
 
         this.handleMessage(worker, msg);
 
-        // On result: run ralph self-review loop before completing
+        // On result: optionally run ralph self-review loop before completing
         if (msg.type === 'result') {
+          // Self-review disabled (default) — break immediately
+          if (maxReviewIterations <= 0) {
+            break;
+          }
+
           // Check if agent already passed review (said DONE)
           const lastMsg = worker.lastAssistantMessage || '';
           if (lastMsg.includes('<promise>DONE</promise>')) {
