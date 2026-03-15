@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import ThemeToggle from './ThemeToggle';
 
 const sidebarItems = [
   {
@@ -68,8 +69,7 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
   };
 
   return (
-    <div className="hidden md:flex w-14 flex-col items-center py-4 bg-[#15130f] border-r border-border-default flex-shrink-0">
-      {/* Main nav items */}
+    <div className="hidden md:flex w-14 flex-col items-center py-4 bg-[var(--chrome-sidebar)] border-r border-border-default flex-shrink-0">
       {sidebarItems.map((item) => {
         const active = isActive(item.href);
         return (
@@ -86,7 +86,6 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
             }`}>
               {item.icon}
             </span>
-            {/* Tooltip */}
             <span className="pointer-events-none absolute left-[52px] top-1/2 -translate-y-1/2 bg-card text-text-primary border border-border-strong text-[11px] font-medium px-2.5 py-1 rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
               {item.label}
             </span>
@@ -94,13 +93,9 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
         );
       })}
 
-      {/* Separator */}
       <div className="w-6 h-px bg-border-default my-2" />
-
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Bottom items */}
       {bottomItems.map((item) => {
         const active = isActive(item.href);
         return (
@@ -124,7 +119,8 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
         );
       })}
 
-      {/* User avatar */}
+      <ThemeToggle />
+
       <Link
         href="/app/you"
         className="w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-xs font-semibold text-accent-text border border-border-default mt-2 cursor-pointer hover:border-border-strong transition-colors"

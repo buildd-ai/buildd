@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Outfit, IBM_Plex_Mono, Fraunces } from 'next/font/google';
+import ThemeProvider from '@/components/ThemeProvider';
 import './globals.css';
 
 const outfit = Outfit({
@@ -26,14 +27,21 @@ export const metadata: Metadata = {
   description: 'Distributed task broker for Claude agents',
 };
 
+const themeScript = `(function(){try{var t=localStorage.getItem('buildd-theme')||'dark';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`;
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${fraunces.variable}`}>
-      <body>{children}</body>
+    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${fraunces.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+      <body>
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   );
 }

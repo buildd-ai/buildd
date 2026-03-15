@@ -10,16 +10,15 @@
  * z-50: Modals, dialogs, dropdowns (highest layer)
  */
 
-/* ── Buildd Design Tokens — Warm Charcoal ── */
+/* ── Buildd Design Tokens ── */
 
-:root {
-  /* Surfaces — paper on a dark desk */
+/* Night — Warm Charcoal */
+:root, [data-theme="dark"] {
   --surface-1: #1a1816;
   --surface-2: #211f1c;
   --surface-3: #2a2724;
   --surface-4: #302c28;
 
-  /* Card tiers — opacity through color, not blur */
   --card: #2a2724;
   --card-hover: #302c28;
   --card-finding: #252220;
@@ -27,35 +26,29 @@
   --card-border: rgba(255, 245, 230, 0.06);
   --card-shadow: 0 1px 4px rgba(12, 10, 8, 0.35);
 
-  /* Text — warm whites */
   --text-primary: #ede8e2;
   --text-secondary: #a89f96;
   --text-muted: #5e5850;
   --text-desc: #8a827a;
 
-  /* Borders — warm tint */
   --border: rgba(255, 245, 230, 0.07);
   --border-strong: rgba(255, 245, 230, 0.12);
 
-  /* Accent — warm amber */
   --accent: #c8956a;
   --accent-soft: rgba(200, 149, 106, 0.12);
   --accent-text: #d4a574;
 
-  /* Primary (mapped to accent for backward compat) */
   --primary: #c8956a;
   --primary-hover: #b8854f;
   --primary-subtle: rgba(200, 149, 106, 0.08);
   --primary-ring: rgba(200, 149, 106, 0.25);
 
-  /* Status — same signals, warmer cast */
   --status-success: #5ec495;
   --status-running: #c8956a;
   --status-warning: #e0b35a;
   --status-error: #d4736a;
   --status-info: #7aacca;
 
-  /* Category (shared) */
   --cat-bug: #d4736a;
   --cat-feature: #7aacca;
   --cat-refactor: #a78bfa;
@@ -64,16 +57,71 @@
   --cat-test: #e0b35a;
   --cat-infra: #c8956a;
   --cat-design: #d4a574;
+
+  --chrome-bg: rgba(26, 24, 22, 0.92);
+  --chrome-sidebar: #15130f;
+
+  color-scheme: dark;
+}
+
+/* Day — Warm Linen */
+[data-theme="light"] {
+  --surface-1: #f7f4f0;
+  --surface-2: #eee9e3;
+  --surface-3: #e5dfd8;
+  --surface-4: #dbd4cc;
+
+  --card: #ffffff;
+  --card-hover: #fdfcfa;
+  --card-finding: #faf8f5;
+  --card-rightnow: #f5f2ee;
+  --card-border: rgba(0, 0, 0, 0.06);
+  --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+
+  --text-primary: #2a2520;
+  --text-secondary: #6b6258;
+  --text-muted: #b0a89e;
+  --text-desc: #8a827a;
+
+  --border: rgba(0, 0, 0, 0.07);
+  --border-strong: rgba(0, 0, 0, 0.12);
+
+  --accent: #c8956a;
+  --accent-soft: rgba(200, 149, 106, 0.10);
+  --accent-text: #b07d4f;
+
+  --primary: #c8956a;
+  --primary-hover: #b07d4f;
+  --primary-subtle: rgba(200, 149, 106, 0.08);
+  --primary-ring: rgba(200, 149, 106, 0.25);
+
+  --status-success: #3a9864;
+  --status-running: #b07d4f;
+  --status-warning: #9a7a20;
+  --status-error: #c0524a;
+  --status-info: #5088b0;
+
+  --cat-bug: #c0524a;
+  --cat-feature: #5088b0;
+  --cat-refactor: #8b6dd4;
+  --cat-chore: #8a827a;
+  --cat-docs: #3a9864;
+  --cat-test: #9a7a20;
+  --cat-infra: #b07d4f;
+  --cat-design: #b07d4f;
+
+  --chrome-bg: rgba(247, 244, 240, 0.92);
+  --chrome-sidebar: #eee9e3;
+
+  color-scheme: light;
 }
 
 body {
   font-family: var(--font-outfit), system-ui, sans-serif;
   background-color: var(--surface-1);
   color: var(--text-primary);
-  color-scheme: dark;
 }
 
-/* Status dot pulse animation */
 @keyframes status-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
@@ -83,7 +131,6 @@ body {
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
-/* Faint grain texture — dark linen feel */
 .grain-texture::after {
   content: '';
   position: absolute;
@@ -95,9 +142,6 @@ body {
   border-radius: inherit;
 }
 
-/* ── Status Glow Dots ──
- * Targeted glow on status indicators. Color earns its place.
- */
 @keyframes glow-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--glow-color); }
   50% { opacity: 0.6; box-shadow: 0 0 14px var(--glow-color); }
@@ -137,7 +181,6 @@ body {
   }
 }
 
-/* ── Cards & Elevation ── */
 @layer components {
   .card {
     background: var(--card);
@@ -152,9 +195,6 @@ body {
   }
 }
 
-/* ── Section Labels ──
- * IBM Plex Mono uppercase micro-labels for sidebar sections and panels.
- */
 @layer components {
   .section-label {
     font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
@@ -166,7 +206,6 @@ body {
   }
 }
 
-/* ── Mission type labels ── */
 @layer components {
   .type-label {
     font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
@@ -180,9 +219,14 @@ body {
   .type-label-brief { color: var(--accent-text); }
 }
 
-/* ── Mission card borders ── */
 @layer components {
   .mission-build { border-left: 2px solid var(--status-success); }
   .mission-watch { border-left: 2px solid var(--status-warning); }
   .mission-brief { border-left: 2px solid var(--accent-text); }
 }
+
+[data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
+[data-theme="light"] .glow-dot-running { --glow-color: rgba(176, 125, 79, 0.25); }
+[data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }
+[data-theme="light"] .glow-dot-error { --glow-color: rgba(192, 82, 74, 0.25); }
+[data-theme="light"] .glow-dot-info { --glow-color: rgba(80, 136, 176, 0.25); }
