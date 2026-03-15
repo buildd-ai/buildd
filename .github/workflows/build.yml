@@ -132,6 +132,25 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
+      - name: Ensure test container is running
+        run: |
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            CONTAINER=coder-ai-run-my-claude-workspace
+            STATE=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+            echo "Container state: $STATE"
+            if [ "$STATE" != "running" ]; then
+              echo "Starting container..."
+              docker start "$CONTAINER"
+              sleep 3
+              STATE=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)
+              if [ "$STATE" != "running" ]; then
+                echo "::error::Container failed to start (state: $STATE)"
+                exit 1
+              fi
+              echo "Container started successfully"
+            fi
+          SCRIPT
+
       - name: Sync code and build on test machine
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
