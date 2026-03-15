@@ -479,7 +479,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Attach secretRefs for server-managed credentials (API key and/or OAuth token)
+  // Attach inline decrypted secrets for server-managed credentials (API key and/or OAuth token)
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     try {
       const accountSecrets = await db.query.secrets.findMany({
@@ -495,30 +495,24 @@ export async function POST(req: NextRequest) {
         const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
         const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
 
+        // Decrypt once, attach to all claimed workers
+        const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
+          apiKeySecret ? provider.get(apiKeySecret.id) : null,
+          oauthSecret ? provider.get(oauthSecret.id) : null,
+        ]);
+
         for (const cw of claimedWorkers) {
-          if (apiKeySecret) {
-            const ref = await provider.createRef(apiKeySecret.id, cw.id, 300);
-            (cw as any).secretRef = ref;
+          if (decryptedApiKey) {
+            (cw as any).serverApiKey = decryptedApiKey;
           }
-          if (oauthSecret) {
-            const ref = await provider.createRef(oauthSecret.id, cw.id, 300);
-            (cw as any).oauthSecretRef = ref;
+          if (decryptedOauthToken) {
+            (cw as any).serverOauthToken = decryptedOauthToken;
           }
         }
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials
-      console.warn('Failed to create secret refs:', err);
-    }
-  }
-
-  // Piggyback: clean up expired secret refs
-  if (process.env.ENCRYPTION_KEY) {
-    try {
-      const provider = getSecretsProvider();
-      await provider.cleanupExpiredRefs();
-    } catch {
-      // Non-fatal cleanup
+      console.warn('Failed to decrypt server-managed secrets:', err);
     }
   }
 

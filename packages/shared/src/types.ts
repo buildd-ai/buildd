@@ -644,6 +644,10 @@ export interface ClaimTasksResponse {
     secretRef?: string;
     /** Single-use secret reference for server-managed OAuth token (redeem via GET /api/workers/secret/:ref) */
     oauthSecretRef?: string;
+    /** Decrypted server-managed API key (inline, no redemption needed) */
+    serverApiKey?: string;
+    /** Decrypted server-managed OAuth token (inline, no redemption needed) */
+    serverOauthToken?: string;
   }>;
   diagnostics?: ClaimDiagnostics;
 }
