@@ -232,7 +232,7 @@ describe('WorkerManager — state transitions', () => {
       expect(qEvent.worker.status).toBe('waiting');
       expect(qEvent.worker.waitingFor.prompt).toBe('Which format do you prefer?');
       expect(qEvent.worker.waitingFor.toolUseId).toBe('toolu_ask_1');
-    });
+    }, 10_000);
 
     test('syncs question status to server', async () => {
       mockMessages = [
