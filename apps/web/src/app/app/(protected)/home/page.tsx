@@ -262,10 +262,46 @@ export default async function HomePage() {
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
               {activeItems.length === 0 ? (
-                <div className="border border-dashed border-border-default rounded-[10px] p-6">
-                  <p className="text-[14px] text-text-secondary">
-                    No active tasks. <Link href="/app/tasks/new" className="text-primary hover:underline">Create one</Link> to get started.
-                  </p>
+                <div className="border border-dashed border-border-default rounded-[10px] p-5">
+                  <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <span className="text-[10px] font-mono text-text-muted">1</span>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[13px] text-text-primary">Install the CLI</div>
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                          curl -fsSL https://buildd.dev/install.sh | bash
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <span className="text-[10px] font-mono text-text-muted">2</span>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[13px] text-text-primary">Log in &amp; connect</div>
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                          buildd login
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <span className="text-[10px] font-mono text-text-muted">3</span>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[13px] text-text-primary">
+                          <Link href="/app/tasks/new" className="text-primary hover:underline">Create a task</Link>
+                          {' '}or start the runner
+                        </div>
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                          buildd
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">
