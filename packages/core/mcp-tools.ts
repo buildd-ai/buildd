@@ -50,7 +50,7 @@ export const triggerActions = [
 export const workerActions = [
   'list_tasks', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
-  'list_artifacts', 'update_artifact',
+  'upload_artifact', 'list_artifacts', 'update_artifact',
   'emit_event', 'query_events',
   'list_artifact_templates',
 ] as const;
@@ -84,7 +84,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), parentTaskId? (link retry to original task), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
-    create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
+    create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -685,7 +686,7 @@ export async function handleBuilddAction(
       const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.type || !params.title) throw new Error('type and title are required');
 
-      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event'];
+      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event', 'file'];
       if (!validArtifactTypes.includes(params.type as string)) {
         throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
       }
@@ -707,6 +708,48 @@ export async function handleBuilddAction(
       const art = artifactData.artifact;
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
+    }
+
+    case 'upload_artifact': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.filename || !params.mimeType || !params.sizeBytes) {
+        throw new Error('filename, mimeType, and sizeBytes are required');
+      }
+
+      const uploadBody: Record<string, unknown> = {
+        workerId,
+        filename: params.filename,
+        mimeType: params.mimeType,
+        sizeBytes: params.sizeBytes,
+      };
+      if (params.title) uploadBody.title = params.title;
+      if (params.type) uploadBody.type = params.type;
+      if (params.metadata && typeof params.metadata === 'object') uploadBody.metadata = params.metadata;
+
+      const data = await api('/api/artifacts/upload-url', {
+        method: 'POST',
+        body: JSON.stringify(uploadBody),
+      });
+
+      const mimeStr = params.mimeType as string;
+      const lines = [
+        `Upload URL ready (expires in 10 minutes).`,
+        ``,
+        `Upload the file:`,
+        `curl -X PUT -H "Content-Type: ${mimeStr}" --data-binary @./${params.filename} "${data.uploadUrl}"`,
+        ``,
+        `Download URL (permanent, for markdown embedding):`,
+        data.downloadUrl,
+        ``,
+        `Share URL: ${data.shareUrl}`,
+        `Artifact ID: ${data.artifactId}`,
+      ];
+
+      if (mimeStr.startsWith('image/')) {
+        lines.push(``, `Markdown image: ![${params.title || params.filename}](${data.downloadUrl})`);
+      }
+
+      return text(lines.join('\n'));
     }
 
     case 'list_artifacts': {

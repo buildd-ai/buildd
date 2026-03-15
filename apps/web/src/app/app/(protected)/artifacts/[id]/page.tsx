@@ -21,6 +21,7 @@ const TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> =
   recommendation: { bg: 'bg-status-info/10', text: 'text-status-info', label: 'Recommendation' },
   alert: { bg: 'bg-status-warning/10', text: 'text-status-warning', label: 'Alert' },
   calendar_event: { bg: 'bg-status-success/10', text: 'text-status-success', label: 'Calendar Event' },
+  file: { bg: 'bg-surface-3', text: 'text-text-secondary', label: 'File' },
 };
 
 export default async function ArtifactDetailPage({
@@ -62,6 +63,14 @@ export default async function ArtifactDetailPage({
 
   const metadata = artifact.metadata as Record<string, unknown> | null;
   const artifactUrl = metadata?.url as string | undefined;
+  const fileMimeType = metadata?.mimeType as string | undefined;
+  const fileName = metadata?.filename as string | undefined;
+  const fileSizeBytes = metadata?.sizeBytes as number | undefined;
+  const isImage = artifact.storageKey && fileMimeType?.startsWith('image/');
+  const isFile = artifact.storageKey && !isImage;
+  const downloadUrl = artifact.storageKey
+    ? `/api/artifacts/${artifact.id}/download?token=${artifact.shareToken}`
+    : undefined;
   const taskTitle = artifact.worker?.task?.title;
   const taskId = artifact.worker?.task?.id;
   const style = TYPE_STYLES[artifact.type] || { bg: 'bg-surface-3', text: 'text-text-secondary', label: artifact.type };
@@ -152,7 +161,44 @@ export default async function ArtifactDetailPage({
             </pre>
           )}
 
-          {!artifact.content && artifact.type !== 'link' && (
+          {isImage && downloadUrl && (
+            <div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={downloadUrl}
+                alt={artifact.title || fileName || 'Image'}
+                className="max-w-full rounded-lg"
+              />
+              {artifact.content && (
+                <div className="mt-4">
+                  <MarkdownContent content={artifact.content} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {isFile && downloadUrl && (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">{fileName || 'File'}</p>
+                {fileSizeBytes && (
+                  <p className="text-xs text-text-muted mt-1">
+                    {fileSizeBytes < 1024 * 1024
+                      ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
+                      : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`}
+                  </p>
+                )}
+              </div>
+              <a
+                href={downloadUrl}
+                className="px-4 py-2 bg-surface-3 hover:bg-surface-4 text-sm rounded-md transition-colors"
+              >
+                Download
+              </a>
+            </div>
+          )}
+
+          {!artifact.content && !artifact.storageKey && artifact.type !== 'link' && (
             <p className="text-text-muted text-sm">No content</p>
           )}
         </div>
