@@ -2334,6 +2334,11 @@ export class WorkerManager {
 
         // On result: run ralph self-review loop before completing
         if (msg.type === 'result') {
+          // No self-review configured — break immediately
+          if (maxReviewIterations <= 0) {
+            break;
+          }
+
           // Check if agent already passed review (said DONE)
           const lastMsg = worker.lastAssistantMessage || '';
           if (lastMsg.includes('<promise>DONE</promise>')) {
