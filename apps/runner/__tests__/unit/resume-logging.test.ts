@@ -113,6 +113,7 @@ mock.module('../../src/session-logger', () => ({
   sessionLog: mockSessionLog,
   readSessionLogs: () => [],
   cleanupOldLogs: () => {},
+  claimLog: () => {},
 }));
 
 const { WorkerManager } = await import('../../src/workers');

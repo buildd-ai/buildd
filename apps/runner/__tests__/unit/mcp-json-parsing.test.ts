@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseMcpJsonContent, extractVarReferences, scanMcpServersRich, checkMcpPreFlight, type McpServerInfo } from '../../src/env-scan';
+import { parseMcpJsonContent, extractVarReferences, type McpServerInfo } from '../../src/mcp-json';
 
 describe('extractVarReferences', () => {
   it('extracts ${VAR} from a string', () => {
