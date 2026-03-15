@@ -70,6 +70,8 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    env:
+      CI_DIR: /tmp/buildd-ci-${{ github.run_id }}
 
     steps:
       - uses: actions/checkout@v4
@@ -139,10 +141,11 @@ jobs:
             docker exec coder-ai-run-my-claude-workspace bash -c "
               set -e
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-              chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true
-              rm -rf /tmp/buildd-ci
-              git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
-              cd /tmp/buildd-ci && bun install 2>&1 | tail -3
+              # Clean up any stale directories from previous runs
+              chmod -R u+rwx /tmp/buildd-ci* 2>/dev/null || true
+              rm -rf /tmp/buildd-ci*
+              git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git $CI_DIR
+              cd $CI_DIR && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
               test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
             "
@@ -158,18 +161,18 @@ jobs:
           # Pipe env vars to a file on the remote — avoids all escaping issues
           printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
             tailscale ssh ubuntu@100.82.109.19 \
-              "docker exec -i coder-ai-run-my-claude-workspace bash -c 'cat > /tmp/buildd-ci/.env.test'"
+              "docker exec -i coder-ai-run-my-claude-workspace bash -c 'cat > $CI_DIR/.env.test'"
 
           # Start Next.js server with real env vars
-          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+          tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c '
-              export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
+              export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
               screen -X -S buildd-web quit 2>/dev/null || true
               screen -dmS buildd-web bash -c "
-                export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
-                set -a; source /tmp/buildd-ci/.env.test; set +a
+                export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
+                set -a; source $CI_DIR/.env.test; set +a
                 export PORT=3333
-                cd /tmp/buildd-ci/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
+                cd $CI_DIR/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
               "
             '
           SCRIPT
@@ -205,7 +208,7 @@ jobs:
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
-                cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
+                cd $CI_DIR && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
           SCRIPT
@@ -243,7 +246,7 @@ jobs:
           tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
             screen -X -S buildd-web quit 2>/dev/null
             screen -X -S buildd-test quit 2>/dev/null
-            rm -rf /tmp/buildd-ci || { chmod -R u+rwx /tmp/buildd-ci && rm -rf /tmp/buildd-ci; }
+            chmod -R u+rwx /tmp/buildd-ci* 2>/dev/null; rm -rf /tmp/buildd-ci*
           "' || true
 
       - name: Cleanup Neon branch
