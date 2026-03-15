@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import WorkerRespondInput from '@/components/WorkerRespondInput';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +77,7 @@ export default async function MissionDetailPage({
             columns: {
               id: true,
               status: true,
+              waitingFor: true,
               branch: true,
               prUrl: true,
               prNumber: true,
@@ -270,27 +272,47 @@ export default async function MissionDetailPage({
           <div className="space-y-1.5">
             {activeTasks.map((task) => {
               const latestWorker = task.workers?.[0];
+              const waitingWorker = task.workers?.find(
+                (w) => w.status === 'waiting_input' && w.waitingFor
+              );
+              const waitingFor = waitingWorker?.waitingFor as {
+                type: string;
+                prompt: string;
+                options?: string[];
+              } | null;
+
               return (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors group"
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[task.status] || 'bg-text-muted'}`}
-                  />
-                  <span className="flex-1 text-[13px] text-text-primary truncate group-hover:text-accent-text transition-colors">
-                    {task.title}
-                  </span>
-                  {latestWorker?.currentAction && (
-                    <span className="hidden md:block text-[11px] text-text-muted truncate max-w-[200px]">
-                      {latestWorker.currentAction}
+                <div key={task.id}>
+                  <Link
+                    href={`/app/tasks/${task.id}`}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors group"
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[task.status] || 'bg-text-muted'}`}
+                    />
+                    <span className="flex-1 text-[13px] text-text-primary truncate group-hover:text-accent-text transition-colors">
+                      {task.title}
                     </span>
+                    {latestWorker?.currentAction && !waitingWorker && (
+                      <span className="hidden md:block text-[11px] text-text-muted truncate max-w-[200px]">
+                        {latestWorker.currentAction}
+                      </span>
+                    )}
+                    <span className="text-[11px] text-text-muted shrink-0">
+                      {timeAgo(task.createdAt)}
+                    </span>
+                  </Link>
+                  {waitingWorker && waitingFor && (
+                    <div className="px-3 pb-2">
+                      <span className="section-label text-status-warning">Needs your input</span>
+                      <WorkerRespondInput
+                        workerId={waitingWorker.id}
+                        question={waitingFor.prompt}
+                        options={waitingFor.options}
+                      />
+                    </div>
                   )}
-                  <span className="text-[11px] text-text-muted shrink-0">
-                    {timeAgo(task.createdAt)}
-                  </span>
-                </Link>
+                </div>
               );
             })}
           </div>
