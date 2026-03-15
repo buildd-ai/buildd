@@ -1030,7 +1030,7 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
       }
     }
 
-    parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
+    parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed\n- Before completing: write a summary artifact (buildd action=create_artifact, type=summary) documenting what changed, key decisions, and gotchas\n- Save useful discoveries to workspace memory (buildd_memory action=save) — patterns, gotchas, architecture decisions`);
     return parts.join('\n');
   }
 
