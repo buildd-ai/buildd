@@ -1091,12 +1091,6 @@ export class WorkerManager {
       phaseTools: [],
     };
 
-    // Attach verification command from task context (Ralph loop)
-    const verificationCmd = fullTask.context?.verificationCommand;
-    if (verificationCmd && typeof verificationCmd === 'string') {
-      worker.verificationCommand = verificationCmd;
-    }
-
     // Attach server-managed credentials if redeemed
     if (serverApiKey) {
       worker.serverApiKey = serverApiKey;
@@ -2314,9 +2308,14 @@ export class WorkerManager {
         extendedContext,
       });
 
-      // Stream responses
+      // Stream responses with ralph loop (prompt-based self-review)
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
+      const taskTitle = worker.taskTitle || 'Untitled task';
+      const taskDescription = (fullTask as any).description || '';
+      const maxReviewIterations = (fullTask.context as any)?.maxReviewIterations ?? 2;
+      let reviewIteration = 0;
+
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
         if (msg.type === 'result') {
@@ -2334,9 +2333,56 @@ export class WorkerManager {
 
         this.handleMessage(worker, msg);
 
-        // Break on result - the query is complete
+        // On result: run ralph self-review loop before completing
         if (msg.type === 'result') {
-          break;
+          // Check if agent already passed review (said DONE)
+          const lastMsg = worker.lastAssistantMessage || '';
+          if (lastMsg.includes('<promise>DONE</promise>')) {
+            if (reviewIteration > 0) {
+              this.addMilestone(worker, { type: 'status', label: `Self-review passed (iteration ${reviewIteration})`, ts: Date.now() });
+              sessionLog(worker.id, 'info', 'ralph_review_passed', `iteration=${reviewIteration}`, worker.taskId);
+            }
+            break;
+          }
+
+          // Skip review for waiting/error states
+          if (worker.status === 'waiting' || worker.status === 'error') {
+            break;
+          }
+
+          // Check if we've exhausted review iterations
+          if (reviewIteration >= maxReviewIterations) {
+            this.addMilestone(worker, { type: 'status', label: `Self-review iterations exhausted (${reviewIteration}/${maxReviewIterations})`, ts: Date.now() });
+            sessionLog(worker.id, 'warn', 'ralph_review_exhausted', `iterations=${reviewIteration}`, worker.taskId);
+            break;
+          }
+
+          // Send self-review prompt back into the session
+          reviewIteration++;
+          const reviewPrompt = `Before completing, review your work against the original objective.
+
+**Task:** ${taskTitle}
+${taskDescription ? `**Description:** ${taskDescription}` : ''}
+
+Check your implementation:
+- Did you fully implement what was asked, or take shortcuts?
+- Any TODO comments, stubs, or placeholder code left behind?
+- Any features described in the task that you skipped or only partially implemented?
+- Did you remove or break existing functionality unnecessarily?
+
+If everything is complete and meets the objective, respond with exactly: <promise>DONE</promise>
+If something is missing or incomplete, describe what and fix it now.`;
+
+          this.addMilestone(worker, { type: 'status', label: `Self-review ${reviewIteration}/${maxReviewIterations}`, ts: Date.now() });
+          sessionLog(worker.id, 'info', 'ralph_review_start', `iteration=${reviewIteration}`, worker.taskId);
+          worker.currentAction = `Self-review (${reviewIteration}/${maxReviewIterations})`;
+          this.emit({ type: 'worker_update', worker });
+
+          const session = this.sessions.get(worker.id);
+          if (session) {
+            session.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
+          }
+          continue; // Don't break — keep streaming the agent's response
         }
       }
 
@@ -2420,50 +2466,9 @@ export class WorkerManager {
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
       } else {
-        // Actually completed - collect git stats before reporting
+        // Actually completed
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
         const gitStats = await this.collectGitStats(worker.id, worker.branch);
-
-        // Run verification command if configured (Ralph loop)
-        if (worker.verificationCommand) {
-          const sessionData = this.sessions.get(worker.id);
-          const verifyCwd = sessionData?.cwd || worker.worktreePath;
-          if (verifyCwd) {
-            this.addMilestone(worker, { type: 'status', label: 'Running verification...', ts: Date.now() });
-            worker.currentAction = 'Running verification command...';
-            this.emit({ type: 'worker_update', worker });
-
-            const { runVerificationCommand } = await import('./verification');
-            const verifyResult = await runVerificationCommand(worker.verificationCommand, verifyCwd);
-
-            if (!verifyResult.success) {
-              // Verification failed — report task as failed with verification output
-              sessionLog(worker.id, 'error', 'verification_failed',
-                `exitCode=${verifyResult.exitCode} duration=${verifyResult.durationMs}ms`, worker.taskId);
-              this.addMilestone(worker, { type: 'status', label: `Verification failed (exit ${verifyResult.exitCode})`, ts: Date.now() });
-              this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-              worker.status = 'error';
-              worker.error = 'Verification command failed';
-              worker.currentAction = 'Verification failed';
-              worker.hasNewActivity = true;
-              worker.completedAt = Date.now();
-              await this.buildd.updateWorker(worker.id, {
-                status: 'failed',
-                error: `Verification failed: ${verifyResult.output.slice(0, 500)}`,
-                milestones: worker.milestones,
-                ...gitStats,
-              });
-              this.emit({ type: 'worker_update', worker });
-              storeSaveWorker(worker);
-              return; // Skip normal completion flow
-            }
-
-            // Verification passed
-            this.addMilestone(worker, { type: 'status', label: `Verification passed (${verifyResult.durationMs}ms)`, ts: Date.now() });
-            sessionLog(worker.id, 'info', 'verification_passed',
-              `duration=${verifyResult.durationMs}ms`, worker.taskId);
-          }
-        }
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);

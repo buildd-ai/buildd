@@ -1,19 +1,18 @@
 ---
 name: ralph-loop
-description: "Verification loop skill for buildd tasks. Teaches agents to run verification gates, handle failures with structured context, and create retry tasks that chain back to the original."
+description: "Verification loop skill for buildd tasks. Teaches agents to run verification gates locally, handle failures, and iterate until passing."
 author: buildd
 ---
 
 # Ralph Loop — Verification & Retry Skill
 
-Automated verification loop for buildd tasks. When a task has a verification command, run it before completing. If it fails, create a structured retry task so the next attempt starts from your work.
+Verification loop pattern for buildd tasks. When a task has a verification command, agents should run it locally before completing. If it fails, fix the issues and retry — all within the same session to preserve full context.
 
 ## When to Use This Skill
 
 - Task context includes `verificationCommand`
 - Task context includes `failureContext` (you're a retry attempt)
-- You want to set up a verification gate for a new task
-- CI failed on your PR and you need to create a retry
+- You want to verify your work before completing a task
 
 ## How the Loop Works
 
@@ -24,23 +23,15 @@ Agent works on task
 Agent completes work
   |
   v
-Runner runs verificationCommand (if set)
+Agent runs verificationCommand locally (if set in task context)
   |
-  ├─ PASS → task marked completed, PR auto-merges if enabled
+  ├─ PASS → complete the task, create PR
   |
-  └─ FAIL → task marked failed with verification output
-            |
-            v
-         CI failure webhook (or agent) creates retry task:
-           - parentTaskId = original task
-           - baseBranch = previous branch (preserves work)
-           - failureContext = what failed
-           - iteration = N+1
-           |
-           v
-         New agent claims → works on same branch
-         (loop repeats until pass or maxIterations)
+  └─ FAIL → fix the issues, re-run verification
+            (repeat until pass or you're stuck)
 ```
+
+Verification runs in-session — the agent keeps full context of what it tried and why it failed. No new tasks are created for retries.
 
 ## If You Are a Retry Task
 
@@ -52,7 +43,7 @@ Check your task context for these fields:
 | `baseBranch` | Your worktree is based on the previous attempt's branch |
 | `iteration` | Which attempt this is (1-indexed) |
 | `maxIterations` | Stop after this many attempts |
-| `verificationCommand` | The command that will gate your completion |
+| `verificationCommand` | The command to run before completing |
 | `prNumber` | Existing PR number (push fixes, don't create a new PR) |
 
 ### Retry Workflow
@@ -60,19 +51,19 @@ Check your task context for these fields:
 1. **Read the failure context** — understand exactly what went wrong
 2. **Your worktree already has the previous work** — don't start from scratch
 3. **Fix the specific issue** — targeted fix, not a rewrite
-4. **Run the verification command locally first**:
+4. **Run the verification command locally**:
    ```bash
    # Run whatever verificationCommand says, e.g.:
    bun test && bun run build
    ```
 5. **If there's an existing PR**, push to the same branch — it auto-updates
-6. **Complete the task** — the runner will re-run verification before marking done
+6. **Complete the task** once verification passes
 
 ### Do NOT:
 
 - Start from scratch — your branch has the previous work
 - Create a new PR if one exists — push to the existing branch
-- Skip running verification locally — the runner will catch you anyway
+- Skip running verification locally — always verify before completing
 - Ignore the failure context — it tells you exactly what to fix
 
 ## Setting Up Verification for New Tasks
@@ -88,7 +79,7 @@ buildd action=create_task params={
 }
 ```
 
-The verification command runs in the worktree after the agent completes. Common commands:
+Common verification commands:
 
 | Project Type | Verification Command |
 |-------------|---------------------|
@@ -97,35 +88,18 @@ The verification command runs in the worktree after the agent completes. Common 
 | Python | `pytest && mypy .` |
 | Go | `go test ./... && go vet ./...` |
 
-## Creating a Retry Task Manually
-
-If you detect a failure and want to create a retry yourself (instead of waiting for CI):
-
-```
-buildd action=create_task params={
-  "title": "Retry: fix failing tests",
-  "description": "Previous attempt failed: [error details]",
-  "parentTaskId": "original-task-id",
-  "baseBranch": "buildd/abc12345-original-branch",
-  "verificationCommand": "bun test && bun run build",
-  "iteration": 2,
-  "maxIterations": 5,
-  "failureContext": "Test failed: expected 200 got 500 in auth.test.ts"
-}
-```
-
 ## Verification Best Practices
 
 1. **Keep verification commands fast** — under 5 minutes. If your test suite takes longer, use a focused subset.
 2. **Make failure output actionable** — include file paths and line numbers when possible.
 3. **Set reasonable maxIterations** — 3 for simple fixes, 5 for complex features. More than 5 usually means the approach is wrong.
-4. **Run verification locally before completing** — don't rely solely on the runner's gate.
+4. **Always run verification locally before completing** — don't skip this step.
 
 ## Escalation
 
 | Situation | Action |
 |-----------|--------|
-| Iteration = maxIterations and still failing | Stop. Report what's failing and why attempts haven't worked. |
+| Still failing after multiple attempts | Stop. Report what's failing and why attempts haven't worked. |
 | Verification passes locally but fails in CI | Check environment differences (Node version, env vars, dependencies). |
 | Previous attempt's code is fundamentally wrong | Say so in your completion. Don't perpetuate a bad approach. |
 | Flaky test causing failures | Identify the flaky test, fix or skip it, note in completion summary. |
