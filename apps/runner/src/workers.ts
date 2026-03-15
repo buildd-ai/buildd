@@ -9,6 +9,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import { resolveWorktreeBase } from './worktree-utils';
+import { startupPrune, periodicPrune, type WorktreePruneOptions } from './worktree-pruner';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment } from './env-scan';
@@ -203,8 +204,8 @@ export class WorkerManager {
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
     this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
 
-    // Run cleanup every 30 minutes (includes session logs)
-    this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
+    // Run cleanup every 30 minutes (includes session logs + worktree pruning)
+    this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); this.pruneWorktreesPeriodic(); }, 30 * 60 * 1000);
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
@@ -214,6 +215,9 @@ export class WorkerManager {
 
     // Restore workers from disk on startup
     this.restoreWorkersFromDisk();
+
+    // Prune orphaned worktrees on startup (dirs with no worker record)
+    this.pruneWorktreesOnStartup();
 
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
@@ -335,6 +339,39 @@ export class WorkerManager {
       }
     } catch (err) {
       console.error('[WorkerStore] Failed to restore workers from disk:', err);
+    }
+  }
+
+  /** Build a map of worktree dir -> worker info for the pruner */
+  private buildWorkerWorktreeMap(): Map<string, { status: string; worktreePath?: string }> {
+    const map = new Map<string, { status: string; worktreePath?: string }>();
+    for (const [id, worker] of this.workers.entries()) {
+      map.set(id, { status: worker.status, worktreePath: worker.worktreePath });
+    }
+    return map;
+  }
+
+  /** Prune orphaned worktrees on startup — runs synchronously during init */
+  private pruneWorktreesOnStartup() {
+    try {
+      const workerMap = this.buildWorkerWorktreeMap();
+      for (const root of this.config.projectRoots) {
+        startupPrune(root, workerMap);
+      }
+    } catch (err) {
+      console.warn('[WorktreePruner] Startup prune failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Prune expired worktrees periodically — called from cleanup interval */
+  private pruneWorktreesPeriodic() {
+    try {
+      const workerMap = this.buildWorkerWorktreeMap();
+      for (const root of this.config.projectRoots) {
+        periodicPrune(root, { activeWorkers: workerMap });
+      }
+    } catch (err) {
+      console.warn('[WorktreePruner] Periodic prune failed:', err instanceof Error ? err.message : err);
     }
   }
 
