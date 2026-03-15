@@ -116,8 +116,12 @@ jobs:
             "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
           HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
 
+          # URL-encode credentials to handle special characters in passwords
+          ENCODED_USER=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${NEON_DB_USER}")
+          ENCODED_PASSWORD=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${NEON_DB_PASSWORD}")
+
           echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
-          echo "database_url=postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "database_url=postgresql://${ENCODED_USER}:${ENCODED_PASSWORD}@${HOST}/neondb?sslmode=require" >> "$GITHUB_OUTPUT"
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
