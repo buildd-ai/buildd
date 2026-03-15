@@ -2,14 +2,14 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.74)
+## Buildd Integration Status (v0.2.76)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 13 hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange)
+- All 13 original hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange) + 3 new hooks available: PostCompact, Elicitation, ElicitationResult (v0.2.76)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -22,11 +22,15 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.76`** | MCP elicitation support, `Elicitation`/`ElicitationResult` hooks, `PostCompact` hook, `worktree.sparsePaths` setting, `/effort` slash command, deferred tools compaction fix, auto-compaction circuit breaker, stale worktree cleanup, code review inline comment confirmation | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.74`** | `autoMemoryDirectory` setting, `/context` optimization suggestions, managed policy `ask` rule enforcement, full model IDs in agent frontmatter, streaming memory leak fix, `SessionEnd` hook timeout config, `modelOverrides` setting, subagent model downgrade fix on Bedrock/Vertex, RTL text rendering fix, CPU freeze fix on complex bash permission prompts | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.72`** | Prompt cache fix (up to 12x input cost reduction), `ExitWorktree` tool, `Agent` model override restored, `/plan` with description, CLAUDE.md HTML comment hiding, worktree isolation fixes, parallel tool call fix, bash permission improvements | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.71`** | `/loop` command, cron scheduling, `SDKTaskStartedMessage.prompt` field, stdin freeze fix, background agent notification fix, `--print` hang fix, plugin fixes, CLI binary size reduction | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.70`** | API gateway compat, MCP cache fix, ToolSearch fix, compaction image preservation, reduced subagent token usage | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.69`** | DirectConnectTransport, supportedAgents(), hook agent_id/agent_type, Opus 4.6 medium effort default, memory fixes, `/claude-api` skill, `/reload-plugins`, git instructions toggle | **P1** | **Done** |
+| **Handle MCP elicitation in runner** | `Elicitation`/`ElicitationResult` hooks — surface MCP input requests in dashboard UI | **P2** | **New** |
+| **Use `PostCompact` hook for compaction monitoring** | Track compaction frequency and token reduction for observability | **P3** | **New** |
+| **Evaluate `worktree.sparsePaths` for runner** | Sparse checkout could speed up subagent worktree creation in large repos | **P3** | **New** |
 | **Session history in dashboard** | `listSessions()` + `getSessionMessages()` — browse past worker conversations | **P1** | **New** |
 | **Surface `task_progress` events in dashboard** | Real-time cost/progress for background subagents | **P2** | **New** |
 | **Pass account identity env vars to SDK** | `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ORGANIZATION_UUID` | **P2** | **New** |
@@ -52,6 +56,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.76`** — All packages now pin `>=0.2.76`
 - **SDK pin `>=0.2.74`** — All packages now pin `>=0.2.74`
 - **SDK pin `>=0.2.72`** — All packages now pin `>=0.2.72`
 - **SDK pin `>=0.2.71`** — All packages now pin `>=0.2.71`
@@ -80,6 +85,8 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.76 | 0.2.76 | **MCP elicitation support** (structured input mid-task); **`Elicitation`/`ElicitationResult` hooks**; **`PostCompact` hook**; **`worktree.sparsePaths`** setting (sparse checkout for large monorepos); **`/effort` slash command**; `-n`/`--name` CLI flag for session display names; **deferred tools compaction fix** (array/number params rejected after compact); **auto-compaction circuit breaker** (stops after 3 retries); stale worktree cleanup; improved worktree startup perf; background agent partial result preservation on kill; model fallback notifications always visible; slash command "Unknown skill" fix; plan mode re-approval fix; voice mode keypress fix; 1M-context spurious errors fix; clipboard fix in tmux over SSH |
+| 2.1.75 | 0.2.75 | **Code review inline comment confirmation** — `confirmed=true` required to post inline comments, preventing subagent probe comments from reaching customer PRs |
 | 2.1.74 | 0.2.74 | **`/context` optimization suggestions**; **`autoMemoryDirectory` setting**; streaming memory leak fix (unbounded RSS growth); **managed policy `ask` rule enforcement** (security fix — user `allow`/skill `allowed-tools` can no longer bypass); full model IDs in agent frontmatter; `SessionEnd` hook timeout config (`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`); MCP OAuth hang fix (port in use); RTL text rendering fix (Windows Terminal, VS Code); `--plugin-dir` local override behavior; LSP fix for Windows; voice mode macOS entitlement fix |
 | 2.1.73 | 0.2.73 | **`modelOverrides` setting** (custom provider model IDs, Bedrock ARNs); **CPU freeze fix** on complex bash permission prompts; **skill file deadlock fix**; subagent model downgrade fix on Bedrock/Vertex/Foundry; bash output fix for multi-session projects; background bash process cleanup on agent exit; `SessionStart` hook double-fire fix on resume; Linux sandbox ripgrep fix; default Opus model updated to 4.6 on Bedrock/Vertex/Foundry; `/effort` command works during response; `/output-style` deprecated for `/config` |
 | 2.1.72 | 0.2.72 | **Prompt cache fix** (up to 12x input cost reduction in `query()` calls); **`ExitWorktree` tool**; **`Agent` model override restored**; **`/plan` with description**; **CLAUDE.md HTML comment hiding**; **Simplified effort levels** (low/medium/high, removed max); **Bash permission improvements** (tree-sitter parsing, reduced false positives); **`/copy` write-to-file** (`w` key); **`CLAUDE_CODE_DISABLE_CRON`** env var; added `lsof`/`pgrep`/`tput`/`ss`/`fd`/`fdfind` to bash allowlist; parallel tool call fix (failed Read/WebFetch/Glob no longer cancels siblings); worktree isolation fixes (Task resume cwd, background notification paths); skill hooks double-fire fix; `/clear` no longer kills background agents; team agents inherit leader model; improved CPU utilization in long sessions; 510KB bundle size reduction; many plugin, voice, and permission rule fixes |
@@ -116,6 +123,13 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **Deferred tools compaction fix** — Deferred tools no longer lose input schemas (array/number parameters rejected) after conversation compaction (v0.2.76). Critical for long-running Buildd workers using ToolSearch/deferred tools.
+- **Auto-compaction circuit breaker** — Auto-compaction now stops after 3 failed attempts instead of retrying indefinitely (v0.2.76). Prevents workers from getting stuck in compaction loops.
+- **MCP elicitation support** — MCP servers can now request structured input mid-task via interactive dialogs (v0.2.76). Enables richer MCP tool interactions for Buildd workers.
+- **PostCompact hook** — New hook fires after compaction completes (v0.2.76). Enables workers to react to compaction events for monitoring/logging.
+- **Stale worktree cleanup** — Automatically cleans up worktrees left behind after interrupted parallel runs (v0.2.76). Prevents disk space leaks for workers using subagent worktrees.
+- **Worktree sparse checkout** — `worktree.sparsePaths` setting enables sparse checkout for large monorepos (v0.2.76). Can significantly reduce worktree setup time for Buildd workers.
+- **Background agent partial results** — Killing background agents now preserves partial results in conversation context (v0.2.76). Improves reliability when workers need to abort subagents.
 - **Streaming memory leak fix** — Streaming API response buffers now released when generators terminate early, preventing unbounded RSS growth (v0.2.74). Critical for long-running Buildd workers.
 - **Managed policy enforcement** — Managed policy `ask` rules can no longer be bypassed by user `allow` rules or skill `allowed-tools` (v0.2.74). Security fix for enterprise deployments.
 - **Full model IDs in agent frontmatter** — Full model IDs (e.g., `claude-opus-4-5`) now accepted in agent frontmatter/config instead of being silently ignored (v0.2.74). Enables precise model pinning for Buildd skills.

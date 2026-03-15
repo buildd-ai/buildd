@@ -197,7 +197,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (15 events)
+### Official HookEvent Type (18 events)
 
 ```typescript
 type HookEvent =
@@ -212,8 +212,11 @@ type HookEvent =
   | 'SubagentStart'       // Subagent initialization
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
+  | 'PostCompact'         // After compaction completes (v0.2.76+)
   | 'PermissionRequest'   // Permission dialog
   | 'ConfigChange'        // Configuration file changes (v0.2.49+)
+  | 'Elicitation'         // MCP server requests structured input (v0.2.76+)
+  | 'ElicitationResult'   // MCP elicitation response sent (v0.2.76+)
   | 'WorktreeCreate'      // After git worktree created (v2.1.50+)
   | 'WorktreeRemove';     // Before git worktree removed (v2.1.50+)
 ```
