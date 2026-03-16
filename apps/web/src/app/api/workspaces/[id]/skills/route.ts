@@ -101,7 +101,9 @@ export async function POST(
 
     try {
         const body = await req.json();
-        const { name, description, content, source, metadata, enabled } = body;
+        const { name, description, content, source, metadata, enabled,
+            model, allowedTools, canDelegateTo, background, maxTurns, color,
+            mcpServers, requiredEnvVars } = body;
 
         if (!name || !content) {
             return NextResponse.json(
@@ -146,6 +148,14 @@ export async function POST(
                     source: source || null,
                     metadata: metadata || {},
                     enabled: enabled !== undefined ? enabled : existing.enabled,
+                    ...(model !== undefined ? { model } : {}),
+                    ...(allowedTools !== undefined ? { allowedTools } : {}),
+                    ...(canDelegateTo !== undefined ? { canDelegateTo } : {}),
+                    ...(background !== undefined ? { background } : {}),
+                    ...(maxTurns !== undefined ? { maxTurns } : {}),
+                    ...(color !== undefined ? { color } : {}),
+                    ...(mcpServers !== undefined ? { mcpServers } : {}),
+                    ...(requiredEnvVars !== undefined ? { requiredEnvVars } : {}),
                     updatedAt: new Date(),
                 })
                 .where(eq(workspaceSkills.id, existing.id))
@@ -167,6 +177,14 @@ export async function POST(
                 enabled: enabled !== undefined ? enabled : true,
                 origin: 'manual',
                 metadata: metadata || {},
+                ...(model ? { model } : {}),
+                ...(allowedTools ? { allowedTools } : {}),
+                ...(canDelegateTo ? { canDelegateTo } : {}),
+                ...(background !== undefined ? { background } : {}),
+                ...(maxTurns !== undefined ? { maxTurns } : {}),
+                ...(color ? { color } : {}),
+                ...(mcpServers ? { mcpServers } : {}),
+                ...(requiredEnvVars ? { requiredEnvVars } : {}),
             })
             .returning();
 

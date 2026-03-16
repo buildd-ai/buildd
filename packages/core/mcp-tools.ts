@@ -84,7 +84,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), parentTaskId? (link retry to original task), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), parentTaskId? (link retry to original task), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
@@ -92,10 +92,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     list_schedules: '{ workspaceId? } [admin]',
-    register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
+    register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (string[]), requiredEnvVars? (Record<string, string>) } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team objectives [admin]',
+    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, defaultRoleSlug?: string } — manage team objectives [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -455,6 +455,7 @@ export async function handleBuilddAction(
         taskBody.parentTaskId = params.parentTaskId;
       }
       if (params.category) taskBody.category = params.category;
+      if (params.roleSlug && typeof params.roleSlug === 'string') taskBody.roleSlug = params.roleSlug;
       // outputRequirement inheritance from objective is handled by the API route;
       // only pass through if explicitly provided by the caller.
       if (params.outputRequirement) taskBody.outputRequirement = params.outputRequirement;
@@ -670,14 +671,24 @@ export async function handleBuilddAction(
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
+      const skillBody: Record<string, unknown> = {
+        name: params.name,
+        content: params.content,
+        description: params.description || undefined,
+        source: params.source || 'mcp',
+      };
+      if (params.model) skillBody.model = params.model;
+      if (Array.isArray(params.allowedTools)) skillBody.allowedTools = params.allowedTools;
+      if (Array.isArray(params.canDelegateTo)) skillBody.canDelegateTo = params.canDelegateTo;
+      if (typeof params.background === 'boolean') skillBody.background = params.background;
+      if (typeof params.maxTurns === 'number') skillBody.maxTurns = params.maxTurns;
+      if (params.color) skillBody.color = params.color;
+      if (Array.isArray(params.mcpServers)) skillBody.mcpServers = params.mcpServers;
+      if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') skillBody.requiredEnvVars = params.requiredEnvVars;
+
       const data = await api(`/api/workspaces/${wsId}/skills`, {
         method: 'POST',
-        body: JSON.stringify({
-          name: params.name,
-          content: params.content,
-          description: params.description || undefined,
-          source: params.source || 'mcp',
-        }),
+        body: JSON.stringify(skillBody),
       });
 
       const skill = data.skill;
@@ -984,6 +995,7 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
+          if (params.defaultRoleSlug) body.defaultRoleSlug = params.defaultRoleSlug;
           const data = await api('/api/objectives', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -1016,6 +1028,7 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
+          if (params.defaultRoleSlug !== undefined) body.defaultRoleSlug = params.defaultRoleSlug;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/objectives/${params.objectiveId}`, {
             method: 'PATCH',

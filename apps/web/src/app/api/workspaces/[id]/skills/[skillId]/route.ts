@@ -91,7 +91,9 @@ export async function PATCH(
 
     try {
         const body = await req.json();
-        const { name, description, content, source, metadata, enabled } = body;
+        const { name, description, content, source, metadata, enabled,
+            model, allowedTools, canDelegateTo, background, maxTurns, color,
+            mcpServers, requiredEnvVars } = body;
 
         const existing = await db.query.workspaceSkills.findFirst({
             where: and(
@@ -114,6 +116,14 @@ export async function PATCH(
         if (source !== undefined) updates.source = source;
         if (metadata !== undefined) updates.metadata = metadata;
         if (enabled !== undefined) updates.enabled = enabled;
+        if (model !== undefined) updates.model = model;
+        if (allowedTools !== undefined) updates.allowedTools = allowedTools;
+        if (canDelegateTo !== undefined) updates.canDelegateTo = canDelegateTo;
+        if (background !== undefined) updates.background = background;
+        if (maxTurns !== undefined) updates.maxTurns = maxTurns;
+        if (color !== undefined) updates.color = color;
+        if (mcpServers !== undefined) updates.mcpServers = mcpServers;
+        if (requiredEnvVars !== undefined) updates.requiredEnvVars = requiredEnvVars;
 
         const [updated] = await db
             .update(workspaceSkills)

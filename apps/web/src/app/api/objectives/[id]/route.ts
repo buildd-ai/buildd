@@ -124,7 +124,7 @@ export async function PATCH(
 
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, defaultRoleSlug } = body;
 
     // Validate active hours range
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -154,6 +154,7 @@ export async function PATCH(
     if (activeHoursStart !== undefined) updateData.activeHoursStart = activeHoursStart ?? null;
     if (activeHoursEnd !== undefined) updateData.activeHoursEnd = activeHoursEnd ?? null;
     if (activeHoursTimezone !== undefined) updateData.activeHoursTimezone = activeHoursTimezone || null;
+    if (defaultRoleSlug !== undefined) updateData.defaultRoleSlug = defaultRoleSlug || null;
 
     // Handle cronExpression changes or skill/recipe updates on existing schedule
     const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined || isHeartbeat !== undefined;
