@@ -1241,10 +1241,21 @@ const server = DEBUG_MODE ? Bun.serve({
       let sseController: ReadableStreamDefaultController | null = null;
 
       // Prepare initial state outside the stream to ensure it's ready
+      // Slim down init payload: strip message history from completed workers
+      // to avoid multi-MB SSE payloads that break reverse proxies (e.g. Coder)
+      const allWorkers = workerManager?.getWorkers() || [];
+      const slimWorkers = allWorkers.map((w: any) => {
+        if (w.status === 'done' || w.status === 'error') {
+          const { messages, ...rest } = w;
+          return { ...rest, messages: messages?.slice(-5) || [] };
+        }
+        return w;
+      });
+
       const init = {
         type: 'init',
         configured: !!config.apiKey,
-        workers: workerManager?.getWorkers() || [],
+        workers: slimWorkers,
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
