@@ -514,6 +514,14 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
+  pendingSuggestion: jsonb('pending_suggestion').$type<{
+    cronExpression?: string;
+    enabled?: boolean;
+    reason: string;
+    suggestedAt: string;
+    suggestedByTaskId?: string;
+    suggestedByWorkerId?: string;
+  }>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
