@@ -489,12 +489,20 @@ export default async function HomePage() {
                       </Link>
                     );
                   })}
-                  <Link
-                    href="/app/missions"
-                    className="block text-center text-xs text-text-muted hover:text-text-secondary py-2"
-                  >
-                    View all missions
-                  </Link>
+                  <div className="flex items-center justify-between pt-1">
+                    <Link
+                      href="/app/missions"
+                      className="text-xs text-text-muted hover:text-text-secondary"
+                    >
+                      View all missions
+                    </Link>
+                    <Link
+                      href="/app/missions/new"
+                      className="text-xs text-text-muted hover:text-primary"
+                    >
+                      + New Mission
+                    </Link>
+                  </div>
                 </div>
               )}
             </div>
