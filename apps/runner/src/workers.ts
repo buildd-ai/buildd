@@ -98,6 +98,15 @@ function buildUserMessage(
 }
 
 // Worker session state
+// Ralph loop state — tracks iteration progress for the Stop hook
+interface RalphLoopState {
+  originalPrompt: string;        // The original task prompt, re-fed each iteration
+  iteration: number;             // Current iteration (1-indexed)
+  maxIterations: number;         // Stop after this many (0 = unlimited)
+  completionPromise: string;     // Text to look for in <promise> tags (default: "DONE")
+  verificationCommand?: string;  // Optional command agent should run before completing
+}
+
 interface WorkerSession {
   inputStream: MessageStream;
   abortController: AbortController;
@@ -105,6 +114,7 @@ interface WorkerSession {
   repoPath: string;  // Original repo path (different from cwd when using worktrees)
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
+  ralphLoop?: RalphLoopState;  // Set when ralph loop is active for this session
 }
 
 // Constants for repetition detection
@@ -1586,8 +1596,10 @@ export class WorkerManager {
     };
   }
 
-  // Create a Stop hook that captures the last assistant message (v0.2.47+).
-  // Used to generate prompt suggestions for follow-up actions after task completion.
+  // Create a Stop hook that implements the Ralph loop pattern (like the Anthropic plugin).
+  // When a ralph loop is active, the hook intercepts session exit, checks for a completion
+  // promise in the last assistant message, and re-feeds the original prompt if not complete.
+  // Also captures the last assistant message for prompt suggestions.
   private createStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'Stop') return {};
@@ -1602,8 +1614,78 @@ export class WorkerManager {
         }
       }
 
-      return { async: true };
+      // Ralph loop: check if we should block exit and re-feed the prompt
+      const session = this.sessions.get(worker.id);
+      const ralph = session?.ralphLoop;
+      if (!ralph) {
+        return { async: true };
+      }
+
+      // Check for completion promise in last assistant message
+      if (lastMessage) {
+        const promiseMatch = lastMessage.match(/<promise>(.*?)<\/promise>/s);
+        if (promiseMatch) {
+          const promiseText = promiseMatch[1].trim().replace(/\s+/g, ' ');
+          if (promiseText === ralph.completionPromise) {
+            this.addMilestone(worker, { type: 'status', label: `Ralph loop completed (iteration ${ralph.iteration})`, ts: Date.now() });
+            sessionLog(worker.id, 'info', 'ralph_loop_completed', `iteration=${ralph.iteration}, promise="${ralph.completionPromise}"`, worker.taskId);
+            // Clear ralph state — allow exit
+            session!.ralphLoop = undefined;
+            return { async: true };
+          }
+        }
+      }
+
+      // Check if max iterations reached
+      if (ralph.maxIterations > 0 && ralph.iteration >= ralph.maxIterations) {
+        this.addMilestone(worker, { type: 'status', label: `Ralph loop exhausted (${ralph.iteration}/${ralph.maxIterations})`, ts: Date.now() });
+        sessionLog(worker.id, 'warn', 'ralph_loop_exhausted', `iterations=${ralph.iteration}`, worker.taskId);
+        session!.ralphLoop = undefined;
+        return { async: true };
+      }
+
+      // Not complete — block exit and re-feed the same prompt
+      ralph.iteration++;
+      const systemMsg = `🔄 Ralph iteration ${ralph.iteration}${ralph.maxIterations > 0 ? `/${ralph.maxIterations}` : ''} | To complete: output <promise>${ralph.completionPromise}</promise> (ONLY when genuinely true)`;
+
+      this.addMilestone(worker, { type: 'status', label: `Ralph loop iteration ${ralph.iteration}${ralph.maxIterations > 0 ? `/${ralph.maxIterations}` : ''}`, ts: Date.now() });
+      sessionLog(worker.id, 'info', 'ralph_loop_iteration', `iteration=${ralph.iteration}`, worker.taskId);
+      worker.currentAction = `Ralph loop (${ralph.iteration}${ralph.maxIterations > 0 ? `/${ralph.maxIterations}` : ''})`;
+      this.emit({ type: 'worker_update', worker });
+
+      return {
+        decision: 'block',
+        reason: ralph.originalPrompt,
+        systemMessage: systemMsg,
+      };
     };
+  }
+
+  // Build the ralph loop prompt — this is re-fed to the agent on each iteration.
+  // Mirrors how the Anthropic plugin re-feeds PROMPT.md with the same task instructions.
+  private buildRalphPrompt(originalPrompt: string, completionPromise: string, verificationCommand?: string): string {
+    const parts = [originalPrompt];
+
+    if (verificationCommand) {
+      parts.push(`## Verification
+
+Before completing, run the verification command and fix any failures:
+
+\`\`\`bash
+${verificationCommand}
+\`\`\`
+
+Do NOT complete until verification passes.`);
+    }
+
+    parts.push(`## Completion
+
+When the task is fully complete${verificationCommand ? ' and verification passes' : ''}, output exactly:
+<promise>${completionPromise}</promise>
+
+CRITICAL: Only output the promise when the statement is genuinely true. Do not output false promises to exit — the loop will re-feed this prompt until completion is real.`);
+
+    return parts.join('\n\n');
   }
 
   // Extract prompt suggestions from the last assistant message and task context.
@@ -2295,6 +2377,28 @@ export class WorkerManager {
       const session = this.sessions.get(worker.id);
       if (session) {
         session.queryInstance = queryInstance;
+
+        // Initialize ralph loop state — the Stop hook uses this to block exit and
+        // re-feed the original prompt, exactly like the Anthropic ralph-loop plugin.
+        // Reads from task.context: maxReviewIterations (default 2), completionPromise (default "DONE"),
+        // verificationCommand (optional — included in the re-fed prompt so agent knows to run it).
+        const maxIterations = (task.context as any)?.maxReviewIterations ?? 2;
+        const completionPromise = (task.context as any)?.completionPromise || 'DONE';
+        const verificationCommand = (task.context as any)?.verificationCommand as string | undefined;
+
+        // Build the ralph prompt: the original task prompt + verification instructions.
+        // This is re-fed on each iteration (like the plugin re-feeds PROMPT.md).
+        const ralphPrompt = this.buildRalphPrompt(promptText, completionPromise, verificationCommand);
+
+        session.ralphLoop = {
+          originalPrompt: ralphPrompt,
+          iteration: 1,
+          maxIterations,
+          completionPromise,
+          verificationCommand,
+        };
+
+        sessionLog(worker.id, 'info', 'ralph_loop_init', `maxIterations=${maxIterations} promise="${completionPromise}" verification=${!!verificationCommand}`, task.id);
       }
 
       // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
@@ -2308,13 +2412,9 @@ export class WorkerManager {
         extendedContext,
       });
 
-      // Stream responses with ralph loop (prompt-based self-review)
+      // Stream responses — ralph loop is handled by the Stop hook (blocks exit, re-feeds prompt)
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
-      const taskTitle = worker.taskTitle || 'Untitled task';
-      const ralphTaskDescription = worker.taskDescription || (task as any).description || '';
-      const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 2;
-      let reviewIteration = 0;
 
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
@@ -2332,58 +2432,6 @@ export class WorkerManager {
         }
 
         this.handleMessage(worker, msg);
-
-        // On result: run ralph self-review loop before completing
-        if (msg.type === 'result') {
-          // Check if agent already passed review (said DONE)
-          const lastMsg = worker.lastAssistantMessage || '';
-          if (lastMsg.includes('<promise>DONE</promise>')) {
-            if (reviewIteration > 0) {
-              this.addMilestone(worker, { type: 'status', label: `Self-review passed (iteration ${reviewIteration})`, ts: Date.now() });
-              sessionLog(worker.id, 'info', 'ralph_review_passed', `iteration=${reviewIteration}`, worker.taskId);
-            }
-            break;
-          }
-
-          // Skip review for waiting/error states
-          if (worker.status === 'waiting' || worker.status === 'error') {
-            break;
-          }
-
-          // Check if we've exhausted review iterations
-          if (reviewIteration >= maxReviewIterations) {
-            this.addMilestone(worker, { type: 'status', label: `Self-review iterations exhausted (${reviewIteration}/${maxReviewIterations})`, ts: Date.now() });
-            sessionLog(worker.id, 'warn', 'ralph_review_exhausted', `iterations=${reviewIteration}`, worker.taskId);
-            break;
-          }
-
-          // Send self-review prompt back into the session
-          reviewIteration++;
-          const reviewPrompt = `Before completing, review your work against the original objective.
-
-**Task:** ${taskTitle}
-${ralphTaskDescription ? `**Description:** ${ralphTaskDescription}` : ''}
-
-Check your implementation:
-- Did you fully implement what was asked, or take shortcuts?
-- Any TODO comments, stubs, or placeholder code left behind?
-- Any features described in the task that you skipped or only partially implemented?
-- Did you remove or break existing functionality unnecessarily?
-
-If everything is complete and meets the objective, respond with exactly: <promise>DONE</promise>
-If something is missing or incomplete, describe what and fix it now.`;
-
-          this.addMilestone(worker, { type: 'status', label: `Self-review ${reviewIteration}/${maxReviewIterations}`, ts: Date.now() });
-          sessionLog(worker.id, 'info', 'ralph_review_start', `iteration=${reviewIteration}`, worker.taskId);
-          worker.currentAction = `Self-review (${reviewIteration}/${maxReviewIterations})`;
-          this.emit({ type: 'worker_update', worker });
-
-          const session = this.sessions.get(worker.id);
-          if (session) {
-            session.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
-          }
-          continue; // Don't break — keep streaming the agent's response
-        }
       }
 
       // If a newer session has been started (e.g. plan approval killed this one),
