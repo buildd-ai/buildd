@@ -217,7 +217,7 @@ export default async function TaskDetailPage({
               )}
               {task.objective && (
                 <Link
-                  href={`/app/objectives/${task.objective.id}`}
+                  href={`/app/missions/${task.objective.id}`}
                   className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

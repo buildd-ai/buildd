@@ -413,10 +413,10 @@ export default function SchedulesUnified({
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
-              href="/app/objectives?new=1"
+              href="/app/missions/new"
               className="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-primary-hover transition-colors"
             >
-              + New objective
+              + New Mission
             </Link>
             {workspaces.length > 0 && (
               <Link
@@ -442,10 +442,10 @@ export default function SchedulesUnified({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            href="/app/objectives"
+            href="/app/missions/new"
             className="px-3 py-1.5 text-xs text-text-secondary bg-surface-3 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
           >
-            + Objective
+            + Mission
           </Link>
           {workspaces.length > 0 && (
             <Link
