@@ -79,6 +79,7 @@ export default async function SchedulesPage() {
       lastRunAt: true,
       totalRuns: true,
       consecutiveFailures: true,
+      pendingSuggestion: true,
     },
     orderBy: [desc(taskSchedules.createdAt)],
   });
@@ -127,6 +128,7 @@ export default async function SchedulesPage() {
       apiType: 'taskSchedule',
       apiId: s.id,
       apiWorkspaceId: s.workspaceId,
+      pendingSuggestion: s.pendingSuggestion as UnifiedScheduleItem['pendingSuggestion'],
     });
   }
 

@@ -113,6 +113,13 @@
       "when": 1773584418687,
       "tag": "0015_funny_earthquake",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1773619607509,
+      "tag": "0016_abnormal_tarantula",
+      "breakpoints": true
     }
   ]
 }
