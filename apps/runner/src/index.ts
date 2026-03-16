@@ -16,6 +16,45 @@ const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
 
+// --doctor: run diagnostics and exit
+if (process.argv.includes('--doctor')) {
+  const doctor = await import('./doctor');
+  const doFix = process.argv.includes('--fix');
+
+  const report = doctor.runDiagnostics();
+
+  const RED = '\x1b[31m';
+  const GREEN = '\x1b[32m';
+  const YELLOW = '\x1b[33m';
+  const DIM = '\x1b[2m';
+  const BOLD = '\x1b[1m';
+  const RESET = '\x1b[0m';
+
+  const icon = (s: string) => s === 'ok' ? `${GREEN}✓${RESET}` : s === 'warn' ? `${YELLOW}!${RESET}` : `${RED}✗${RESET}`;
+
+  console.log(`\n${BOLD}buildd doctor${RESET}  ${DIM}${report.timestamp}${RESET}\n`);
+  for (const c of report.checks) {
+    const fixTag = c.fixable ? ` ${DIM}[fixable]${RESET}` : '';
+    console.log(`  ${icon(c.status)} ${c.name}  ${DIM}${c.message}${RESET}${fixTag}`);
+  }
+  console.log(`\n  ${GREEN}${report.summary.ok} ok${RESET}  ${YELLOW}${report.summary.warn} warn${RESET}  ${RED}${report.summary.error} error${RESET}\n`);
+
+  if (doFix) {
+    const fixResults = doctor.autoFix(report);
+    if (fixResults.length > 0) {
+      console.log(`${BOLD}Auto-fixes:${RESET}\n`);
+      for (const f of fixResults) {
+        console.log(`  ${f.success ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`} ${f.check}  ${DIM}${f.message}${RESET}`);
+      }
+      console.log('');
+    }
+  } else if (report.summary.error > 0 || report.summary.warn > 0) {
+    console.log(`${DIM}Run with --fix to auto-repair fixable issues${RESET}\n`);
+  }
+
+  process.exit(report.summary.error > 0 ? 1 : 0);
+}
+
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
 // Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
 const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
@@ -409,6 +448,7 @@ interface UpdateState {
   updating: boolean;
   changelog: string[];
   lastIdleAt: number | null; // Timestamp when workers last became idle
+  autoUpdateRetries: number; // Prevent infinite retry loops
 }
 
 const updateState: UpdateState = {
@@ -418,6 +458,7 @@ const updateState: UpdateState = {
   updating: false,
   changelog: [],
   lastIdleAt: Date.now(),
+  autoUpdateRetries: 0,
 };
 
 // Kick off async commit resolution (non-blocking)
@@ -481,6 +522,7 @@ async function setLatestCommit(sha: string) {
     // Only show update if there are actual code changes (skip empty releases)
     updateState.updateAvailable = updateState.changelog.length > 0;
     if (updateState.updateAvailable && !wasAvailable) {
+      updateState.autoUpdateRetries = 0; // Reset retries for new version
       console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
       broadcast({
         type: 'update_available',
@@ -2097,6 +2139,22 @@ const server = DEBUG_MODE ? Bun.serve({
       return Response.json({ ok: true, overrides: resolver.getPathOverrides() }, { headers: corsHeaders });
     }
 
+    // Doctor — self-diagnostics and auto-fix
+    if (path === '/api/doctor' && req.method === 'GET') {
+      const { runDiagnostics } = await import('./doctor');
+      const report = runDiagnostics();
+      return Response.json(report, { headers: corsHeaders });
+    }
+
+    if (path === '/api/doctor/fix' && req.method === 'POST') {
+      const { runDiagnostics, autoFix } = await import('./doctor');
+      const report = runDiagnostics();
+      const fixes = autoFix(report);
+      // Re-run diagnostics after fixes
+      const afterReport = runDiagnostics();
+      return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
+    }
+
     // Static files — serve debug UI (single HTML file)
     if (path === '/' || path === '/index.html') {
       const debugHtml = join(import.meta.dir, '..', 'ui-debug', 'debug.html');
@@ -2330,15 +2388,17 @@ setInterval(async () => {
     updateState.lastIdleAt = Date.now(); // Just became idle
   }
 
-  // Auto-update when: update available, not already updating, idle long enough
+  // Auto-update when: update available, not already updating, idle long enough, retries not exhausted
   if (
     updateState.updateAvailable &&
     !updateState.updating &&
     updateState.lastIdleAt &&
-    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS
+    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS &&
+    updateState.autoUpdateRetries < 3
   ) {
-    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle...`);
+    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/3)`);
     updateState.updating = true;
+    updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
     const prevBranch = await getCurrentBranch();
     broadcast({ type: 'update_started' });
@@ -2350,7 +2410,12 @@ setInterval(async () => {
       }
       await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
       const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-      await installProc.exited;
+      const installTimeout = setTimeout(() => { try { installProc.kill(); } catch {} }, 120_000);
+      const installExit = await installProc.exited;
+      clearTimeout(installTimeout);
+      if (installExit !== 0) {
+        throw new Error(`bun install failed with exit code ${installExit}`);
+      }
       await initCurrentCommit();
 
       // Health check on temp port (only meaningful in debug mode with HTTP server)
@@ -2404,7 +2469,32 @@ setInterval(async () => {
       }
       updateState.updating = false;
       console.error('Auto-update failed:', err.message);
+      if (updateState.autoUpdateRetries >= 3) {
+        console.error('Auto-update retries exhausted — will not retry until a new version is available');
+      }
       broadcast({ type: 'update_failed', error: err.message });
     }
   }
 }, 60_000); // Check every 60 seconds
+
+// Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
+let lastSelfHeal = Date.now();
+setInterval(async () => {
+  if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
+  lastSelfHeal = Date.now();
+
+  try {
+    const { runDiagnostics, autoFix } = await import('./doctor');
+    const report = runDiagnostics();
+    const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
+    if (fixable.length > 0) {
+      console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
+      const fixes = autoFix(report);
+      for (const f of fixes) {
+        console.log(`[self-heal] ${f.success ? '✓' : '✗'} ${f.check}: ${f.message}`);
+      }
+    }
+  } catch (err: any) {
+    console.error('[self-heal] Doctor check failed:', err.message);
+  }
+}, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes
