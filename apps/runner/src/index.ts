@@ -1241,10 +1241,15 @@ const server = DEBUG_MODE ? Bun.serve({
       let sseController: ReadableStreamDefaultController | null = null;
 
       // Prepare initial state outside the stream to ensure it's ready
+      // Only send active workers in init — completed workers are fetched on demand.
+      // Full worker list was 4MB+ and broke reverse proxies (Coder).
+      const activeWorkers = (workerManager?.getWorkers() || [])
+        .filter((w: any) => w.status !== 'done' && w.status !== 'error');
+
       const init = {
         type: 'init',
         configured: !!config.apiKey,
-        workers: workerManager?.getWorkers() || [],
+        workers: activeWorkers,
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
