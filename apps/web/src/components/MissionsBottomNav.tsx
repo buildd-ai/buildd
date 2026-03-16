@@ -26,6 +26,18 @@ const missionTabs = [
     ),
   },
   {
+    label: 'Team',
+    href: '/app/team',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="9" cy="7" r="3" />
+        <circle cx="17" cy="9" r="2.5" />
+        <path d="M15 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+        <path d="M23 21v-1.5a3 3 0 00-3-3h-1" />
+      </svg>
+    ),
+  },
+  {
     label: 'You',
     href: '/app/you',
     icon: (
@@ -49,6 +61,7 @@ export default function MissionsBottomNav() {
             (tab.href === '/app/home' && pathname === '/app/dashboard') ||
             (tab.href === '/app/missions' && pathname.startsWith('/app/objectives')) ||
             (tab.href === '/app/missions' && pathname.startsWith('/app/missions')) ||
+            (tab.href === '/app/team' && pathname.startsWith('/app/team')) ||
             (tab.href === '/app/you' && pathname.startsWith('/app/settings')) ||
             (tab.href === '/app/you' && pathname.startsWith('/app/you'));
 
