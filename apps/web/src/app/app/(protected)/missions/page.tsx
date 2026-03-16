@@ -122,7 +122,7 @@ export default async function MissionsPage() {
   ).length;
 
   return (
-    <div className="px-7 md:px-10 pt-5 md:pt-8">
+    <div className="px-7 md:px-10 pt-5 md:pt-8 max-w-5xl">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
@@ -146,7 +146,7 @@ export default async function MissionsPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className={missions.length > 4 ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'space-y-3'}>
           {missions.map((mission) => {
             if (mission.type === 'build') return <BuildCard key={mission.id} mission={mission} />;
             if (mission.type === 'watch') return <WatchCard key={mission.id} mission={mission} />;
