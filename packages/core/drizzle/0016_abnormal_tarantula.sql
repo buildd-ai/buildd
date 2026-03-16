@@ -1,0 +1,1 @@
+ALTER TABLE "task_schedules" ADD COLUMN "pending_suggestion" jsonb;

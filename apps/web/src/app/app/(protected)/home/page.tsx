@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, objectives, workerHeartbeats, accountWorkspaces, taskSchedules } from '@buildd/core/db/schema';
+import { tasks, workers, objectives, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -86,6 +86,16 @@ export default async function HomePage() {
   let completedLast12h = 0;
   let totalTaskCount = 0;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
+
+  let pendingSuggestions: {
+    scheduleId: string;
+    scheduleName: string;
+    workspaceId: string;
+    reason: string;
+    cronExpression?: string;
+    enabled?: boolean;
+    suggestedByTaskId?: string;
+  }[] = [];
 
   let pendingSuggestions: {
     scheduleId: string;

@@ -53,6 +53,7 @@ export const workerActions = [
   'upload_artifact', 'list_artifacts', 'update_artifact',
   'emit_event', 'query_events',
   'list_artifact_templates',
+  'suggest_schedule_update',
 ] as const;
 
 export const adminActions = [
@@ -101,6 +102,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
+    suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
 
@@ -869,6 +871,55 @@ export async function handleBuilddAction(
       ).join('\n');
 
       return text(`${filtered.length} event(s):\n\n${summary}`);
+    }
+
+    case 'suggest_schedule_update': {
+      if (!params.reason) throw new Error('reason is required');
+      if (params.cronExpression === undefined && params.enabled === undefined) {
+        throw new Error('At least one of cronExpression or enabled must be provided');
+      }
+
+      // Resolve scheduleId from params or from worker's task context
+      let scheduleId = params.scheduleId as string | undefined;
+      let wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+
+      if (!scheduleId && ctx.workerId) {
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskContext = workerData?.task?.context || workerData?.context || {};
+        scheduleId = taskContext.scheduleId;
+        if (!wsId) wsId = workerData?.workspaceId || workerData?.task?.workspaceId;
+      }
+
+      if (!scheduleId) throw new Error('scheduleId is required — pass it explicitly or run from a scheduled task');
+      if (!wsId) throw new Error('Could not determine workspace.');
+
+      const suggestionBody: Record<string, unknown> = {
+        reason: params.reason,
+      };
+      if (params.cronExpression !== undefined) suggestionBody.cronExpression = params.cronExpression;
+      if (params.enabled !== undefined) suggestionBody.enabled = params.enabled;
+      if (ctx.workerId) suggestionBody.workerId = ctx.workerId;
+
+      // Get taskId from worker context
+      if (ctx.workerId) {
+        try {
+          const workerData = await api(`/api/workers/${ctx.workerId}`);
+          if (workerData?.taskId) suggestionBody.taskId = workerData.taskId;
+        } catch {
+          // non-critical
+        }
+      }
+
+      const result = await api(`/api/workspaces/${wsId}/schedules/${scheduleId}/suggestion`, {
+        method: 'POST',
+        body: JSON.stringify(suggestionBody),
+      });
+
+      const changes: string[] = [];
+      if (params.cronExpression) changes.push(`cron → "${params.cronExpression}"`);
+      if (params.enabled !== undefined) changes.push(`enabled → ${params.enabled}`);
+
+      return text(`Schedule suggestion created for schedule ${scheduleId}.\nProposed changes: ${changes.join(', ')}\nReason: ${params.reason}\n\nThe suggestion is now pending human approval in the dashboard.`);
     }
 
     case 'approve_plan': {
