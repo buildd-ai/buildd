@@ -2,11 +2,11 @@
  * Integration Tests: Objectives Management
  *
  * Tests the complete objectives CRUD lifecycle including:
- *   - Create objective (POST /api/objectives)
- *   - List objectives (GET /api/objectives)
- *   - Get single objective (GET /api/objectives/[id])
- *   - Update objective (PATCH /api/objectives/[id])
- *   - Delete objective (DELETE /api/objectives/[id])
+ *   - Create objective (POST /api/missions)
+ *   - List objectives (GET /api/missions)
+ *   - Get single objective (GET /api/missions/[id])
+ *   - Update objective (PATCH /api/missions/[id])
+ *   - Delete objective (DELETE /api/missions/[id])
  *   - Task linking via objectiveId
  *   - Progress computation (including > 0 with completed tasks)
  *   - Schedule auto-creation with cronExpression
@@ -65,7 +65,7 @@ afterAll(async () => {
   // Then clean up objectives
   for (const id of objectiveIds.reverse()) {
     try {
-      await api(`/api/objectives/${id}`, { method: 'DELETE' });
+      await api(`/api/missions/${id}`, { method: 'DELETE' });
     } catch { /* best effort */ }
   }
 });
@@ -76,7 +76,7 @@ describe('Objectives CRUD', () => {
   let createdId: string;
 
   test('POST creates objective with title', async () => {
-    const data = await api('/api/objectives', {
+    const data = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Test Objective' }),
     });
@@ -89,7 +89,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('POST with workspaceId pins to workspace', async () => {
-    const data = await api('/api/objectives', {
+    const data = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Workspace-pinned Objective',
@@ -102,7 +102,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('POST with cronExpression auto-creates schedule', async () => {
-    const data = await api('/api/objectives', {
+    const data = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Scheduled Objective',
@@ -117,7 +117,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('POST with cronExpression but no workspaceId skips schedule', async () => {
-    const data = await api('/api/objectives', {
+    const data = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Cron without workspace',
@@ -131,13 +131,13 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('GET lists objectives', async () => {
-    const data = await api('/api/objectives');
+    const data = await api('/api/missions');
     expect(Array.isArray(data.objectives)).toBe(true);
     expect(data.objectives.length).toBeGreaterThanOrEqual(3);
   }, TIMEOUT);
 
   test('GET lists objectives filtered by status', async () => {
-    const data = await api('/api/objectives?status=active');
+    const data = await api('/api/missions?status=active');
     expect(Array.isArray(data.objectives)).toBe(true);
     for (const obj of data.objectives) {
       expect(obj.status).toBe('active');
@@ -145,7 +145,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('GET lists objectives filtered by workspaceId', async () => {
-    const data = await api(`/api/objectives?workspaceId=${workspaceId}`);
+    const data = await api(`/api/missions?workspaceId=${workspaceId}`);
     expect(Array.isArray(data.objectives)).toBe(true);
     for (const obj of data.objectives) {
       expect(obj.workspaceId).toBe(workspaceId);
@@ -153,7 +153,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('GET /[id] returns objective with linked tasks and progress', async () => {
-    const data = await api(`/api/objectives/${createdId}`);
+    const data = await api(`/api/missions/${createdId}`);
     expect(data.id).toBe(createdId);
     expect(data.title).toBe('Test Objective');
     expect(data.totalTasks).toBe(0);
@@ -163,7 +163,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('PATCH updates title, description, status', async () => {
-    const data = await api(`/api/objectives/${createdId}`, {
+    const data = await api(`/api/missions/${createdId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         title: 'Updated Objective',
@@ -177,7 +177,7 @@ describe('Objectives CRUD', () => {
   }, TIMEOUT);
 
   test('PATCH with cronExpression creates schedule', async () => {
-    const data = await api(`/api/objectives/${createdId}`, {
+    const data = await api(`/api/missions/${createdId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         cronExpression: '0 12 * * 1',
@@ -190,7 +190,7 @@ describe('Objectives CRUD', () => {
 
   test('PATCH clearing cronExpression removes schedule', async () => {
     // createdId already has a schedule from previous test
-    const data = await api(`/api/objectives/${createdId}`, {
+    const data = await api(`/api/missions/${createdId}`, {
       method: 'PATCH',
       body: JSON.stringify({ cronExpression: null }),
     });
@@ -200,7 +200,7 @@ describe('Objectives CRUD', () => {
 
   test('DELETE removes objective, tasks keep objectiveId=null', async () => {
     // Create a temporary objective and link a task
-    const obj = await api('/api/objectives', {
+    const obj = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Delete-test Objective' }),
     });
@@ -216,7 +216,7 @@ describe('Objectives CRUD', () => {
     taskIds.push(task.id);
 
     // Delete the objective
-    const res = await api(`/api/objectives/${obj.id}`, { method: 'DELETE' });
+    const res = await api(`/api/missions/${obj.id}`, { method: 'DELETE' });
     expect(res.success).toBe(true);
 
     // Verify task still exists with null objectiveId
@@ -232,7 +232,7 @@ describe('Task Linking', () => {
   let objectiveId: string;
 
   beforeAll(async () => {
-    const data = await api('/api/objectives', {
+    const data = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Linking Test Objective' }),
     });
@@ -287,7 +287,7 @@ describe('Task Linking', () => {
   }, TIMEOUT);
 
   test('GET /objectives/[id] progress reflects completed/total tasks', async () => {
-    const data = await api(`/api/objectives/${objectiveId}`);
+    const data = await api(`/api/missions/${objectiveId}`);
     expect(data.totalTasks).toBeGreaterThanOrEqual(2);
     expect(data.completedTasks).toBe(0);
     expect(data.progress).toBe(0);
@@ -295,7 +295,7 @@ describe('Task Linking', () => {
 
   test('Progress > 0 when tasks are completed', async () => {
     // Create a new objective with tasks we control
-    const obj = await api('/api/objectives', {
+    const obj = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Progress Test Objective' }),
     });
@@ -327,20 +327,20 @@ describe('Task Linking', () => {
     }
 
     // Check progress — should be 50% (1/2)
-    const data = await api(`/api/objectives/${obj.id}`);
+    const data = await api(`/api/missions/${obj.id}`);
     expect(data.totalTasks).toBe(2);
     expect(data.completedTasks).toBe(1);
     expect(data.progress).toBe(50);
   }, TIMEOUT);
 
   test('Progress = 0 when no tasks linked', async () => {
-    const empty = await api('/api/objectives', {
+    const empty = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Empty objective' }),
     });
     objectiveIds.push(empty.id);
 
-    const data = await api(`/api/objectives/${empty.id}`);
+    const data = await api(`/api/missions/${empty.id}`);
     expect(data.progress).toBe(0);
     expect(data.totalTasks).toBe(0);
   }, TIMEOUT);
@@ -357,7 +357,7 @@ describe('Task Linking', () => {
 
 describe('Validation', () => {
   test('POST without title returns 400', async () => {
-    const { status, body } = await apiRaw('/api/objectives', {
+    const { status, body } = await apiRaw('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ description: 'no title' }),
     });
@@ -366,13 +366,13 @@ describe('Validation', () => {
   }, TIMEOUT);
 
   test('PATCH with invalid status returns 400', async () => {
-    const obj = await api('/api/objectives', {
+    const obj = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Validation test' }),
     });
     objectiveIds.push(obj.id);
 
-    const { status, body } = await apiRaw(`/api/objectives/${obj.id}`, {
+    const { status, body } = await apiRaw(`/api/missions/${obj.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ status: 'invalid_status' }),
     });
@@ -387,12 +387,12 @@ describe('Not Found', () => {
   const fakeId = '00000000-0000-0000-0000-000000000000';
 
   test('GET /objectives/[id] returns 404 for nonexistent ID', async () => {
-    const { status } = await apiRaw(`/api/objectives/${fakeId}`);
+    const { status } = await apiRaw(`/api/missions/${fakeId}`);
     expect(status).toBe(404);
   }, TIMEOUT);
 
   test('PATCH /objectives/[id] returns 404 for nonexistent ID', async () => {
-    const { status } = await apiRaw(`/api/objectives/${fakeId}`, {
+    const { status } = await apiRaw(`/api/missions/${fakeId}`, {
       method: 'PATCH',
       body: JSON.stringify({ title: 'nope' }),
     });
@@ -400,7 +400,7 @@ describe('Not Found', () => {
   }, TIMEOUT);
 
   test('DELETE /objectives/[id] returns 404 for nonexistent ID', async () => {
-    const { status } = await apiRaw(`/api/objectives/${fakeId}`, {
+    const { status } = await apiRaw(`/api/missions/${fakeId}`, {
       method: 'DELETE',
     });
     expect(status).toBe(404);
@@ -411,12 +411,12 @@ describe('Not Found', () => {
 
 describe('Auth', () => {
   test('Unauthenticated GET returns 401', async () => {
-    const res = await fetch(`${SERVER}/api/objectives`);
+    const res = await fetch(`${SERVER}/api/missions`);
     expect(res.status).toBe(401);
   }, TIMEOUT);
 
   test('Unauthenticated POST returns 401', async () => {
-    const res = await fetch(`${SERVER}/api/objectives`, {
+    const res = await fetch(`${SERVER}/api/missions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'Should fail' }),
@@ -425,7 +425,7 @@ describe('Auth', () => {
   }, TIMEOUT);
 
   test('Unauthenticated PATCH returns 401', async () => {
-    const res = await fetch(`${SERVER}/api/objectives/some-id`, {
+    const res = await fetch(`${SERVER}/api/missions/some-id`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'nope' }),
@@ -434,7 +434,7 @@ describe('Auth', () => {
   }, TIMEOUT);
 
   test('Unauthenticated DELETE returns 401', async () => {
-    const res = await fetch(`${SERVER}/api/objectives/some-id`, { method: 'DELETE' });
+    const res = await fetch(`${SERVER}/api/missions/some-id`, { method: 'DELETE' });
     expect(res.status).toBe(401);
   }, TIMEOUT);
 
@@ -445,7 +445,7 @@ describe('Auth', () => {
       console.log('    (skipped: BUILDD_WORKER_API_KEY not set)');
       return;
     }
-    const res = await fetch(`${SERVER}/api/objectives`, {
+    const res = await fetch(`${SERVER}/api/missions`, {
       headers: { Authorization: `Bearer ${workerKey}` },
     });
     expect(res.status).toBe(403);

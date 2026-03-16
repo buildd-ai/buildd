@@ -961,7 +961,7 @@ export async function handleBuilddAction(
           const qs = new URLSearchParams();
           if (params.workspaceId) qs.set('workspaceId', params.workspaceId as string);
           if (params.status) qs.set('status', params.status as string);
-          const data = await api(`/api/objectives?${qs}`);
+          const data = await api(`/api/missions?${qs}`);
           const objs = data.objectives || [];
           if (objs.length === 0) return text('No objectives found.');
           const summary = objs.map((o: any) =>
@@ -984,7 +984,7 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
-          const data = await api('/api/objectives', {
+          const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
           });
@@ -992,7 +992,7 @@ export async function handleBuilddAction(
         }
         case 'get': {
           if (!params.objectiveId) throw new Error('objectiveId is required');
-          const data = await api(`/api/objectives/${params.objectiveId}`);
+          const data = await api(`/api/missions/${params.objectiveId}`);
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
@@ -1017,7 +1017,7 @@ export async function handleBuilddAction(
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
-          const data = await api(`/api/objectives/${params.objectiveId}`, {
+          const data = await api(`/api/missions/${params.objectiveId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
@@ -1025,7 +1025,7 @@ export async function handleBuilddAction(
         }
         case 'delete': {
           if (!params.objectiveId) throw new Error('objectiveId is required');
-          await api(`/api/objectives/${params.objectiveId}`, { method: 'DELETE' });
+          await api(`/api/missions/${params.objectiveId}`, { method: 'DELETE' });
           return text(`Objective deleted: ${params.objectiveId}`);
         }
         case 'link_task': {

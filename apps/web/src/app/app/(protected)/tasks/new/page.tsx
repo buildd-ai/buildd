@@ -181,7 +181,7 @@ export default function NewTaskPage() {
 
   // Fetch objectives (team-level, not workspace-specific)
   useEffect(() => {
-    fetch('/api/objectives')
+    fetch('/api/missions')
       .then(res => res.json())
       .then(data => {
         const objs = (data.objectives || []).filter((o: any) => o.status === 'active' || o.status === 'paused');

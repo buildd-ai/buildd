@@ -323,7 +323,7 @@ export default function SchedulesUnified({
 
     try {
       if (item.apiType === 'objective') {
-        await fetch(`/api/objectives/${item.apiId}`, {
+        await fetch(`/api/missions/${item.apiId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newEnabled ? 'active' : 'paused' }),
