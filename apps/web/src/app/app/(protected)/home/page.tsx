@@ -415,7 +415,7 @@ export default async function HomePage() {
               <div className="flex items-center justify-between mb-4">
                 <div className="section-label">Missions</div>
                 {missions.length > 0 && (
-                  <Link href="/app/objectives" className="text-xs text-text-muted hover:text-text-secondary">
+                  <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
                     {missions.length} active
                   </Link>
                 )}
@@ -423,7 +423,7 @@ export default async function HomePage() {
               {missions.length === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-6">
                   <p className="text-[14px] text-text-secondary">
-                    No active missions. <Link href="/app/objectives" className="text-primary hover:underline">Create one</Link> to organize your work.
+                    No active missions. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
                   </p>
                 </div>
               ) : (
@@ -439,7 +439,7 @@ export default async function HomePage() {
                     return (
                       <Link
                         key={mission.id}
-                        href={`/app/objectives/${mission.id}`}
+                        href={`/app/missions/${mission.id}`}
                         className="block card card-interactive p-4 hover:bg-surface-3/50 transition-colors"
                       >
                         <div className="flex items-start justify-between gap-3 mb-2">
@@ -484,10 +484,10 @@ export default async function HomePage() {
                     );
                   })}
                   <Link
-                    href="/app/objectives"
+                    href="/app/missions"
                     className="block text-center text-xs text-text-muted hover:text-text-secondary py-2"
                   >
-                    View all objectives
+                    View all missions
                   </Link>
                 </div>
               )}

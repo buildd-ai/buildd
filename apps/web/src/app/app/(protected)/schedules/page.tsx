@@ -102,7 +102,7 @@ export default async function SchedulesPage() {
       totalRuns: obj.schedule?.totalRuns ?? 0,
       consecutiveFailures: obj.schedule?.consecutiveFailures ?? 0,
       isEnabled: obj.status === 'active',
-      href: `/app/objectives/${obj.id}`,
+      href: `/app/missions/${obj.id}`,
       apiType: 'objective',
       apiId: obj.id,
       apiWorkspaceId: null,

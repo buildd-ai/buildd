@@ -165,11 +165,14 @@ function BuildCard({ mission }: { mission: any }) {
       href={`/app/missions/${mission.id}`}
       className="card card-interactive mission-build block p-4 hover:bg-card-hover"
     >
-      <div className="flex items-start justify-between mb-1.5">
-        <span className="text-[17px] font-medium text-text-primary leading-tight">
-          {mission.title}
-        </span>
-        <span className="font-display text-2xl text-status-success ml-3 shrink-0 tabular-nums">
+      <div className="flex items-start justify-between gap-3 mb-1.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="type-label type-label-build">BUILD</span>
+          <span className="text-[17px] font-medium text-text-primary leading-tight truncate">
+            {mission.title}
+          </span>
+        </div>
+        <span className="font-display text-2xl text-status-success shrink-0 tabular-nums">
           {mission.progress}%
         </span>
       </div>
@@ -217,9 +220,12 @@ function WatchCard({ mission }: { mission: any }) {
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <span className="text-[17px] font-medium text-text-primary leading-tight block mb-1">
-            {mission.title}
-          </span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="type-label type-label-watch">WATCH</span>
+            <span className="text-[17px] font-medium text-text-primary leading-tight truncate">
+              {mission.title}
+            </span>
+          </div>
           {mission.description && (
             <p className="text-[13px] text-text-secondary font-normal line-clamp-2 mb-2.5">
               {mission.description}
@@ -278,18 +284,18 @@ function BriefCard({ mission }: { mission: any }) {
         </>
       ) : (
         <>
-          <span className="text-[17px] font-medium text-text-primary leading-tight block mb-1">
-            {mission.title}
-          </span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="type-label type-label-brief">BRIEF</span>
+            <span className="text-[17px] font-medium text-text-primary leading-tight truncate">
+              {mission.title}
+            </span>
+          </div>
           {mission.description && (
             <p className="text-[13px] text-text-secondary font-normal line-clamp-2 mb-2">
               {mission.description}
             </p>
           )}
           <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
-            <span className="font-mono text-[10px] font-medium text-accent-text tracking-wide">
-              BRIEF
-            </span>
             {mission.totalTasks > 0 && (
               <>
                 <span className="mx-0.5">&middot;</span>

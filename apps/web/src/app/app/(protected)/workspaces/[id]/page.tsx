@@ -148,10 +148,10 @@ export default async function WorkspaceDetailPage({
         {/* Tab bar */}
         <div className="flex gap-1 border-b border-border-default pb-0 mb-8 overflow-x-auto whitespace-nowrap scrollbar-hide">
           <Link
-            href={`/app/objectives?workspaceId=${workspace.id}`}
+            href={`/app/missions?workspaceId=${workspace.id}`}
             className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
-            Objectives{objectiveCount > 0 ? ` (${objectiveCount})` : ''}
+            Missions{objectiveCount > 0 ? ` (${objectiveCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/artifacts`}

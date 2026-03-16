@@ -319,7 +319,7 @@ function CollapsedTile({ group }: { group: CollapsedGroup }) {
   return (
     <div className="relative group shrink-0 w-[180px]">
       <Link
-        href={`/app/objectives/${group.objectiveId}`}
+        href={`/app/missions/${group.objectiveId}`}
         className="block relative w-full rounded-lg h-[72px] transition-all hover:border-text-muted/30"
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
