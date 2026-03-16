@@ -84,6 +84,18 @@ export default async function HomePage() {
   }[] = [];
 
   let completedLast12h = 0;
+  let totalTaskCount = 0;
+  let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
+
+  let pendingSuggestions: {
+    scheduleId: string;
+    scheduleName: string;
+    workspaceId: string;
+    reason: string;
+    cronExpression?: string;
+    enabled?: boolean;
+    suggestedByTaskId?: string;
+  }[] = [];
 
   let pendingSuggestions: {
     scheduleId: string;
@@ -104,6 +116,13 @@ export default async function HomePage() {
       const wsIds = await getUserWorkspaceIds(user.id);
 
       if (wsIds.length > 0) {
+        // Count total tasks to distinguish new vs returning users
+        const totalResult = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(tasks)
+          .where(inArray(tasks.workspaceId, wsIds));
+        totalTaskCount = totalResult[0]?.count || 0;
+
         // Count tasks completed in last 12 hours for the subheading
         const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
         const countResult = await db
@@ -292,7 +311,7 @@ export default async function HomePage() {
             {/* Right Now */}
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
-              {activeItems.length === 0 ? (
+              {activeItems.length === 0 && totalTaskCount === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
@@ -333,6 +352,10 @@ export default async function HomePage() {
                       </div>
                     </div>
                   </div>
+                </div>
+              ) : activeItems.length === 0 ? (
+                <div className="text-[14px] text-text-secondary">
+                  No agents running. <Link href="/app/tasks/new" className="text-primary hover:underline">Create a task</Link> to get one going.
                 </div>
               ) : (
                 <div className="space-y-2">

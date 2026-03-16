@@ -2312,7 +2312,7 @@ export class WorkerManager {
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
       const taskTitle = worker.taskTitle || 'Untitled task';
-      const taskDescription = worker.taskDescription || (task as any).description || '';
+      const ralphTaskDescription = worker.taskDescription || (task as any).description || '';
       const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 2;
       let reviewIteration = 0;
 
@@ -2362,7 +2362,7 @@ export class WorkerManager {
           const reviewPrompt = `Before completing, review your work against the original objective.
 
 **Task:** ${taskTitle}
-${taskDescription ? `**Description:** ${taskDescription}` : ''}
+${ralphTaskDescription ? `**Description:** ${ralphTaskDescription}` : ''}
 
 Check your implementation:
 - Did you fully implement what was asked, or take shortcuts?
