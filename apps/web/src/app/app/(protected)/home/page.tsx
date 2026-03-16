@@ -97,16 +97,6 @@ export default async function HomePage() {
     suggestedByTaskId?: string;
   }[] = [];
 
-  let pendingSuggestions: {
-    scheduleId: string;
-    scheduleName: string;
-    workspaceId: string;
-    reason: string;
-    cronExpression?: string;
-    enabled?: boolean;
-    suggestedByTaskId?: string;
-  }[] = [];
-
   if (!isDev) {
     if (!user) {
       redirect('/app/auth/signin');
