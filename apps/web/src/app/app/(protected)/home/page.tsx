@@ -348,7 +348,7 @@ export default async function HomePage() {
                 </div>
               ) : activeItems.length === 0 ? (
                 <div className="text-[14px] text-text-secondary">
-                  No agents running.
+                  No agents running. <Link href="/app/tasks/new" className="text-primary hover:underline">Create a task</Link> to get one going.
                 </div>
               ) : (
                 <div className="space-y-2">
