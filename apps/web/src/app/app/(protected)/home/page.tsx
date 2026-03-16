@@ -77,7 +77,7 @@ export default async function HomePage() {
     id: string;
     title: string;
     description: string | null;
-    isHeartbeat: boolean;
+    type: 'build' | 'watch' | 'brief';
     totalTasks: number;
     completedTasks: number;
     activeWorkers: number;
@@ -197,7 +197,7 @@ export default async function HomePage() {
               eq(objectives.status, 'active')
             ),
             orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-            columns: { id: true, title: true, description: true, isHeartbeat: true },
+            columns: { id: true, title: true, description: true, isHeartbeat: true, cronExpression: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -232,15 +232,18 @@ export default async function HomePage() {
             }
           }
 
-          missions = activeObjectives.map(obj => ({
-            id: obj.id,
-            title: obj.title,
-            description: obj.description,
-            isHeartbeat: obj.isHeartbeat,
-            totalTasks: obj.tasks.length,
-            completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
-            activeWorkers: activeWorkerCounts[obj.id] || 0,
-          }));
+          missions = activeObjectives.map(obj => {
+            const type = !obj.cronExpression ? 'build' : obj.isHeartbeat ? 'watch' : 'brief';
+            return {
+              id: obj.id,
+              title: obj.title,
+              description: obj.description,
+              type,
+              totalTasks: obj.tasks.length,
+              completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
+              activeWorkers: activeWorkerCounts[obj.id] || 0,
+            };
+          });
         }
 
         // Schedules with pending agent suggestions
@@ -432,9 +435,12 @@ export default async function HomePage() {
                     const pct = mission.totalTasks > 0
                       ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
                       : 0;
-                    const typeLabel = mission.isHeartbeat
-                      ? { label: 'WATCH', className: 'type-label type-label-watch' }
-                      : { label: 'BUILD', className: 'type-label type-label-build' };
+                    const typeLabelMap = {
+                      build: { label: 'BUILD', className: 'type-label type-label-build' },
+                      watch: { label: 'WATCH', className: 'type-label type-label-watch' },
+                      brief: { label: 'BRIEF', className: 'type-label type-label-brief' },
+                    };
+                    const typeLabel = typeLabelMap[mission.type];
 
                     return (
                       <Link
