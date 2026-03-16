@@ -77,7 +77,7 @@ export default async function HomePage() {
     id: string;
     title: string;
     description: string | null;
-    isHeartbeat: boolean;
+    type: 'build' | 'watch' | 'brief';
     totalTasks: number;
     completedTasks: number;
     activeWorkers: number;
@@ -197,7 +197,7 @@ export default async function HomePage() {
               eq(objectives.status, 'active')
             ),
             orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-            columns: { id: true, title: true, description: true, isHeartbeat: true },
+            columns: { id: true, title: true, description: true, isHeartbeat: true, cronExpression: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -232,15 +232,18 @@ export default async function HomePage() {
             }
           }
 
-          missions = activeObjectives.map(obj => ({
-            id: obj.id,
-            title: obj.title,
-            description: obj.description,
-            isHeartbeat: obj.isHeartbeat,
-            totalTasks: obj.tasks.length,
-            completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
-            activeWorkers: activeWorkerCounts[obj.id] || 0,
-          }));
+          missions = activeObjectives.map(obj => {
+            const type = !obj.cronExpression ? 'build' : obj.isHeartbeat ? 'watch' : 'brief';
+            return {
+              id: obj.id,
+              title: obj.title,
+              description: obj.description,
+              type,
+              totalTasks: obj.tasks.length,
+              completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
+              activeWorkers: activeWorkerCounts[obj.id] || 0,
+            };
+          });
         }
 
         // Schedules with pending agent suggestions
@@ -415,7 +418,7 @@ export default async function HomePage() {
               <div className="flex items-center justify-between mb-4">
                 <div className="section-label">Missions</div>
                 {missions.length > 0 && (
-                  <Link href="/app/objectives" className="text-xs text-text-muted hover:text-text-secondary">
+                  <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
                     {missions.length} active
                   </Link>
                 )}
@@ -423,7 +426,7 @@ export default async function HomePage() {
               {missions.length === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-6">
                   <p className="text-[14px] text-text-secondary">
-                    No active missions. <Link href="/app/objectives" className="text-primary hover:underline">Create one</Link> to organize your work.
+                    No active missions. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
                   </p>
                 </div>
               ) : (
@@ -432,14 +435,17 @@ export default async function HomePage() {
                     const pct = mission.totalTasks > 0
                       ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
                       : 0;
-                    const typeLabel = mission.isHeartbeat
-                      ? { label: 'WATCH', className: 'type-label type-label-watch' }
-                      : { label: 'BUILD', className: 'type-label type-label-build' };
+                    const typeLabelMap = {
+                      build: { label: 'BUILD', className: 'type-label type-label-build' },
+                      watch: { label: 'WATCH', className: 'type-label type-label-watch' },
+                      brief: { label: 'BRIEF', className: 'type-label type-label-brief' },
+                    };
+                    const typeLabel = typeLabelMap[mission.type];
 
                     return (
                       <Link
                         key={mission.id}
-                        href={`/app/objectives/${mission.id}`}
+                        href={`/app/missions/${mission.id}`}
                         className="block card card-interactive p-4 hover:bg-surface-3/50 transition-colors"
                       >
                         <div className="flex items-start justify-between gap-3 mb-2">
@@ -484,10 +490,10 @@ export default async function HomePage() {
                     );
                   })}
                   <Link
-                    href="/app/objectives"
+                    href="/app/missions"
                     className="block text-center text-xs text-text-muted hover:text-text-secondary py-2"
                   >
-                    View all objectives
+                    View all missions
                   </Link>
                 </div>
               )}

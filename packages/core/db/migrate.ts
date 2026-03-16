@@ -14,8 +14,8 @@ async function main() {
   // Retry loop to handle Neon preview branch endpoints that need time to start up.
   // New branch endpoints can return "password authentication failed" for a few seconds
   // while the compute is initializing and roles are being synced.
-  const maxAttempts = 6;
-  const retryDelayMs = 5000;
+  const maxAttempts = 12;
+  const retryDelayMs = 10000;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {

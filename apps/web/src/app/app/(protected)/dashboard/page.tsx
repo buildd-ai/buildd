@@ -355,9 +355,9 @@ export default async function DashboardPage() {
         {dashboardObjectives.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
-              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Objectives</span>
+              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Missions</span>
               <Link
-                href="/app/objectives"
+                href="/app/missions"
                 className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 View All
@@ -367,7 +367,7 @@ export default async function DashboardPage() {
               {dashboardObjectives.map((obj) => (
                 <Link
                   key={obj.id}
-                  href={`/app/objectives/${obj.id}`}
+                  href={`/app/missions/${obj.id}`}
                   className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
                 >
                   <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center flex-shrink-0 ${
