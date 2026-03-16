@@ -1,11 +1,37 @@
 # Claude Agent SDK Ecosystem Research
 
-> Last updated: 2026-03-09
+> Last updated: 2026-03-16
 > Purpose: Track how the community uses the Claude Agent SDK and identify features/patterns Buildd should adopt.
 
 ## SDK Release Summary (since last update)
 
-### v0.2.71 (Mar 7, 2026) — Latest
+### v0.2.76 (Mar 14, 2026) — Latest
+- **`forkSession(sessionId, opts?)`** — Branch conversations from a specific point. Enables A/B testing agent behavior and branching workflows.
+- **`cancel_async_message`** control subtype — Drop a queued user message by UUID before execution
+- **`planFilePath`** field added to `ExitPlanMode` tool input for hooks and SDK consumers
+- **MCP elicitation hooks** — `SDKElicitationCompleteMessage` system message for handling MCP server input requests programmatically
+- Parity with Claude Code v2.1.76
+
+### v0.2.75 (Mar 13, 2026)
+- Parity with Claude Code v2.1.75 (1M context window for Opus 4.6)
+
+### v0.2.74 (Mar 12, 2026)
+- **`renameSession(sessionId, title, opts?)`** — Programmatic session renaming
+- **Fixed:** `import type` from `@anthropic-ai/claude-agent-sdk/sdk-tools` failing under NodeNext/Bundler module resolution (broken since v0.2.69)
+- **Fixed:** Skills with `user-invocable: false` incorrectly included in `supportedCommands()` and `system:init` slash_commands/skills lists
+- Parity with Claude Code v2.1.74
+
+### v0.2.73 (Mar 11, 2026)
+- **Fixed:** `options.env` being overridden by `~/.claude/settings.json` env block when not using `user` as a `settingSources` option
+- Parity with Claude Code v2.1.73
+
+### v0.2.72 (Mar 10, 2026)
+- **`agentProgressSummaries`** option — Enable periodic AI-generated progress summaries for running subagents (foreground and background), emitted on `task_progress` events via new `summary` field
+- **`getSettings().applied`** section — Runtime-resolved `model` and `effort` values
+- **Fixed:** `toggleMcpServer` and `reconnectMcpServer` failing with "Server not found" for servers passed via `query({mcpServers})`
+- Parity with Claude Code v2.1.72
+
+### v0.2.71 (Mar 7, 2026)
 - Parity with Claude Code v2.1.71
 - No SDK-specific changes beyond CLI parity
 
@@ -23,7 +49,7 @@
 - Fixed malformed `updatedPermissions` blocking tool calls with ZodError
 - Improved memory usage of `getSessionMessages()` for large sessions
 
-### v0.2.68 (Mar 4, 2026) — Previous baseline
+### v0.2.68 (Mar 4, 2026)
 - Opus 4.6 defaults to **medium effort** for Max/Team subscribers
 - Re-introduced "ultrathink" keyword for high effort on next turn
 - **Opus 4.0 and 4.1 removed** from first-party API (auto-migrate to 4.6)
@@ -38,6 +64,26 @@
 - **`supportedAgents()`** method — query available subagents at runtime
 - Fixed: MCP replacement tools no longer incorrectly denied in subagents
 - Fixed: `pathToClaudeCodeExecutable` resolves bare command names via PATH
+
+### Notable Claude Code CLI Features (v2.1.72–2.1.76) — NEW
+- **MCP elicitation** (v2.1.76) — MCP servers can request structured input mid-task via interactive dialog (form fields or browser URL). New `Elicitation` and `ElicitationResult` hooks to intercept/override responses.
+- **`worktree.sparsePaths`** (v2.1.76) — Sparse checkout for `--worktree` in large monorepos. Check out only needed directories via git sparse-checkout.
+- **`PostCompact` hook** (v2.1.76) — Fires after compaction completes. Enables post-compaction actions (e.g., memory save, progress update).
+- **`/effort` command** (v2.1.76) — Set model effort level interactively.
+- **Session naming** (v2.1.76) — `-n`/`--name` flag at startup; `/rename` shows name on prompt bar.
+- **1M context for Opus 4.6** (v2.1.75) — Default for Max/Team/Enterprise plans (up from 200K).
+- **`/color` command** (v2.1.75) — Set prompt-bar color per session. Useful for multi-session workflows.
+- **Memory timestamps** (v2.1.75) — Last-modified timestamps on memory files for staleness reasoning.
+- **Hook source display** (v2.1.75) — Permission prompts show whether hook comes from settings/plugin/skill.
+- **`/context` suggestions** (v2.1.74) — Actionable suggestions for context-heavy tools, memory bloat, capacity warnings.
+- **`autoMemoryDirectory`** (v2.1.74) — Configurable directory for auto-memory storage.
+- **`modelOverrides`** (v2.1.73) — Map model picker entries to custom provider model IDs (Bedrock ARNs, etc.).
+- **`agentProgressSummaries`** (v2.1.72) — AI-generated progress summaries for subagents.
+- **`ExitWorktree` tool** (v2.1.72) — Leave an `EnterWorktree` session programmatically.
+- **Simplified effort levels** (v2.1.72) — low/medium/high (removed max), new symbols ○◐●, `/effort auto` to reset.
+- **Prompt cache optimization** (v2.1.72) — Fixed SDK `query()` prompt cache invalidation, reducing input token costs up to 12×.
+- **Auto-compaction circuit breaker** (v2.1.76) — Stops after 3 consecutive failures instead of retrying indefinitely.
+- **Improved background agents** (v2.1.76) — Killing a background agent now preserves partial results in context.
 
 ### Notable Claude Code CLI Features (v2.1.69–2.1.71)
 - **`/loop` command** (v2.1.71) — Run prompts on recurring intervals (e.g., `/loop 5m check the deploy`). Built-in cron scheduling tools. Tasks auto-expire after 3 days.
@@ -106,7 +152,7 @@
 **What**: 5+ unofficial Go implementations. Most active is M1n9X's with claimed full feature parity.
 **Takeaway for Buildd**: Signals demand for non-JS/Python agent development.
 
-### New This Week (12–17)
+### Added Mar 9 (12–17)
 
 #### 12. Claude Code Agent Farm (Dicklesworthstone) — ~2k stars
 **What**: Orchestration framework for running 20–50 Claude Code agents in parallel. Automated bug fixing, best-practices sweeps, lock-based coordination, and real-time tmux monitoring.
@@ -142,93 +188,76 @@
 **Architecture**: Modular packages — server helpers, WebSocket handlers, session management, client shims. Multi-runtime support (Node + Bun).
 **Takeaway for Buildd**: The modular package structure (separate server, WebSocket, and client packages) is a clean pattern. If Buildd ever publishes SDK helpers for external integrations, this layered approach is worth emulating.
 
-#### 12. Claude Code Agent Farm (Dicklesworthstone) — ~2k stars
-**What**: Orchestration framework for running 20–50 Claude Code agents in parallel via tmux. Single 3k-line Python script (`claude_code_agent_farm.py`) + 37 stack config JSONs + 41 prompt files + 31 best-practices guides.
-**Repo**: [github.com/Dicklesworthstone/claude_code_agent_farm](https://github.com/Dicklesworthstone/claude_code_agent_farm)
+### New This Week (18–23)
 
-**Architecture**: tmux-based — each agent gets its own pane. Central `AgentMonitor` polls panes every N seconds (default 10s) by capturing tmux pane content and regex-matching status indicators ("✻ Pontificating", "● Bash(", "✻ Thinking", etc.). State persisted to `.claude_agent_farm_state.json` with `fcntl` file locking for atomic reads/writes.
+#### 18. wshobson/agents — 31.4k stars
+**What**: Production-ready plugin marketplace for Claude Code — 112 specialized agents, 16 orchestrators, 146 skills, 79 dev tools organized into 72 single-purpose plugins.
+**Architecture**: Tiered model allocation by task complexity:
+- Tier 1 (Opus 4.6): 42 agents for critical architecture, security, code review
+- Tier 2 (Inherit/Flexible): 42 agents where users select model
+- Tier 3 (Sonnet 4.6): 51 support agents for docs and testing
+- Tier 4 (Haiku 4.5): 18 agents for operational tasks
+**Key Patterns**: (1) **Progressive disclosure skill architecture** — 3-tier loading: metadata → instructions → resources on demand, minimizing token overhead. (2) **Composable multi-agent workflows** — full-stack feature development coordinates 7+ agents across backend/frontend/DB/test/security/deploy/observability. (3) **Selective installation** — each plugin loads only its specific agents/commands/skills without context bloat (avg 3.4 components per plugin).
+**Takeaway for Buildd**: The **tiered model allocation** pattern is directly applicable — Buildd could auto-assign model tiers based on task category (architecture → Opus, testing → Sonnet, ops → Haiku). The **progressive disclosure** approach (metadata first, full instructions on demand) could significantly reduce token consumption in `buildd_memory` and skill loading. At 31.4k stars this is the most popular project in the ecosystem, validating demand for curated agent collections.
 
-**Key Implementation Details:**
+#### 19. VoltAgent/awesome-claude-code-subagents — 14k stars
+**What**: Curated collection of 127+ specialized Claude Code subagents across 10 categories with interactive installer.
+**Categories**: Core Development, Language Specialists (20+ languages), Infrastructure, Quality & Security, Data & AI, Developer Experience, Specialized Domains, Business & Product, Meta & Orchestration, Research & Analysis.
+**Key Patterns**: (1) **Isolation-first design** — each subagent has its own isolated context space preventing cross-contamination. (2) **Fine-grained tool permissions** — per-subagent tool access rights configuration. (3) **Interactive installer** — browse categories, select agents, install/uninstall via shell script.
+**Takeaway for Buildd**: The **category taxonomy** (10 categories spanning dev through business) maps well to Buildd's skill system. The **per-subagent tool permissions** pattern could enhance Buildd's skill definitions — currently skills get full tool access, but restricting tools per skill type would improve safety and reduce token waste. VoltAgent also maintains `awesome-agent-skills` (500+ cross-compatible skills for Claude Code, Codex, Gemini CLI, Cursor).
 
-1. **Adaptive Idle Timeout** (`calculate_adaptive_timeout()`):
-   - Tracks cycle times (working→ready transitions) in a sliding window of last 20 cycles
-   - Calculates median cycle time, sets timeout to 3× median
-   - Bounds: min 30s, max 600s (10 min)
-   - Only adjusts if >20% change from current value (prevents thrashing)
-   - Needs ≥3 cycle samples before activating; uses base timeout until then
-   - **Buildd relevance**: Our runner uses fixed heartbeat timeout (5 min). Adaptive timeout based on historical task duration would prevent premature kills on complex tasks while catching truly stalled workers faster.
+#### 20. parallel-code (johannesjo) — Open Source
+**What**: Desktop app to run Claude Code, Codex CLI, and Gemini CLI side by side, each in its own git worktree.
+**Architecture**: Each task gets its own branch and worktree automatically. Provider-agnostic — works with Claude Code, Codex, Gemini CLI from one interface. Keyboard-first control.
+**Takeaway for Buildd**: Validates the **multi-provider parallel worktree** pattern. Buildd already uses worktrees for agent isolation, but this project shows users want a unified interface across providers. As Buildd considers multi-model support (e.g., routing tasks to Codex or Gemini for cost optimization), a provider-agnostic worktree manager is the UX users expect.
 
-2. **File-Based Heartbeat System**:
-   - `.heartbeats/agentNN.heartbeat` files with ISO timestamps
-   - Updated on every status check when agent is "working" or "ready"
-   - Stale heartbeat (>120s) triggers "error" restart
-   - Displayed in monitoring dashboard with color coding: green (<30s), yellow (<60s), red (>60s)
-   - **Buildd relevance**: Simpler than our WebSocket-based heartbeat but the age-based color coding in the dashboard is a nice UX touch we could adopt.
+#### 21. Emdash (generalaction, YC W26) — Open Source
+**What**: Provider-agnostic agentic development environment. Run multiple coding agents in parallel, locally or over SSH on remote machines.
+**Architecture**: Desktop app with git worktree isolation per agent. Supports any AI coding provider. Local and remote execution.
+**Takeaway for Buildd**: A YC W26 company building in this space signals strong market validation. Their SSH-to-remote pattern is notable — Buildd's runner already runs remotely, but exposing a "remote agent" connection mode (SSH or WebSocket) for users who want to bring their own compute could be a differentiator. The fact that they're provider-agnostic reinforces that coordination (not model lock-in) is the value layer.
 
-3. **Lock-Based Coordination** (two separate levels):
-   - **Launch lock** (`~/.claude/.agent_farm_launch.lock`): Prevents concurrent `claude` CLI launches that corrupt shared settings. Uses `O_CREAT|O_EXCL` for atomicity. Stale after 30s, auto-cleaned.
-   - **Work coordination** (prompt-based, not enforced in code): Agents are instructed via prompt to maintain `/coordination/active_work_registry.json` + per-agent lock files. Advisory only — relies on the LLM following instructions.
-   - Stale lock detection: >1hr for work locks, >30s for launch locks
-   - **Buildd relevance**: The launch lock is a solved problem for us (we spawn one worker per task). The advisory work coordination is interesting but fragile — Buildd's task-level isolation is more robust. However, for multi-worker-on-same-repo scenarios, a PreToolUse hook checking a file-lock registry (as noted in pattern #2) would be stronger than prompt-based coordination.
+#### 22. Piebald-AI/claude-code-system-prompts
+**What**: Tracks all parts of Claude Code's system prompt across versions — 18 builtin tool descriptions, subagent prompts (Plan/Explore/Task), utility prompts (CLAUDE.md, compact, statusline, magic docs, WebFetch, Bash, security review, agent creation).
+**Takeaway for Buildd**: Useful reference for understanding how Claude Code structures its system prompts internally. Changes to system prompts across versions can explain behavioral shifts in workers. Worth monitoring when debugging unexpected worker behavior after SDK upgrades.
 
-4. **Auto-Recovery with Exponential Backoff**:
-   - Three restart reasons: `context` (low context%), `error` (settings corruption/stalled heartbeat), `idle` (exceeded adaptive timeout)
-   - `context` restarts use `/clear` (soft reset); `error`/`idle` do full agent restart
-   - Exponential backoff: `min(300, 10 * 2^restart_count)` seconds between restarts (10s, 20s, 40s, 80s, 160s, 300s max)
-   - Max consecutive errors configurable (default 3) before agent disabled
-   - **Buildd relevance**: Our workers don't have graduated restart strategies. The `/clear` vs full restart distinction is valuable — context exhaustion should try a soft reset before killing the worker. The exponential backoff pattern is directly adoptable for our auto-retry logic.
+#### 23. Claude Agent SDK Official Demos (anthropics/claude-agent-sdk-demos)
+**What**: Official Anthropic demo repository showcasing SDK patterns — V2 Session API (multi-turn, persistence), multi-agent research system with subagent coordination, branding assistant with HTML preview cards, React+Express WebSocket chat UI, spreadsheet processing, resume generation.
+**Takeaway for Buildd**: The **multi-agent research system** demo (coordinating specialized subagents for research and report generation) is architecturally similar to Buildd's BRIEF mission type. The **V2 Session API patterns** (separate send/stream, session persistence) may eventually supersede V1 query() for interactive use cases. Worth tracking as V2 stabilizes.
 
-5. **Stack Profiles** (37 configs):
-   - JSON configs with: `tech_stack`, `problem_commands` (type_check, lint), `best_practices_files`, `chunk_size`, `agents` count, timing params, prompt files
-   - Example Next.js config: 20 agents, chunk_size 50, stagger 10s, wait_after_cc 15s, idle_timeout 60s
-   - Each stack has a matching best-practices guide (31 markdown files) and default prompt
-   - **Buildd relevance**: Could inspire workspace-specific defaults. When a workspace is detected as Next.js (via package.json), auto-set suggested effort level, model, and budget. Not the 34 configs themselves, but the concept of stack detection → config presets.
+### Deep-Dive Analyses (from prior weeks)
 
-6. **Context Percentage Detection**:
-   - Regex scrapes "Context left until auto-compact: N%" from tmux pane content
-   - Multiple fallback patterns for different Claude Code versions
-   - Triggers `/clear` when below threshold (default 20%)
-   - **Buildd relevance**: SDK hooks expose context usage events directly — we don't need tmux scraping. But tracking context% per worker and taking action (compact/restart) before exhaustion is a pattern we should adopt.
+<details>
+<summary>Agent Farm deep-dive (Mar 9) — adaptive timeout, heartbeat, recovery patterns</summary>
 
-**SDK Features Used**: None — this is entirely CLI-based. Launches `claude` CLI processes in tmux panes and monitors via terminal scraping. Does NOT use the Agent SDK's query() API, hooks, or any programmatic interface.
+**Claude Code Agent Farm (Dicklesworthstone)** — Detailed implementation analysis:
 
-**What We Should NOT Adopt**:
-- tmux-based architecture (we have proper subprocess management via SDK)
-- Terminal scraping for status detection (we have SDK hook events)
-- Prompt-based work coordination (fragile; our task isolation is better)
-- Single-machine constraint (we run distributed workers)
+1. **Adaptive Idle Timeout** (`calculate_adaptive_timeout()`): Tracks cycle times in sliding window of 20 cycles, sets timeout = 3× median, bounded [30s, 600s], only adjusts on >20% change, needs ≥3 samples before activating.
+2. **File-Based Heartbeat**: `.heartbeats/agentNN.heartbeat` files, color-coded in dashboard (green <30s, yellow <60s, red >60s).
+3. **Lock-Based Coordination**: Launch lock (atomic `O_CREAT|O_EXCL`, stale after 30s) + advisory work coordination (prompt-based, fragile).
+4. **Auto-Recovery with Exponential Backoff**: `context` → `/clear` (soft), `error`/`idle` → full restart. Backoff: `min(300, 10 * 2^count)`.
+5. **Stack Profiles**: 37 JSON configs with tech_stack, problem_commands, best_practices_files, timing params.
+6. **Context % Detection**: Regex scrapes context remaining, triggers `/clear` below 20%.
 
-**What We SHOULD Adopt** (Priority Order):
-1. **Adaptive idle timeout** — Replace fixed 5-min heartbeat timeout with median-of-recent-cycles × 3. Low effort, high impact.
-2. **Graduated restart strategy** — `/clear` (soft) for context exhaustion vs full restart for errors. Currently we only do full restarts.
-3. **Exponential backoff on restarts** — `min(300, 10 * 2^count)` prevents restart storms on systemic issues.
-4. **Stack detection → config presets** — Auto-detect project type from package.json/Cargo.toml/etc and suggest effort/model/budget defaults.
-5. **Heartbeat age visualization** — Color-coded heartbeat freshness in dashboard (green/yellow/red thresholds).
+**What to adopt**: Adaptive timeout, graduated restart, exponential backoff, stack presets, heartbeat age visualization.
+**What NOT to adopt**: tmux architecture, terminal scraping, prompt-based coordination, single-machine constraint.
 
-#### 13. claude-code-by-agents (baryhuang) — ~400 stars
-**What**: Desktop app (Electron) and REST API for multi-agent Claude Code orchestration. Deno backend coordinates local and remote agents through @mentions.
-**Repo**: [github.com/baryhuang/claude-code-by-agents](https://github.com/baryhuang/claude-code-by-agents)
-**Architecture**: Frontend (Electron, port 3000) → Backend orchestrator (Deno, port 8080) → Multiple Claude Code CLI agents (ports 8081, 8082, etc.). Remote agents run on other machines. @mention syntax routes messages to specific agents. File-based inter-agent communication.
-**SDK Features Used**: None — uses Claude CLI directly with OAuth auth (no API keys). No SDK hooks, no programmatic API.
-**Key Features**: @agent-name mention routing, automatic task decomposition with dependency management, multi-machine agent coordination, REST API for chat/history/abort.
+</details>
 
-**Processed**: 2026-03-09
-**Assessment**: Investigated for potential Buildd integration. Conclusion: Buildd's existing architecture already covers (and exceeds) what this project offers.
-- Their **@mention routing** → Buildd's task + skill assignment
-- Their **multi-machine agents** → Buildd's distributed worker claim model
-- Their **orchestrator decomposition** → Buildd's objectives → tasks
-- Their **REST API** → Buildd's MCP server
-- Their **limitations** (no persistence, no session resume, no real-time visibility, context fragmentation across agents) are problems Buildd already solves via DB-backed task state, worker heartbeats, and Pusher realtime.
-- The `@mention` syntax is effectively a skill/agent invocator — same concept as Claude Code's `/` slash commands or Buildd's skill attachment on tasks. No novel pattern to adopt.
+<details>
+<summary>claude-code-by-agents assessment (Mar 9) — no novel patterns for Buildd</summary>
 
-**Action**: None. Validates Buildd's architectural direction. No features to borrow.
+**Assessment**: Buildd's architecture already covers and exceeds this project's capabilities. @mention routing → Buildd's task+skill assignment. Multi-machine agents → Buildd's distributed worker claim. Their limitations (no persistence, no session resume, no real-time visibility) are problems Buildd already solves.
+
+**Action**: None. Validates Buildd's architectural direction.
+
+</details>
 
 ## Buildd's Current SDK Usage (What We Do Well)
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | V1 Query API | Full | Correct choice for orchestration with CLAUDE.md, plugins, sandbox |
-| Hooks (13/15) | Extensive | PreToolUse, PostToolUse, PostToolUseFailure, Notification, PermissionRequest, SessionStart, SessionEnd, PreCompact, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, ConfigChange |
+| Hooks (13/17) | Extensive | PreToolUse, PostToolUse, PostToolUseFailure, Notification, PermissionRequest, SessionStart, SessionEnd, PreCompact, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, ConfigChange. **Not yet using**: PostCompact, Elicitation, ElicitationResult, InstructionsLoaded |
 | Agent Teams | Full | Skill delegation, subagent lifecycle tracking |
 | In-Process MCP | Full | buildd + buildd_memory tools via createSdkMcpServer() |
 | Structured Outputs | Basic | JSON schema when task defines outputSchema |
@@ -237,6 +266,8 @@
 | Cost Tracking | Full | Per-worker budgets, per-model usage breakdowns |
 | Rate Limit Detection | Full | SDK v0.2.45+ events + fallback detection |
 | Background Agents | Full | `background: true` on skill-as-subagent definitions |
+| Effort Levels | Partial | Supported via task `model` field but not auto-mapped from priority |
+| Worktree Isolation | Full | Workers use isolated worktrees |
 
 ## SDK Features We Don't Yet Use (Opportunities)
 
@@ -253,7 +284,7 @@
 8. **Plan Mode Review UI** — Currently plans are auto-approved. Could add dashboard step for human review.
 9. **`additionalDirectories`** — Workers accessing shared monorepo packages outside CWD.
 
-### New in v0.2.69–0.2.71
+### New in v0.2.69–0.2.76
 10. **`DirectConnectTransport`** (v0.2.64) — Connect to a running `claude server` over WebSocket. Stable session keys for persistent multi-turn across reconnects. Could fundamentally simplify Buildd's runner architecture.
 11. **`supportedAgents()`** (v0.2.63) — Query available subagents at runtime. Could enable dynamic skill discovery in the dashboard.
 12. **`agent_id` / `agent_type` in hook events** (v0.2.69) — Now in stable release. Subagent-specific hook logic. Enables per-skill cost tracking and monitoring.
@@ -266,13 +297,24 @@
 19. **Auto-memory** (CLI v2.1.59) — Workers accumulate cross-session learnings per workspace. Evaluate against custom `buildd_memory` MCP.
 20. **Worktree-shared configs** (CLI v2.1.63) — Project configs + auto-memory shared across git worktrees. Reduces setup for subagent worktree isolation.
 21. **Plugin marketplace integration** — Buildd skills could be distributed as Claude Code plugins via marketplace.
+22. **`agentProgressSummaries`** (v0.2.72) — **HIGH PRIORITY** — AI-generated progress summaries for subagents. Buildd workers already report progress, but enabling this would provide richer, auto-generated summaries without manual `update_progress` calls. Could power a "live summary" feature in the dashboard.
+23. **`getSettings().applied`** (v0.2.72) — Runtime-resolved model and effort values. Could use this to log actual runtime config per worker for debugging and optimization.
+24. **`forkSession`** (v0.2.76) — **NOW AVAILABLE** — A/B testing agent behavior, branching workflows. Could enable "try two approaches" pattern for complex tasks.
+25. **`renameSession`** (v0.2.74) — Programmatic session renaming. Could set meaningful session names like task IDs for easier debugging.
+26. **MCP elicitation** (v0.2.76/v2.1.76) — MCP servers can request structured input mid-task. New `Elicitation`/`ElicitationResult` hooks. Buildd's MCP server could use this for interactive task clarification without AskUserQuestion.
+27. **`worktree.sparsePaths`** (v2.1.76) — Sparse checkout in worktrees. **HIGH PRIORITY** for Buildd's monorepo — workers only check out relevant packages instead of entire repo, reducing setup time and context.
+28. **`PostCompact` hook** (v2.1.76) — Fire actions after compaction. Could auto-save progress or memory when context is compacted.
+29. **`modelOverrides`** (v2.1.73) — Map model names to custom provider IDs. Enables Bedrock/Vertex integration without changing agent definitions.
+30. **`autoMemoryDirectory`** (v2.1.74) — Custom auto-memory path. Could unify with `buildd_memory` storage.
+31. **Prompt cache optimization** (v2.1.72) — Up to 12× input token cost reduction. Verify Buildd workers are benefiting from this fix.
+32. **Auto-compaction circuit breaker** (v2.1.76) — Stops after 3 failures. Prevents runaway compaction loops that waste tokens.
 
 ### Lower Priority
-22. **`forkSession`** — A/B testing agent behavior, branching workflows.
-23. **`resumeSessionAt`** — Rewind to specific conversation point.
-24. **`setPermissionMode()`** — Dynamic permission escalation mid-session.
-25. **`promptSuggestion()`** — SDK v0.2.47 feature for requesting prompt suggestions.
-26. **Model capability discovery** (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) — Runtime feature detection instead of hardcoded model assumptions.
+33. **`resumeSessionAt`** — Rewind to specific conversation point.
+34. **`setPermissionMode()`** — Dynamic permission escalation mid-session.
+35. **`promptSuggestion()`** — SDK v0.2.47 feature for requesting prompt suggestions.
+36. **Model capability discovery** (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`) — Runtime feature detection instead of hardcoded model assumptions.
+37. **`cancel_async_message`** (v0.2.76) — Drop queued messages by UUID. Edge case utility for multi-turn coordination.
 
 ## Patterns From the Community Worth Adopting
 
@@ -365,24 +407,65 @@ Different recovery actions based on failure type:
 - Max consecutive errors threshold before disabling worker entirely
 - Prevents restart storms on systemic issues (rate limits, auth failures)
 
+### New Patterns (16–20) — Added Mar 16
+
+#### 16. Tiered Model Allocation (from wshobson/agents)
+Assign models by task complexity tier instead of one-size-fits-all:
+- **Tier 1** (Opus 4.6): Architecture, security, complex code review — 42 agents
+- **Tier 2** (Inherit): User-selected model for general work — 42 agents
+- **Tier 3** (Sonnet 4.6): Documentation, testing, support — 51 agents
+- **Tier 4** (Haiku 4.5): Operational tasks, simple automation — 18 agents
+Buildd could auto-assign model tiers based on task `category` field. Bug fixes → Sonnet, architecture → Opus, docs → Haiku. Already partially supported via task `model` field but not automated.
+
+#### 17. Progressive Disclosure Skill Loading (from wshobson/agents)
+Three-tier skill architecture that loads knowledge on demand:
+- **Metadata** (always loaded): name, description, category — minimal tokens
+- **Instructions** (loaded when invoked): step-by-step how-to — moderate tokens
+- **Resources** (loaded on demand): full reference docs, examples — heavy tokens
+Buildd's skills currently load everything at once. Progressive disclosure could cut skill token costs significantly, especially for workers with many attached skills.
+
+#### 18. Per-Subagent Tool Permissions (from VoltAgent)
+Configure specific tool access rights per subagent type:
+- Security auditor gets Read + Grep only (no Write/Edit)
+- Frontend agent gets Write + Edit but no Bash
+- Infrastructure agent gets Bash but restricted to specific commands
+Buildd skills currently inherit full tool access. Restricting tools per skill type improves safety and reduces accidental damage surface.
+
+#### 19. Sparse Worktree for Monorepos (from CLI v2.1.76 + community)
+Use `worktree.sparsePaths` to check out only needed directories:
+- Worker on `apps/web` task only checks out `apps/web/` + `packages/shared/` + `packages/core/`
+- Dramatically reduces clone time and disk usage for large monorepos
+- Combined with `isolation: worktree`, enables lean parallel agents
+Buildd workers currently clone the full repo. For Buildd's own monorepo (with `apps/` and `packages/`), sparse checkout based on task `project` field could speed up worker startup.
+
+#### 20. Provider-Agnostic Worktree Management (from parallel-code, Emdash)
+Desktop apps that run Claude Code, Codex, Gemini side-by-side in isolated worktrees:
+- Each task gets its own branch + worktree automatically
+- Provider selection per task (cost optimization, capability matching)
+- Unified UI across providers
+Validates that coordination layer (not model lock-in) is the value layer. As Buildd considers multi-model support, the UX expectation is seamless provider switching per task.
+
 ## Recommendations for Buildd (Priority Order)
 
 ### Immediate (This Sprint)
-1. **Bump SDK to `>=0.2.69`** — Stable `agent_id`/`agent_type` in hooks, `supportsFastMode`, AskUserQuestion preview format, memory improvements
-2. **Implement `effort` levels** — Map task priority to effort. Opus 4.6 already defaults to medium.
-3. **Add `fallbackModel`** — Zero-effort resilience improvement
+1. **Bump SDK to `>=0.2.76`** — Gets `agentProgressSummaries`, `forkSession`, MCP elicitation hooks, prompt cache fix (12× cost reduction), and auto-compaction circuit breaker. Previous recommendation was >=0.2.69; now 0.2.76 has substantial features.
+2. **Enable `agentProgressSummaries`** — Auto-generated progress summaries for subagents without manual `update_progress` calls. Low effort, immediate dashboard value.
+3. **Enable `worktree.sparsePaths`** — Configure sparse checkout for Buildd's monorepo. Workers only check out relevant `apps/` + `packages/` directories. Reduces worker startup time.
+4. **Verify prompt cache optimization** — v2.1.72 fixed SDK `query()` prompt cache invalidation for up to 12× input token cost reduction. Verify Buildd workers are benefiting.
 
 ### Near-Term (Next 2 Sprints)
-4. **CI failure auto-routing** — Hook GitHub Actions status events to auto-create fix tasks when worker PRs fail CI
-5. **Adaptive idle timeout** — Replace fixed timeouts with heartbeat-based adaptive approach from Agent Farm pattern
-6. **Evaluate DirectConnectTransport for runner** — Could replace subprocess management with WebSocket connection to persistent `claude server`
-7. **Progressive memory disclosure in `buildd_memory`** — Layered retrieval to reduce token waste
-8. **`agent_id`/`agent_type` hook events** — Enable per-skill cost dashboards (now stable in v0.2.69)
+5. **Tiered model allocation** — Auto-assign model based on task category: architecture→Opus, bug fix→Sonnet, docs/ops→Haiku. Extends existing task `model` field with smart defaults.
+6. **CI failure auto-routing** — Hook GitHub Actions status events to auto-create fix tasks when worker PRs fail CI (from ComposioHQ pattern)
+7. **Adaptive idle timeout** — Replace fixed timeouts with heartbeat-based adaptive approach from Agent Farm pattern
+8. **MCP elicitation for task clarification** — Use elicitation hooks so Buildd's MCP server can request structured input mid-task without AskUserQuestion
+9. **`PostCompact` hook for auto-save** — Save progress/memory automatically when context is compacted
+10. **Progressive skill loading** — Three-tier metadata→instructions→resources architecture to reduce token costs
 
 ### Medium-Term
-9. **Repo context auto-detection** — Auto-discover workspace stack and configure defaults on first task
-10. **Plugin marketplace distribution** — Publish Buildd skills as Claude Code plugins
-11. **`InstructionsLoaded` hook** — Audit/validate worker CLAUDE.md configuration at startup
-12. **WASM pre-processing for trivial tasks** — Token savings for simple transforms
-13. **Auto-generated skill definitions** — Scan workspace, generate skills automatically
-14. **Session-scoped `/loop` for health checks** — Use CronCreate within worker sessions for periodic self-monitoring
+11. **Per-skill tool permissions** — Restrict tool access per skill type (security auditor: read-only, frontend: no Bash, etc.)
+12. **Evaluate DirectConnectTransport for runner** — Could replace subprocess management with WebSocket connection to persistent `claude server`
+13. **Repo context auto-detection** — Auto-discover workspace stack and configure defaults on first task
+14. **Plugin marketplace distribution** — Publish Buildd skills as Claude Code plugins
+15. **`InstructionsLoaded` hook** — Audit/validate worker CLAUDE.md configuration at startup
+16. **`forkSession` for A/B task approaches** — Try two implementation approaches in parallel, pick the better one
+17. **Session-scoped `/loop` for health checks** — Use CronCreate within worker sessions for periodic self-monitoring
