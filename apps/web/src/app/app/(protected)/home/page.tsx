@@ -348,7 +348,7 @@ export default async function HomePage() {
                 </div>
               ) : activeItems.length === 0 ? (
                 <div className="text-[14px] text-text-secondary">
-                  No agents running. <Link href="/app/tasks/new" className="text-primary hover:underline">Create a task</Link> to get one going.
+                  No agents running.
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -489,12 +489,20 @@ export default async function HomePage() {
                       </Link>
                     );
                   })}
-                  <Link
-                    href="/app/missions"
-                    className="block text-center text-xs text-text-muted hover:text-text-secondary py-2"
-                  >
-                    View all missions
-                  </Link>
+                  <div className="flex items-center justify-between pt-1">
+                    <Link
+                      href="/app/missions"
+                      className="text-xs text-text-muted hover:text-text-secondary"
+                    >
+                      View all missions
+                    </Link>
+                    <Link
+                      href="/app/missions/new"
+                      className="text-xs text-text-muted hover:text-primary"
+                    >
+                      + New Mission
+                    </Link>
+                  </div>
                 </div>
               )}
             </div>

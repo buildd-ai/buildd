@@ -411,7 +411,7 @@ export default function NewTaskPage() {
           <span className="mx-2">/</span>
           <span className="text-text-primary">New</span>
         </nav>
-        <h1 className="text-2xl font-bold mb-1">Set a mission</h1>
+        <h1 className="text-2xl font-bold mb-1">New task</h1>
         <p className="text-sm text-text-secondary mb-6">Describe what you want done. The system handles the rest.</p>
 
         {workspaces.length === 0 && !loadingWorkspaces ? (
@@ -954,7 +954,7 @@ export default function NewTaskPage() {
               >
                 {loading
                   ? (recurring ? 'Creating Schedule...' : 'Launching...')
-                  : (recurring ? 'Create Schedule' : 'Launch Mission')
+                  : (recurring ? 'Create Schedule' : 'Launch Task')
                 }
               </button>
               <Link
