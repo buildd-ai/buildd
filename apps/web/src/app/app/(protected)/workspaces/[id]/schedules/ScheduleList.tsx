@@ -3,6 +3,15 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+interface PendingSuggestion {
+  cronExpression?: string;
+  enabled?: boolean;
+  reason: string;
+  suggestedAt: string;
+  suggestedByTaskId?: string;
+  suggestedByWorkerId?: string;
+}
+
 interface Schedule {
   id: string;
   name: string;
@@ -23,6 +32,7 @@ interface Schedule {
   lastCheckedAt: string | null;
   lastTriggerValue: string | null;
   totalChecks: number;
+  pendingSuggestion?: PendingSuggestion | null;
 }
 
 interface Props {
@@ -55,6 +65,27 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   const [schedules, setSchedules] = useState(initialSchedules);
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState<string | null>(null);
+
+  async function handleSuggestionAction(scheduleId: string, action: 'approve' | 'dismiss') {
+    setSuggestionLoading(scheduleId);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${workspaceId}/schedules/${scheduleId}/suggestion`,
+        { method: action === 'approve' ? 'PATCH' : 'DELETE' },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setSchedules(prev =>
+          prev.map(s => s.id === scheduleId ? data.schedule : s)
+        );
+      }
+    } catch {
+      // Silent failure
+    } finally {
+      setSuggestionLoading(null);
+    }
+  }
 
   async function toggleEnabled(schedule: Schedule) {
     setToggling(schedule.id);
@@ -164,6 +195,52 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               </div>
               {schedule.lastError && (
                 <p className="text-xs text-status-error mt-1 truncate">{schedule.lastError}</p>
+              )}
+              {schedule.pendingSuggestion && (
+                <div className="mt-2 p-3 rounded-lg bg-status-warning/10 border border-status-warning/20">
+                  <div className="flex items-start gap-2">
+                    <svg className="w-4 h-4 text-status-warning shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-status-warning mb-1">Agent suggestion</div>
+                      <p className="text-xs text-text-secondary">{schedule.pendingSuggestion.reason}</p>
+                      <p className="text-xs text-text-muted mt-1 font-mono">
+                        {[
+                          schedule.pendingSuggestion.cronExpression && `cron → ${schedule.pendingSuggestion.cronExpression}`,
+                          schedule.pendingSuggestion.enabled === false && 'disable schedule',
+                          schedule.pendingSuggestion.enabled === true && 'enable schedule',
+                        ].filter(Boolean).join(', ')}
+                      </p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <button
+                          onClick={() => handleSuggestionAction(schedule.id, 'approve')}
+                          disabled={suggestionLoading === schedule.id}
+                          className="px-2.5 py-1 text-xs font-medium bg-status-success/15 text-status-success border border-status-success/25 rounded-md hover:bg-status-success/25 transition-colors disabled:opacity-50"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => handleSuggestionAction(schedule.id, 'dismiss')}
+                          disabled={suggestionLoading === schedule.id}
+                          className="px-2.5 py-1 text-xs font-medium bg-surface-3 text-text-secondary border border-border-default rounded-md hover:bg-surface-4 transition-colors disabled:opacity-50"
+                        >
+                          Dismiss
+                        </button>
+                        {schedule.pendingSuggestion.suggestedByTaskId && (
+                          <a
+                            href={`/app/tasks/${schedule.pendingSuggestion.suggestedByTaskId}`}
+                            className="text-[10px] text-primary hover:underline ml-auto"
+                          >
+                            View task
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
 

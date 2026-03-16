@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, objectives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql } from 'drizzle-orm';
+import { tasks, workers, objectives, taskSchedules } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, sql, isNotNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -84,6 +84,16 @@ export default async function HomePage() {
   }[] = [];
 
   let completedLast12h = 0;
+
+  let pendingSuggestions: {
+    scheduleId: string;
+    scheduleName: string;
+    workspaceId: string;
+    reason: string;
+    cronExpression?: string;
+    enabled?: boolean;
+    suggestedByTaskId?: string;
+  }[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -223,6 +233,36 @@ export default async function HomePage() {
             activeWorkers: activeWorkerCounts[obj.id] || 0,
           }));
         }
+
+        // Schedules with pending agent suggestions
+        const schedulesWithSuggestions = await db.query.taskSchedules.findMany({
+          where: and(
+            inArray(taskSchedules.workspaceId, wsIds),
+            isNotNull(taskSchedules.pendingSuggestion),
+          ),
+          columns: {
+            id: true,
+            name: true,
+            workspaceId: true,
+            pendingSuggestion: true,
+          },
+          limit: 5,
+        });
+
+        pendingSuggestions = schedulesWithSuggestions
+          .filter(s => s.pendingSuggestion)
+          .map(s => {
+            const ps = s.pendingSuggestion as any;
+            return {
+              scheduleId: s.id,
+              scheduleName: s.name,
+              workspaceId: s.workspaceId,
+              reason: ps.reason,
+              cronExpression: ps.cronExpression,
+              enabled: ps.enabled,
+              suggestedByTaskId: ps.suggestedByTaskId,
+            };
+          });
       }
     } catch (error) {
       console.error('Home page query error:', error);
@@ -325,6 +365,37 @@ export default async function HomePage() {
                 </div>
               )}
             </div>
+
+            {/* Pending Schedule Suggestions */}
+            {pendingSuggestions.length > 0 && (
+              <div className="mb-8">
+                <div className="section-label mb-4">Needs Attention</div>
+                <div className="space-y-2">
+                  {pendingSuggestions.map((s) => (
+                    <Link
+                      key={s.scheduleId}
+                      href={`/app/workspaces/${s.workspaceId}/schedules`}
+                      className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="type-label type-label-watch">SUGGEST</span>
+                        <span className="text-[13px] font-medium text-text-primary truncate">
+                          {s.scheduleName}
+                        </span>
+                      </div>
+                      <p className="text-[12px] text-text-secondary line-clamp-2">{s.reason}</p>
+                      <p className="text-[11px] text-text-muted font-mono mt-1">
+                        {[
+                          s.cronExpression && `cron → ${s.cronExpression}`,
+                          s.enabled === false && 'disable',
+                          s.enabled === true && 'enable',
+                        ].filter(Boolean).join(', ')}
+                      </p>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Missions */}
             <div className="mb-8 md:mb-0">
