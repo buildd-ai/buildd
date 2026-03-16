@@ -200,7 +200,7 @@ describe('Ralph Loop Stop Hook', () => {
       expect(lastQueryOpts.options.hooks).toBeDefined();
       expect(lastQueryOpts.options.hooks.Stop).toBeDefined();
       expect(lastQueryOpts.options.hooks.Stop[0].hooks).toHaveLength(1);
-    });
+    }, 15_000);  // First test pays cold-start cost
 
     test('all expected hooks are registered', async () => {
       manager = new WorkerManager(makeConfig());
