@@ -68,8 +68,8 @@ export default async function TeamPage() {
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
 
-  // Get all enabled roles: workspace-scoped OR account-level
-  const allSkills = await db.query.workspaceSkills.findMany({
+  // Get all enabled roles: workspace-scoped OR account-level, dedupe by slug
+  const allSkillsRaw = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.isRole, true),
@@ -79,6 +79,12 @@ export default async function TeamPage() {
       ),
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
+  });
+  const seenSlugs = new Set<string>();
+  const allSkills = allSkillsRaw.filter(s => {
+    if (seenSlugs.has(s.slug)) return false;
+    seenSlugs.add(s.slug);
+    return true;
   });
 
   // Get active workers with their tasks
