@@ -285,16 +285,23 @@ export default async function HomePage() {
             };
           });
 
-        // Get team roles for mini Team section
-        const allRoles = await db.query.workspaceSkills.findMany({
+        // Get team roles for mini Team section (isRole = true, dedupe by slug)
+        const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
             inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
+            eq(workspaceSkills.isRole, true),
           ),
           columns: { id: true, name: true, color: true, slug: true, workspaceId: true },
           orderBy: [desc(workspaceSkills.createdAt)],
-          limit: 8,
+          limit: 20,
         });
+        const seenSlugs = new Set<string>();
+        const allRoles = allRolesRaw.filter(r => {
+          if (seenSlugs.has(r.slug)) return false;
+          seenSlugs.add(r.slug);
+          return true;
+        }).slice(0, 8);
 
         // Determine which roles are active (have running workers)
         const activeSlugs = new Set(
