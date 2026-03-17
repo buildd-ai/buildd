@@ -84,21 +84,30 @@ export async function verifyAccountWorkspaceAccess(
  * Get all workspace IDs accessible to a user via their team memberships.
  */
 export async function getUserWorkspaceIds(userId: string): Promise<string[]> {
+  const ids = new Set<string>();
+
+  // 1. Workspaces owned directly by this user (owner_id exists in DB but not in Drizzle schema)
+  const owned = await db.execute<{ id: string }>(
+    sql`SELECT id FROM workspaces WHERE owner_id = ${userId}`
+  );
+  for (const w of owned.rows) ids.add(w.id);
+
+  // 2. Workspaces via team membership
   const memberships = await db.query.teamMembers.findMany({
     where: eq(teamMembers.userId, userId),
     columns: { teamId: true },
   });
 
-  if (memberships.length === 0) return [];
+  if (memberships.length > 0) {
+    const teamIds = memberships.map(m => m.teamId);
+    const teamWorkspaces = await db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true },
+    });
+    for (const w of teamWorkspaces) ids.add(w.id);
+  }
 
-  const teamIds = memberships.map(m => m.teamId);
-
-  const userWorkspaces = await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds),
-    columns: { id: true },
-  });
-
-  return userWorkspaces.map(w => w.id);
+  return [...ids];
 }
 
 /**
