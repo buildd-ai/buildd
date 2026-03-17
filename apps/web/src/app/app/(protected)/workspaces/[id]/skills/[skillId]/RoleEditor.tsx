@@ -168,7 +168,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-text-primary text-white rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
           >
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
