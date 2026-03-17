@@ -11,6 +11,13 @@ interface WorkspaceOption {
   name: string;
 }
 
+interface RoleOption {
+  slug: string;
+  name: string;
+  color: string;
+  workspaceId: string;
+}
+
 interface SchedulePreview {
   valid: boolean;
   description: string;
@@ -74,7 +81,7 @@ const TYPE_CRON_DEFAULTS: Record<MissionType, string | null> = {
   brief: null,
 };
 
-export default function NewMissionForm({ workspaces }: { workspaces: WorkspaceOption[] }) {
+export default function NewMissionForm({ workspaces, roles = [] }: { workspaces: WorkspaceOption[]; roles?: RoleOption[] }) {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [type, setType] = useState<MissionType | null>(null);
@@ -83,6 +90,8 @@ export default function NewMissionForm({ workspaces }: { workspaces: WorkspaceOp
   const [workspaceId, setWorkspaceId] = useState(workspaces.length === 1 ? workspaces[0].id : '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  const [defaultRoleSlug, setDefaultRoleSlug] = useState('');
 
   // Schedule state
   const [cronExpression, setCronExpression] = useState('');
@@ -174,6 +183,10 @@ export default function NewMissionForm({ workspaces }: { workspaces: WorkspaceOp
 
       if (type === 'watch') {
         payload.isHeartbeat = true;
+      }
+
+      if (defaultRoleSlug) {
+        payload.defaultRoleSlug = defaultRoleSlug;
       }
 
       const res = await fetch('/api/objectives', {
@@ -316,6 +329,38 @@ export default function NewMissionForm({ workspaces }: { workspaces: WorkspaceOp
                     <option key={ws.id} value={ws.id}>{ws.name}</option>
                   ))}
                 </select>
+              </div>
+            )}
+
+            {/* Assign to role */}
+            {roles.length > 0 && (
+              <div className="mb-4">
+                <label className="block text-xs text-text-muted mb-1.5">
+                  Assign to role <span className="text-text-muted/60">(optional)</span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {roles
+                    .filter(r => !workspaceId || r.workspaceId === workspaceId)
+                    .map(role => (
+                    <button
+                      key={role.slug}
+                      type="button"
+                      onClick={() => setDefaultRoleSlug(defaultRoleSlug === role.slug ? '' : role.slug)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                        defaultRoleSlug === role.slug
+                          ? 'bg-primary/10 border-primary text-primary'
+                          : 'bg-surface-2 border-border-default text-text-secondary hover:text-text-primary hover:border-border-default/80'
+                      }`}
+                    >
+                      <span
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: role.color }}
+                      />
+                      {role.name}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-text-muted mt-1">Tasks from this mission will be routed to the selected role.</p>
               </div>
             )}
 

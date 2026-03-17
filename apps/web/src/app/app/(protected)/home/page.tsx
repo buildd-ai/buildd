@@ -544,8 +544,40 @@ export default async function HomePage() {
             </div>
           </div>
 
-          {/* Right column: Activity rail */}
+          {/* Right column: Team + Activity rail */}
           <div className="md:w-[40%] md:border-l md:border-border-default md:pl-8">
+            {/* Team section — above Activity for visibility */}
+            {teamRoles.length > 0 && (
+              <div className="mb-6 pb-6 border-b border-border-default">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="section-label">Team</div>
+                  <Link href="/app/team" className="text-xs text-text-muted hover:text-text-secondary">
+                    {teamRoles.filter(r => r.isActive).length} active &middot; {teamRoles.length} total
+                  </Link>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {teamRoles.map((role) => (
+                    <Link
+                      key={role.id}
+                      href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--card)] border border-border-default hover:bg-surface-3 transition-colors"
+                    >
+                      <div
+                        className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${role.isActive ? 'ring-2 ring-status-success/50' : ''}`}
+                        style={{ backgroundColor: role.color }}
+                      >
+                        <span className="text-white text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                      </div>
+                      <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
+                      {role.isActive && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="section-label mb-4">Activity</div>
             {recentActivity.length === 0 ? (
               <p className="text-[14px] text-text-secondary">
@@ -578,38 +610,6 @@ export default async function HomePage() {
                     </div>
                   );
                 })}
-              </div>
-            )}
-
-            {/* Mini Team section */}
-            {teamRoles.length > 0 && (
-              <div className="mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="section-label">Team</div>
-                  <Link href="/app/team" className="text-xs text-text-muted hover:text-text-secondary">
-                    {teamRoles.length} role{teamRoles.length !== 1 ? 's' : ''}
-                  </Link>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {teamRoles.map((role) => (
-                    <Link
-                      key={role.id}
-                      href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--card)] border border-border-default hover:bg-surface-3 transition-colors"
-                    >
-                      <div
-                        className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${role.isActive ? 'ring-2 ring-status-success/50' : ''}`}
-                        style={{ backgroundColor: role.color }}
-                      >
-                        <span className="text-white text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
-                      </div>
-                      <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
-                      {role.isActive && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
-                      )}
-                    </Link>
-                  ))}
-                </div>
               </div>
             )}
           </div>

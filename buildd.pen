@@ -1018,7 +1018,7 @@
                   "fill": "$--muted-foreground",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Micro-interactions are events which have one main task — a single purpose — and they are found all over your device and within apps.",
+                  "content": "Micro-interactions are events which have one main task \u2014 a single purpose \u2014 and they are found all over your device and within apps.",
                   "lineHeight": 1.4285714285714286,
                   "fontFamily": "Inter",
                   "fontSize": 14,
@@ -1442,9 +1442,9 @@
                     {
                       "type": "text",
                       "id": "wgSK2",
-                      "name": "•",
+                      "name": "\u2022",
                       "fill": "$--foreground",
-                      "content": "•",
+                      "content": "\u2022",
                       "lineHeight": 1.4285714285714286,
                       "fontFamily": "Inter",
                       "fontSize": 14,
@@ -3091,10 +3091,10 @@
                 {
                   "type": "text",
                   "id": "A1EhN",
-                  "name": "⇧⌘A",
+                  "name": "\u21e7\u2318A",
                   "opacity": 0.6000000238418579,
                   "fill": "$--foreground",
-                  "content": "⇧⌘A",
+                  "content": "\u21e7\u2318A",
                   "lineHeight": 1.3333333333333333,
                   "textAlign": "right",
                   "fontFamily": "Inter",
@@ -3864,7 +3864,7 @@
                   "type": "ref",
                   "ref": "C3KOZ",
                   "x": 24,
-                  "y": 24.019943701668048,
+                  "y": 24.01994370166805,
                   "width": "fill_container",
                   "height": "fit_content",
                   "descendants": {
@@ -3942,7 +3942,7 @@
             "L6Ngo": {
               "width": "fill_container",
               "height": "fit_content",
-              "y": 24.019943701668048
+              "y": 24.01994370166805
             },
             "L6Ngo/RO4Ll": {
               "x": 39,
@@ -4022,7 +4022,7 @@
             "L6Ngo": {
               "width": "fill_container",
               "height": "fit_content",
-              "y": 24.019943701668048
+              "y": 24.01994370166805
             },
             "L6Ngo/RO4Ll": {
               "x": 39,
@@ -4951,7 +4951,7 @@
                           "id": "sdtInputVal1",
                           "name": "Input Value",
                           "fill": "$--muted-foreground",
-                          "content": "Search…",
+                          "content": "Search\u2026",
                           "lineHeight": 1.4285714285714286,
                           "textAlignVertical": "middle",
                           "fontFamily": "Inter",
@@ -5040,86 +5040,11 @@
       ]
     },
     {
-      "type": "prompt",
-      "id": "j4hLC",
-      "x": 3053,
-      "y": -384,
-      "model": "cursor-composer",
-      "width": 400,
-      "height": 219,
-      "content": "Design a dashboard with a sidebar on the left into \"dashboard-utility\" frame for a utility company showing current usage and a history in a table."
-    },
-    {
-      "type": "frame",
-      "id": "nSNTs",
-      "x": 3053,
-      "y": -10,
-      "name": "dashboard-utility",
-      "theme": {
-        "Mode": "Light"
-      },
-      "clip": true,
-      "width": 1440,
-      "height": 900,
-      "fill": "$--background"
-    },
-    {
-      "type": "prompt",
-      "id": "b6D19",
-      "x": 3053,
-      "y": 1037,
-      "model": "cursor-composer",
-      "width": 400,
-      "height": 219,
-      "content": "Design a dashboard into \"dashboard-revenue\" frame for a revenue tracking app with a sidebar, showing revenue stats, history in the content."
-    },
-    {
-      "type": "frame",
-      "id": "TZ4am",
-      "x": 3053,
-      "y": 1422,
-      "name": "dashboard-revenue",
-      "theme": {
-        "Mode": "Light"
-      },
-      "clip": true,
-      "width": 1440,
-      "height": "fit_content(717)",
-      "fill": "$--background"
-    },
-    {
-      "type": "prompt",
-      "id": "QGYHK",
-      "x": 3053,
-      "y": 2320.9999999999995,
-      "model": "cursor-composer",
-      "width": 400,
-      "height": 219,
-      "content": "Design a dashboard into \"dashboard-football\" frame with a table ranking UEFA teams. Show goal counts, captain name, etc. Put stats on the top."
-    },
-    {
-      "type": "frame",
-      "id": "6LMCW",
-      "x": 3053,
-      "y": 2652.9999999999995,
-      "name": "dashboard-football",
-      "theme": {
-        "Mode": "Light"
-      },
-      "clip": true,
-      "width": 1440,
-      "height": 933,
-      "fill": "$--background",
-      "layout": "vertical",
-      "gap": 24,
-      "padding": 32
-    },
-    {
       "type": "frame",
       "id": "qp8Yy",
       "x": 0,
       "y": 3786,
-      "name": "Buildd — Home",
+      "name": "Buildd \u2014 Home",
       "width": 1440,
       "height": 900,
       "fill": "#F5F0E8",
@@ -5262,7 +5187,7 @@
                   "id": "8Quku",
                   "name": "tick1",
                   "fill": "#1A1A1A",
-                  "content": "Shipping v2 auth module · 2 agents · 67%",
+                  "content": "Shipping v2 auth module \u00b7 2 agents \u00b7 67%",
                   "fontFamily": "Inter",
                   "fontSize": 13,
                   "fontWeight": "500"
@@ -5272,7 +5197,7 @@
                   "id": "CfjAj",
                   "name": "tickSep",
                   "fill": "#999",
-                  "content": "·",
+                  "content": "\u00b7",
                   "fontFamily": "Inter",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -5290,7 +5215,7 @@
                   "id": "4mI9m",
                   "name": "tick2",
                   "fill": "#1A1A1A",
-                  "content": "3 new signals from inbox · 1 flagged · 12m ago",
+                  "content": "3 new signals from inbox \u00b7 1 flagged \u00b7 12m ago",
                   "fontFamily": "Inter",
                   "fontSize": 13,
                   "fontWeight": "500"
@@ -5458,7 +5383,7 @@
                                   "id": "4Fnu5",
                                   "name": "card1foot",
                                   "fill": "#888",
-                                  "content": "67%  6 of 9 done · 2 agents active",
+                                  "content": "67%  6 of 9 done \u00b7 2 agents active",
                                   "fontFamily": "Inter",
                                   "fontSize": 11,
                                   "fontWeight": "normal"
@@ -5587,7 +5512,7 @@
                                   "id": "FK6SL",
                                   "name": "card2scan",
                                   "fill": "#888",
-                                  "content": "1 agent active · next scan 48m",
+                                  "content": "1 agent active \u00b7 next scan 48m",
                                   "fontFamily": "Inter",
                                   "fontSize": 11,
                                   "fontWeight": "normal"
@@ -5702,7 +5627,7 @@
                                   "id": "9imbF",
                                   "name": "card3foot",
                                   "fill": "#888",
-                                  "content": "34%  in progress · 1 agent active",
+                                  "content": "34%  in progress \u00b7 1 agent active",
                                   "fontFamily": "Inter",
                                   "fontSize": 11,
                                   "fontWeight": "normal"
@@ -5856,6 +5781,289 @@
                   ],
                   "children": [
                     {
+                      "type": "frame",
+                      "id": "teamSec",
+                      "name": "team-section",
+                      "layout": "vertical",
+                      "gap": 12,
+                      "width": "fill_container",
+                      "padding": [
+                        0,
+                        0,
+                        20,
+                        0
+                      ],
+                      "stroke": {
+                        "fill": "#E0DDD6",
+                        "thickness": {
+                          "bottom": 1
+                        }
+                      },
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "teamHdr",
+                          "name": "team-header",
+                          "width": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "teamLbl",
+                              "content": "TEAM",
+                              "fill": "#999",
+                              "fontFamily": "Space Grotesk",
+                              "fontSize": 11,
+                              "fontWeight": "600",
+                              "letterSpacing": 2
+                            },
+                            {
+                              "type": "frame",
+                              "id": "teamSpc",
+                              "width": "fill_container",
+                              "height": 1
+                            },
+                            {
+                              "type": "text",
+                              "id": "teamCnt",
+                              "content": "2 active \u00b7 5 total",
+                              "fill": "#B0A99E",
+                              "fontFamily": "Inter",
+                              "fontSize": 12
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "teamChips",
+                          "name": "team-chips",
+                          "width": "fill_container",
+                          "gap": 6,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "rc1",
+                              "name": "role-builder",
+                              "cornerRadius": 20,
+                              "fill": "#FFFFFF",
+                              "gap": 8,
+                              "padding": [
+                                6,
+                                12,
+                                6,
+                                6
+                              ],
+                              "alignItems": "center",
+                              "stroke": {
+                                "align": "inside",
+                                "fill": "#EDE8DF",
+                                "thickness": 1
+                              },
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "rc1d",
+                                  "width": 20,
+                                  "height": 20,
+                                  "cornerRadius": 10,
+                                  "fill": "#C45A3B",
+                                  "layout": "vertical",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "rc1i",
+                                      "content": "B",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 9,
+                                      "fontWeight": "700",
+                                      "fill": "#FFFFFF"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "rc1n",
+                                  "content": "Builder",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12,
+                                  "fontWeight": "500",
+                                  "fill": "#2C2A25"
+                                },
+                                {
+                                  "type": "ellipse",
+                                  "id": "rc1a",
+                                  "width": 6,
+                                  "height": 6,
+                                  "fill": "#6B8E5E"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "rc2",
+                              "name": "role-researcher",
+                              "cornerRadius": 20,
+                              "fill": "#FFFFFF",
+                              "gap": 8,
+                              "padding": [
+                                6,
+                                12,
+                                6,
+                                6
+                              ],
+                              "alignItems": "center",
+                              "stroke": {
+                                "align": "inside",
+                                "fill": "#EDE8DF",
+                                "thickness": 1
+                              },
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "rc2d",
+                                  "width": 20,
+                                  "height": 20,
+                                  "cornerRadius": 10,
+                                  "fill": "#D97706",
+                                  "layout": "vertical",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "rc2i",
+                                      "content": "R",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 9,
+                                      "fontWeight": "700",
+                                      "fill": "#FFFFFF"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "rc2n",
+                                  "content": "Researcher",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12,
+                                  "fontWeight": "500",
+                                  "fill": "#2C2A25"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "rc3",
+                              "name": "role-accountant",
+                              "cornerRadius": 20,
+                              "fill": "#FFFFFF",
+                              "gap": 8,
+                              "padding": [
+                                6,
+                                12,
+                                6,
+                                6
+                              ],
+                              "alignItems": "center",
+                              "stroke": {
+                                "align": "inside",
+                                "fill": "#EDE8DF",
+                                "thickness": 1
+                              },
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "rc3d",
+                                  "width": 20,
+                                  "height": 20,
+                                  "cornerRadius": 10,
+                                  "fill": "#5B7BB3",
+                                  "layout": "vertical",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "rc3i",
+                                      "content": "A",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 9,
+                                      "fontWeight": "700",
+                                      "fill": "#FFFFFF"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "rc3n",
+                                  "content": "Accountant",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12,
+                                  "fontWeight": "500",
+                                  "fill": "#2C2A25"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "rc4",
+                              "name": "role-marketer",
+                              "cornerRadius": 20,
+                              "fill": "#FFFFFF",
+                              "gap": 8,
+                              "padding": [
+                                6,
+                                12,
+                                6,
+                                6
+                              ],
+                              "alignItems": "center",
+                              "stroke": {
+                                "align": "inside",
+                                "fill": "#EDE8DF",
+                                "thickness": 1
+                              },
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "rc4d",
+                                  "width": 20,
+                                  "height": 20,
+                                  "cornerRadius": 10,
+                                  "fill": "#9B59B6",
+                                  "layout": "vertical",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "rc4i",
+                                      "content": "M",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 9,
+                                      "fontWeight": "700",
+                                      "fill": "#FFFFFF"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "rc4n",
+                                  "content": "Marketer",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 12,
+                                  "fontWeight": "500",
+                                  "fill": "#2C2A25"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
                       "type": "text",
                       "id": "CLBjb",
                       "name": "actLabel",
@@ -5897,7 +6105,7 @@
                               "fill": "#1A1A1A",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "Auth module tests passing — PR ready",
+                              "content": "Auth module tests passing \u2014 PR ready",
                               "fontFamily": "Inter",
                               "fontSize": 13,
                               "fontWeight": "500"
@@ -5907,7 +6115,7 @@
                               "id": "ZC1Px",
                               "name": "act1meta",
                               "fill": "#999",
-                              "content": "via GitHub · 2m ago",
+                              "content": "via GitHub \u00b7 2m ago",
                               "fontFamily": "Inter",
                               "fontSize": 11,
                               "fontWeight": "normal"
@@ -5957,7 +6165,7 @@
                               "id": "rjT0X",
                               "name": "act2meta",
                               "fill": "#999",
-                              "content": "via iCloud Mail → Dispatch · 12m ago",
+                              "content": "via iCloud Mail \u2192 Dispatch \u00b7 12m ago",
                               "fontFamily": "Inter",
                               "fontSize": 11,
                               "fontWeight": "normal"
@@ -6007,7 +6215,7 @@
                               "id": "VyYFC",
                               "name": "act3meta",
                               "fill": "#999",
-                              "content": "via OWASP scan · 45m ago",
+                              "content": "via OWASP scan \u00b7 45m ago",
                               "fontFamily": "Inter",
                               "fontSize": 11,
                               "fontWeight": "normal"
@@ -6057,7 +6265,7 @@
                               "id": "esZYF",
                               "name": "act4meta",
                               "fill": "#999",
-                              "content": "via GitHub · 1h ago",
+                              "content": "via GitHub \u00b7 1h ago",
                               "fontFamily": "Inter",
                               "fontSize": 11,
                               "fontWeight": "normal"
@@ -6079,7 +6287,7 @@
       "id": "eCQID",
       "x": 1640,
       "y": 3786,
-      "name": "Buildd — Mission Detail",
+      "name": "Buildd \u2014 Mission Detail",
       "width": 1440,
       "height": 900,
       "fill": "#F5F0E8",
@@ -6454,7 +6662,7 @@
                           "id": "aESB7",
                           "name": "w1commits",
                           "fill": "#999",
-                          "content": "4 commits · 12 files",
+                          "content": "4 commits \u00b7 12 files",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -6590,7 +6798,7 @@
                           "id": "LN29R",
                           "name": "w2commits",
                           "fill": "#999",
-                          "content": "2 commits · 5 files",
+                          "content": "2 commits \u00b7 5 files",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -6820,7 +7028,7 @@
       "id": "Jeaa8",
       "x": 3280,
       "y": 3786,
-      "name": "Buildd — Tasks",
+      "name": "Buildd \u2014 Tasks",
       "width": 1440,
       "height": 900,
       "fill": "#F5F0E8",
@@ -6868,7 +7076,7 @@
                       "id": "wuRqW",
                       "name": "homeIcon",
                       "fill": "#8A8478",
-                      "content": "⌂",
+                      "content": "\u2302",
                       "fontFamily": "Inter",
                       "fontSize": 14,
                       "fontWeight": "normal"
@@ -6899,7 +7107,7 @@
                       "id": "yp9uo",
                       "name": "missIcon",
                       "fill": "#8A8478",
-                      "content": "◎",
+                      "content": "\u25ce",
                       "fontFamily": "Inter",
                       "fontSize": 14,
                       "fontWeight": "normal"
@@ -6931,7 +7139,7 @@
                       "id": "hEwgn",
                       "name": "taskIcon",
                       "fill": "#2C2A25",
-                      "content": "☰",
+                      "content": "\u2630",
                       "fontFamily": "Inter",
                       "fontSize": 14,
                       "fontWeight": "normal"
@@ -7142,7 +7350,7 @@
                       "id": "pIdd2",
                       "name": "searchIcon",
                       "fill": "#8A8478",
-                      "content": "⌕",
+                      "content": "\u2315",
                       "fontFamily": "Inter",
                       "fontSize": 14,
                       "fontWeight": "normal"
@@ -7191,7 +7399,7 @@
                       "id": "hAufy",
                       "name": "groupArrow",
                       "fill": "#8A8478",
-                      "content": "▾",
+                      "content": "\u25be",
                       "fontFamily": "Inter",
                       "fontSize": 12,
                       "fontWeight": "normal"
@@ -7361,7 +7569,7 @@
                           "id": "4BNOS",
                           "name": "g1arrow",
                           "fill": "#8A8478",
-                          "content": "▾",
+                          "content": "\u25be",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -7691,7 +7899,7 @@
                           "id": "xSmuE",
                           "name": "g2arrow",
                           "fill": "#8A8478",
-                          "content": "▾",
+                          "content": "\u25be",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -7908,7 +8116,7 @@
                           "id": "ZX8Cu",
                           "name": "g3arrow",
                           "fill": "#8A8478",
-                          "content": "▾",
+                          "content": "\u25be",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -8112,7 +8320,7 @@
       "id": "o9zck",
       "x": 0,
       "y": 4786,
-      "name": "Buildd — Team",
+      "name": "Buildd \u2014 Team",
       "width": 1440,
       "height": 900,
       "fill": "#F5F0E8",
@@ -8317,7 +8525,7 @@
                           "id": "zd0v8",
                           "name": "liveText",
                           "fill": "#6B8E5E",
-                          "content": "3 active · 2 idle",
+                          "content": "3 active \u00b7 2 idle",
                           "fontFamily": "Inter",
                           "fontSize": 12,
                           "fontWeight": "500"
@@ -8442,7 +8650,7 @@
                               "id": "d7iPA",
                               "name": "c1desc",
                               "fill": "#8A8478",
-                              "content": "Ships code — PRs, bug fixes, features",
+                              "content": "Ships code \u2014 PRs, bug fixes, features",
                               "fontFamily": "Inter",
                               "fontSize": 13,
                               "fontWeight": "normal"
@@ -8510,7 +8718,7 @@
                           "id": "nlH30",
                           "name": "bl3",
                           "fill": "#8A8478",
-                          "content": "web-app · 12m · PR #449",
+                          "content": "web-app \u00b7 12m \u00b7 PR #449",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -8591,7 +8799,7 @@
                               "id": "qWMMW",
                               "name": "c2desc",
                               "fill": "#8A8478",
-                              "content": "Deep dives — competitor intel, docs, analysis",
+                              "content": "Deep dives \u2014 competitor intel, docs, analysis",
                               "fontFamily": "Inter",
                               "fontSize": 13,
                               "fontWeight": "normal"
@@ -8670,7 +8878,7 @@
                           "id": "p1ZFm",
                           "name": "meta",
                           "fill": "#8A8478",
-                          "content": "research · 5m ago",
+                          "content": "research \u00b7 5m ago",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -8819,7 +9027,7 @@
                           "id": "hHL6u",
                           "name": "al3",
                           "fill": "#8A8478",
-                          "content": "finance · 2m",
+                          "content": "finance \u00b7 2m",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -9085,7 +9293,7 @@
       "id": "HRxZu",
       "x": 1640,
       "y": 4786,
-      "name": "Buildd — Role Editor",
+      "name": "Buildd \u2014 Role Editor",
       "width": 1440,
       "height": 700,
       "fill": "#F5F0E8",
@@ -9334,7 +9542,7 @@
                       "id": "Xzhhu",
                       "name": "roleSlug",
                       "fill": "#8A8478",
-                      "content": "builder · Created 2 weeks ago · 47 tasks completed",
+                      "content": "builder \u00b7 Created 2 weeks ago \u00b7 47 tasks completed",
                       "fontFamily": "Inter",
                       "fontSize": 13,
                       "fontWeight": "normal"
@@ -9480,7 +9688,7 @@
                               "id": "SS3Y1",
                               "name": "descValue",
                               "fill": "#2C2A25",
-                              "content": "Ship high-quality code — PRs, bug fixes, new features, refactoring",
+                              "content": "Ship high-quality code \u2014 PRs, bug fixes, new features, refactoring",
                               "fontFamily": "Inter",
                               "fontSize": 14,
                               "fontWeight": "normal"
@@ -9608,7 +9816,7 @@
                               "id": "8jeVB",
                               "name": "modelArrow",
                               "fill": "#8A8478",
-                              "content": "▾",
+                              "content": "\u25be",
                               "fontFamily": "Inter",
                               "fontSize": 12,
                               "fontWeight": "normal"
