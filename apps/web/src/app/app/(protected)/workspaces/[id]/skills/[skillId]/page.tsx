@@ -1,9 +1,9 @@
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, getUserWorkspaceIds } from '@/lib/team-access';
 import { RoleEditor } from './RoleEditor';
 
 export const dynamic = 'force-dynamic';
@@ -48,12 +48,22 @@ export default async function SkillDetailPage({
     .filter(s => s.slug !== skill.slug)
     .map(s => ({ slug: s.slug, name: s.name }));
 
+  // Fetch all user workspaces for the workspace picker
+  const allWorkspaceIds = await getUserWorkspaceIds(user.id);
+  const allWorkspaces = allWorkspaceIds.length > 0
+    ? await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, allWorkspaceIds),
+        columns: { id: true, name: true },
+      })
+    : [];
+
   return (
     <RoleEditor
       workspaceId={id}
       workspaceName={workspace.name}
       skill={JSON.parse(JSON.stringify(skill))}
       delegateOptions={delegateOptions}
+      workspaces={allWorkspaces}
     />
   );
 }

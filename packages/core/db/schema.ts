@@ -612,7 +612,7 @@ export const workspaceSkills = pgTable('workspace_skills', {
   background: boolean('background').notNull().default(false),
   maxTurns: integer('max_turns'), // null = unlimited
   color: text('color').notNull().default('#8A8478'), // avatar color hex
-  mcpServers: jsonb('mcp_servers').notNull().default([]).$type<string[]>(), // MCP server names this role requires
+  mcpServers: jsonb('mcp_servers').notNull().default({}).$type<Record<string, unknown> | string[]>(), // MCP server configs or legacy name array
   requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
   // Role-specific fields
   isRole: boolean('is_role').notNull().default(false), // distinguishes roles (Team page) from skills
