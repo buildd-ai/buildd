@@ -1,13 +1,13 @@
-ALTER TABLE "objectives" ADD COLUMN "default_role_slug" text;--> statement-breakpoint
-ALTER TABLE "tasks" ADD COLUMN "role_slug" text;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "model" text DEFAULT 'inherit' NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "allowed_tools" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "can_delegate_to" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "background" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "max_turns" integer;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "color" text DEFAULT '#8A8478' NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "mcp_servers" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "workspace_skills" ADD COLUMN "required_env_vars" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "objectives" ADD COLUMN IF NOT EXISTS "default_role_slug" text;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "role_slug" text;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "model" text DEFAULT 'inherit' NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "allowed_tools" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "can_delegate_to" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "background" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "max_turns" integer;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "color" text DEFAULT '#8A8478' NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "mcp_servers" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "required_env_vars" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
 -- Data migration: assign distinct colors to existing skills
 UPDATE "workspace_skills" SET "color" = sub.new_color
 FROM (
