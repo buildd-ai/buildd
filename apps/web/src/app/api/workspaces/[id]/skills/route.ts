@@ -9,6 +9,21 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 
+/** Convert mcpServers (legacy string[] or new Record) into .mcp.json mcpServers format */
+function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
+    if (Array.isArray(raw)) {
+        const servers: Record<string, object> = {};
+        for (const name of raw) {
+            if (typeof name === 'string') servers[name] = {};
+        }
+        return { mcpServers: servers };
+    }
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        return { mcpServers: raw };
+    }
+    return {};
+}
+
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -170,7 +185,7 @@ export async function POST(
                 const bundle = await packageRoleConfig(id, {
                     slug: updated.slug,
                     claudeMd: updated.content,
-                    mcpConfig: {},
+                    mcpConfig: normalizeMcpToConfig(updated.mcpServers),
                     envMapping: (updated.requiredEnvVars as Record<string, string>) || {},
                     skillSlugs: body.skillSlugs || [],
                     type: updated.repoUrl ? 'builder' : 'service',
@@ -216,7 +231,7 @@ export async function POST(
             const bundle = await packageRoleConfig(id, {
                 slug: skill.slug,
                 claudeMd: skill.content,
-                mcpConfig: {},
+                mcpConfig: normalizeMcpToConfig(skill.mcpServers),
                 envMapping: (skill.requiredEnvVars as Record<string, string>) || {},
                 skillSlugs: body.skillSlugs || [],
                 type: skill.repoUrl ? 'builder' : 'service',

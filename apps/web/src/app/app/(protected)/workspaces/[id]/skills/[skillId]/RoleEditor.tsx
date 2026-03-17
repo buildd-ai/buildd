@@ -21,6 +21,14 @@ const COLOR_PALETTE = [
   '#9B59B6', '#2C8C99', '#C4783B', '#8A8478',
 ];
 
+interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  type?: 'stdio' | 'http';
+  url?: string;
+}
+
 interface Skill {
   id: string;
   slug: string;
@@ -33,11 +41,16 @@ interface Skill {
   background: boolean;
   maxTurns: number | null;
   color: string;
-  mcpServers: string[];
+  mcpServers: Record<string, McpServerConfig> | string[];
   requiredEnvVars: Record<string, string>;
   isRole: boolean;
   repoUrl: string | null;
   createdAt: string;
+}
+
+interface WorkspaceOption {
+  id: string;
+  name: string;
 }
 
 interface Props {
@@ -45,9 +58,181 @@ interface Props {
   workspaceName: string;
   skill: Skill;
   delegateOptions: { slug: string; name: string }[];
+  workspaces: WorkspaceOption[];
 }
 
-export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions }: Props) {
+/** Normalize legacy string[] to Record<string, McpServerConfig> */
+function normalizeMcpServers(raw: Record<string, McpServerConfig> | string[] | null): Record<string, McpServerConfig> {
+  if (!raw) return {};
+  if (Array.isArray(raw)) {
+    const result: Record<string, McpServerConfig> = {};
+    for (const name of raw) {
+      if (typeof name === 'string') result[name] = {};
+    }
+    return result;
+  }
+  return raw as Record<string, McpServerConfig>;
+}
+
+function McpServerEditor({
+  name,
+  config,
+  onUpdate,
+  onRemove,
+}: {
+  name: string;
+  config: McpServerConfig;
+  onUpdate: (config: McpServerConfig) => void;
+  onRemove: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isHttp = config.type === 'http' || !!config.url;
+  const hasConfig = config.command || config.url || (config.args && config.args.length > 0) || (config.env && Object.keys(config.env).length > 0);
+
+  return (
+    <div className="border border-border-default rounded-md overflow-hidden">
+      <div
+        className="flex items-center gap-2 px-3 py-2 bg-surface-2 cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-text-muted flex-shrink-0">
+          <path d="M12 2v6m0 8v6M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m8 0h6M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24" />
+        </svg>
+        <span className="text-[13px] font-medium text-text-primary flex-1">{name}</span>
+        {hasConfig && (
+          <span className="text-[11px] text-text-muted">{isHttp ? 'HTTP' : 'stdio'}</span>
+        )}
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          className={`text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </div>
+
+      {expanded && (
+        <div className="px-3 py-3 space-y-3 bg-surface-1">
+          {/* Transport type */}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => onUpdate({ ...config, type: 'stdio', url: undefined })}
+              className={`px-2.5 py-1 rounded text-[12px] font-medium border transition-colors ${
+                !isHttp ? 'bg-text-primary text-white border-text-primary' : 'bg-surface-2 border-border-default text-text-muted'
+              }`}
+            >
+              stdio
+            </button>
+            <button
+              type="button"
+              onClick={() => onUpdate({ ...config, type: 'http', command: undefined, args: undefined })}
+              className={`px-2.5 py-1 rounded text-[12px] font-medium border transition-colors ${
+                isHttp ? 'bg-text-primary text-white border-text-primary' : 'bg-surface-2 border-border-default text-text-muted'
+              }`}
+            >
+              HTTP
+            </button>
+          </div>
+
+          {isHttp ? (
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">URL</label>
+              <input
+                type="text"
+                value={config.url || ''}
+                onChange={(e) => onUpdate({ ...config, url: e.target.value || undefined })}
+                className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
+                placeholder="http://localhost:3100/mcp"
+              />
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-[12px] text-text-muted mb-1">Command</label>
+                <input
+                  type="text"
+                  value={config.command || ''}
+                  onChange={(e) => onUpdate({ ...config, command: e.target.value || undefined })}
+                  className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
+                  placeholder="npx, uvx, docker..."
+                />
+              </div>
+              <div>
+                <label className="block text-[12px] text-text-muted mb-1">Args</label>
+                <input
+                  type="text"
+                  value={(config.args || []).join(' ')}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    onUpdate({ ...config, args: val ? val.split(/\s+/) : undefined });
+                  }}
+                  className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
+                  placeholder="-y @modelcontextprotocol/server-github"
+                />
+                <p className="text-[11px] text-text-muted mt-0.5">Space-separated arguments</p>
+              </div>
+            </>
+          )}
+
+          {/* Env vars per server */}
+          <div>
+            <label className="block text-[12px] text-text-muted mb-1">Environment</label>
+            <div className="space-y-1">
+              {Object.entries(config.env || {}).map(([key, value]) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <code className="px-1.5 py-0.5 bg-surface-3 rounded text-[11px] font-mono text-text-primary">{key}</code>
+                  <span className="text-[11px] text-text-muted">=</span>
+                  <span className="text-[11px] text-text-muted flex-1 truncate">{value}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = { ...config.env };
+                      delete next[key];
+                      onUpdate({ ...config, env: Object.keys(next).length > 0 ? next : undefined });
+                    }}
+                    className="text-text-muted hover:text-status-error text-[11px]"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+            <form
+              className="flex items-center gap-1.5 mt-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.target as HTMLFormElement;
+                const keyInput = form.elements.namedItem('envKey') as HTMLInputElement;
+                const valInput = form.elements.namedItem('envVal') as HTMLInputElement;
+                const k = keyInput.value.trim();
+                const v = valInput.value.trim();
+                if (k && v) {
+                  onUpdate({ ...config, env: { ...(config.env || {}), [k]: v } });
+                  keyInput.value = '';
+                  valInput.value = '';
+                }
+              }}
+            >
+              <input name="envKey" type="text" placeholder="KEY" className="w-24 px-1.5 py-1 border border-border-default rounded text-[11px] font-mono bg-surface-1 text-text-primary" />
+              <input name="envVal" type="text" placeholder="value" className="flex-1 px-1.5 py-1 border border-border-default rounded text-[11px] bg-surface-1 text-text-primary" />
+              <button type="submit" className="px-2 py-1 rounded text-[11px] border border-border-default text-text-muted hover:text-text-secondary">+</button>
+            </form>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-[12px] text-status-error hover:underline"
+          >
+            Remove server
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions, workspaces: userWorkspaces }: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -63,8 +248,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
   const [background, setBackground] = useState(skill.background);
   const [maxTurns, setMaxTurns] = useState<string>(skill.maxTurns?.toString() || '');
   const [color, setColor] = useState(skill.color);
-  const [mcpServers, setMcpServers] = useState<string[]>(skill.mcpServers || []);
-  const [newMcpServer, setNewMcpServer] = useState('');
+  const [mcpServers, setMcpServers] = useState<Record<string, McpServerConfig>>(
+    normalizeMcpServers(skill.mcpServers)
+  );
+  const [newServerName, setNewServerName] = useState('');
   const [envVars, setEnvVars] = useState<Record<string, string>>(skill.requiredEnvVars || {});
   const [isRole, setIsRole] = useState(skill.isRole);
   const [repoUrl, setRepoUrl] = useState(skill.repoUrl || '');
@@ -82,6 +269,25 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
       prev.includes(slug) ? prev.filter(s => s !== slug) : [...prev, slug]
     );
   };
+
+  function updateServer(name: string, config: McpServerConfig) {
+    setMcpServers(prev => ({ ...prev, [name]: config }));
+  }
+
+  function removeServer(name: string) {
+    setMcpServers(prev => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+  }
+
+  function addServer(serverName: string) {
+    const trimmed = serverName.trim();
+    if (trimmed && !mcpServers[trimmed]) {
+      setMcpServers(prev => ({ ...prev, [trimmed]: {} }));
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -295,45 +501,42 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
             {/* Connectors (MCP Servers) */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-1">Connectors</label>
-              <p className="text-xs text-text-muted mb-2">MCP servers this role can use</p>
-              <div className="flex flex-wrap gap-2">
-                {mcpServers.map(server => (
-                  <span
-                    key={server}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-text-primary text-white"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0">
-                      <path d="M12 2v6m0 8v6M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m8 0h6M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24" />
-                    </svg>
-                    {server}
-                    <button
-                      type="button"
-                      onClick={() => setMcpServers(prev => prev.filter(s => s !== server))}
-                      className="ml-0.5 hover:opacity-70"
-                    >
-                      &times;
-                    </button>
-                  </span>
-                ))}
-                <form
-                  className="inline-flex"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (newMcpServer.trim() && !mcpServers.includes(newMcpServer.trim())) {
-                      setMcpServers(prev => [...prev, newMcpServer.trim()]);
-                      setNewMcpServer('');
-                    }
-                  }}
-                >
-                  <input
-                    type="text"
-                    value={newMcpServer}
-                    onChange={(e) => setNewMcpServer(e.target.value)}
-                    placeholder="+ Add"
-                    className="w-20 px-2.5 py-1 rounded-full text-[12px] border border-border-default bg-transparent text-text-muted placeholder:text-text-muted focus:w-32 transition-all"
+              <p className="text-xs text-text-muted mb-2">MCP servers available to this role at runtime</p>
+              <div className="space-y-2">
+                {Object.entries(mcpServers).map(([serverName, config]) => (
+                  <McpServerEditor
+                    key={serverName}
+                    name={serverName}
+                    config={config}
+                    onUpdate={(c) => updateServer(serverName, c)}
+                    onRemove={() => removeServer(serverName)}
                   />
-                </form>
+                ))}
               </div>
+              <form
+                className="flex items-center gap-2 mt-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newServerName.trim()) {
+                    addServer(newServerName);
+                    setNewServerName('');
+                  }
+                }}
+              >
+                <input
+                  type="text"
+                  value={newServerName}
+                  onChange={(e) => setNewServerName(e.target.value)}
+                  placeholder="Server name"
+                  className="flex-1 px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 rounded-md text-[12px] border border-border-default text-text-muted hover:text-text-secondary"
+                >
+                  + Add
+                </button>
+              </form>
             </div>
 
             {/* Environment (Required Env Vars) */}
@@ -411,15 +614,19 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
                 </label>
 
                 {isRole && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] text-text-primary">Repo URL</span>
-                    <input
-                      type="text"
-                      value={repoUrl}
+                  <div>
+                    <span className="text-[13px] text-text-primary block mb-1">Workspace</span>
+                    <select
+                      value={repoUrl || ''}
                       onChange={(e) => setRepoUrl(e.target.value)}
-                      className="flex-1 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
-                      placeholder="github.com/org/repo (optional)"
-                    />
+                      className="w-full px-2 py-1.5 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
+                    >
+                      <option value="">No linked workspace</option>
+                      {userWorkspaces.map(ws => (
+                        <option key={ws.id} value={ws.id}>{ws.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-text-muted mt-1">Link to a workspace for builder roles</p>
                   </div>
                 )}
 

@@ -9,6 +9,22 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 
+/** Convert mcpServers (legacy string[] or new Record) into .mcp.json mcpServers format */
+function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
+    if (Array.isArray(raw)) {
+        // Legacy: ["github", "slack"] → { mcpServers: { github: {}, slack: {} } }
+        const servers: Record<string, object> = {};
+        for (const name of raw) {
+            if (typeof name === 'string') servers[name] = {};
+        }
+        return { mcpServers: servers };
+    }
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        return { mcpServers: raw };
+    }
+    return {};
+}
+
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -142,7 +158,7 @@ export async function PATCH(
             const bundle = await packageRoleConfig(id, {
                 slug: updatedSkill.slug,
                 claudeMd: updatedSkill.content,
-                mcpConfig: {},
+                mcpConfig: normalizeMcpToConfig(updatedSkill.mcpServers),
                 envMapping: (updatedSkill.requiredEnvVars as Record<string, string>) || {},
                 skillSlugs: body.skillSlugs || [],
                 type: updatedSkill.repoUrl ? 'builder' : 'service',

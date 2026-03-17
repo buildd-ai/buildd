@@ -503,6 +503,14 @@ export interface SkillBundle {
   requiredEnvVars: Record<string, string>;
 }
 
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  type?: 'stdio' | 'http';
+  url?: string;
+}
+
 export interface RoleConfig {
   slug: string;
   configHash: string;
