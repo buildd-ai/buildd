@@ -50,7 +50,7 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
 
   return (
     <Link
-      href={`/app/workspaces/${role.workspaceId}/skills?edit=${role.id}`}
+      href={`/app/workspaces/${role.workspaceId}/skills?edit=${role.id}&from=team`}
       className="block rounded-[10px] bg-[var(--card)] p-5 transition-all hover:shadow-md"
       style={{ border: `2px solid ${borderColor}` }}
     >
@@ -86,7 +86,7 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
 function IdleRoleChip({ role }: { role: RoleWithActivity }) {
   return (
     <Link
-      href={`/app/workspaces/${role.workspaceId}/skills?edit=${role.id}`}
+      href={`/app/workspaces/${role.workspaceId}/skills?edit=${role.id}&from=team`}
       className="flex items-center gap-2.5 rounded-lg bg-[var(--card)] border border-border-default px-4 py-3 hover:bg-surface-3 transition-colors"
     >
       <RoleAvatar name={role.name} color={role.color} size={28} />

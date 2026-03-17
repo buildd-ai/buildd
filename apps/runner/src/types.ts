@@ -1,3 +1,5 @@
+import type { RoleConfig } from './roles.js';
+
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -161,6 +163,8 @@ export interface LocalWorker {
   serverOauthToken?: string;
   // Server-managed MCP credential secrets (label/env var name → decrypted value)
   mcpSecrets?: Record<string, string>;
+  // Role config from claim route (for role env resolution)
+  roleConfig?: RoleConfig;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)

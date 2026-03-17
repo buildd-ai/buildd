@@ -453,7 +453,9 @@ export async function POST(req: NextRequest) {
         ),
       });
 
+      const foundSlugs = new Set<string>();
       for (const ws of wsSkills) {
+        foundSlugs.add(ws.slug);
         const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
         bundles.push({
           slug: ws.slug,
@@ -470,10 +472,89 @@ export async function POST(req: NextRequest) {
           requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
         });
       }
+
+      // Fallback: account-level skills for slugs not found at workspace level
+      const missingSlugs = slugs.filter(s => !foundSlugs.has(s));
+      if (missingSlugs.length > 0) {
+        const acctSkills = await db.query.workspaceSkills.findMany({
+          where: and(
+            eq(workspaceSkills.accountId, account.id),
+            inArray(workspaceSkills.slug, missingSlugs),
+            eq(workspaceSkills.enabled, true),
+          ),
+        });
+        for (const ws of acctSkills) {
+          const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
+          bundles.push({
+            slug: ws.slug,
+            name: ws.name,
+            description: ws.description || undefined,
+            content: ws.content,
+            ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
+            model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+            allowedTools: (ws.allowedTools as string[]) || [],
+            canDelegateTo: (ws.canDelegateTo as string[]) || [],
+            background: ws.background ?? false,
+            maxTurns: ws.maxTurns ?? null,
+            mcpServers: (ws.mcpServers as string[]) || [],
+            requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
+          });
+        }
+      }
     }
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+    }
+  }
+
+  // Enrich claimed workers with role config (for role-based task routing)
+  if (isStorageConfigured()) {
+    for (const cw of claimedWorkers) {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      const roleSlug = (task as any)?.roleSlug as string | null;
+      if (!roleSlug) continue;
+
+      const wsId = task?.workspaceId;
+      if (!wsId) continue;
+
+      // Look up the role: workspace-level first, then account-level fallback
+      let role = await db.query.workspaceSkills.findFirst({
+        where: and(
+          eq(workspaceSkills.workspaceId, wsId),
+          eq(workspaceSkills.slug, roleSlug),
+          eq(workspaceSkills.enabled, true),
+          eq(workspaceSkills.isRole, true),
+        ),
+      });
+
+      // Fallback: account-level role
+      if (!role) {
+        role = await db.query.workspaceSkills.findFirst({
+          where: and(
+            eq(workspaceSkills.accountId, account.id),
+            eq(workspaceSkills.slug, roleSlug),
+            eq(workspaceSkills.enabled, true),
+            eq(workspaceSkills.isRole, true),
+          ),
+        });
+      }
+
+      if (role?.configStorageKey && role?.configHash) {
+        const configUrl = await generateDownloadUrl(role.configStorageKey);
+        (cw as any).roleConfig = {
+          slug: role.slug,
+          configHash: role.configHash,
+          configUrl,
+          type: role.repoUrl ? 'builder' : 'service',
+          repoUrl: role.repoUrl || undefined,
+          model: role.model,
+          allowedTools: (role.allowedTools as string[]) || [],
+          canDelegateTo: (role.canDelegateTo as string[]) || [],
+          background: role.background ?? false,
+          maxTurns: role.maxTurns ?? null,
+        };
+      }
     }
   }
 

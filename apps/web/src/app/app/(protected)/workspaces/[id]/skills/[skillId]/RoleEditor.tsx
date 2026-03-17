@@ -35,6 +35,8 @@ interface Skill {
   color: string;
   mcpServers: string[];
   requiredEnvVars: Record<string, string>;
+  isRole: boolean;
+  repoUrl: string | null;
   createdAt: string;
 }
 
@@ -64,6 +66,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
   const [mcpServers, setMcpServers] = useState<string[]>(skill.mcpServers || []);
   const [newMcpServer, setNewMcpServer] = useState('');
   const [envVars, setEnvVars] = useState<Record<string, string>>(skill.requiredEnvVars || {});
+  const [isRole, setIsRole] = useState(skill.isRole);
+  const [repoUrl, setRepoUrl] = useState(skill.repoUrl || '');
   const [newEnvKey, setNewEnvKey] = useState('');
   const [newEnvValue, setNewEnvValue] = useState('');
 
@@ -98,6 +102,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
           color,
           mcpServers,
           requiredEnvVars: envVars,
+          isRole,
+          repoUrl: repoUrl || null,
         }),
       });
       if (!res.ok) {
@@ -394,6 +400,29 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions 
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Settings</label>
               <div className="space-y-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isRole}
+                    onChange={(e) => setIsRole(e.target.checked)}
+                    className="rounded border-border-default"
+                  />
+                  <span className="text-[13px] text-text-primary">Show on Team page</span>
+                </label>
+
+                {isRole && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] text-text-primary">Repo URL</span>
+                    <input
+                      type="text"
+                      value={repoUrl}
+                      onChange={(e) => setRepoUrl(e.target.value)}
+                      className="flex-1 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
+                      placeholder="github.com/org/repo (optional)"
+                    />
+                  </div>
+                )}
+
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
