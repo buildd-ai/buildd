@@ -141,6 +141,13 @@
       "when": 1773712457615,
       "tag": "0019_loving_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1773886800000,
+      "tag": "0020_data_fix_is_role",
+      "breakpoints": true
     }
   ]
 }
