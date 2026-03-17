@@ -503,6 +503,19 @@ export interface SkillBundle {
   requiredEnvVars: Record<string, string>;
 }
 
+export interface RoleConfig {
+  slug: string;
+  configHash: string;
+  configUrl: string;
+  type: 'builder' | 'service';
+  repoUrl?: string;
+  model: string;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
+}
+
 export interface SkillMetadata {
   version?: string;
   author?: string;
@@ -678,6 +691,8 @@ export interface ClaimTasksResponse {
     serverOauthToken?: string;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
+    /** Role configuration for the claimed task's assigned role */
+    roleConfig?: RoleConfig;
   }>;
   diagnostics?: ClaimDiagnostics;
 }

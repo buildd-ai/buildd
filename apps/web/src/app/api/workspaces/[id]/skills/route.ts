@@ -6,6 +6,8 @@ import { eq, and, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
+import { isStorageConfigured } from '@/lib/storage';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -103,7 +105,7 @@ export async function POST(
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
-            mcpServers, requiredEnvVars } = body;
+            mcpServers, requiredEnvVars, isRole, repoUrl, accountId } = body;
 
         if (!name || !content) {
             return NextResponse.json(
@@ -156,10 +158,29 @@ export async function POST(
                     ...(color !== undefined ? { color } : {}),
                     ...(mcpServers !== undefined ? { mcpServers } : {}),
                     ...(requiredEnvVars !== undefined ? { requiredEnvVars } : {}),
+                    ...(isRole !== undefined ? { isRole } : {}),
+                    ...(repoUrl !== undefined ? { repoUrl } : {}),
+                    ...(accountId !== undefined ? { accountId } : {}),
                     updatedAt: new Date(),
                 })
                 .where(eq(workspaceSkills.id, existing.id))
                 .returning();
+
+            if (updated.isRole && isStorageConfigured()) {
+                const bundle = await packageRoleConfig(id, {
+                    slug: updated.slug,
+                    claudeMd: updated.content,
+                    mcpConfig: {},
+                    envMapping: (updated.requiredEnvVars as Record<string, string>) || {},
+                    skillSlugs: body.skillSlugs || [],
+                    type: updated.repoUrl ? 'builder' : 'service',
+                    repoUrl: updated.repoUrl,
+                });
+                const { configHash, configStorageKey } = await uploadRoleConfig(bundle);
+                await db.update(workspaceSkills)
+                    .set({ configHash, configStorageKey })
+                    .where(eq(workspaceSkills.id, updated.id));
+            }
 
             return NextResponse.json({ skill: updated });
         }
@@ -185,8 +206,27 @@ export async function POST(
                 ...(color ? { color } : {}),
                 ...(mcpServers ? { mcpServers } : {}),
                 ...(requiredEnvVars ? { requiredEnvVars } : {}),
+                ...(isRole !== undefined ? { isRole } : {}),
+                ...(repoUrl !== undefined ? { repoUrl } : {}),
+                ...(accountId ? { accountId } : {}),
             })
             .returning();
+
+        if (skill.isRole && isStorageConfigured()) {
+            const bundle = await packageRoleConfig(id, {
+                slug: skill.slug,
+                claudeMd: skill.content,
+                mcpConfig: {},
+                envMapping: (skill.requiredEnvVars as Record<string, string>) || {},
+                skillSlugs: body.skillSlugs || [],
+                type: skill.repoUrl ? 'builder' : 'service',
+                repoUrl: skill.repoUrl,
+            });
+            const { configHash, configStorageKey } = await uploadRoleConfig(bundle);
+            await db.update(workspaceSkills)
+                .set({ configHash, configStorageKey })
+                .where(eq(workspaceSkills.id, skill.id));
+        }
 
         return NextResponse.json({ skill }, { status: 201 });
     } catch (error) {

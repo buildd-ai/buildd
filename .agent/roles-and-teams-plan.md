@@ -1,465 +1,371 @@
-# Agent Roles & Team Management — Implementation Plan
+# Agent Roles & Team Management — Architecture
 
-> Extend the skills system into agent roles with a "Team" dashboard.
-> A skill IS a role. No separate concept — just richer fields on the same table.
+> A role is a workspace. Not a DB row with extra columns — a configured environment that an agent runs in.
 
-## Context
+## The Insight
 
-The skills system is 95% built: schema, CRUD API, MCP `register_skill`, runner sync + subagent conversion, UI (list/form/settings). What's missing is the role config — model selection, tool restrictions, delegation rules — and a top-level Team page showing live agent status (Marcus AI "Office" pattern).
+The runner already knows how to:
+- Read `.claude/skills/` and make skills available via `Skill()` tool
+- Read `.mcp.json` and connect to MCP servers automatically (SDK autodiscovery)
+- Inherit env vars from the process (making connectors actually work)
+- Run in a working directory with memory, git, etc.
+- Sync skill bundles from server → local disk with hash-based caching (`syncSkillToLocal`)
+- Download files from R2 via presigned URLs (used for attachments today)
 
-Mockups: `pencil-shadcn.pen` — "Buildd — Team" and "Buildd — Role Editor" frames.
-
-**Design principle:** No backward compatibility shims. Do it right. Skills become roles — same table, richer schema, better UI.
-
----
-
-## Conceptual Model: Roles, Missions, and Tasks
-
-### Three independent concepts
-
-```
-Roles (persistent)     Missions (goals)       Tasks (work items)
-┌──────────────┐      ┌──────────────┐       ┌──────────────┐
-│ Builder      │      │ Ship v2      │──────▶│ Rename routes│
-│ Researcher   │      │ (BUILD)      │       │ roleSlug:    │
-│ Accountant   │      └──────────────┘       │  "builder"   │
-│ Compliance   │      ┌──────────────┐       └──────┬───────┘
-└──────┬───────┘      │ Monitor API  │              │
-       │              │ (WATCH)      │──────▶ claimed by
-       │              └──────────────┘       matching role
-       │              ┌──────────────┐
-       └──── picks ──▶│ Ad-hoc task  │
-            up work   │ (no mission) │
-                      └──────────────┘
-```
-
-### Relationships
-
-- **Roles = employees.** Persistent agent personas with skills, tools, and personality. They exist whether or not there's work for them.
-- **Missions = projects.** Goals that generate work. BUILD missions end. WATCH missions are ongoing responsibilities. BRIEF missions produce periodic output. "Mission" covers the full spectrum from finite to ambient.
-- **Tasks = work items.** The link between roles and missions. A mission creates tasks. Tasks get routed to roles via `roleSlug`.
-
-### Many-to-many through tasks
-
-- A role can work on tasks from **multiple missions** (Builder works on Ship v2 AND a hotfix mission)
-- A mission can have tasks handled by **multiple roles** (Ship v2 needs Builder AND QA)
-- A role can pick up **ad-hoc tasks** with no mission at all
-- Roles **don't belong to** missions — missions just express a **preference** for which role should handle their tasks (`defaultRoleSlug`)
-
-### What "ongoing" means
-
-WATCH missions already solve the "beyond a mission" concern — they're ongoing, no end date, continuously generating tasks. A Compliance role running a WATCH mission "Review policy docs weekly" is effectively a persistent responsibility. The mission framework already supports this via cron + `isHeartbeat`.
-
-### Team page shows current activity, not assignment
-
-The Team page doesn't show "Builder is assigned to Ship v2." It shows "Builder is currently working on 'Rename API routes' (from Ship v2, 12m ago)." The role's identity is its skills and config, not which mission it's on.
+A "role" is just **a workspace directory configured for a specific agent persona.** The DB row tracks metadata (name, color, status). The directory does the real work.
 
 ---
 
-## Phase 1: Schema & Types
+## Two Types of Roles
 
-**Goal:** Add role fields to `workspaceSkills`. Make them required where they should be.
+| | Builder roles | Service roles |
+|---|---|---|
+| **Has git repo** | Yes — existing cloned repo | No — just a config directory |
+| **Source code** | Yes | No |
+| **MCP servers** | github, linear, etc. | slack, stripe, quickbooks, etc. |
+| **Skills** | buildd-workflow, code-review | financial-analysis, email-templates |
+| **Working dir** | The repo itself (resolved by WorkspaceResolver) | `~/.buildd/roles/<slug>/` |
+| **Example** | Builder, QA | Finance, Comms, Researcher |
 
-### 1.1 Extend `workspaceSkills` table
+**Builder roles** overlay config onto an existing repo. The repo is already cloned (WorkspaceResolver finds it). The role adds `.mcp.json`, env vars, and skills on top.
 
-**File:** `packages/core/db/schema.ts`
+**Service roles** get their own standalone directory. No repo needed. They work through MCP connectors (Stripe, Slack, etc.) and produce output in their working dir.
 
-Add columns:
+---
 
-```typescript
-model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
-allowedTools: jsonb('allowed_tools').notNull().default([]).$type<string[]>(), // empty = all tools
-canDelegateTo: jsonb('can_delegate_to').notNull().default([]).$type<string[]>(), // slugs of other skills
-background: boolean('background').notNull().default(false),
-maxTurns: integer('max_turns'), // null = unlimited
-color: text('color').notNull().default('#8A8478'), // avatar color hex, default gray
-mcpServers: jsonb('mcp_servers').notNull().default([]).$type<string[]>(), // MCP server names this role requires
-requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
+## Role Workspace Directory Structure
+
+```
+~/.buildd/roles/
+├── builder/                    ← overlay on existing repo
+│   ├── .mcp.json              ← additional connectors (merged with repo's)
+│   ├── .env                   ← GITHUB_TOKEN, LINEAR_API_KEY
+│   └── .claude/
+│       └── skills/            ← role-specific skills
+│
+├── finance/                    ← standalone workspace
+│   ├── CLAUDE.md              ← "You are Finance, you monitor..."
+│   ├── .mcp.json              ← quickbooks, stripe connectors
+│   ├── .env                   ← STRIPE_API_KEY, QB_TOKEN
+│   ├── .claude/
+│   │   └── skills/
+│   │       └── financial-analysis/
+│   └── data/                  ← working directory for outputs
+│
+├── researcher/
+│   ├── CLAUDE.md
+│   ├── .mcp.json              ← web-search, buildd-memory
+│   └── .claude/
+│       └── skills/
+│
+└── comms/
+    ├── CLAUDE.md
+    ├── .mcp.json              ← slack, gmail, calendar
+    ├── .env                   ← SLACK_TOKEN, GMAIL_TOKEN
+    └── .claude/
+        └── skills/
 ```
 
-Add `roleSlug` to `tasks` table in the same migration (Phase 6 is not "future" — do it now):
+### The role's identity
 
-```typescript
-roleSlug: text('role_slug'), // if set, only runners with this skill can claim
+`CLAUDE.md` in the role's workspace IS the role definition. Not a DB column — a file in a directory. The runner already reads `CLAUDE.md` from cwd.
+
+For builder roles, the repo's own `CLAUDE.md` provides project context. The role's overlay adds persona-specific instructions.
+
+---
+
+## How It Works End-to-End
+
+### Config sync: Web UI → R2 → Runner
+
+The web UI runs on Vercel. Role workspaces live on the runner. **R2 bridges the gap** — same infrastructure already used for attachments.
+
+```
+CREATE / UPDATE (rare — only when user edits role config)
+┌─────────────────┐    ┌──────────────┐    ┌──────────┐
+│ Role Editor      │───▶│ API          │───▶│ R2       │
+│ (web UI)         │    │              │    │          │
+│ Saves:           │    │ 1. Update DB │    │ Stores   │
+│ - CLAUDE.md      │    │ 2. Package   │    │ config   │
+│ - .mcp.json      │    │    tarball   │    │ tarball  │
+│ - env mappings   │    │ 3. Upload    │    │          │
+│ - skills refs    │    │    to R2     │    │          │
+│ - model/tools    │    │ 4. Store     │    │          │
+│                  │    │    R2 key +  │    │          │
+│                  │    │    hash on   │    │          │
+│                  │    │    DB row    │    │          │
+└─────────────────┘    └──────────────┘    └──────────┘
+
+TASK CLAIM (every task — but lightweight, usually no download)
+┌──────────────────┐    ┌──────────────┐    ┌──────────┐
+│ Claim route      │───▶│ Runner       │───▶│ Exec     │
+│ returns:         │    │              │    │          │
+│ - roleSlug       │    │ 1. Check     │    │ cwd =    │
+│ - configHash     │    │    local     │    │ role     │
+│ - R2 presigned   │    │    .buildd-  │    │ workspace│
+│   URL (if new)   │    │    hash      │    │ dir      │
+│                  │    │ 2. If stale: │    │          │
+│                  │    │    download  │    │          │
+│                  │    │    + extract │    │          │
+│                  │    │ 3. Set cwd   │    │          │
+└──────────────────┘    └──────────────┘    └──────────┘
 ```
 
-### 1.2 Data migration
+**Key:** Config transfers happen only on create/update. The runner caches with `.buildd-hash`. On a typical task claim, the runner just checks the hash and skips the download.
 
-In the generated migration SQL, add a statement to set `color` for any existing skills to a default palette based on row order, so they look good on the Team page immediately.
+This is the **exact same pattern** as `syncSkillToLocal()` in `apps/runner/src/skills.ts` — which already writes to `~/.claude/skills/<slug>/` with hash-based caching.
 
-### 1.3 Generate migration
+### Task execution flow
 
-```bash
-cd packages/core && bun db:generate
+```
+Runner claims task with roleSlug="finance"
+  → Check ~/.buildd/roles/finance/.buildd-hash vs configHash from claim
+  → If stale: download tarball from R2 presigned URL, extract
+  → Set queryOptions.cwd = ~/.buildd/roles/finance/
+  → SDK discovers CLAUDE.md → system prompt
+  → SDK discovers .mcp.json → connects to stripe, quickbooks
+  → Process env includes .env vars → STRIPE_API_KEY works
+  → SDK discovers .claude/skills/ → financial-analysis available
+  → Agent executes task
 ```
 
-### 1.4 Update shared types
-
-**File:** `packages/shared/src/types.ts`
-
-```typescript
-export type SkillModel = 'sonnet' | 'opus' | 'haiku' | 'inherit';
-
-export interface WorkspaceSkill {
-  id: string;
-  workspaceId: string;
-  slug: string;
-  name: string;
-  description: string | null;
-  content: string;
-  contentHash: string;
-  source: string | null;
-  enabled: boolean;
-  origin: WorkspaceSkillOrigin;
-  metadata: SkillMetadata;
-  // Role config
-  model: SkillModel;
-  allowedTools: string[];
-  canDelegateTo: string[];
-  background: boolean;
-  maxTurns: number | null;
-  color: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface SkillBundle {
-  slug: string;
-  name: string;
-  description?: string;
-  content: string;
-  contentHash?: string;
-  referenceFiles?: Record<string, string>;
-  files?: SkillBundleFile[];
-  // Role config
-  model: SkillModel;
-  allowedTools: string[];
-  canDelegateTo: string[];
-  background: boolean;
-  maxTurns: number | null;
-}
-
-export interface CreateWorkspaceSkillInput {
-  slug?: string;
-  name: string;
-  description?: string;
-  content: string;
-  source?: string;
-  metadata?: SkillMetadata;
-  enabled?: boolean;
-  // Role config
-  model?: SkillModel;
-  allowedTools?: string[];
-  canDelegateTo?: string[];
-  background?: boolean;
-  maxTurns?: number;
-  color?: string;
-}
+For builder roles, the flow adds a workspace resolution step:
+```
+Runner claims task with roleSlug="builder"
+  → Resolve repo via WorkspaceResolver (existing logic)
+  → Sync role overlay config to repo directory (or use worktree)
+  → Set queryOptions.cwd = resolved repo path
+  → SDK discovers repo's CLAUDE.md + role's overlay
+  → Agent executes in the repo
 ```
 
 ---
 
-## Phase 2: API
+## Data Model
 
-**Goal:** All routes accept and return role fields. Add task routing by `roleSlug`.
+### DB: `workspaceSkills` table (existing, extended)
 
-### 2.1 Skills CRUD
+Fields that stay (runner uses them at SDK level, not file-based):
+- `id`, `workspaceId`, `slug`, `name`, `description`, `enabled`
+- `model` — per-agent model override (runner line 2187) ✓
+- `allowedTools` — tool restriction (runner line 2174) ✓
+- `canDelegateTo` — Task() delegation (runner line 2179) ✓
+- `background` — background execution flag (runner line 2191) ✓
+- `maxTurns` — per-agent turn limit (runner line 2193) ✓
+- `color` — avatar color for UI
+- `origin`, `metadata`, `createdAt`, `updatedAt`
 
-**File:** `apps/web/src/app/api/workspaces/[id]/skills/route.ts`
+Fields to add:
+- `configHash` — SHA-256 of the packaged tarball, for cache invalidation
+- `configStorageKey` — R2 object key for the role config tarball
+- `isRole` — boolean, distinguishes roles (Team page) from skills (building blocks)
+- `repoUrl` — optional, for builder roles (git clone target)
 
-- POST: accept all new fields in body, include in `db.insert()`
-- GET: already returns full rows — just verify new columns come through
+Fields to deprecate (replaced by files in the workspace):
+- `content` — replaced by `CLAUDE.md` in workspace dir
+- `mcpServers` — replaced by `.mcp.json` in workspace dir
+- `requiredEnvVars` — replaced by `.env` in workspace dir
 
-**File:** `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts`
+Keep these columns for backward compat but stop using them for roles. Skills (non-role entries) still use `content`.
 
-- PATCH: accept `model`, `allowedTools`, `canDelegateTo`, `background`, `maxTurns`, `color` in update payload
+### R2 tarball contents
 
-### 2.2 Claim route — bundle role config + filter by roleSlug
-
-**File:** `apps/web/src/app/api/workers/claim/route.ts`
-
-Two changes:
-
-**a) Task filtering by roleSlug:**
-When a task has `roleSlug` set, only claim it if the worker's claim request includes that slug in its `availableSkills` array. Add to the claim request body:
-
-```typescript
-// New field in claim request:
-availableSkills?: string[]; // slugs this runner can execute
+```
+role-config.tar.gz
+├── CLAUDE.md              ← persona / instructions
+├── .mcp.json              ← MCP server config (connectors)
+├── env-mapping.json       ← { "STRIPE_API_KEY": "stripe-prod-key" }
+│                            (secret label → runner resolves to actual value)
+├── .claude/
+│   └── skills/
+│       └── <slug>/
+│           └── SKILL.md   ← referenced skill content (inlined at package time)
+└── .buildd-role.json      ← metadata: slug, version, type (builder|service)
 ```
 
-SQL filter addition (alongside existing `requiredCapabilities` and `dependsOn` checks):
-```sql
-AND (tasks.role_slug IS NULL OR tasks.role_slug = ANY(:availableSkills))
-```
+**Note on secrets:** The tarball contains env var NAME → SECRET LABEL mappings, not actual secret values. The runner resolves labels to values from its own env or a secrets manager. This keeps secrets out of R2.
 
-**b) Bundle role fields:**
-```typescript
-const skillBundles: SkillBundle[] = skills.map(s => ({
-  slug: s.slug,
-  name: s.name,
-  description: s.description ?? undefined,
-  content: s.content,
-  contentHash: s.contentHash,
-  referenceFiles: (s.metadata as SkillMetadata)?.referenceFiles,
-  model: s.model,
-  allowedTools: s.allowedTools,
-  canDelegateTo: s.canDelegateTo,
-  background: s.background,
-  maxTurns: s.maxTurns,
-}));
-```
-
-### 2.3 MCP `register_skill`
-
-**File:** `packages/core/mcp-tools.ts`
-
-Add all new fields to `register_skill` action params. Pass through to API.
-
-### 2.4 Task creation — accept roleSlug
-
-**File:** `apps/web/src/app/api/tasks/route.ts`
-
-Accept `roleSlug` in task creation body. Store on task row.
-
-**File:** `packages/core/mcp-tools.ts` — `create_task` action
-
-Add `roleSlug` param, pass through.
-
----
-
-## Phase 3: Runner
-
-**Goal:** Runner uses role config for AgentDefinition. Announces available skills when claiming.
-
-### 3.1 Announce skills on claim
-
-**File:** `apps/runner/src/workers.ts`
-
-When calling `POST /api/workers/claim`, include the list of skill slugs configured for this workspace:
+### Claim route response (extended)
 
 ```typescript
-const claimBody = {
-  // ...existing fields...
-  availableSkills: configuredSkillSlugs, // from workspace git config or runner config
-};
-```
+interface ClaimWorkerResponse {
+  // ... existing fields ...
 
-### 3.2 Use role config in AgentDefinition
-
-**File:** `apps/runner/src/workers.ts` (~lines 2170-2184)
-
-```typescript
-agents[bundle.slug] = {
-  description: bundle.description || bundle.name,
-  prompt: bundle.content,
-  tools: bundle.allowedTools.length > 0
-    ? bundle.allowedTools
-    : ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
-  model: bundle.model,
-  background: bundle.background || useBackgroundAgents,
-  ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
-  ...(bundle.maxTurns ? { maxTurns: bundle.maxTurns } : {}),
-};
-
-// Delegation: add Task(<slug>) tool for each delegatee
-if (bundle.canDelegateTo.length > 0) {
-  agents[bundle.slug].tools = [
-    ...agents[bundle.slug].tools,
-    ...bundle.canDelegateTo.map(slug => `Task(${slug})`),
-  ];
+  // Role config (new)
+  roleConfig?: {
+    slug: string;
+    configHash: string;
+    configUrl: string;        // R2 presigned download URL
+    type: 'builder' | 'service';
+    repoUrl?: string;         // For builder roles
+    // DB-level config (not in tarball — runner uses directly)
+    model: string;
+    allowedTools: string[];
+    canDelegateTo: string[];
+    background: boolean;
+    maxTurns: number | null;
+  };
 }
 ```
 
 ---
 
-## Phase 4: Team Page
+## Implementation Plan
 
-**Goal:** New top-level `/app/team` page — the "Office" view.
+### Phase 2A: Schema + Config Packaging
 
-### 4.1 Create page
+**Goal:** Role Editor saves config to R2 tarball. DB tracks hash + storage key.
 
-**File:** `apps/web/src/app/app/(protected)/team/page.tsx` (NEW)
+1. **Migration:** Add `configHash`, `configStorageKey`, `isRole`, `repoUrl` to `workspaceSkills`
+2. **Migration:** Set `isRole = true` for existing consolidated roles (builder, researcher, ops, finance, comms)
+3. **Package function** (`apps/web/src/lib/role-config.ts` — NEW):
+   - Takes role config (CLAUDE.md content, .mcp.json, env mappings, skill slugs)
+   - Resolves skill slugs → fetches their content from DB
+   - Packages into tarball
+   - Uploads to R2 via existing `generateUploadUrl`
+   - Returns `{ configHash, configStorageKey }`
+4. **Role PATCH route:** On save, call packager, update DB with hash + key
+5. **Role POST route:** On create, call packager, set `isRole = true`
 
-**Data loading:**
-1. Query all `workspaceSkills` across user's workspaces (enabled only)
-2. Query active workers (status: running, starting, waiting_input)
-3. Join workers → tasks → task.context.skillSlugs to determine which role each worker is executing
-4. Also check task.roleSlug for direct role assignment
+**Files:**
+- `packages/core/db/schema.ts` — add columns
+- `apps/web/src/lib/role-config.ts` — NEW, tarball packager
+- `apps/web/src/app/api/workspaces/[id]/skills/route.ts` — POST creates role config
+- `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts` — PATCH updates role config
 
-**Layout (per mockup):**
-- Header: "The Team" + live count badge + "+ New Role" button
-- Active roles section: card grid (3 columns max)
-  - Each card: avatar circle (using `skill.color` + first initial), name, description, status badge, current task box with title + workspace + time + PR link
-  - Green border = running, amber border = needs input
-- Idle section: compact row of role chips with gray styling
-- Click card → navigate to `/app/workspaces/[wsId]/skills?edit=[skillId]`
+### Phase 2B: Claim Route + Runner Sync
 
-**Real-time:**
-- Subscribe to Pusher channels for workspace workers
-- Update card status live when workers change state
-- Animate transitions (e.g., idle → running)
+**Goal:** Runner receives role config on claim, syncs to local disk, sets cwd.
 
-### 4.2 Navigation
+1. **Claim route enrichment:** When task has `roleSlug`, look up role's `configHash` + generate presigned download URL. Include in response as `roleConfig`.
+2. **Runner: `syncRoleToLocal()`** (`apps/runner/src/roles.ts` — NEW):
+   - Same pattern as `syncSkillToLocal()` in `apps/runner/src/skills.ts`
+   - Check `~/.buildd/roles/<slug>/.buildd-hash` vs `configHash`
+   - If stale: download tarball from presigned URL, extract to `~/.buildd/roles/<slug>/`
+   - Resolve env mappings: read `env-mapping.json`, look up values from `process.env` or runner config
+   - Write `.env` with resolved values
+3. **Runner: per-role cwd** (`apps/runner/src/workers.ts`):
+   - If task has `roleSlug` and role type is `service`: `queryOptions.cwd = ~/.buildd/roles/<slug>/`
+   - If task has `roleSlug` and role type is `builder`: resolve repo via WorkspaceResolver, overlay role config
+   - If no `roleSlug`: use existing workspace resolution (unchanged)
 
-**File:** `apps/web/src/app/app/(protected)/missions/MissionsSidebar.tsx`
+**Files:**
+- `apps/web/src/app/api/workers/claim/route.ts` — enrich with roleConfig
+- `apps/runner/src/roles.ts` — NEW, role workspace sync
+- `apps/runner/src/workers.ts` — per-role cwd switching
 
-Add between Missions and bottom:
-```tsx
-{ label: 'Team', href: '/app/team', icon: UsersIcon }
-```
+### Phase 2C: Team Page + Role Editor Updates
 
-**File:** `apps/web/src/app/app/(protected)/missions/MissionsBottomNav.tsx`
+**Goal:** Team page shows only roles. Role Editor manages files, not just DB fields.
 
-Add "Team" tab.
+1. **Team page:** Filter by `isRole = true` — no more showing every skill as a team member
+2. **Role Editor:**
+   - Instructions textarea → reads/writes to `CLAUDE.md` content (stored in DB, packaged to R2 on save)
+   - Connectors section → reads/writes `.mcp.json` structure (stored in DB as structured JSON, packaged on save)
+   - Environment section → reads/writes env mappings (stored in DB, packaged on save)
+   - Skills section → chip selector of other workspace skills (slugs stored in DB, content inlined at package time)
+   - On "Save Changes": package tarball → upload to R2 → update DB hash + key
+3. **"+ New Role" from Team page:** Creates a service role by default. Option to select "Builder role" which prompts for repo URL.
 
-### 4.3 Home page integration
+**Files:**
+- `apps/web/src/app/app/(protected)/team/page.tsx` — filter `isRole = true`
+- `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx` — file-backed editing
+- `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/page.tsx` — pass skill options
 
-**File:** `apps/web/src/app/app/(protected)/home/page.tsx`
+### Phase 2D: Global Roles
 
-Replace the "active agents" section with a mini Team view — show active role avatars with names and current task, linking to `/app/team`.
+**Goal:** Roles are account-level, not workspace-scoped. No more duplicates.
 
----
+1. **New `roles` table** (or `accountId` on `workspaceSkills`):
+   - `accountId` instead of `workspaceId`
+   - Role config is account-global
+   - Tasks still belong to workspaces — `roleSlug` routes to the right role
+2. **Team page:** Shows roles for the account, not per-workspace
+3. **Workspace override:** A workspace can have a `workspaceSkills` entry with the same slug that overrides the account-level role for that workspace
 
-## Phase 5: Role Editor
-
-**Goal:** Upgrade SkillForm into a proper Role Editor with all config fields.
-
-### 5.1 Two-column form layout
-
-**File:** `apps/web/src/app/app/(protected)/workspaces/[id]/skills/SkillForm.tsx`
-
-Redesign as two-column layout (per mockup):
-
-**Left column (identity):**
-- Role Name (text input)
-- Goal / Description (text input with helper text)
-- Instructions (textarea — the SKILL.md content, this is the "backstory")
-
-**Right column (config):**
-- Model selector (dropdown: Claude Opus 4, Claude Sonnet 4, Claude Haiku 4.5, Inherit)
-- Allowed Tools (chip multi-select, dark=active, light=available):
-  - Default set: Read, Write, Edit, Bash, Grep, Glob
-  - Extended: WebSearch, WebFetch, Agent, NotebookEdit
-  - Empty selection = all tools (no restriction)
-- Can Delegate To (chip selector of other workspace skills, green=selected)
-- Skills (chip selector to preload other skill contexts)
-- Settings:
-  - Checkbox: "Run in isolated worktree"
-  - Checkbox: "Allow background execution"
-  - Number input: "Max turns" (optional)
-- Color picker (preset palette of 8-10 colors for avatar)
-
-### 5.2 Skill detail page
-
-**File:** `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/page.tsx` (NEW)
-
-Dedicated edit page with:
-- Breadcrumb: Team / {workspace} / {role name}
-- Avatar + name header with stats (created date, tasks completed count)
-- Save Changes button
-- Two-column form (reuse SkillForm component)
-- Delete button (with confirmation)
-
-### 5.3 Enhanced SkillList
-
-**File:** `apps/web/src/app/app/(protected)/workspaces/[id]/skills/SkillList.tsx`
-
-Each row shows:
-- Color dot + name
-- Model badge (small pill)
-- Tool count
-- Delegation targets as chips
-- Enabled toggle
-- Click → navigate to detail page
+**Defer this phase** — start with workspace-scoped roles, promote to account-level once the core works.
 
 ---
 
-## Phase 6: Mission → Role Assignment
+## Runner Audit Results (verified)
 
-**Goal:** Missions can assign a default role to their generated tasks.
+| Field | Runner uses it? | How |
+|-------|----------------|-----|
+| `model` | **YES** | Line 2187: `model: bundle.model \|\| 'inherit'` |
+| `allowedTools` | **YES** | Line 2174: filters agent tools |
+| `canDelegateTo` | **YES** | Line 2179: injects `Task(<slug>)` tools |
+| `background` | **YES** | Line 2191: background agent flag |
+| `maxTurns` | **YES** | Line 2193: per-agent turn limit |
+| `mcpServers` | **NO** | Never read — SDK autodiscovers from `.mcp.json` |
+| `requiredEnvVars` | **NO** | Never read — runner uses process env |
 
-### 6.1 Add roleSlug to objectives
+### Existing runner infrastructure we leverage
 
-**File:** `packages/core/db/schema.ts`
-
-```typescript
-// On objectives table:
-defaultRoleSlug: text('default_role_slug'),
-```
-
-### 6.2 Task schedule enrichment
-
-**File:** `apps/web/src/lib/objective-context.ts`
-
-When a mission generates a task via its schedule, copy `objective.defaultRoleSlug` → `task.roleSlug`.
-
-### 6.3 Mission creation UI
-
-**File:** `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx`
-
-Add "Assign to role" dropdown showing workspace skills. Selected role becomes `defaultRoleSlug`.
+- **WorkspaceResolver** (`apps/runner/src/workspace.ts`): Auto-discovers local repos by git remote, name, path. Used for builder roles.
+- **`syncSkillToLocal()`** (`apps/runner/src/skills.ts`): Writes skill bundles to `~/.claude/skills/<slug>/` with `.buildd-hash` caching. Template for `syncRoleToLocal()`.
+- **R2 presigned URLs**: Already generated in claim route for attachments (line 417-432). Same mechanism for role config tarballs.
+- **Per-task cwd**: Already supported — `queryOptions.cwd` is set per worker session (line 2229).
+- **Worktree isolation**: Production-grade per-task branching. Builder roles can use this for isolation.
+- **Secret injection**: Claim route already decrypts and passes API keys, OAuth tokens, MCP credentials (lines 498-547).
 
 ---
 
-## File Change Summary
+## What Success Looks Like
 
-| Phase | Files Modified | Files Created |
-|-------|---------------|--------------|
-| 1 | `schema.ts`, `types.ts` | Migration SQL |
-| 2 | Skills routes (2), claim route, `mcp-tools.ts`, tasks route | — |
-| 3 | `apps/runner/src/workers.ts` | — |
-| 4 | `MissionsSidebar.tsx`, `MissionsBottomNav.tsx`, `home/page.tsx` | `team/page.tsx` |
-| 5 | `SkillForm.tsx`, `SkillList.tsx` | `skills/[skillId]/page.tsx` |
-| 6 | `schema.ts`, `objective-context.ts`, `NewMissionForm.tsx` | Migration SQL |
+1. You create "Finance" role from the Team page
+2. Add `.mcp.json` with Stripe + QuickBooks connectors
+3. Add `STRIPE_API_KEY` → `stripe-prod-key` env mapping
+4. Save → tarball uploaded to R2
+5. A WATCH mission creates a daily task with `roleSlug: "finance"`
+6. Runner claims task, checks hash, downloads config (first time only)
+7. Runner `cd`s to `~/.buildd/roles/finance/`
+8. SDK reads `CLAUDE.md`, discovers `.mcp.json`, loads env vars
+9. Agent talks to Stripe, produces a report
+10. Result shows up in the dashboard
 
-## PR Strategy
+**For a builder role:** Same flow but `cwd` = the repo directory (resolved by WorkspaceResolver). Agent has repo context + role-specific connectors and instructions.
 
-| PR | Phases | Description |
-|----|--------|-------------|
-| 1 | 1+2+3 | **Schema + API + Runner** — all backend work, one PR |
-| 2 | 4 | **Team page** — new page + nav updates |
-| 3 | 5 | **Role Editor** — enhanced skill form |
-| 4 | 6 | **Mission → Role** — role assignment on missions |
+---
 
-## Testing
+## Shipped (Phase 1 — Live in Production)
 
-| Phase | Test file | What to test |
-|-------|-----------|-------------|
-| 1-2 | `apps/web/tests/integration/skills.test.ts` | Create skill with model/tools/delegation, update, verify claim bundles include new fields |
-| 2 | `apps/web/tests/integration/skills.test.ts` | Task with roleSlug only claimable by matching runner |
-| 3 | `packages/core/__tests__/worker-runner-skills.test.ts` | AgentDefinition uses model, tools, delegation, maxTurns from bundle |
-| 4 | New E2E test | Team page renders active/idle roles, real-time updates |
-| 5 | Component test | SkillForm validates model, tools, delegation inputs |
-| 6 | Integration test | Mission-generated tasks inherit roleSlug |
+- Schema: `model`, `allowedTools`, `canDelegateTo`, `background`, `maxTurns`, `color`, `mcpServers`, `requiredEnvVars` on `workspaceSkills`
+- `tasks.roleSlug`, `objectives.defaultRoleSlug`
+- Team page (`/app/team`), Role Editor (`/app/workspaces/[id]/skills/[skillId]`), Home page team section
+- Mission form: "Assign to role" chip selector
+- Navigation: Team in sidebar + bottom nav
+- Runner: uses model, allowedTools, canDelegateTo, background, maxTurns from skill bundles
+- Runner: ignores mcpServers, requiredEnvVars (replaced by file-based config in Phase 2)
+- DB: 5 consolidated roles (builder, researcher, ops, finance, comms) in primary workspace
+- DB: 15 legacy granular skills disabled (not deleted)
 
-## Resolved Design Decisions
+## Shipped (Phase 2 — Implemented, Pending Deploy)
 
-1. **Roles don't belong to missions.** Many-to-many through tasks. Missions express a `defaultRoleSlug` preference, not ownership. Roles are persistent employees, missions are projects.
-2. **"Ongoing work" is handled by WATCH/BRIEF missions.** No new concept needed. A Compliance role + a WATCH mission = a persistent responsibility. The mission framework already supports finite and ambient work.
-3. **Team page shows current activity.** Not "Builder is assigned to Ship v2" but "Builder is working on X right now." The role's identity comes from its config, not its current mission.
+### Phase 2A: Schema + Config Packaging
+- Schema: `isRole`, `configHash`, `configStorageKey`, `repoUrl` on `workspaceSkills`
+- Migration 0018: adds columns + data migration sets `isRole=true` for 5 consolidated roles
+- `role-config.ts`: packages role config as JSON bundle, uploads to R2
+- `storage.ts`: added `uploadBuffer()` for direct server-side R2 uploads
+- API routes: PATCH/POST/DELETE handle role config packaging and R2 lifecycle
 
-## Key Constants
+### Phase 2B: Claim Route + Runner Sync
+- Claim route: enriches response with `roleConfig` (presigned download URL, DB-level config)
+- `roles.ts` (runner): `syncRoleToLocal()` with hash-based caching, `resolveRoleEnv()`, `overlayRoleFiles()`
+- `workers.ts`: service roles use `~/.buildd/roles/<slug>/` as cwd; builder roles overlay files into repo
+- Shared types: `RoleConfig` interface in `@buildd/shared`
 
-**Available tools for `allowedTools` chip selector:**
-```
-Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Agent, NotebookEdit
-```
+### Phase 2C: Team Page + Role Editor
+- Team page: filters `isRole=true`, queries account-level roles
+- RoleEditor: "Show on Team page" toggle, conditional "Repo URL" field
+- `isRole`/`repoUrl` flow through API to DB
 
-**Default color palette for roles:**
-```
-#C45A3B (terracotta), #5B7BB3 (steel blue), #6B8E5E (olive green),
-#D97706 (amber), #8A8478 (warm gray), #9B59B6 (purple),
-#2C8C99 (teal), #C4783B (burnt orange)
-```
+### Phase 2D: Global Roles
+- Schema: `accountId` on `workspaceSkills` (nullable, migration 0019)
+- Team page: queries both workspace-scoped and account-level roles
+- Claim route: workspace-level role lookup with account-level fallback
+- API routes: accept `accountId` in POST/PATCH
 
-**Model options:**
-```
-inherit (default), opus, sonnet, haiku
-```
-
-## Open Questions
-
-1. **Workspace picker for "+ New Role":** Team page aggregates across workspaces. When user clicks "+ New Role", which workspace? Options: default workspace, modal picker, or most recently used.
-2. **Role templates:** Should we ship pre-built roles (Builder, Researcher, Analyst) that users can one-click install? Or start blank?
-3. **Role icon vs initial:** Mockup uses first-letter avatar. Could use icons (wrench, magnifying glass, chart) for more visual distinction. Decide during Phase 5.
+### Known gaps (future work)
+- Skills chip selector UI in RoleEditor (selecting which skills a role references)
+- Full MCP config editor (currently `mcpConfig` is empty; MCP names handled by skill bundle system)
+- `.mcp.json` overlay for builder roles only works when role has valid MCP config objects

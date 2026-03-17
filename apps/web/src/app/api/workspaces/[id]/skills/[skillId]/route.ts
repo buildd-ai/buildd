@@ -6,6 +6,8 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
+import { isStorageConfigured } from '@/lib/storage';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -93,7 +95,7 @@ export async function PATCH(
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
-            mcpServers, requiredEnvVars } = body;
+            mcpServers, requiredEnvVars, isRole, repoUrl, accountId } = body;
 
         const existing = await db.query.workspaceSkills.findFirst({
             where: and(
@@ -124,6 +126,9 @@ export async function PATCH(
         if (color !== undefined) updates.color = color;
         if (mcpServers !== undefined) updates.mcpServers = mcpServers;
         if (requiredEnvVars !== undefined) updates.requiredEnvVars = requiredEnvVars;
+        if (isRole !== undefined) updates.isRole = isRole;
+        if (repoUrl !== undefined) updates.repoUrl = repoUrl;
+        if (accountId !== undefined) updates.accountId = accountId;
 
         const [updated] = await db
             .update(workspaceSkills)
@@ -131,7 +136,36 @@ export async function PATCH(
             .where(eq(workspaceSkills.id, skillId))
             .returning();
 
-        return NextResponse.json({ skill: updated });
+        const updatedSkill = updated;
+        if (updatedSkill.isRole && isStorageConfigured()) {
+            const oldStorageKey = existing.configStorageKey;
+            const bundle = await packageRoleConfig(id, {
+                slug: updatedSkill.slug,
+                claudeMd: updatedSkill.content,
+                mcpConfig: {},
+                envMapping: (updatedSkill.requiredEnvVars as Record<string, string>) || {},
+                skillSlugs: body.skillSlugs || [],
+                type: updatedSkill.repoUrl ? 'builder' : 'service',
+                repoUrl: updatedSkill.repoUrl,
+            });
+            const { configHash, configStorageKey } = await uploadRoleConfig(bundle);
+
+            // Update DB with new hash and storage key
+            await db.update(workspaceSkills)
+                .set({ configHash, configStorageKey, updatedAt: new Date() })
+                .where(eq(workspaceSkills.id, skillId));
+
+            // Clean up old config
+            if (oldStorageKey && oldStorageKey !== configStorageKey) {
+                await deleteRoleConfig(oldStorageKey).catch(() => {});
+            }
+
+            // Merge into response
+            updatedSkill.configHash = configHash;
+            updatedSkill.configStorageKey = configStorageKey;
+        }
+
+        return NextResponse.json({ skill: updatedSkill });
     } catch (error) {
         console.error('Update workspace skill error:', error);
         return NextResponse.json({ error: 'Failed to update workspace skill' }, { status: 500 });
@@ -167,6 +201,11 @@ export async function DELETE(
 
         if (!existing) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+        }
+
+        // Clean up R2 config for roles
+        if (existing.configStorageKey && isStorageConfigured()) {
+            await deleteRoleConfig(existing.configStorageKey).catch(() => {});
         }
 
         await db

@@ -595,6 +595,7 @@ export const githubRepos = pgTable('github_repos', {
 export const workspaceSkills = pgTable('workspace_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   slug: text('slug').notNull(),
   name: text('name').notNull(),
   description: text('description'),
@@ -613,11 +614,17 @@ export const workspaceSkills = pgTable('workspace_skills', {
   color: text('color').notNull().default('#8A8478'), // avatar color hex
   mcpServers: jsonb('mcp_servers').notNull().default([]).$type<string[]>(), // MCP server names this role requires
   requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
+  // Role-specific fields
+  isRole: boolean('is_role').notNull().default(false), // distinguishes roles (Team page) from skills
+  configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
+  configStorageKey: text('config_storage_key'), // R2 object key for role config tarball
+  repoUrl: text('repo_url'), // for builder roles (git clone target)
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
+  accountIdx: index('workspace_skills_account_idx').on(t.accountId),
 }));
 
 // Team invitations for multi-tenancy
@@ -803,6 +810,7 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
 
 export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
   workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
+  account: one(accounts, { fields: [workspaceSkills.accountId], references: [accounts.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
