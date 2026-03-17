@@ -63,7 +63,7 @@ export default function ObjectiveConfig({
   const patchObjective = useCallback(async (body: Record<string, unknown>, field: string) => {
     setSaving(field);
     try {
-      const res = await fetch(`/api/objectives/${objectiveId}`, {
+      const res = await fetch(`/api/missions/${objectiveId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

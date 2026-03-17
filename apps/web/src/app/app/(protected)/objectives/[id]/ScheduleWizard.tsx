@@ -83,7 +83,7 @@ export default function ScheduleWizard({
 
     setSaving(true);
     try {
-      await fetch(`/api/objectives/${objectiveId}`, {
+      await fetch(`/api/missions/${objectiveId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

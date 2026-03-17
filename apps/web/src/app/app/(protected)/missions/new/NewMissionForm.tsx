@@ -176,7 +176,7 @@ export default function NewMissionForm({ workspaces }: { workspaces: WorkspaceOp
         payload.isHeartbeat = true;
       }
 
-      const res = await fetch('/api/objectives', {
+      const res = await fetch('/api/missions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

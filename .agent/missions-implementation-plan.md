@@ -167,8 +167,8 @@ This decouples the "input surface" (dashboard/notification) from the "execution 
 │                         API LAYER                                   │
 │                   (unchanged, backward compat)                      │
 │                                                                     │
-│  GET /api/objectives ─── mapped to ──▶ Missions list               │
-│  POST /api/objectives ── mapped to ──▶ Create Mission              │
+│  GET /api/missions ─── mapped to ──▶ Missions list               │
+│  POST /api/missions ── mapped to ──▶ Create Mission              │
 │  GET /api/tasks ──────── filtered by ─▶ Mission's task tree        │
 │  POST /api/tasks ─────── linked via ──▶ objectiveId                │
 │  PATCH /api/workers/[id] ────────────▶ Real-time updates           │
@@ -243,7 +243,7 @@ Each phase broken into tasks, each gated by `verificationCommand`.
 - Watch card (signals count + flagged badge)
 - Brief card (finding/artifact inline)
 - Left border type indicator
-- Fetch from `GET /api/objectives` + map to types
+- Fetch from `GET /api/missions` + map to types
 - Gate: `bun test && bun run build`
 
 **Task 1.4: Mission detail page**
@@ -499,7 +499,7 @@ buildd-meta (orchestrator workspace)
         └── memory-service: "Review stale memories"
 ```
 
-The orchestrator task runs in `buildd-meta`, reads all missions via `GET /api/objectives` (cross-workspace), and creates follow-up tasks in the correct workspace via `POST /api/tasks` with the target `workspaceId`.
+The orchestrator task runs in `buildd-meta`, reads all missions via `GET /api/missions` (cross-workspace), and creates follow-up tasks in the correct workspace via `POST /api/tasks` with the target `workspaceId`.
 
 **This already works.** The `create_task` MCP tool accepts `workspaceId`. The orchestrator just needs to know which workspace maps to which mission — and that's already in the objective record (`objective.workspaceId`).
 
