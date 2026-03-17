@@ -86,11 +86,18 @@ export async function verifyAccountWorkspaceAccess(
 export async function getUserWorkspaceIds(userId: string): Promise<string[]> {
   const ids = new Set<string>();
 
-  // 1. Workspaces owned directly by this user (owner_id exists in DB but not in Drizzle schema)
-  const owned = await db.execute<{ id: string }>(
-    sql`SELECT id FROM workspaces WHERE owner_id = ${userId}`
-  );
-  for (const w of owned.rows) ids.add(w.id);
+  // 1. Workspaces via personal team (for users missing team_members rows)
+  const personalTeam = await db.query.teams.findFirst({
+    where: eq(teams.slug, `personal-${userId}`),
+    columns: { id: true },
+  });
+  if (personalTeam) {
+    const personalWorkspaces = await db.query.workspaces.findMany({
+      where: eq(workspaces.teamId, personalTeam.id),
+      columns: { id: true },
+    });
+    for (const w of personalWorkspaces) ids.add(w.id);
+  }
 
   // 2. Workspaces via team membership
   const memberships = await db.query.teamMembers.findMany({
