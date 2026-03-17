@@ -15,6 +15,9 @@ type SandboxSettings = {
   ignoreViolations?: SandboxIgnoreViolations;
   enableWeakerNestedSandbox?: boolean;
   excludedCommands?: string[];           // Commands that always bypass sandbox (e.g. ['docker'])
+  filesystem?: {
+    allowRead?: string[];                // Re-allow read access within denyRead regions (v0.2.77)
+  };
 };
 
 type NetworkSandboxSettings = {
