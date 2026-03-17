@@ -2166,19 +2166,31 @@ export class WorkerManager {
         ? Boolean(taskBackgroundAgents)
         : Boolean(gitConfig?.useBackgroundAgents);
 
-      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean }> | undefined;
+      let agents: Record<string, { description: string; prompt: string; tools: string[]; model: string; isolation?: string; background?: boolean; maxTurns?: number }> | undefined;
       if (useSkillAgents && skillBundles && skillBundles.length > 0) {
         agents = {};
         for (const bundle of skillBundles) {
+          const defaultTools = ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'];
+          const tools = bundle.allowedTools && bundle.allowedTools.length > 0
+            ? bundle.allowedTools
+            : defaultTools;
+
+          // Add delegation tools for each delegatee
+          const delegationTools = bundle.canDelegateTo && bundle.canDelegateTo.length > 0
+            ? bundle.canDelegateTo.map((slug: string) => `Task(${slug})`)
+            : [];
+
           agents[bundle.slug] = {
             description: bundle.description || bundle.name,
             prompt: bundle.content,
-            tools: ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write'],
-            model: 'inherit',
+            tools: [...tools, ...delegationTools],
+            model: bundle.model || 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
-            // SDK v0.2.49+: run subagent as background task
-            ...(useBackgroundAgents ? { background: true } : {}),
+            // Background: bundle-level override > workspace-level setting
+            ...(bundle.background || useBackgroundAgents ? { background: true } : {}),
+            // Max turns from role config
+            ...(bundle.maxTurns ? { maxTurns: bundle.maxTurns } : {}),
           };
         }
       }

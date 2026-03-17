@@ -284,6 +284,7 @@ export async function GET(req: NextRequest) {
             activeHoursStart: true,
             activeHoursEnd: true,
             activeHoursTimezone: true,
+            defaultRoleSlug: true,
           },
         });
 
@@ -340,6 +341,7 @@ export async function GET(req: NextRequest) {
             creationSource: 'schedule',
             ...(externalId ? { externalId } : {}),
             ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
+            ...(linkedObjective?.defaultRoleSlug ? { roleSlug: linkedObjective.defaultRoleSlug } : {}),
           })
           .returning();
 

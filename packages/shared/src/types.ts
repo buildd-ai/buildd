@@ -451,6 +451,8 @@ export interface RecipeStep {
 
 export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
+export type SkillModel = 'sonnet' | 'opus' | 'haiku' | 'inherit';
+
 export interface WorkspaceSkill {
   id: string;
   workspaceId: string;
@@ -463,6 +465,15 @@ export interface WorkspaceSkill {
   enabled: boolean;
   origin: WorkspaceSkillOrigin;
   metadata: SkillMetadata;
+  // Role config
+  model: SkillModel;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
+  color: string;
+  mcpServers: string[];
+  requiredEnvVars: Record<string, string>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -482,6 +493,14 @@ export interface SkillBundle {
   contentHash?: string;
   referenceFiles?: Record<string, string>;
   files?: SkillBundleFile[];
+  // Role config
+  model: SkillModel;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
+  mcpServers: string[];
+  requiredEnvVars: Record<string, string>;
 }
 
 export interface SkillMetadata {
@@ -622,6 +641,7 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
+  availableSkills?: string[]; // skill slugs this runner can execute
 }
 
 export type ClaimDiagnosticReason =
@@ -692,6 +712,15 @@ export interface CreateWorkspaceSkillInput {
   source?: string;
   metadata?: SkillMetadata;
   enabled?: boolean;
+  // Role config
+  model?: SkillModel;
+  allowedTools?: string[];
+  canDelegateTo?: string[];
+  background?: boolean;
+  maxTurns?: number;
+  color?: string;
+  mcpServers?: string[];
+  requiredEnvVars?: Record<string, string>;
 }
 
 

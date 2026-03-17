@@ -168,6 +168,8 @@ export async function POST(req: NextRequest) {
       objectiveId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
+      // Role routing — only runners with this skill can claim the task
+      roleSlug,
     } = body;
 
     if (!title) {
@@ -326,6 +328,7 @@ export async function POST(req: NextRequest) {
         ...(outputSchema ? { outputSchema } : {}),
         ...(objectiveId ? { objectiveId } : {}),
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
+        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })

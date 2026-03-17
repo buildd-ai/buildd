@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
-import { inArray, desc } from 'drizzle-orm';
+import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { inArray, desc, eq, and } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
@@ -34,5 +34,18 @@ export default async function NewMissionPage() {
     });
   }
 
-  return <NewMissionForm workspaces={teamWorkspaces} />;
+  // Query enabled roles across user's workspaces
+  let roles: { slug: string; name: string; color: string; workspaceId: string }[] = [];
+  if (wsIds.length > 0) {
+    roles = await db.query.workspaceSkills.findMany({
+      where: and(
+        inArray(workspaceSkills.workspaceId, wsIds),
+        eq(workspaceSkills.enabled, true),
+      ),
+      columns: { slug: true, name: true, color: true, workspaceId: true },
+      orderBy: [desc(workspaceSkills.createdAt)],
+    });
+  }
+
+  return <NewMissionForm workspaces={teamWorkspaces} roles={roles} />;
 }

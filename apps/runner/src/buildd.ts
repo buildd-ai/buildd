@@ -84,10 +84,14 @@ export class BuilddClient {
     }
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[]): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
+    const body: Record<string, unknown> = { maxTasks, workspaceId, taskId, runner: runner || 'runner' };
+    if (availableSkills && availableSkills.length > 0) {
+      body.availableSkills = availableSkills;
+    }
     const data = await this.fetch('/api/workers/claim', {
       method: 'POST',
-      body: JSON.stringify({ maxTasks, workspaceId, taskId, runner: runner || 'runner' }),
+      body: JSON.stringify(body),
     });
     return { workers: data.workers || [], diagnostics: data.diagnostics };
   }

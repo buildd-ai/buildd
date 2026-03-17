@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, cronExpression, priority, parentObjectiveId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, defaultRoleSlug } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -147,6 +147,7 @@ export async function POST(req: NextRequest) {
         activeHoursStart: activeHoursStart ?? null,
         activeHoursEnd: activeHoursEnd ?? null,
         activeHoursTimezone: activeHoursTimezone || null,
+        defaultRoleSlug: defaultRoleSlug || null,
       })
       .returning();
 

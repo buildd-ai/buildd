@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
+  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [] } = body;
 
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
@@ -196,6 +196,15 @@ export async function POST(req: NextRequest) {
       )`
     )
   );
+
+  // Filter by roleSlug: tasks with a role_slug are only claimable by runners
+  // that advertise that slug in availableSkills.
+  // If availableSkills is not provided, the runner can claim any task (backward compat).
+  if (availableSkills.length > 0) {
+    claimableConditions.push(
+      or(isNull(tasks.roleSlug), inArray(tasks.roleSlug, availableSkills))
+    );
+  }
 
   const claimableTasks = await db.query.tasks.findMany({
     where: and(...claimableConditions),
@@ -452,6 +461,13 @@ export async function POST(req: NextRequest) {
           description: ws.description || undefined,
           content: ws.content,
           ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
+          model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+          allowedTools: (ws.allowedTools as string[]) || [],
+          canDelegateTo: (ws.canDelegateTo as string[]) || [],
+          background: ws.background ?? false,
+          maxTurns: ws.maxTurns ?? null,
+          mcpServers: (ws.mcpServers as string[]) || [],
+          requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
         });
       }
     }

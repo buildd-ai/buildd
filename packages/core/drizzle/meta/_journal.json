@@ -120,6 +120,13 @@
       "when": 1773619607509,
       "tag": "0016_abnormal_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1773703756905,
+      "tag": "0017_amused_misty_knight",
+      "breakpoints": true
     }
   ]
 }
