@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc } from 'drizzle-orm';
+import { workspaceSkills, workers, tasks, accountWorkspaces } from '@buildd/core/db/schema';
+import { eq, and, or, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -33,6 +33,7 @@ export interface RoleWithActivity {
   allowedTools: string[];
   canDelegateTo: string[];
   enabled: boolean;
+  isRole: boolean;
   // Current activity
   currentTask: {
     id: string;
@@ -60,11 +61,22 @@ export default async function TeamPage() {
     );
   }
 
-  // Get all enabled skills across user's workspaces
+  // Get user's account IDs for account-level roles
+  const userAccountWs = await db.query.accountWorkspaces.findMany({
+    where: inArray(accountWorkspaces.workspaceId, wsIds),
+    columns: { accountId: true },
+  });
+  const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
+
+  // Get all enabled roles: workspace-scoped OR account-level
   const allSkills = await db.query.workspaceSkills.findMany({
     where: and(
-      inArray(workspaceSkills.workspaceId, wsIds),
       eq(workspaceSkills.enabled, true),
+      eq(workspaceSkills.isRole, true),
+      or(
+        inArray(workspaceSkills.workspaceId, wsIds),
+        accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
+      ),
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
   });
@@ -127,6 +139,7 @@ export default async function TeamPage() {
     allowedTools: skill.allowedTools as string[],
     canDelegateTo: skill.canDelegateTo as string[],
     enabled: skill.enabled,
+    isRole: skill.isRole,
     currentTask: roleActivity[skill.slug] || null,
   }));
 

@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
+import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { resolveWorktreeBase } from './worktree-utils';
 import Pusher from 'pusher-js';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
@@ -980,7 +981,19 @@ export class WorkerManager {
           continue;
         }
 
-        const worker = await this.startFromClaim(claimedWorker, task, workspacePath);
+        let resolvedPath = workspacePath;
+        if ((claimedWorker as any).roleConfig) {
+          const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
+          if (roleConfig.type === 'service') {
+            const { cwd } = await syncRoleToLocal(roleConfig);
+            resolvedPath = cwd;
+          } else {
+            // Builder role: sync config, then overlay files into repo
+            const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
+            await overlayRoleFiles(roleDir, workspacePath);
+          }
+        }
+        const worker = await this.startFromClaim(claimedWorker, task, resolvedPath);
         if (worker) started.push(worker);
       }
       return started;
@@ -1027,11 +1040,23 @@ export class WorkerManager {
     // Prefer claim response task data (full) over Pusher event task data (minimal payload)
     const fullTask = claimedWorker.task || task;
 
-    return this.startFromClaim(claimedWorker, fullTask, workspacePath);
+    let resolvedPath = workspacePath;
+    if ((claimedWorker as any).roleConfig) {
+      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
+      if (roleConfig.type === 'service') {
+        const { cwd } = await syncRoleToLocal(roleConfig);
+        resolvedPath = cwd;
+      } else {
+        // Builder role: sync config, then overlay files into repo
+        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
+        await overlayRoleFiles(roleDir, workspacePath);
+      }
+    }
+    return this.startFromClaim(claimedWorker, fullTask, resolvedPath);
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string> },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1101,6 +1126,10 @@ export class WorkerManager {
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
+    }
+    if (claimedWorker.roleConfig) {
+      worker.roleConfig = claimedWorker.roleConfig;
+      console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
     }
 
     this.workers.set(worker.id, worker);
@@ -2121,6 +2150,20 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+
+      // Resolve role env vars (secret labels → actual values)
+      if (worker.roleConfig) {
+        try {
+          const roleEnv = await resolveRoleEnv(
+            getRoleDir(worker.roleConfig.slug),
+            { ...process.env as Record<string, string>, ...(worker.mcpSecrets || {}) },
+          );
+          Object.assign(cleanEnv, roleEnv);
+          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Failed to resolve role env:`, err);
+        }
+      }
 
       // Determine whether to load CLAUDE.md
       // Default to true if not configured, respect admin setting if configured

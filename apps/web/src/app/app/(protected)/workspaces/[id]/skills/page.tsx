@@ -15,11 +15,12 @@ export default async function WorkspaceSkillsPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ new?: string }>;
+  searchParams: Promise<{ new?: string; from?: string }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
   const showNew = query.new === '1';
+  const fromTeam = query.from === 'team';
 
   const user = await getCurrentUser();
 
@@ -52,8 +53,8 @@ export default async function WorkspaceSkillsPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-          &larr; {workspace.name}
+        <Link href={fromTeam ? '/app/team' : `/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
+          &larr; {fromTeam ? 'Team' : workspace.name}
         </Link>
 
         <div className="flex justify-between items-center mb-8">
