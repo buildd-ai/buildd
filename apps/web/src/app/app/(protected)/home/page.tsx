@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, objectives, taskSchedules } from '@buildd/core/db/schema';
+import { tasks, workers, objectives, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -95,6 +95,15 @@ export default async function HomePage() {
     cronExpression?: string;
     enabled?: boolean;
     suggestedByTaskId?: string;
+  }[] = [];
+
+  let teamRoles: {
+    id: string;
+    name: string;
+    color: string;
+    slug: string;
+    isActive: boolean;
+    workspaceId: string;
   }[] = [];
 
   if (!isDev) {
@@ -275,6 +284,33 @@ export default async function HomePage() {
               suggestedByTaskId: ps.suggestedByTaskId,
             };
           });
+
+        // Get team roles for mini Team section
+        const allRoles = await db.query.workspaceSkills.findMany({
+          where: and(
+            inArray(workspaceSkills.workspaceId, wsIds),
+            eq(workspaceSkills.enabled, true),
+          ),
+          columns: { id: true, name: true, color: true, slug: true, workspaceId: true },
+          orderBy: [desc(workspaceSkills.createdAt)],
+          limit: 8,
+        });
+
+        // Determine which roles are active (have running workers)
+        const activeSlugs = new Set(
+          activeWorkers
+            .map((w: any) => w.task?.roleSlug as string | null)
+            .filter(Boolean)
+        );
+
+        teamRoles = allRoles.map(r => ({
+          id: r.id,
+          name: r.name,
+          color: r.color,
+          slug: r.slug,
+          isActive: activeSlugs.has(r.slug),
+          workspaceId: r.workspaceId,
+        }));
       }
     } catch (error) {
       console.error('Home page query error:', error);
@@ -542,6 +578,38 @@ export default async function HomePage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Mini Team section */}
+            {teamRoles.length > 0 && (
+              <div className="mt-8">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="section-label">Team</div>
+                  <Link href="/app/team" className="text-xs text-text-muted hover:text-text-secondary">
+                    {teamRoles.length} role{teamRoles.length !== 1 ? 's' : ''}
+                  </Link>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {teamRoles.map((role) => (
+                    <Link
+                      key={role.id}
+                      href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--card)] border border-border-default hover:bg-surface-3 transition-colors"
+                    >
+                      <div
+                        className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${role.isActive ? 'ring-2 ring-status-success/50' : ''}`}
+                        style={{ backgroundColor: role.color }}
+                      >
+                        <span className="text-white text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                      </div>
+                      <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
+                      {role.isActive && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
+                      )}
+                    </Link>
+                  ))}
+                </div>
               </div>
             )}
           </div>
