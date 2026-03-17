@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Use task terminology on task creation page
+- Remove task CTA from no-agents state on home page
+- Add New Mission CTA to home page, simplify no-agents text
+- Restore "Create a task" CTA on home page
+- Simplify "no agents running" message on home page
+
+### Docs
+
+- Add Missions section to CLAUDE.md
+
 ## [0.36.2] - 2026-03-11
 
 ### Fixed

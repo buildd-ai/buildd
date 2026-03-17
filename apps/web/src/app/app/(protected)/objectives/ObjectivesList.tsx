@@ -64,7 +64,7 @@ function PauseToggle({ id, status }: { id: string; status: string }) {
     e.preventDefault();
     e.stopPropagation();
     const nextStatus = isActive ? 'paused' : 'active';
-    await fetch(`/api/objectives/${id}`, {
+    await fetch(`/api/missions/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: nextStatus }),
@@ -234,7 +234,7 @@ export default function ObjectivesList({
         }
       }
 
-      const res = await fetch('/api/objectives', {
+      const res = await fetch('/api/missions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

@@ -81,7 +81,7 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
 
 ### 2. Objectives (Current Model)
 
-**Location:** `packages/core/db/schema.ts:300-327`, API: `apps/web/src/app/api/objectives/`
+**Location:** `packages/core/db/schema.ts:300-327`, API: `apps/web/src/app/api/missions/`
 
 #### Schema
 ```typescript
@@ -113,7 +113,7 @@ export const objectives = pgTable('objectives', {
 #### Task Relationship
 - **Foreign key:** `tasks.objectiveId` → `objectives.id` (lines 358)
 - **Computation:** Progress = (completed tasks / total tasks) * 100
-- **API calculation:** `apps/web/src/app/api/objectives/route.ts:60-70`
+- **API calculation:** `apps/web/src/app/api/missions/route.ts:60-70`
   ```typescript
   const totalTasks = obj.tasks?.length || 0;
   const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
@@ -121,10 +121,10 @@ export const objectives = pgTable('objectives', {
   ```
 
 #### CRUD Operations
-- **POST /api/objectives** (line 79-195): Create, auto-creates schedule if `cronExpression` provided
-- **GET /api/objectives** (line 10-77): List, filters by status/workspace, computes progress
-- **PATCH /api/objectives/[id]** (line 95-283): Update, syncs schedule if cron changes
-- **DELETE /api/objectives/[id]**: Delete (handler location inferred from route structure)
+- **POST /api/missions** (line 79-195): Create, auto-creates schedule if `cronExpression` provided
+- **GET /api/missions** (line 10-77): List, filters by status/workspace, computes progress
+- **PATCH /api/missions/[id]** (line 95-283): Update, syncs schedule if cron changes
+- **DELETE /api/missions/[id]**: Delete (handler location inferred from route structure)
 
 #### Heartbeat Mode (Special Feature)
 - `isHeartbeat: true` marks objective as a recurring health check
@@ -228,7 +228,7 @@ export interface ScheduleTrigger {
 
 #### Linking to Objectives
 - **Bidirectional:** `objectives.scheduleId` FK to `taskSchedules.id`
-- When objective created with `cronExpression`, schedule auto-created (`apps/web/src/app/api/objectives/route.ts:154-188`)
+- When objective created with `cronExpression`, schedule auto-created (`apps/web/src/app/api/missions/route.ts:154-188`)
 - Schedule embedded in objective's template context
 
 ---
@@ -577,7 +577,7 @@ When worker completes task via `PATCH /api/workers/[id]` with `status='completed
 For watch missions (`isHeartbeat=true`):
 1. Schedule fires → creates task
 2. Agent executes health check → records `result.structuredOutput.status`
-3. API extracts in `GET /api/objectives/[id]` (`apps/web/src/app/api/objectives/[id]/route.ts:63-74`):
+3. API extracts in `GET /api/missions/[id]` (`apps/web/src/app/api/missions/[id]/route.ts:63-74`):
    ```typescript
    const lastCompletedTask = objective.tasks?.find(
      (t: any) => t.status === 'completed' && t.result?.structuredOutput?.status
@@ -685,7 +685,7 @@ Missions need to "stay fresh" — progress updates, new tasks created when neede
 #### Example Implementation
 ```typescript
 async function orchestrateMissions() {
-  const objectives = await api('/api/objectives', {
+  const objectives = await api('/api/missions', {
     headers: { Authorization: 'Bearer <admin-key>' }
   });
   
@@ -716,7 +716,7 @@ async function orchestrateMissions() {
       const nextRunAt = new Date(mission.schedule.nextRunAt);
       if (nextRunAt < new Date()) {
         console.log(`[Orchestrator] Watch mission overdue: ${mission.title}, manually firing`);
-        await api(`/api/objectives/${mission.id}/run`, { method: 'POST' });
+        await api(`/api/missions/${mission.id}/run`, { method: 'POST' });
       }
     }
     
@@ -797,13 +797,13 @@ case 'run_recipe': {
 | Heartbeat send | `apps/runner/src/workers.ts:672-689` |
 | Heartbeat receive | `apps/web/src/app/api/workers/heartbeat/route.ts:20-96` |
 | Objective schema | `packages/core/db/schema.ts:300-327` |
-| Objective CRUD | `apps/web/src/app/api/objectives/route.ts` + `[id]/route.ts` |
+| Objective CRUD | `apps/web/src/app/api/missions/route.ts` + `[id]/route.ts` |
 | Schedule execution | `apps/web/src/app/api/cron/schedules/route.ts:100-400` |
 | Task creation | `apps/web/src/app/api/tasks/route.ts:123-290` |
 | Worker completion | `apps/web/src/app/api/workers/[id]/route.ts:48-497` |
 | MCP objectives tool | `packages/core/mcp-tools.ts:858-956` |
-| Progress calculation | `apps/web/src/app/api/objectives/route.ts:60-70` |
-| Heartbeat status extraction | `apps/web/src/app/api/objectives/[id]/route.ts:63-74` |
+| Progress calculation | `apps/web/src/app/api/missions/route.ts:60-70` |
+| Heartbeat status extraction | `apps/web/src/app/api/missions/[id]/route.ts:63-74` |
 | Active hours gating | `apps/web/src/app/api/cron/schedules/route.ts:291-298` |
 | Skills schema | `packages/core/db/schema.ts:570-587` |
 

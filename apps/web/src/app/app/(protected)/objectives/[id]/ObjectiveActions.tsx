@@ -24,7 +24,7 @@ export default function ObjectiveActions({
   async function handleRunNow() {
     setRunning(true);
     try {
-      const res = await fetch(`/api/objectives/${objectiveId}/run`, {
+      const res = await fetch(`/api/missions/${objectiveId}/run`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -42,7 +42,7 @@ export default function ObjectiveActions({
   async function patchObjective(body: Record<string, unknown>) {
     setLoading(true);
     try {
-      await fetch(`/api/objectives/${objectiveId}`, {
+      await fetch(`/api/missions/${objectiveId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -57,7 +57,7 @@ export default function ObjectiveActions({
     if (!confirm('Delete this objective? Linked tasks will be preserved.')) return;
     setLoading(true);
     try {
-      await fetch(`/api/objectives/${objectiveId}`, { method: 'DELETE' });
+      await fetch(`/api/missions/${objectiveId}`, { method: 'DELETE' });
       router.push('/app/objectives');
     } finally {
       setLoading(false);
