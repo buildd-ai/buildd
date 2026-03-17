@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -232,6 +232,176 @@ function McpServerEditor({
   );
 }
 
+interface RegistryServer {
+  server: {
+    name: string;
+    description: string;
+    title?: string;
+    version: string;
+    repository?: { url: string; source: string };
+    remotes?: { type: string; url: string; headers?: { name: string; description: string; isRequired?: boolean; isSecret?: boolean }[] }[];
+    packages?: { registryType: string; identifier: string; transport: string[]; environmentVariables?: { name: string; description: string; isRequired?: boolean; isSecret?: boolean }[] }[];
+  };
+}
+
+/** Convert a registry server entry into an MCP config */
+function registryToConfig(entry: RegistryServer['server']): McpServerConfig {
+  // Prefer remote (HTTP) if available
+  const remote = entry.remotes?.[0];
+  if (remote) {
+    const config: McpServerConfig = { type: 'http', url: remote.url };
+    // Add required header env stubs
+    const envHeaders = remote.headers?.filter(h => h.isSecret || h.isRequired);
+    if (envHeaders?.length) {
+      config.env = {};
+      for (const h of envHeaders) {
+        config.env[h.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')] = `\${${h.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}}`;
+      }
+    }
+    return config;
+  }
+  // Fallback: try npm package
+  const pkg = entry.packages?.find(p => p.registryType === 'npm');
+  if (pkg) {
+    const config: McpServerConfig = {
+      command: 'npx',
+      args: ['-y', pkg.identifier],
+    };
+    if (pkg.environmentVariables?.length) {
+      config.env = {};
+      for (const ev of pkg.environmentVariables) {
+        config.env[ev.name] = `\${${ev.name}}`;
+      }
+    }
+    return config;
+  }
+  return {};
+}
+
+/** Short display name from registry name like "io.github/user-repo" */
+function shortName(registryName: string): string {
+  const parts = registryName.split('/');
+  return parts[parts.length - 1] || registryName;
+}
+
+function McpRegistryBrowser({ onInstall, installedNames }: {
+  onInstall: (name: string, config: McpServerConfig) => void;
+  installedNames: string[];
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<RegistryServer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResults([]);
+      setSearched(false);
+      return;
+    }
+    setLoading(true);
+    setSearched(true);
+    try {
+      const res = await fetch(`/api/mcp/registry?search=${encodeURIComponent(q)}&limit=10`);
+      if (res.ok) {
+        const data = await res.json();
+        setResults(data.servers || []);
+      }
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  function handleInput(val: string) {
+    setQuery(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(val), 300);
+  }
+
+  return (
+    <div className="border border-border-default rounded-md overflow-hidden">
+      <div className="px-3 py-2 bg-surface-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => handleInput(e.target.value)}
+          placeholder="Search MCP Registry..."
+          className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
+        />
+      </div>
+      {loading && (
+        <div className="px-3 py-3 text-[12px] text-text-muted">Searching...</div>
+      )}
+      {!loading && searched && results.length === 0 && (
+        <div className="px-3 py-3 text-[12px] text-text-muted">No servers found</div>
+      )}
+      {results.length > 0 && (
+        <div className="max-h-[280px] overflow-y-auto divide-y divide-border-default">
+          {results.map((entry) => {
+            const s = entry.server;
+            const displayName = shortName(s.name);
+            const isInstalled = installedNames.includes(displayName);
+            const hasRemote = !!s.remotes?.length;
+            const hasPkg = !!s.packages?.find(p => p.registryType === 'npm');
+
+            return (
+              <div key={s.name + s.version} className="px-3 py-2.5 hover:bg-surface-2 transition-colors">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[13px] font-medium text-text-primary truncate">{s.title || displayName}</span>
+                      <span className="text-[11px] text-text-muted">v{s.version}</span>
+                    </div>
+                    <p className="text-[11px] text-text-muted mt-0.5 line-clamp-2">{s.description}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      {hasRemote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">HTTP</span>}
+                      {hasPkg && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">npm</span>}
+                      {s.repository && (
+                        <a
+                          href={s.repository.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-text-muted hover:text-text-secondary"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          repo
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isInstalled}
+                    onClick={() => {
+                      const config = registryToConfig(s);
+                      onInstall(displayName, config);
+                    }}
+                    className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
+                      isInstalled
+                        ? 'bg-surface-3 text-text-muted cursor-default'
+                        : 'bg-primary text-white hover:bg-primary-hover'
+                    }`}
+                  >
+                    {isInstalled ? 'Added' : '+ Add'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!searched && !loading && (
+        <div className="px-3 py-3 text-[11px] text-text-muted">
+          Search the official MCP Registry for servers like &quot;github&quot;, &quot;slack&quot;, &quot;postgres&quot;...
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions, workspaces: userWorkspaces }: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -252,6 +422,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     normalizeMcpServers(skill.mcpServers)
   );
   const [newServerName, setNewServerName] = useState('');
+  const [showBrowse, setShowBrowse] = useState(false);
   const [envVars, setEnvVars] = useState<Record<string, string>>(skill.requiredEnvVars || {});
   const [isRole, setIsRole] = useState(skill.isRole);
   const [repoUrl, setRepoUrl] = useState(skill.repoUrl || '');
@@ -500,8 +671,29 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
 
             {/* Connectors (MCP Servers) */}
             <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Connectors</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-text-primary">Connectors</label>
+                <button
+                  type="button"
+                  onClick={() => setShowBrowse(!showBrowse)}
+                  className="text-[12px] text-primary hover:text-primary-hover font-medium"
+                >
+                  {showBrowse ? 'Hide Registry' : 'Browse Registry'}
+                </button>
+              </div>
               <p className="text-xs text-text-muted mb-2">MCP servers available to this role at runtime</p>
+
+              {showBrowse && (
+                <div className="mb-3">
+                  <McpRegistryBrowser
+                    installedNames={Object.keys(mcpServers)}
+                    onInstall={(installName, config) => {
+                      setMcpServers(prev => ({ ...prev, [installName]: config }));
+                    }}
+                  />
+                </div>
+              )}
+
               <div className="space-y-2">
                 {Object.entries(mcpServers).map(([serverName, config]) => (
                   <McpServerEditor
