@@ -1,7 +1,7 @@
 /**
  * Pluggable secrets provider interface (BYOSM — Bring Your Own Secrets Manager).
  *
- * Default implementation: PostgresSecretsProvider (uses `secrets` + `secret_refs` tables).
+ * Default implementation: PostgresSecretsProvider (uses `secrets` table).
  * Override with setSecretsProvider() for custom backends (Vault, AWS Secrets Manager, etc.).
  */
 
@@ -38,13 +38,4 @@ export interface SecretsProvider {
 
   /** List secret metadata (never values) for a team. */
   list(teamId: string): Promise<SecretRecord[]>;
-
-  /** Create a single-use, time-limited reference to a secret. */
-  createRef(secretId: string, scopedTo: string, ttlSeconds?: number): Promise<string>;
-
-  /** Redeem a secret ref — returns decrypted value if valid, null if expired/used/wrong scope. */
-  redeemRef(ref: string, claimedBy: string): Promise<string | null>;
-
-  /** Clean up expired refs. */
-  cleanupExpiredRefs(): Promise<number>;
 }

@@ -42,6 +42,7 @@ export interface RoleWithActivity {
     workerStatus: string;
     startedAt: string;
     prUrl?: string;
+    missionTitle?: string;
   } | null;
 }
 
@@ -96,7 +97,10 @@ export default async function TeamPage() {
     with: {
       task: {
         columns: { id: true, title: true, workspaceId: true, roleSlug: true, context: true },
-        with: { workspace: { columns: { name: true } } },
+        with: {
+          workspace: { columns: { name: true } },
+          objective: { columns: { title: true } },
+        },
       },
     },
   });
@@ -109,6 +113,7 @@ export default async function TeamPage() {
     workerStatus: string;
     startedAt: string;
     prUrl?: string;
+    missionTitle?: string;
   }> = {};
 
   for (const w of activeWorkers) {
@@ -128,6 +133,7 @@ export default async function TeamPage() {
           workerStatus: w.status,
           startedAt: w.startedAt ? timeAgo(w.startedAt) : '',
           prUrl: (w as any).prUrl || undefined,
+          missionTitle: task.objective?.title || undefined,
         };
       }
     }

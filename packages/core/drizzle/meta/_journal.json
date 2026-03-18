@@ -148,6 +148,13 @@
       "when": 1773886800000,
       "tag": "0020_data_fix_is_role",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1773749254048,
+      "tag": "0021_faithful_warbound",
+      "breakpoints": true
     }
   ]
 }

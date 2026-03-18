@@ -1056,33 +1056,22 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; secretRef?: string; oauthSecretRef?: string; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
 
-    // Use server-managed secrets: prefer inline (no roundtrip), fall back to ref redemption
+    // Use server-managed secrets (delivered inline during claim)
     let serverApiKey: string | undefined;
     let serverOauthToken: string | undefined;
     if (!this.hasCredentials) {
-      // Prefer inline secrets (new servers send these directly)
       if (claimedWorker.serverApiKey) {
         serverApiKey = claimedWorker.serverApiKey;
-        console.log(`[Worker ${claimedWorker.id}] Using inline server-managed API key`);
-      } else if (claimedWorker.secretRef) {
-        serverApiKey = await this.buildd.redeemSecret(claimedWorker.secretRef, claimedWorker.id) || undefined;
-        if (serverApiKey) {
-          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed API key via ref`);
-        }
+        console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
       }
       if (claimedWorker.serverOauthToken) {
         serverOauthToken = claimedWorker.serverOauthToken;
-        console.log(`[Worker ${claimedWorker.id}] Using inline server-managed OAuth token`);
-      } else if (claimedWorker.oauthSecretRef) {
-        serverOauthToken = await this.buildd.redeemSecret(claimedWorker.oauthSecretRef, claimedWorker.id) || undefined;
-        if (serverOauthToken) {
-          console.log(`[Worker ${claimedWorker.id}] Redeemed server-managed OAuth token via ref`);
-        }
+        console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
       }
     }
 
@@ -2123,13 +2112,13 @@ export class WorkerManager {
         }
       }
 
-      // Inject server-managed API key (redeemed from secretRef during claim)
+      // Inject server-managed API key (delivered inline during claim)
       if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
         cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
         console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
 
-      // Inject server-managed OAuth token (redeemed from oauthSecretRef during claim)
+      // Inject server-managed OAuth token (delivered inline during claim)
       if (worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
         cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);

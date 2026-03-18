@@ -6,7 +6,12 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import TaskGrid from './TaskGrid';
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mission?: string }>;
+}) {
+  const { mission: missionId } = await searchParams;
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
@@ -116,5 +121,17 @@ export default async function TasksPage() {
     }
   }
 
-  return <TaskGrid tasks={gridTasks} />;
+  // Look up mission title if filtered
+  let missionTitle: string | null = null;
+  if (missionId && user) {
+    try {
+      const mission = await db.query.objectives.findFirst({
+        where: eq(objectives.id, missionId),
+        columns: { title: true },
+      });
+      missionTitle = mission?.title || null;
+    } catch {}
+  }
+
+  return <TaskGrid tasks={gridTasks} missionFilter={missionId || null} missionTitle={missionTitle} />;
 }

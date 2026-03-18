@@ -639,36 +639,6 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               </div>
             )}
 
-            {/* Allowed Tools */}
-            <div>
-              <label className="block text-sm font-medium text-text-primary mb-2">
-                Allowed Tools
-                <span className="text-text-muted font-normal ml-1">
-                  {allowedTools.length === 0 ? '(all)' : `(${allowedTools.length})`}
-                </span>
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {AVAILABLE_TOOLS.map(tool => {
-                  const active = allowedTools.includes(tool);
-                  return (
-                    <button
-                      key={tool}
-                      type="button"
-                      onClick={() => toggleTool(tool)}
-                      className={`px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
-                        active
-                          ? 'bg-text-primary text-white border-text-primary'
-                          : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
-                      }`}
-                    >
-                      {tool}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-text-muted mt-1">Empty = all tools allowed.</p>
-            </div>
-
             {/* Connectors (MCP Servers) */}
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -790,6 +760,38 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 </button>
               </form>
             </div>
+
+            {/* Allowed Tools (collapsed) */}
+            <details className="group">
+              <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-text-primary">
+                Allowed Tools
+                <span className="text-text-muted font-normal text-[12px]">
+                  {allowedTools.length === 0 ? 'All allowed' : `${allowedTools.length} restricted`}
+                </span>
+              </summary>
+              <div className="mt-3">
+                <div className="flex flex-wrap gap-2">
+                  {AVAILABLE_TOOLS.map(tool => {
+                    const active = allowedTools.includes(tool);
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        onClick={() => toggleTool(tool)}
+                        className={`px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
+                          active
+                            ? 'bg-text-primary text-white border-text-primary'
+                            : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
+                        }`}
+                      >
+                        {tool}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-text-muted mt-1">Empty = all tools allowed.</p>
+              </div>
+            </details>
 
             {/* Settings */}
             <div>

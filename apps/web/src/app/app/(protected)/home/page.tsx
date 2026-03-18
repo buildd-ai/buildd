@@ -37,16 +37,6 @@ function formatTime(date: Date | string): string {
   });
 }
 
-function getTaskTypeLabel(task: { mode?: string; category?: string | null }): { label: string; className: string } {
-  if (task.mode === 'planning') {
-    return { label: 'BRIEF', className: 'type-label type-label-brief' };
-  }
-  if (task.category === 'chore' || task.category === 'infra') {
-    return { label: 'WATCH', className: 'type-label type-label-watch' };
-  }
-  return { label: 'BUILD', className: 'type-label type-label-build' };
-}
-
 export default async function HomePage() {
   const user = await getCurrentUser();
 
@@ -60,8 +50,7 @@ export default async function HomePage() {
     workerName: string;
     status: string;
     startedAt: Date | null;
-    mode: string;
-    category: string | null;
+    roleSlug: string | null;
   }[] = [];
 
   let recentActivity: {
@@ -77,7 +66,7 @@ export default async function HomePage() {
     id: string;
     title: string;
     description: string | null;
-    type: 'build' | 'watch' | 'brief';
+    defaultRoleSlug: string | null;
     totalTasks: number;
     completedTasks: number;
     activeWorkers: number;
@@ -105,6 +94,9 @@ export default async function HomePage() {
     isActive: boolean;
     workspaceId: string;
   }[] = [];
+
+  // Build a roles map for display
+  const rolesMap = new Map<string, { name: string; color: string }>();
 
   if (!isDev) {
     if (!user) {
@@ -146,7 +138,7 @@ export default async function HomePage() {
           limit: 10,
           with: {
             task: {
-              columns: { id: true, title: true, mode: true, category: true, objectiveId: true },
+              columns: { id: true, title: true, mode: true, category: true, objectiveId: true, roleSlug: true },
               with: {
                 objective: {
                   columns: { title: true },
@@ -164,8 +156,7 @@ export default async function HomePage() {
           workerName: w.name,
           status: w.status,
           startedAt: w.startedAt,
-          mode: w.task?.mode || 'execution',
-          category: w.task?.category || null,
+          roleSlug: w.task?.roleSlug || null,
         }));
 
         // Recent completed/failed workers for activity feed
@@ -206,7 +197,7 @@ export default async function HomePage() {
               eq(objectives.status, 'active')
             ),
             orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-            columns: { id: true, title: true, description: true, isHeartbeat: true, cronExpression: true },
+            columns: { id: true, title: true, description: true, defaultRoleSlug: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -241,18 +232,15 @@ export default async function HomePage() {
             }
           }
 
-          missions = activeObjectives.map(obj => {
-            const type = !obj.cronExpression ? 'build' : obj.isHeartbeat ? 'watch' : 'brief';
-            return {
-              id: obj.id,
-              title: obj.title,
-              description: obj.description,
-              type,
-              totalTasks: obj.tasks.length,
-              completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
-              activeWorkers: activeWorkerCounts[obj.id] || 0,
-            };
-          });
+          missions = activeObjectives.map(obj => ({
+            id: obj.id,
+            title: obj.title,
+            description: obj.description,
+            defaultRoleSlug: obj.defaultRoleSlug,
+            totalTasks: obj.tasks.length,
+            completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
+            activeWorkers: activeWorkerCounts[obj.id] || 0,
+          }));
         }
 
         // Schedules with pending agent suggestions
@@ -302,6 +290,9 @@ export default async function HomePage() {
           seenSlugs.add(r.slug);
           return true;
         }).slice(0, 8);
+
+        // Build roles map for resolving role slugs to name/color
+        allRoles.forEach(r => rolesMap.set(r.slug, { name: r.name, color: r.color }));
 
         // Determine which roles are active (have running workers)
         const activeSlugs = new Set(
@@ -396,7 +387,7 @@ export default async function HomePage() {
               ) : (
                 <div className="space-y-2">
                   {activeItems.map((item) => {
-                    const typeLabel = getTaskTypeLabel({ mode: item.mode, category: item.category });
+                    const role = item.roleSlug ? rolesMap.get(item.roleSlug) : null;
                     return (
                       <Link
                         key={item.id}
@@ -414,9 +405,15 @@ export default async function HomePage() {
                               {item.objectiveTitle && ` \u00B7 ${item.objectiveTitle}`}
                             </div>
                           </div>
-                          <span className={typeLabel.className}>
-                            {typeLabel.label}
-                          </span>
+                          {role && (
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              <span
+                                className="w-2 h-2 rounded-full"
+                                style={{ backgroundColor: role.color }}
+                              />
+                              <span className="text-[11px] text-text-muted">{role.name}</span>
+                            </span>
+                          )}
                         </div>
                       </Link>
                     );
@@ -437,7 +434,7 @@ export default async function HomePage() {
                       className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                     >
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="type-label type-label-watch">SUGGEST</span>
+                        <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">SUGGEST</span>
                         <span className="text-[13px] font-medium text-text-primary truncate">
                           {s.scheduleName}
                         </span>
@@ -478,12 +475,7 @@ export default async function HomePage() {
                     const pct = mission.totalTasks > 0
                       ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
                       : 0;
-                    const typeLabelMap = {
-                      build: { label: 'BUILD', className: 'type-label type-label-build' },
-                      watch: { label: 'WATCH', className: 'type-label type-label-watch' },
-                      brief: { label: 'BRIEF', className: 'type-label type-label-brief' },
-                    };
-                    const typeLabel = typeLabelMap[mission.type];
+                    const role = mission.defaultRoleSlug ? rolesMap.get(mission.defaultRoleSlug) : null;
 
                     return (
                       <Link
@@ -493,7 +485,12 @@ export default async function HomePage() {
                       >
                         <div className="flex items-start justify-between gap-3 mb-2">
                           <div className="flex items-center gap-2 min-w-0">
-                            <span className={typeLabel.className}>{typeLabel.label}</span>
+                            {role && (
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: role.color }}
+                              />
+                            )}
                             <span className="text-[15px] font-medium text-text-primary truncate">
                               {mission.title}
                             </span>
@@ -520,6 +517,9 @@ export default async function HomePage() {
                           </div>
                         )}
                         <div className="flex items-center gap-3 text-[11px] text-text-muted">
+                          {role && (
+                            <span>{role.name}</span>
+                          )}
                           {mission.totalTasks > 0 && (
                             <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
                           )}

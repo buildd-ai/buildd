@@ -133,16 +133,6 @@ export class BuilddClient {
     }, [409]);
   }
 
-  async redeemSecret(ref: string, workerId: string): Promise<string | null> {
-    try {
-      const data = await this.fetch(`/api/workers/secret/${ref}?workerId=${workerId}`);
-      return data.value || null;
-    } catch (err) {
-      console.warn(`Failed to redeem secret ref: ${err}`);
-      return null;
-    }
-  }
-
   async createTask(task: {
     workspaceId: string;
     title: string;

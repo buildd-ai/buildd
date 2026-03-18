@@ -47,33 +47,27 @@ type GroupBy = 'mission' | 'none' | 'status';
 
 function getStatusDot(status: string): { color: string; pulse: boolean } {
   switch (status) {
-    case 'completed': return { color: 'bg-[#6B8E5E]', pulse: false };
+    case 'completed': return { color: 'bg-status-success', pulse: false };
     case 'in_progress':
-    case 'assigned': return { color: 'bg-[#3B82F6]', pulse: true };
-    case 'failed': return { color: 'bg-[#EF4444]', pulse: false };
-    case 'waiting_input': return { color: 'bg-[#D97706]', pulse: false };
+    case 'assigned': return { color: 'bg-status-info', pulse: true };
+    case 'failed': return { color: 'bg-status-error', pulse: false };
+    case 'waiting_input': return { color: 'bg-status-warning', pulse: false };
     case 'pending': return { color: 'bg-text-muted', pulse: false };
     default: return { color: 'bg-text-muted', pulse: false };
   }
 }
 
-function getMissionType(_tasks: GridTask[]): string | null {
-  // Infer from the first task's objective — we don't have cron/heartbeat info here,
-  // so just show a generic badge. In the future this could come from the API.
-  return null;
-}
-
 function StatusBadge({ status }: { status: string }) {
   if (status === 'failed') {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-[#FEE2E2] text-[#EF4444]">
+      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-error/15 text-status-error">
         Failed
       </span>
     );
   }
   if (status === 'in_progress' || status === 'assigned') {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-[#DBEAFE] text-[#3B82F6]">
+      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-info/15 text-status-info">
         Running
       </span>
     );
@@ -88,13 +82,13 @@ function TaskRow({ task }: { task: GridTask }) {
   return (
     <Link
       href={`/app/tasks/${task.id}`}
-      className="flex items-center gap-3 px-4 py-2.5 border-b border-[#EDE8DF] hover:bg-surface-2/50 transition-colors"
+      className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default hover:bg-surface-2/50 transition-colors"
     >
       {/* Status dot */}
       <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
 
       {/* Title */}
-      <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-[#8A8478]' : 'text-[#2C2A25]'}`}>
+      <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
         {task.title}
       </span>
 
@@ -108,14 +102,14 @@ function TaskRow({ task }: { task: GridTask }) {
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
-          className="text-[12px] text-[#C45A3B] hover:underline shrink-0"
+          className="text-[12px] text-accent-text hover:underline shrink-0"
         >
           #{task.prNumber}
         </a>
       )}
 
       {/* Workspace badge */}
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-[#EDE8DF] text-text-secondary shrink-0">
+      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-surface-3 text-text-secondary shrink-0">
         {task.workspaceName}
       </span>
 
@@ -127,7 +121,7 @@ function TaskRow({ task }: { task: GridTask }) {
       )}
 
       {/* Time ago */}
-      <span className="text-[12px] text-[#B0A99E] shrink-0 w-[70px] text-right">
+      <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right">
         {timeAgo(task.updatedAt)}
       </span>
     </Link>
@@ -146,21 +140,33 @@ interface StatusGroup {
   tasks: GridTask[];
 }
 
-export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
+interface TaskGridProps {
+  tasks: GridTask[];
+  missionFilter?: string | null;
+  missionTitle?: string | null;
+}
+
+export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGridProps) {
+  // When viewing a single mission's tasks, filter to just those
+  const visibleTasks = useMemo(() => {
+    if (!missionFilter) return tasks;
+    return tasks.filter(t => t.objectiveId === missionFilter);
+  }, [tasks, missionFilter]);
+
   const [filter, setFilter] = useState<FilterStatus>('all');
-  const [groupBy, setGroupBy] = useState<GroupBy>('mission');
+  const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'mission');
   const [search, setSearch] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   // Counts from unfiltered tasks
-  const allCount = tasks.length;
-  const activeCount = tasks.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
-  const completedCount = tasks.filter(t => t.status === 'completed').length;
-  const failedCount = tasks.filter(t => t.status === 'failed').length;
+  const allCount = visibleTasks.length;
+  const activeCount = visibleTasks.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
+  const completedCount = visibleTasks.filter(t => t.status === 'completed').length;
+  const failedCount = visibleTasks.filter(t => t.status === 'failed').length;
 
   // Apply filter + search
   const filtered = useMemo(() => {
-    let result = tasks;
+    let result = visibleTasks;
     if (filter === 'active') result = result.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status));
     else if (filter === 'completed') result = result.filter(t => t.status === 'completed');
     else if (filter === 'failed') result = result.filter(t => t.status === 'failed');
@@ -171,7 +177,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
     }
 
     return result;
-  }, [tasks, filter, search]);
+  }, [visibleTasks, filter, search]);
 
   // Split out needs-input tasks (always pinned at top)
   const needsInputTasks = useMemo(() => filtered.filter(t => t.status === 'waiting_input'), [filtered]);
@@ -202,7 +208,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
         id,
         title: id ? (groupTasks[0].objectiveTitle || 'Untitled mission') : 'No mission',
         tasks: sortTasks(groupTasks),
-        missionType: getMissionType(groupTasks),
+        missionType: null,
       });
     }
     // Sort: groups with active tasks first, then by recency
@@ -257,7 +263,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
   };
 
   // Empty state
-  if (tasks.length === 0) {
+  if (visibleTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8">
         <div className="max-w-md text-center">
@@ -292,9 +298,30 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto py-4">
+        {/* Breadcrumbs */}
+        {missionFilter && (
+          <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
+            <Link href="/app/missions" className="hover:text-text-secondary transition-colors">
+              Missions
+            </Link>
+            <span>/</span>
+            <Link href={`/app/missions/${missionFilter}`} className="hover:text-text-secondary transition-colors truncate max-w-[200px]">
+              {missionTitle || 'Mission'}
+            </Link>
+            <span>/</span>
+            <span className="text-text-secondary">Tasks</span>
+            <span className="mx-1 text-text-muted">&middot;</span>
+            <Link href="/app/tasks" className="text-accent-text hover:underline">
+              View all tasks
+            </Link>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between px-4 mb-4">
-          <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>Tasks</h1>
+          <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>
+            {missionFilter ? (missionTitle || 'Mission Tasks') : 'Tasks'}
+          </h1>
           <Link
             href="/app/tasks/new"
             className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-primary text-white text-[14px] font-medium hover:bg-primary-hover transition-colors"
@@ -315,12 +342,12 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
                 className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
                   filter === f.key
                     ? 'bg-text-primary text-white'
-                    : 'text-[#8A8478] hover:text-text-primary hover:bg-surface-2'
+                    : 'text-text-desc hover:text-text-primary hover:bg-surface-2'
                 }`}
               >
                 {f.label}
                 {f.count > 0 && (
-                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-white/70' : 'text-[#8A8478]'}`}>
+                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-white/70' : 'text-text-desc'}`}>
                     {f.count}
                   </span>
                 )}
@@ -336,7 +363,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
             placeholder="Search tasks..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-[#DDD8CE] bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-muted"
+            className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
           />
 
           {/* Group by dropdown */}
@@ -344,7 +371,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
             <select
               value={groupBy}
               onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-              className="appearance-none px-3 py-1.5 pr-7 text-[13px] rounded-md border border-[#DDD8CE] bg-transparent text-text-primary cursor-pointer focus:outline-none focus:border-text-muted"
+              className="appearance-none px-3 py-1.5 pr-7 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary cursor-pointer focus:outline-none focus:border-text-secondary"
             >
               <option value="mission">Group: Mission</option>
               <option value="status">Group: Status</option>
@@ -355,15 +382,15 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
         </div>
 
         {/* Task list */}
-        <div className="border-t border-[#EDE8DF]">
+        <div className="border-t border-border-default">
           {/* Needs Input — pinned section */}
           {needsInputTasks.length > 0 && (
-            <div className="bg-[#FDF6EE]">
+            <div className="bg-status-warning/8">
               {/* Header */}
-              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#EDE8DF]">
-                <span className="w-2 h-2 rounded-full bg-[#D97706]" />
-                <span className="text-[13px] font-semibold text-[#2C2A25]">Needs Input</span>
-                <span className="text-[12px] text-[#8A8478]">{needsInputTasks.length}</span>
+              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border-default">
+                <span className="w-2 h-2 rounded-full bg-status-warning" />
+                <span className="text-[13px] font-semibold text-text-primary">Needs Input</span>
+                <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               {/* Rows */}
               {needsInputTasks.map((task) => {
@@ -372,11 +399,11 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
                   <Link
                     key={task.id}
                     href={`/app/tasks/${task.id}`}
-                    className="flex items-center gap-3 px-4 py-2.5 border-b border-[#EDE8DF]/60 hover:bg-[#FBF0E2] transition-colors"
+                    className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default/60 hover:bg-status-warning/12 transition-colors"
                   >
                     <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
-                    <span className="text-[14px] text-[#2C2A25] truncate min-w-0 flex-1">{task.title}</span>
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-[#EDE8DF] text-text-secondary shrink-0">
+                    <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
+                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-surface-3 text-text-secondary shrink-0">
                       {task.workspaceName}
                     </span>
                     {task.objectiveTitle && (
@@ -384,7 +411,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
                         {task.objectiveTitle}
                       </span>
                     )}
-                    <span className="text-[12px] text-[#B0A99E] shrink-0 w-[70px] text-right">
+                    <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right">
                       {timeAgo(task.updatedAt)}
                     </span>
                   </Link>
@@ -403,18 +430,18 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
                 {/* Group header */}
                 <button
                   onClick={() => toggleGroup(groupId)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-[#EDE8DF] bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
                 >
                   <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
                     &#9662;
                   </span>
-                  <span className="text-[13px] font-semibold text-[#2C2A25]">{group.title}</span>
+                  <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
                   {group.missionType && (
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded bg-[#EDE8DF] text-text-secondary">
+                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded bg-surface-3 text-text-secondary">
                       {group.missionType}
                     </span>
                   )}
-                  <span className="text-[12px] text-[#8A8478] ml-auto">
+                  <span className="text-[12px] text-text-desc ml-auto">
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
@@ -435,13 +462,13 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
               <div key={groupId}>
                 <button
                   onClick={() => toggleGroup(groupId)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-[#EDE8DF] bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
                 >
                   <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
                     &#9662;
                   </span>
-                  <span className="text-[13px] font-semibold text-[#2C2A25]">{group.label}</span>
-                  <span className="text-[12px] text-[#8A8478] ml-auto">
+                  <span className="text-[13px] font-semibold text-text-primary">{group.label}</span>
+                  <span className="text-[12px] text-text-desc ml-auto">
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
@@ -458,7 +485,7 @@ export default function TaskGrid({ tasks }: { tasks: GridTask[] }) {
           ))}
 
           {/* Empty filtered state */}
-          {filtered.length === 0 && tasks.length > 0 && (
+          {filtered.length === 0 && visibleTasks.length > 0 && (
             <div className="text-center py-12">
               <p className="text-text-muted text-sm">No tasks match this filter.</p>
             </div>

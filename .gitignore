@@ -17,3 +17,4 @@ coverage/
 scripts/seed/.last-seed.json
 .agent/research/
 .agent/runbooks/
+*.pen

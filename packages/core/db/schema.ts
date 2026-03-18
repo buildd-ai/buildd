@@ -660,20 +660,6 @@ export const secrets = pgTable('secrets', {
   accountPurposeLabelIdx: uniqueIndex('secrets_account_purpose_label_idx').on(t.accountId, t.purpose, t.label),
 }));
 
-// Single-use secret references for worker credential delivery
-export const secretRefs = pgTable('secret_refs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  ref: text('ref').notNull().unique(),
-  secretId: uuid('secret_id').references(() => secrets.id, { onDelete: 'cascade' }).notNull(),
-  scopedToWorkerId: text('scoped_to_worker_id').notNull(),
-  redeemed: boolean('redeemed').default(false).notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  refIdx: uniqueIndex('secret_refs_ref_idx').on(t.ref),
-  secretIdx: index('secret_refs_secret_idx').on(t.secretId),
-  expiresIdx: index('secret_refs_expires_idx').on(t.expiresAt),
-}));
 
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
@@ -817,15 +803,10 @@ export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
   user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
 }));
 
-export const secretsRelations = relations(secrets, ({ one, many }) => ({
+export const secretsRelations = relations(secrets, ({ one }) => ({
   team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
-  refs: many(secretRefs),
-}));
-
-export const secretRefsRelations = relations(secretRefs, ({ one }) => ({
-  secret: one(secrets, { fields: [secretRefs.secretId], references: [secrets.id] }),
 }));
 
 // Advisory file reservations — prevents concurrent workers from editing the same files

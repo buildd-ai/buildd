@@ -12,7 +12,6 @@ const TEST_KEY = 'test-encryption-key-that-is-at-least-32-chars-long!!';
  */
 class InMemorySecretsProvider implements SecretsProvider {
   private secrets = new Map<string, { encrypted: string; meta: SecretRecord }>();
-  private refs = new Map<string, { secretId: string; scopedTo: string; redeemed: boolean; expiresAt: Date }>();
 
   async set(id: string | null, value: string, metadata: Partial<SecretMetadata>): Promise<string> {
     const encryptedValue = encrypt(value);
@@ -60,40 +59,6 @@ class InMemorySecretsProvider implements SecretsProvider {
       .filter(s => s.meta.teamId === teamId)
       .map(s => s.meta);
   }
-
-  async createRef(secretId: string, scopedTo: string, ttlSeconds = 300): Promise<string> {
-    const ref = `sref_${randomUUID().replace(/-/g, '')}`;
-    this.refs.set(ref, {
-      secretId,
-      scopedTo,
-      redeemed: false,
-      expiresAt: new Date(Date.now() + ttlSeconds * 1000),
-    });
-    return ref;
-  }
-
-  async redeemRef(ref: string, claimedBy: string): Promise<string | null> {
-    const entry = this.refs.get(ref);
-    if (!entry) return null;
-    if (entry.redeemed) return null;
-    if (entry.scopedTo !== claimedBy) return null;
-    if (entry.expiresAt < new Date()) return null;
-
-    entry.redeemed = true;
-    return this.get(entry.secretId);
-  }
-
-  async cleanupExpiredRefs(): Promise<number> {
-    const now = new Date();
-    let count = 0;
-    for (const [key, entry] of this.refs) {
-      if (entry.expiresAt < now) {
-        this.refs.delete(key);
-        count++;
-      }
-    }
-    return count;
-  }
 }
 
 describe('SecretsProvider contract', () => {
@@ -102,7 +67,6 @@ describe('SecretsProvider contract', () => {
 
   const TEAM_ID = randomUUID();
   const ACCOUNT_ID = randomUUID();
-  const WORKER_ID = randomUUID();
 
   beforeAll(() => {
     originalKey = process.env.ENCRYPTION_KEY;
@@ -192,70 +156,5 @@ describe('SecretsProvider contract', () => {
 
   test('set: requires purpose for new secrets', async () => {
     await expect(provider.set(null, 'value', { teamId: TEAM_ID })).rejects.toThrow('purpose');
-  });
-
-  describe('secret refs', () => {
-    let secretId: string;
-
-    beforeAll(async () => {
-      secretId = await provider.set(null, 'ref-test-secret', {
-        teamId: TEAM_ID,
-        accountId: ACCOUNT_ID,
-        purpose: 'anthropic_api_key',
-      });
-    });
-
-    test('createRef + redeemRef: single-use works', async () => {
-      const ref = await provider.createRef(secretId, WORKER_ID, 300);
-      expect(ref).toMatch(/^sref_/);
-
-      const value = await provider.redeemRef(ref, WORKER_ID);
-      expect(value).toBe('ref-test-secret');
-    });
-
-    test('second redeem fails (single-use)', async () => {
-      const ref = await provider.createRef(secretId, WORKER_ID, 300);
-
-      // First redeem succeeds
-      const value = await provider.redeemRef(ref, WORKER_ID);
-      expect(value).toBe('ref-test-secret');
-
-      // Second redeem fails
-      const value2 = await provider.redeemRef(ref, WORKER_ID);
-      expect(value2).toBeNull();
-    });
-
-    test('wrong worker scope: redeem fails', async () => {
-      const ref = await provider.createRef(secretId, WORKER_ID, 300);
-      const wrongWorker = randomUUID();
-
-      const value = await provider.redeemRef(ref, wrongWorker);
-      expect(value).toBeNull();
-    });
-
-    test('expired ref: redeem fails', async () => {
-      // Create with 0 TTL (immediately expired)
-      const ref = await provider.createRef(secretId, WORKER_ID, 0);
-
-      // Wait a tick for expiration
-      await new Promise(r => setTimeout(r, 10));
-
-      const value = await provider.redeemRef(ref, WORKER_ID);
-      expect(value).toBeNull();
-    });
-
-    test('non-existent ref: redeem returns null', async () => {
-      const value = await provider.redeemRef('sref_nonexistent', WORKER_ID);
-      expect(value).toBeNull();
-    });
-
-    test('cleanupExpiredRefs removes expired entries', async () => {
-      // Create an expired ref
-      await provider.createRef(secretId, WORKER_ID, 0);
-      await new Promise(r => setTimeout(r, 10));
-
-      const cleaned = await provider.cleanupExpiredRefs();
-      expect(cleaned).toBeGreaterThanOrEqual(1);
-    });
   });
 });

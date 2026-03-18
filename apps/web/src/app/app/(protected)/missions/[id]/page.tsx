@@ -1,35 +1,15 @@
 import { db } from '@buildd/core/db';
-import { objectives } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { objectives, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import MissionSettings from './MissionSettings';
 
 export const dynamic = 'force-dynamic';
-
-type MissionType = 'build' | 'watch' | 'brief';
-
-function classifyMission(obj: {
-  cronExpression: string | null;
-  isHeartbeat: boolean;
-}): MissionType {
-  if (!obj.cronExpression) return 'build';
-  if (obj.isHeartbeat) return 'watch';
-  return 'brief';
-}
-
-function timeAgo(date: Date | string): string {
-  const ms = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 const STATUS_DOT: Record<string, string> = {
   pending: 'bg-text-muted',
@@ -38,12 +18,6 @@ const STATUS_DOT: Record<string, string> = {
   waiting_input: 'bg-status-warning animate-status-pulse',
   completed: 'bg-status-success',
   failed: 'bg-status-error',
-};
-
-const TYPE_BADGE: Record<MissionType, { label: string; classes: string }> = {
-  build: { label: 'BUILD', classes: 'type-label-build bg-status-success/10' },
-  watch: { label: 'WATCH', classes: 'type-label-watch bg-status-warning/10' },
-  brief: { label: 'BRIEF', classes: 'type-label-brief bg-accent-soft' },
 };
 
 export default async function MissionDetailPage({
@@ -108,12 +82,36 @@ export default async function MissionDetailPage({
     notFound();
   }
 
-  const missionType = classifyMission(objective);
-  const badge = TYPE_BADGE[missionType];
+  // Query roles for this user's workspaces
+  const wsIds = await getUserWorkspaceIds(user.id);
+  let roles: { slug: string; name: string; color: string }[] = [];
+  if (wsIds.length > 0) {
+    roles = await db.query.workspaceSkills.findMany({
+      where: and(
+        inArray(workspaceSkills.workspaceId, wsIds),
+        eq(workspaceSkills.enabled, true),
+      ),
+      columns: { slug: true, name: true, color: true },
+      orderBy: [desc(workspaceSkills.createdAt)],
+    });
+  }
 
   const totalTasks = objective.tasks?.length || 0;
   const completedTasks = objective.tasks?.filter((t) => t.status === 'completed').length || 0;
   const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+  const activeAgents = objective.tasks
+    ?.flatMap((t) => t.workers || [])
+    .filter((w) => w.status === 'running').length || 0;
+
+  const health = deriveMissionHealth({
+    status: objective.status,
+    activeAgents,
+    cronExpression: objective.cronExpression,
+    lastRunAt: (objective.schedule as any)?.lastRunAt || null,
+    nextRunAt: (objective.schedule as any)?.nextRunAt || null,
+  });
+  const healthDisplay = HEALTH_DISPLAY[health];
 
   const activeTasks = objective.tasks?.filter(
     (t) => !['completed', 'failed'].includes(t.status)
@@ -158,12 +156,9 @@ export default async function MissionDetailPage({
     })
     .slice(0, 8) || [];
 
-  // Connected MCP tools — unique tool names from worker metadata
-  const mcpTools = new Set<string>();
-  objective.tasks?.forEach((t) =>
-    t.workers?.forEach((w) => {
-      // Worker tool calls not stored yet — placeholder for future
-    })
+  // Last evaluation — most recent planning-mode completed task
+  const lastEvaluation = objective.tasks?.find(
+    (t) => t.mode === 'planning' && t.status === 'completed' && t.result
   );
 
   return (
@@ -183,8 +178,8 @@ export default async function MissionDetailPage({
           <h1 className="text-xl font-semibold text-text-primary font-sans">
             {objective.title}
           </h1>
-          <span className={`type-label px-2 py-0.5 rounded-full ${badge.classes}`}>
-            {badge.label}
+          <span className={`health-pill ${healthDisplay.colorClass}`}>
+            {healthDisplay.label}
           </span>
         </div>
 
@@ -194,8 +189,8 @@ export default async function MissionDetailPage({
           </p>
         )}
 
-        {/* Progress (build missions) */}
-        {missionType === 'build' && totalTasks > 0 && (
+        {/* Progress — shown for all missions with tasks */}
+        {totalTasks > 0 && (
           <div className="card p-4 mb-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[13px] text-text-secondary">Progress</span>
@@ -218,23 +213,6 @@ export default async function MissionDetailPage({
           </div>
         )}
 
-        {/* Schedule info */}
-        {objective.cronExpression && (
-          <div className="flex items-center gap-2 text-[12px] text-text-muted mb-4">
-            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <code className="font-mono text-[11px] text-text-secondary">
-              {objective.cronExpression}
-            </code>
-            {(objective.schedule as any)?.nextRunAt && (
-              <span>
-                &middot; Next: {new Date((objective.schedule as any).nextRunAt).toLocaleString()}
-              </span>
-            )}
-          </div>
-        )}
-
         {/* Workspace link */}
         {objective.workspace && (
           <div className="flex items-center gap-2 text-[12px] text-text-muted">
@@ -248,19 +226,34 @@ export default async function MissionDetailPage({
         )}
       </div>
 
-      {/* ── Connected Services ── */}
-      {mcpTools.size > 0 && (
+      {/* Mission Controls & Quick Task */}
+      <div className="mb-6">
+        <MissionSettings
+          missionId={id}
+          currentStatus={objective.status}
+          cronExpression={objective.cronExpression}
+          defaultRoleSlug={objective.defaultRoleSlug}
+          workspaceId={objective.workspaceId}
+          roles={roles}
+          schedule={objective.schedule ? {
+            nextRunAt: (objective.schedule as any).nextRunAt?.toISOString?.() || (objective.schedule as any).nextRunAt || null,
+            lastRunAt: (objective.schedule as any).lastRunAt?.toISOString?.() || (objective.schedule as any).lastRunAt || null,
+          } : null}
+          hasSchedule={!!objective.cronExpression}
+        />
+      </div>
+
+      {/* ── Orchestrator / Last Evaluation ── */}
+      {lastEvaluation && (
         <div className="mb-6">
-          <h2 className="section-label mb-3">Connected Services</h2>
-          <div className="flex flex-wrap gap-2">
-            {Array.from(mcpTools).map((tool) => (
-              <span
-                key={tool}
-                className="px-2.5 py-1 rounded-full bg-surface-3 border border-card-border text-[11px] text-text-secondary font-mono"
-              >
-                {tool}
-              </span>
-            ))}
+          <h2 className="section-label mb-3">Last Evaluation</h2>
+          <div className="card p-4">
+            <p className="text-[13px] text-text-secondary leading-relaxed line-clamp-4">
+              {(lastEvaluation.result as any)?.summary || 'Evaluation completed'}
+            </p>
+            <div className="text-[11px] text-text-muted mt-2">
+              {timeAgo(lastEvaluation.createdAt)}
+            </div>
           </div>
         </div>
       )}
@@ -323,7 +316,7 @@ export default async function MissionDetailPage({
         <div className="mb-6">
           <h2 className="section-label mb-3">Completed ({doneTasks.length})</h2>
           <div className="space-y-1.5">
-            {doneTasks.map((task) => {
+            {doneTasks.slice(0, 5).map((task) => {
               const latestWorker = task.workers?.[0];
               return (
                 <Link
@@ -349,6 +342,24 @@ export default async function MissionDetailPage({
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* View all tasks link */}
+      {totalTasks > 0 && (
+        <div className="mb-6">
+          <Link
+            href={`/app/tasks?mission=${id}`}
+            className="flex items-center gap-2 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors group text-[13px] text-text-secondary hover:text-accent-text"
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+            </svg>
+            <span>View all {totalTasks} tasks</span>
+            <svg className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+          </Link>
         </div>
       )}
 
@@ -439,27 +450,6 @@ export default async function MissionDetailPage({
         </div>
       )}
 
-      {/* ── Quick Task Input (placeholder) ── */}
-      <div className="mt-8">
-        <h2 className="section-label mb-3">Quick Task</h2>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            placeholder="Add a task to this mission..."
-            disabled
-            className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-[13px] text-text-primary placeholder:text-text-muted disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-          <button
-            disabled
-            className="px-4 py-2 rounded-lg bg-accent/20 text-accent-text text-[13px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Add
-          </button>
-        </div>
-        <p className="text-[11px] text-text-muted mt-1.5">
-          Coming soon — quick-add tasks to this mission.
-        </p>
-      </div>
     </div>
   );
 }
