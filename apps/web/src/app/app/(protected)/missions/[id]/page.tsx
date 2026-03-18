@@ -5,8 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { classifyMission, timeAgo } from '@/lib/mission-helpers';
-import type { MissionType } from '@/lib/mission-helpers';
+import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
 
@@ -19,12 +18,6 @@ const STATUS_DOT: Record<string, string> = {
   waiting_input: 'bg-status-warning animate-status-pulse',
   completed: 'bg-status-success',
   failed: 'bg-status-error',
-};
-
-const TYPE_BADGE: Record<MissionType, { label: string; classes: string }> = {
-  build: { label: 'BUILD', classes: 'type-label-build bg-status-success/10' },
-  watch: { label: 'WATCH', classes: 'type-label-watch bg-status-warning/10' },
-  brief: { label: 'BRIEF', classes: 'type-label-brief bg-accent-soft' },
 };
 
 export default async function MissionDetailPage({
@@ -103,12 +96,22 @@ export default async function MissionDetailPage({
     });
   }
 
-  const missionType = classifyMission(objective);
-  const badge = TYPE_BADGE[missionType];
-
   const totalTasks = objective.tasks?.length || 0;
   const completedTasks = objective.tasks?.filter((t) => t.status === 'completed').length || 0;
   const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+  const activeAgents = objective.tasks
+    ?.flatMap((t) => t.workers || [])
+    .filter((w) => w.status === 'running').length || 0;
+
+  const health = deriveMissionHealth({
+    status: objective.status,
+    activeAgents,
+    cronExpression: objective.cronExpression,
+    lastRunAt: (objective.schedule as any)?.lastRunAt || null,
+    nextRunAt: (objective.schedule as any)?.nextRunAt || null,
+  });
+  const healthDisplay = HEALTH_DISPLAY[health];
 
   const activeTasks = objective.tasks?.filter(
     (t) => !['completed', 'failed'].includes(t.status)
@@ -153,6 +156,11 @@ export default async function MissionDetailPage({
     })
     .slice(0, 8) || [];
 
+  // Last evaluation — most recent planning-mode completed task
+  const lastEvaluation = objective.tasks?.find(
+    (t) => t.mode === 'planning' && t.status === 'completed' && t.result
+  );
+
   return (
     <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Breadcrumbs */}
@@ -170,8 +178,8 @@ export default async function MissionDetailPage({
           <h1 className="text-xl font-semibold text-text-primary font-sans">
             {objective.title}
           </h1>
-          <span className={`type-label px-2 py-0.5 rounded-full ${badge.classes}`}>
-            {badge.label}
+          <span className={`health-pill ${healthDisplay.colorClass}`}>
+            {healthDisplay.label}
           </span>
         </div>
 
@@ -181,8 +189,8 @@ export default async function MissionDetailPage({
           </p>
         )}
 
-        {/* Progress (build missions) */}
-        {missionType === 'build' && totalTasks > 0 && (
+        {/* Progress — shown for all missions with tasks */}
+        {totalTasks > 0 && (
           <div className="card p-4 mb-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[13px] text-text-secondary">Progress</span>
@@ -234,6 +242,21 @@ export default async function MissionDetailPage({
           hasSchedule={!!objective.cronExpression}
         />
       </div>
+
+      {/* ── Orchestrator / Last Evaluation ── */}
+      {lastEvaluation && (
+        <div className="mb-6">
+          <h2 className="section-label mb-3">Last Evaluation</h2>
+          <div className="card p-4">
+            <p className="text-[13px] text-text-secondary leading-relaxed line-clamp-4">
+              {(lastEvaluation.result as any)?.summary || 'Evaluation completed'}
+            </p>
+            <div className="text-[11px] text-text-muted mt-2">
+              {timeAgo(lastEvaluation.createdAt)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Task Tree ── */}
       {activeTasks.length > 0 && (
