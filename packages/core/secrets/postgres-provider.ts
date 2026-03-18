@@ -1,14 +1,13 @@
 /**
- * Default SecretsProvider backed by Postgres (secrets + secret_refs tables).
+ * Default SecretsProvider backed by Postgres (secrets table).
  * Uses AES-256-GCM encryption for values at rest.
  */
 
 import { db } from '../db/client';
-import { secrets, secretRefs } from '../db/schema';
-import { eq, and, lt } from 'drizzle-orm';
+import { secrets } from '../db/schema';
+import { eq } from 'drizzle-orm';
 import { encrypt, decrypt } from './crypto';
 import type { SecretsProvider, SecretMetadata, SecretRecord } from './types';
-import { randomBytes } from 'crypto';
 
 export class PostgresSecretsProvider implements SecretsProvider {
 
@@ -77,47 +76,5 @@ export class PostgresSecretsProvider implements SecretsProvider {
       },
     });
     return rows as SecretRecord[];
-  }
-
-  async createRef(secretId: string, scopedTo: string, ttlSeconds = 300): Promise<string> {
-    const ref = `sref_${randomBytes(24).toString('hex')}`;
-    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
-
-    await db.insert(secretRefs).values({
-      ref,
-      secretId,
-      scopedToWorkerId: scopedTo,
-      expiresAt,
-    });
-
-    return ref;
-  }
-
-  async redeemRef(ref: string, claimedBy: string): Promise<string | null> {
-    // Atomic single-use: only succeed if not redeemed and not expired and scoped correctly
-    const now = new Date();
-    const updated = await db.update(secretRefs)
-      .set({ redeemed: true })
-      .where(and(
-        eq(secretRefs.ref, ref),
-        eq(secretRefs.redeemed, false),
-        eq(secretRefs.scopedToWorkerId, claimedBy),
-      ))
-      .returning({ secretId: secretRefs.secretId, expiresAt: secretRefs.expiresAt });
-
-    if (updated.length === 0) return null;
-
-    // Check expiry after atomic update
-    if (updated[0].expiresAt < now) return null;
-
-    return this.get(updated[0].secretId);
-  }
-
-  async cleanupExpiredRefs(): Promise<number> {
-    const now = new Date();
-    const deleted = await db.delete(secretRefs)
-      .where(lt(secretRefs.expiresAt, now))
-      .returning({ id: secretRefs.id });
-    return deleted.length;
   }
 }
