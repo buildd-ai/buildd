@@ -57,7 +57,14 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
       <div className="flex items-center gap-3 mb-3">
         <RoleAvatar name={role.name} color={role.color} />
         <div className="flex-1 min-w-0">
-          <div className="text-[15px] font-semibold text-text-primary truncate">{role.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="text-[15px] font-semibold text-text-primary truncate">{role.name}</span>
+            {role.model && (
+              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+                {role.model}
+              </span>
+            )}
+          </div>
           <div className="text-[12px] text-text-muted truncate">{role.description || role.slug}</div>
         </div>
         {role.currentTask && <StatusBadge status={role.currentTask.workerStatus} />}
@@ -70,6 +77,12 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
           </div>
           <div className="flex items-center gap-2 text-[11px] text-text-muted">
             <span>{role.currentTask.workspaceName}</span>
+            {role.currentTask.missionTitle && (
+              <>
+                <span>&middot;</span>
+                <span className="text-accent-text truncate max-w-[120px]">{role.currentTask.missionTitle}</span>
+              </>
+            )}
             {role.currentTask.startedAt && (
               <>
                 <span>&middot;</span>
@@ -93,6 +106,11 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
       <div className="flex-1 min-w-0">
         <span className="text-[13px] font-medium text-text-primary truncate block">{role.name}</span>
       </div>
+      {role.model && (
+        <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+          {role.model}
+        </span>
+      )}
       <span className="text-[11px] text-text-muted font-mono">{role.slug}</span>
     </Link>
   );

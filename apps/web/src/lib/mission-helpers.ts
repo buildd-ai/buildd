@@ -1,13 +1,70 @@
-export type MissionType = 'build' | 'watch' | 'brief';
+export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle';
 
-export function classifyMission(obj: {
+/**
+ * Derive health status for a mission based on its current state.
+ * Replaces the old BUILD/WATCH/BRIEF type classification.
+ */
+export function deriveMissionHealth(opts: {
+  status: string;
+  activeAgents: number;
   cronExpression: string | null;
-  isHeartbeat: boolean;
-}): MissionType {
-  if (!obj.cronExpression) return 'build';
-  if (obj.isHeartbeat) return 'watch';
-  return 'brief';
+  lastRunAt: string | Date | null;
+  nextRunAt: string | Date | null;
+}): MissionHealth {
+  if (opts.status === 'completed') return 'shipped';
+  if (opts.status === 'paused') return 'paused';
+  if (opts.activeAgents > 0) return 'active';
+
+  if (opts.cronExpression) {
+    // Parse cron interval to determine if stalled
+    const intervalMs = estimateCronIntervalMs(opts.cronExpression);
+    const now = Date.now();
+
+    if (opts.lastRunAt) {
+      const lastRun = new Date(opts.lastRunAt).getTime();
+      const elapsed = now - lastRun;
+      // Stalled if more than 2x the expected interval has passed
+      if (intervalMs && elapsed > intervalMs * 2) return 'stalled';
+      return 'on-schedule';
+    }
+
+    // Has schedule but never ran
+    if (opts.nextRunAt) return 'on-schedule';
+    return 'stalled';
+  }
+
+  return 'idle';
 }
+
+/** Rough estimate of cron interval in ms for staleness detection */
+function estimateCronIntervalMs(cron: string): number | null {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+
+  const [minute, hour] = parts;
+
+  // */N minutes
+  const everyMin = minute.match(/^\*\/(\d+)$/);
+  if (everyMin && hour === '*') return parseInt(everyMin[1], 10) * 60_000;
+
+  // */N hours
+  const everyHour = hour.match(/^\*\/(\d+)$/);
+  if (everyHour) return parseInt(everyHour[1], 10) * 3600_000;
+
+  // Fixed time daily
+  if (/^\d+$/.test(minute) && /^\d+$/.test(hour)) return 24 * 3600_000;
+
+  return null;
+}
+
+export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: string }> = {
+  active: { label: 'Active', colorClass: 'health-pill-active' },
+  'on-schedule': { label: 'On schedule', colorClass: 'health-pill-on-schedule' },
+  stalled: { label: 'Stalled', colorClass: 'health-pill-stalled' },
+  shipped: { label: 'Shipped', colorClass: 'health-pill-shipped' },
+  paused: { label: 'Paused', colorClass: 'health-pill-paused' },
+  idle: { label: 'Idle', colorClass: 'health-pill-idle' },
+};
 
 export function timeAgo(date: Date | string): string {
   const ms = Date.now() - new Date(date).getTime();

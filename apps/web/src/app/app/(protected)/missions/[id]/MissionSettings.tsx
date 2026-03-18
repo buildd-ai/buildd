@@ -277,22 +277,18 @@ export default function MissionSettings({
           </>
         )}
 
-        {/* Run now */}
-        {hasSchedule && (
-          <>
-            <div className="h-4 border-r border-card-border" />
-            <button
-              onClick={handleManualRun}
-              disabled={manualRunLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
-              </svg>
-              {manualRunLoading ? 'Running...' : 'Run now'}
-            </button>
-          </>
-        )}
+        {/* Evaluate now */}
+        <div className="h-4 border-r border-card-border" />
+        <button
+          onClick={handleManualRun}
+          disabled={manualRunLoading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+          </svg>
+          {manualRunLoading ? 'Evaluating...' : 'Evaluate now'}
+        </button>
       </div>
 
       {error && (

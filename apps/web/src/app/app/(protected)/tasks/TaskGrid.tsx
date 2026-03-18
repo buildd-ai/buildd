@@ -57,12 +57,6 @@ function getStatusDot(status: string): { color: string; pulse: boolean } {
   }
 }
 
-function getMissionType(_tasks: GridTask[]): string | null {
-  // Infer from the first task's objective — we don't have cron/heartbeat info here,
-  // so just show a generic badge. In the future this could come from the API.
-  return null;
-}
-
 function StatusBadge({ status }: { status: string }) {
   if (status === 'failed') {
     return (
@@ -214,7 +208,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
         id,
         title: id ? (groupTasks[0].objectiveTitle || 'Untitled mission') : 'No mission',
         tasks: sortTasks(groupTasks),
-        missionType: getMissionType(groupTasks),
+        missionType: null,
       });
     }
     // Sort: groups with active tasks first, then by recency

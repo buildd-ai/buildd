@@ -214,15 +214,41 @@ body {
     letter-spacing: 0.8px;
     text-transform: uppercase;
   }
-  .type-label-build { color: var(--status-success); }
-  .type-label-watch { color: var(--status-warning); }
-  .type-label-brief { color: var(--accent-text); }
 }
 
 @layer components {
-  .mission-build { border-left: 2px solid var(--status-success); }
-  .mission-watch { border-left: 2px solid var(--status-warning); }
-  .mission-brief { border-left: 2px solid var(--accent-text); }
+  .health-pill {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 9999px;
+  }
+  .health-pill-active {
+    background: rgba(94, 196, 149, 0.12);
+    color: var(--status-success);
+  }
+  .health-pill-on-schedule {
+    background: rgba(122, 172, 202, 0.12);
+    color: var(--status-info);
+  }
+  .health-pill-stalled {
+    background: rgba(224, 179, 90, 0.12);
+    color: var(--status-warning);
+  }
+  .health-pill-shipped {
+    background: rgba(94, 196, 149, 0.08);
+    color: var(--status-success);
+  }
+  .health-pill-paused {
+    background: rgba(138, 130, 122, 0.12);
+    color: var(--text-muted);
+  }
+  .health-pill-idle {
+    background: rgba(138, 130, 122, 0.08);
+    color: var(--text-desc);
+  }
 }
 
 [data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
