@@ -1,34 +1,13 @@
 import { db } from '@buildd/core/db';
-import { objectives } from '@buildd/core/db/schema';
-import { inArray, desc } from 'drizzle-orm';
+import { objectives, workspaceSkills } from '@buildd/core/db/schema';
+import { inArray, desc, and, eq } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { classifyMission, timeAgo } from '@/lib/mission-helpers';
 
 export const dynamic = 'force-dynamic';
-
-type MissionType = 'build' | 'watch' | 'brief';
-
-function classifyMission(obj: {
-  cronExpression: string | null;
-  isHeartbeat: boolean;
-}): MissionType {
-  if (!obj.cronExpression) return 'build';
-  if (obj.isHeartbeat) return 'watch';
-  return 'brief';
-}
-
-function timeAgo(date: Date | string): string {
-  const ms = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 export default async function MissionsPage() {
   const user = await getCurrentUser();
@@ -50,9 +29,24 @@ export default async function MissionsPage() {
     );
   }
 
+  // Query roles for display
+  const wsIds = await getUserWorkspaceIds(user.id);
+  const rolesMap = new Map<string, { name: string; color: string }>();
+  if (wsIds.length > 0) {
+    const roles = await db.query.workspaceSkills.findMany({
+      where: and(
+        inArray(workspaceSkills.workspaceId, wsIds),
+        eq(workspaceSkills.enabled, true),
+      ),
+      columns: { slug: true, name: true, color: true },
+    });
+    roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
+  }
+
   const allObjectives = await db.query.objectives.findMany({
     where: inArray(objectives.teamId, teamIds),
     orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+    limit: 50,
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
@@ -66,7 +60,7 @@ export default async function MissionsPage() {
           },
         },
       },
-      schedule: { columns: { nextRunAt: true } },
+      schedule: { columns: { nextRunAt: true, lastRunAt: true } },
     },
   });
 
@@ -92,9 +86,12 @@ export default async function MissionsPage() {
     ).length || 0;
 
     const nextRunAt = (obj.schedule as any)?.nextRunAt;
+    const lastRunAt = (obj.schedule as any)?.lastRunAt;
     const nextScanMins = nextRunAt
       ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
       : null;
+
+    const role = obj.defaultRoleSlug ? rolesMap.get(obj.defaultRoleSlug) : null;
 
     return {
       id: obj.id,
@@ -108,6 +105,8 @@ export default async function MissionsPage() {
       activeAgents,
       newSignals,
       nextScanMins,
+      lastRunAt,
+      role: role ? { name: role.name, color: role.color } : null,
       latestFinding: latestFinding
         ? {
             title: (latestFinding.result as any)?.summary?.slice(0, 120) || 'Finding',
@@ -195,6 +194,16 @@ function BuildCard({ mission }: { mission: any }) {
       </div>
 
       <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+        {mission.role && (
+          <>
+            <span
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ backgroundColor: mission.role.color }}
+            />
+            <span>{mission.role.name}</span>
+            <span className="mx-0.5">&middot;</span>
+          </>
+        )}
         <span>
           {mission.completedTasks} of {mission.totalTasks} done
         </span>
@@ -204,6 +213,12 @@ function BuildCard({ mission }: { mission: any }) {
             <span className="text-status-success">
               {mission.activeAgents} agent{mission.activeAgents !== 1 ? 's' : ''} active
             </span>
+          </>
+        )}
+        {mission.status === 'paused' && (
+          <>
+            <span className="mx-0.5">&middot;</span>
+            <span className="text-status-warning">paused</span>
           </>
         )}
       </div>
@@ -232,6 +247,18 @@ function WatchCard({ mission }: { mission: any }) {
             </p>
           )}
           <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+            {mission.role && (
+              <>
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: mission.role.color }}
+                />
+                <span>{mission.role.name}</span>
+                {(mission.newSignals > 0 || mission.nextScanMins !== null) && (
+                  <span className="mx-0.5">&middot;</span>
+                )}
+              </>
+            )}
             {mission.newSignals > 0 && (
               <span>{mission.newSignals} new signal{mission.newSignals !== 1 ? 's' : ''}</span>
             )}
@@ -239,6 +266,12 @@ function WatchCard({ mission }: { mission: any }) {
               <>
                 {mission.newSignals > 0 && <span className="mx-0.5">&middot;</span>}
                 <span>next scan {mission.nextScanMins}m</span>
+              </>
+            )}
+            {mission.status === 'paused' && (
+              <>
+                <span className="mx-0.5">&middot;</span>
+                <span className="text-status-warning">paused</span>
               </>
             )}
           </div>
@@ -278,9 +311,25 @@ function BriefCard({ mission }: { mission: any }) {
           <p className="text-[16px] font-medium text-text-primary leading-snug mb-1">
             {finding.title}
           </p>
-          <p className="text-[12px] text-text-secondary font-light">
-            {mission.title}
-          </p>
+          <div className="flex items-center gap-1.5 text-[12px] text-text-secondary font-light">
+            <span>{mission.title}</span>
+            {mission.role && (
+              <>
+                <span className="mx-0.5">&middot;</span>
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0 inline-block"
+                  style={{ backgroundColor: mission.role.color }}
+                />
+                <span>{mission.role.name}</span>
+              </>
+            )}
+            {mission.nextScanMins !== null && (
+              <>
+                <span className="mx-0.5">&middot;</span>
+                <span className="text-text-muted">next run {mission.nextScanMins}m</span>
+              </>
+            )}
+          </div>
         </>
       ) : (
         <>
@@ -296,10 +345,31 @@ function BriefCard({ mission }: { mission: any }) {
             </p>
           )}
           <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+            {mission.role && (
+              <>
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: mission.role.color }}
+                />
+                <span>{mission.role.name}</span>
+              </>
+            )}
             {mission.totalTasks > 0 && (
               <>
-                <span className="mx-0.5">&middot;</span>
+                {mission.role && <span className="mx-0.5">&middot;</span>}
                 <span>{mission.completedTasks} of {mission.totalTasks} runs</span>
+              </>
+            )}
+            {mission.nextScanMins !== null && (
+              <>
+                <span className="mx-0.5">&middot;</span>
+                <span>next run {mission.nextScanMins}m</span>
+              </>
+            )}
+            {mission.status === 'paused' && (
+              <>
+                <span className="mx-0.5">&middot;</span>
+                <span className="text-status-warning">paused</span>
               </>
             )}
           </div>
