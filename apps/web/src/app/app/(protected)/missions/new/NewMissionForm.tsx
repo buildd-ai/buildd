@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -29,6 +29,69 @@ const SCHEDULE_PRESETS = [
   { label: 'Daily at 9am', cron: '0 9 * * *' },
   { label: 'Weekly Monday', cron: '0 9 * * 1' },
 ] as const;
+
+function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: WorkspaceOption[]; value: string; onChange: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    if (open) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [open]);
+
+  const selected = workspaces.find(ws => ws.id === value);
+
+  return (
+    <div className="mb-4" ref={ref}>
+      <label className="block text-xs text-text-muted mb-1.5">Workspace</label>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={`w-full px-4 py-3 bg-surface-1 border rounded-sm text-sm text-left flex items-center justify-between transition-colors ${
+          open ? 'border-primary ring-2 ring-primary-ring' : 'border-border-default'
+        }`}
+        data-testid="mission-workspace-select"
+      >
+        <span className={selected ? 'text-text-primary' : 'text-text-muted'}>
+          {selected ? selected.name : 'Select a workspace'}
+        </span>
+        <svg
+          className={`w-4 h-4 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="mt-1 bg-surface-1 border border-border-default rounded-sm shadow-lg overflow-hidden">
+          {workspaces.map(ws => (
+            <button
+              key={ws.id}
+              type="button"
+              onClick={() => { onChange(ws.id); setOpen(false); }}
+              className={`w-full px-4 py-2.5 text-sm text-left transition-colors ${
+                ws.id === value
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-text-primary hover:bg-surface-2'
+              }`}
+            >
+              {ws.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function NewMissionForm({ workspaces, roles = [] }: { workspaces: WorkspaceOption[]; roles?: RoleOption[] }) {
   const router = useRouter();
@@ -172,20 +235,11 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
 
         {/* Workspace picker — only show if multiple workspaces */}
         {workspaces.length > 1 && (
-          <div className="mb-4">
-            <label className="block text-xs text-text-muted mb-1.5">Workspace</label>
-            <select
-              value={workspaceId}
-              onChange={e => setWorkspaceId(e.target.value)}
-              className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors"
-              data-testid="mission-workspace-select"
-            >
-              <option value="">Select a workspace</option>
-              {workspaces.map(ws => (
-                <option key={ws.id} value={ws.id}>{ws.name}</option>
-              ))}
-            </select>
-          </div>
+          <WorkspaceDropdown
+            workspaces={workspaces}
+            value={workspaceId}
+            onChange={setWorkspaceId}
+          />
         )}
 
         {/* Assign to role */}
