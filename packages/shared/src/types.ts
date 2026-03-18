@@ -689,13 +689,9 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /** Single-use secret reference for server-managed API key (redeem via GET /api/workers/secret/:ref) */
-    secretRef?: string;
-    /** Single-use secret reference for server-managed OAuth token (redeem via GET /api/workers/secret/:ref) */
-    oauthSecretRef?: string;
-    /** Decrypted server-managed API key (inline, no redemption needed) */
+    /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
-    /** Decrypted server-managed OAuth token (inline, no redemption needed) */
+    /** Decrypted server-managed OAuth token (inline) */
     serverOauthToken?: string;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
