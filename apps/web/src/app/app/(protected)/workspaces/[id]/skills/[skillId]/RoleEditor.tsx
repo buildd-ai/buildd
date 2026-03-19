@@ -17,8 +17,8 @@ const AVAILABLE_TOOLS = [
 ];
 
 const COLOR_PALETTE = [
-  '#C45A3B', '#5B7BB3', '#6B8E5E', '#D97706',
-  '#9B59B6', '#2C8C99', '#C4783B', '#8A8478',
+  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
+  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
 interface McpServerConfig {
