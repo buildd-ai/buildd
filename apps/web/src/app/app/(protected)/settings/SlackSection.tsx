@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { Select } from '@/components/ui/Select';
 
 interface Workspace {
   id: string;
@@ -123,17 +124,11 @@ export default function SlackSection({ workspaces }: { workspaces: Workspace[] }
         {workspaces.length > 1 && (
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-1">Workspace</label>
-            <select
+            <Select
               value={selectedWorkspace}
-              onChange={(e) => setSelectedWorkspace(e.target.value)}
-              className="w-full px-3 py-2 bg-surface-2 border border-border-default rounded-md text-sm"
-            >
-              {workspaces.map((ws) => (
-                <option key={ws.id} value={ws.id}>
-                  {ws.name}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedWorkspace}
+              options={workspaces.map((ws) => ({ value: ws.id, label: ws.name }))}
+            />
           </div>
         )}
 

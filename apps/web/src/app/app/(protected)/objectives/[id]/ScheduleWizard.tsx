@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useTransition, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 const PRESETS = [
   { label: 'Every hour', cron: '0 * * * *' },
@@ -151,15 +152,11 @@ export default function ScheduleWizard({
       {needsWorkspace && cronExpression && (
         <div className="mb-3">
           <label className="block text-xs text-text-muted mb-1">Workspace (required for scheduling)</label>
-          <select
+          <Select
             value={selectedWorkspaceId}
-            onChange={e => setSelectedWorkspaceId(e.target.value)}
-            className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            {workspaces.map(ws => (
-              <option key={ws.id} value={ws.id}>{ws.name}</option>
-            ))}
-          </select>
+            onChange={setSelectedWorkspaceId}
+            options={workspaces.map(ws => ({ value: ws.id, label: ws.name }))}
+          />
         </div>
       )}
 
