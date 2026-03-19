@@ -352,7 +352,7 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),

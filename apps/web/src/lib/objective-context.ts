@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, objectives, taskRecipes } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc } from 'drizzle-orm';
+import { tasks, objectives, taskRecipes, workspaceSkills, workers } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -42,8 +42,67 @@ export function isWithinActiveHours(currentHour: number, start: number, end: num
 }
 
 /**
+ * Fetch available roles for a workspace with current load.
+ * Reusable by both the context builder and the /api/roles endpoint.
+ */
+export async function getWorkspaceRoles(workspaceId: string) {
+  const allRoles = await db.query.workspaceSkills.findMany({
+    where: and(
+      eq(workspaceSkills.workspaceId, workspaceId),
+      eq(workspaceSkills.isRole, true),
+      eq(workspaceSkills.enabled, true),
+    ),
+    columns: {
+      slug: true,
+      name: true,
+      model: true,
+      color: true,
+      description: true,
+    },
+  });
+
+  // Deduplicate by slug
+  const seenSlugs = new Set<string>();
+  const uniqueRoles = allRoles.filter(r => {
+    if (seenSlugs.has(r.slug)) return false;
+    seenSlugs.add(r.slug);
+    return true;
+  });
+
+  // Count active workers per role slug
+  const activeWorkerCounts = await db
+    .select({
+      roleSlug: tasks.roleSlug,
+      count: sql<number>`count(distinct ${workers.id})::int`,
+    })
+    .from(workers)
+    .innerJoin(tasks, eq(workers.taskId, tasks.id))
+    .where(
+      and(
+        eq(workers.workspaceId, workspaceId),
+        inArray(workers.status, ['running', 'starting', 'waiting_input']),
+      )
+    )
+    .groupBy(tasks.roleSlug);
+
+  const loadMap: Record<string, number> = {};
+  for (const row of activeWorkerCounts) {
+    if (row.roleSlug) loadMap[row.roleSlug] = row.count;
+  }
+
+  return uniqueRoles.map(r => ({
+    slug: r.slug,
+    name: r.name,
+    model: r.model,
+    color: r.color,
+    description: r.description,
+    currentLoad: loadMap[r.slug] || 0,
+  }));
+}
+
+/**
  * Build rich context for an objective planning task.
- * Queries task history, active tasks, failures, and optional recipe playbook.
+ * Queries task history, active tasks, failures, available roles, and optional recipe playbook.
  * Detects heartbeat mode and produces specialised instructions.
  */
 export async function buildObjectiveContext(objectiveId: string, templateContext?: Record<string, unknown>) {
@@ -57,6 +116,7 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       priority: true,
       isHeartbeat: true,
       heartbeatChecklist: true,
+      workspaceId: true,
     },
   });
   if (!objective) return null;
@@ -75,7 +135,7 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
     ),
     orderBy: [desc(tasks.createdAt)],
     limit: 10,
-    columns: { id: true, title: true, mode: true, result: true, createdAt: true },
+    columns: { id: true, title: true, mode: true, result: true, createdAt: true, roleSlug: true },
   });
 
   // Active tasks
@@ -154,8 +214,52 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
     }
   }
 
+  // Fetch available roles for orchestrator context
+  let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
+  if (objective.workspaceId) {
+    roles = await getWorkspaceRoles(objective.workspaceId);
+  }
+
+  // Detect role patterns from completed tasks — if tasks consistently use the same role,
+  // the orchestrator should reuse it without re-evaluating every time
+  const completedRoleSlugs = completedTasks
+    .map(t => (t as any).roleSlug as string | null)
+    .filter(Boolean);
+  const roleFrequency: Record<string, number> = {};
+  for (const slug of completedRoleSlugs) {
+    roleFrequency[slug!] = (roleFrequency[slug!] || 0) + 1;
+  }
+  const dominantRole = Object.entries(roleFrequency).sort((a, b) => b[1] - a[1])[0];
+  const isRecurringPattern = dominantRole && dominantRole[1] >= 3;
+
+  if (roles.length > 0) {
+    descParts.push('\n## Available Roles');
+    for (const r of roles) {
+      const load = r.currentLoad > 0 ? ` (${r.currentLoad} active)` : ' (idle)';
+      descParts.push(`- **${r.name}** (\`${r.slug}\`) — ${r.model}${load}${r.description ? `: ${r.description}` : ''}`);
+    }
+
+    if (isRecurringPattern) {
+      descParts.push(`\n**Pattern detected**: The last ${dominantRole[1]} tasks used role \`${dominantRole[0]}\`. ` +
+        `For recurring work of the same kind, reuse this role. Only pick a different role if the task requires different capabilities.`);
+    }
+  }
+
   // Dedup guidance: detect repetitive results and warn planner
-  descParts.push('\n## Instructions');
+  descParts.push('\n## Orchestrator Instructions');
+  descParts.push(
+    'You are the **orchestrator** for this mission. Your job is to evaluate the current state and decide what work is needed next.'
+  );
+
+  if (isRecurringPattern) {
+    descParts.push(
+      '\n**Efficiency mode**: This mission has an established pattern. Be fast:\n' +
+      '- If the work is routine (same type as prior tasks), create the task with the proven role — don\'t over-analyze.\n' +
+      '- Only do a full evaluation if something has changed (failures, new requirements, blocked work).\n' +
+      '- For recurring monitoring/check-ins, keep the same structure unless results indicate a problem.'
+    );
+  }
+
   if (completedTasks.length >= 3) {
     const summaries = completedTasks
       .map(t => (t.result as Record<string, unknown> | null)?.summary as string || '')
@@ -163,21 +267,27 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
     const uniqueSummaries = new Set(summaries);
     if (uniqueSummaries.size <= 2) {
       descParts.push(
-        '⚠️ Recent tasks produced nearly identical results. Focus on what has CHANGED since the last run. ' +
+        '\n⚠️ Recent tasks produced nearly identical results. Focus on what has CHANGED since the last run. ' +
         'Do NOT repeat the same analysis — identify new developments, blockers removed, or status changes. ' +
         'If nothing meaningful has changed, create fewer or no sub-tasks.'
       );
     }
   }
   descParts.push(
-    'Review the prior results above. Plan the NEXT concrete steps toward the objective. ' +
-    'Avoid duplicating work already completed or in progress.'
+    '\n1. **Evaluate**: Review prior results, active tasks, and failures above.\n' +
+    '2. **Decide**: What concrete work is needed next to advance the mission goal?\n' +
+    '3. **Route**: For each task you create, assign the best role via `roleSlug`. Reuse proven roles for recurring work; only switch for tasks requiring different capabilities.\n' +
+    '4. **Create tasks**: Use the `buildd` tool with `action: "create_task"` to spawn follow-up tasks.\n' +
+    '5. **Don\'t duplicate**: Skip work that\'s already in progress or completed.\n' +
+    '6. **Report**: Summarize your assessment and what you decided in your completion summary.'
   );
 
   // Build context JSONB
   const contextData: Record<string, unknown> = {
     objectiveId: objective.id,
     objectiveTitle: objective.title,
+    orchestrator: true,
+    availableRoles: roles,
     recentCompletions: completedTasks.map(t => {
       const result = t.result as Record<string, unknown> | null;
       return {

@@ -86,6 +86,7 @@ export const CreationSource = {
   LOCAL_UI: 'local_ui',
   SCHEDULE: 'schedule',
   WEBHOOK: 'webhook',
+  ORCHESTRATOR: 'orchestrator',
 } as const;
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
