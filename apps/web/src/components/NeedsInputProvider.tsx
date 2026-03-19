@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
 interface WaitingTask {
@@ -30,6 +31,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
   const [tasks, setTasks] = useState<WaitingTask[]>([]);
   const prevTaskIdsRef = useRef<Set<string>>(new Set());
   const initialFetchDone = useRef(false);
+  const router = useRouter();
 
   // Fetch waiting-input tasks
   const fetchWaitingTasks = useCallback(async () => {
@@ -45,7 +47,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
           const prevIds = prevTaskIdsRef.current;
           for (const task of newTasks) {
             if (!prevIds.has(task.id)) {
-              showToast(task);
+              showToast(task, router);
             }
           }
         }
@@ -55,7 +57,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     } catch {
       // Silently fail - not critical
     }
-  }, []);
+  }, [router]);
 
   // Initial fetch + request notification permission
   useEffect(() => {
@@ -113,7 +115,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
   );
 }
 
-function showToast(task: WaitingTask) {
+function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
   // Play notification sound
   try {
     const audio = new Audio('/sounds/notification.wav');
@@ -127,10 +129,11 @@ function showToast(task: WaitingTask) {
 
   // Show browser notification if permitted
   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    new Notification('Task needs your input', {
+    const n = new Notification('Task needs your input', {
       body: task.waitingFor?.prompt || task.title,
       icon: '/favicon.ico',
       tag: `waiting-input-${task.id}`,
     });
+    n.onclick = () => { window.focus(); router.push(`/app/tasks/${task.id}`); };
   }
 }

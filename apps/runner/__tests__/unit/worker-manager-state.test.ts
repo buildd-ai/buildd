@@ -220,7 +220,8 @@ describe('WorkerManager — state transitions', () => {
         task: makeTask(),
       }] }));
 
-      manager = new WorkerManager(makeConfig());
+      // Explicit opt-out to test legacy waiting behavior
+      manager = new WorkerManager(makeConfig({ inputAsRetry: false }));
       const events = collectEvents(manager);
 
       await manager.claimAndStart(makeTask());
@@ -509,8 +510,8 @@ describe('WorkerManager — state transitions', () => {
         task: makeTask(),
       }] }));
 
-      // Default (no inputAsRetry) — should use existing waiting behavior
-      manager = new WorkerManager(makeConfig());
+      // Explicit opt-out (inputAsRetry: false) — should use existing waiting behavior
+      manager = new WorkerManager(makeConfig({ inputAsRetry: false }));
       await manager.claimAndStart(makeTask());
       await new Promise(r => setTimeout(r, 100));
 

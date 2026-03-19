@@ -147,6 +147,17 @@ export async function PATCH(
   if (typeof linesRemoved === 'number') updates.linesRemoved = linesRemoved;
   // Waiting state
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
+  // Pushover notification when agent needs input
+  if (waitingFor?.type === 'question') {
+    notify({
+      app: 'tasks',
+      title: 'Agent needs your input',
+      message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
+      url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
+      urlTitle: 'Respond',
+      priority: 0,
+    });
+  }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
