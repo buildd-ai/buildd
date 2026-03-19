@@ -212,4 +212,37 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursStart).toBe(0);
     expect(ctx.activeHoursEnd).toBe(23);
   });
+
+  it('should create a scheduled mission without workspaceId', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Workspace-less Mission',
+        cronExpression: '0 * * * *',
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.scheduleId).toBeDefined();
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.workspaceId).toBeNull();
+  });
+
+  it('should create a scheduled mission with workspaceId', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Workspace Mission',
+        workspaceId: 'ws-1',
+        cronExpression: '0 * * * *',
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.workspaceId).toBe('ws-1');
+  });
 });

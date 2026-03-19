@@ -139,8 +139,8 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    // Auto-create schedule if cronExpression provided and workspaceId is set
-    if (cronExpression && workspaceId) {
+    // Auto-create schedule if cronExpression provided (workspaceId is optional — resolved at task fire time)
+    if (cronExpression) {
       const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
       const [schedule] = await db
         .insert(taskSchedules)
         .values({
-          workspaceId,
+          workspaceId: workspaceId || null,
           name: `Mission: ${title}`,
           cronExpression,
           timezone: 'UTC',

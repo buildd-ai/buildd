@@ -111,7 +111,7 @@ bun run test:e2e                            # E2E tests (full stack)
 
 **Smoke tests** (`*-smoke.test.ts`): Lightweight guards that always run in CI. Cover CRUD + auth + endpoint existence for a feature. Full suites (e.g., `missions.test.ts`) run on-demand or when affected code changes.
 
-See `.agent/testing.md` and `.agent/testing-strategy.md` for full details.
+See `docs/testing.md` and `docs/testing-strategy.md` for full details.
 
 ### Dev Mode Auth
 Use `DEV_USER_EMAIL` to test as a real user locally:
@@ -139,7 +139,7 @@ Key components have `data-testid` attributes for E2E testing:
 - `sidebar-task-item` - Sidebar task links (includes `data-status`)
 - `worker-needs-input-banner` - "Needs Input" banner
 
-See `.agent/testing.md` for details.
+See `docs/testing.md` for details.
 
 ## Related Repos
 
@@ -166,5 +166,6 @@ This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
 
 ## Docs
 
-- **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)
+- **Testing guides**: `docs/testing.md` and `docs/testing-strategy.md`
+- **Internal knowledge base** (architecture, SDK research, plans): `~/.buildd/knowledge/` (closed-source, separate repo)
 - **Product documentation**: Check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.
