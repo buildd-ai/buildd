@@ -185,7 +185,16 @@ export async function POST(req: NextRequest) {
       objective.scheduleId = schedule.id;
     }
 
-    return NextResponse.json(objective, { status: 201 });
+    // Derive backward-compat fields from schedule template context
+    return NextResponse.json({
+      ...objective,
+      cronExpression: cronExpression || null,
+      isHeartbeat: isHeartbeat || false,
+      heartbeatChecklist: heartbeatChecklist || null,
+      activeHoursStart: activeHoursStart ?? null,
+      activeHoursEnd: activeHoursEnd ?? null,
+      activeHoursTimezone: activeHoursTimezone || null,
+    }, { status: 201 });
   } catch (error) {
     console.error('Create objective error:', error);
     return NextResponse.json({ error: 'Failed to create objective' }, { status: 500 });

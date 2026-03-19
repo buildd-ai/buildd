@@ -248,6 +248,13 @@ export interface Objective {
   tasks?: Task[];
   subObjectives?: Objective[];
   parentObjective?: Objective;
+  // Derived from schedule.taskTemplate.context (backward compat)
+  cronExpression?: string | null;
+  isHeartbeat?: boolean;
+  heartbeatChecklist?: string | null;
+  activeHoursStart?: number | null;
+  activeHoursEnd?: number | null;
+  activeHoursTimezone?: string | null;
   // Computed
   progress?: number;
   totalTasks?: number;
