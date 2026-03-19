@@ -107,10 +107,11 @@ export default async function MissionDetailPage({
     ?.flatMap((t) => t.workers || [])
     .filter((w) => w.status === 'running').length || 0;
 
+  const scheduleCron = (objective.schedule as any)?.cronExpression || null;
   const health = deriveMissionHealth({
     status: objective.status,
     activeAgents,
-    cronExpression: objective.cronExpression,
+    cronExpression: scheduleCron,
     lastRunAt: (objective.schedule as any)?.lastRunAt || null,
     nextRunAt: (objective.schedule as any)?.nextRunAt || null,
   });
@@ -225,15 +226,14 @@ export default async function MissionDetailPage({
         <MissionSettings
           missionId={id}
           currentStatus={objective.status}
-          cronExpression={objective.cronExpression}
-          defaultRoleSlug={objective.defaultRoleSlug}
+          cronExpression={scheduleCron}
           workspaceId={objective.workspaceId}
           roles={roles}
           schedule={objective.schedule ? {
             nextRunAt: (objective.schedule as any).nextRunAt?.toISOString?.() || (objective.schedule as any).nextRunAt || null,
             lastRunAt: (objective.schedule as any).lastRunAt?.toISOString?.() || (objective.schedule as any).lastRunAt || null,
           } : null}
-          hasSchedule={!!objective.cronExpression}
+          hasSchedule={!!scheduleCron}
         />
       </div>
 
@@ -396,7 +396,7 @@ export default async function MissionDetailPage({
             })}
 
             {/* Next evaluation indicator */}
-            {objective.cronExpression && (objective.schedule as any)?.nextRunAt && (
+            {scheduleCron && (objective.schedule as any)?.nextRunAt && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
                   <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />

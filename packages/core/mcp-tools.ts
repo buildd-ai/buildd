@@ -96,7 +96,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (string[]), requiredEnvVars? (Record<string, string>) } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, defaultRoleSlug?: string } — manage team objectives [admin]',
+    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team objectives [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -1019,12 +1019,11 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
-          if (params.defaultRoleSlug) body.defaultRoleSlug = params.defaultRoleSlug;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
           });
-          return text(`Objective created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}${data.isHeartbeat ? `\nHeartbeat: enabled` : ''}`);
+          return text(`Objective created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}`);
         }
         case 'get': {
           if (!params.objectiveId) throw new Error('objectiveId is required');
@@ -1032,7 +1031,8 @@ export async function handleBuilddAction(
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
-          const heartbeatInfo = data.isHeartbeat ? `\nHeartbeat: enabled${data.activeHoursStart !== null && data.activeHoursEnd !== null ? ` (active ${data.activeHoursStart}:00–${data.activeHoursEnd}:00${data.activeHoursTimezone ? ` ${data.activeHoursTimezone}` : ''})` : ''}${data.heartbeatChecklist ? `\nChecklist: ${data.heartbeatChecklist}` : ''}` : '';
+          const schedCtx = data.schedule?.taskTemplate?.context;
+          const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
           return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
@@ -1052,7 +1052,6 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
-          if (params.defaultRoleSlug !== undefined) body.defaultRoleSlug = params.defaultRoleSlug;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.objectiveId}`, {
             method: 'PATCH',

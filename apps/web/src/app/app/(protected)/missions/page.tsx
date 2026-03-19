@@ -60,7 +60,7 @@ export default async function MissionsPage() {
           },
         },
       },
-      schedule: { columns: { nextRunAt: true, lastRunAt: true } },
+      schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
     },
   });
 
@@ -84,12 +84,12 @@ export default async function MissionsPage() {
       ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
       : null;
 
-    const role = obj.defaultRoleSlug ? rolesMap.get(obj.defaultRoleSlug) : null;
+    const scheduleCron = (obj.schedule as any)?.cronExpression || null;
 
     const health = deriveMissionHealth({
       status: obj.status,
       activeAgents,
-      cronExpression: obj.cronExpression,
+      cronExpression: scheduleCron,
       lastRunAt,
       nextRunAt,
     });
@@ -106,7 +106,7 @@ export default async function MissionsPage() {
       activeAgents,
       nextScanMins,
       lastRunAt,
-      role: role ? { name: role.name, color: role.color } : null,
+      role: null as { name: string; color: string } | null,
       latestFinding: latestFinding
         ? {
             title: (latestFinding.result as any)?.summary?.slice(0, 120) || 'Finding',
