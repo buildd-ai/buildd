@@ -13,7 +13,7 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => []),
   })),
 }));
-const mockObjectivesFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -100,7 +100,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany },
-      objectives: { findFirst: mockObjectivesFindFirst },
+      missions: { findFirst: mockMissionsFindFirst },
     },
     insert: mockTasksInsert,
   },
@@ -123,7 +123,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt' },
-  objectives: { id: 'id' },
+  missions: { id: 'id' },
 }));
 
 // Import handlers AFTER mocks
@@ -167,6 +167,7 @@ describe('GET /api/tasks', () => {
     mockTasksFindMany.mockReset();
     mockGetUserWorkspaceIds.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    mockMissionsFindFirst.mockReset();
 
     // Default: session auth gets workspace access
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
@@ -277,7 +278,7 @@ describe('POST /api/tasks', () => {
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDispatchNewTask.mockReset();
-    mockObjectivesFindFirst.mockReset();
+    mockMissionsFindFirst.mockReset();
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
 
@@ -817,9 +818,9 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.project).toBe('@mono/web');
   });
 
-  // ── outputRequirement inheritance from objectives ──────────────────────
+  // ── outputRequirement inheritance from missions ──────────────────────
 
-  it('inherits outputRequirement from objective when not explicitly set', async () => {
+  it('inherits outputRequirement from mission when not explicitly set', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -837,7 +838,7 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
-    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -850,14 +851,14 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1' },
     });
     await POST(request);
 
     expect(capturedValues.outputRequirement).toBe('pr_required');
   });
 
-  it('uses explicit outputRequirement when provided, ignoring objective default', async () => {
+  it('uses explicit outputRequirement when provided, ignoring mission default', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -875,8 +876,8 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
-    // Objective has pr_required, but explicit 'none' should win
-    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+    // Mission has pr_required, but explicit 'none' should win
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -889,16 +890,16 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1', outputRequirement: 'none' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', outputRequirement: 'none' },
     });
     await POST(request);
 
     expect(capturedValues.outputRequirement).toBe('none');
-    // Should NOT have queried the objective since explicit value was provided
+    // Should NOT have queried the mission since explicit value was provided
     // (Note: due to mock structure, findFirst may still be callable but outputRequirement should be 'none')
   });
 
-  it('falls back to auto when objective has no defaultOutputRequirement', async () => {
+  it('falls back to auto when mission has no defaultOutputRequirement', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -916,7 +917,7 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
-    mockObjectivesFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -929,14 +930,14 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', objectiveId: 'obj-1' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1' },
     });
     await POST(request);
 
     expect(capturedValues.outputRequirement).toBe('auto');
   });
 
-  it('does not look up objective when no objectiveId provided', async () => {
+  it('does not look up mission when no missionId provided', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -953,7 +954,7 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
-    mockObjectivesFindFirst.mockClear();
+    mockMissionsFindFirst.mockClear();
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -970,8 +971,8 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    // Should NOT have queried objectives table
-    expect(mockObjectivesFindFirst).not.toHaveBeenCalled();
+    // Should NOT have queried missions table
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
     // outputRequirement should not be set (DB default 'auto' applies)
     expect(capturedValues.outputRequirement).toBeUndefined();
   });

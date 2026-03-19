@@ -10,10 +10,10 @@ const PRIORITIES = [
 ] as const;
 
 export default function PrioritySelector({
-  objectiveId,
+  missionId,
   initialPriority,
 }: {
-  objectiveId: string;
+  missionId: string;
   initialPriority: number;
 }) {
   const router = useRouter();
@@ -26,7 +26,7 @@ export default function PrioritySelector({
     setPriority(value);
     setSaving(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ priority: value }),

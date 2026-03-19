@@ -1,5 +1,5 @@
 /**
- * Pure helper functions extracted from ObjectiveConfig component.
+ * Pure helper functions extracted from MissionConfig component.
  */
 
 export interface ModelOption {

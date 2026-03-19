@@ -1,14 +1,14 @@
 import { db } from '@buildd/core/db';
-import { objectives, workspaces } from '@buildd/core/db/schema';
+import { missions, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
-import ObjectivesList from './ObjectivesList';
+import MissionsList from './MissionsList';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ObjectivesPage() {
+export default async function MissionsPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -21,10 +21,10 @@ export default async function ObjectivesPage() {
     );
   }
 
-  const [allObjectives, teamWorkspaces] = await Promise.all([
-    db.query.objectives.findMany({
-      where: inArray(objectives.teamId, teamIds),
-      orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+  const [allMissions, teamWorkspaces] = await Promise.all([
+    db.query.missions.findMany({
+      where: inArray(missions.teamId, teamIds),
+      orderBy: [desc(missions.priority), desc(missions.createdAt)],
       with: {
         workspace: { columns: { id: true, name: true } },
         // Most recent task for "last output" preview
@@ -45,7 +45,7 @@ export default async function ObjectivesPage() {
     }),
   ]);
 
-  const shaped = allObjectives.map(obj => {
+  const shaped = allMissions.map(obj => {
     const lastTask = obj.tasks?.[0] ?? null;
     const result = lastTask?.result as { prUrl?: string; prNumber?: number; summary?: string } | null;
     return {
@@ -71,8 +71,8 @@ export default async function ObjectivesPage() {
 
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <ObjectivesList
-        objectives={shaped}
+      <MissionsList
+        missions={shaped}
         teamId={teamIds[0]}
         workspaces={teamWorkspaces}
       />

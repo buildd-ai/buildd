@@ -17,8 +17,8 @@ interface GridTask {
   hasArtifact: boolean;
   filesChanged: number | null;
   waitingPrompt: string | null;
-  objectiveId: string | null;
-  objectiveTitle: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -115,9 +115,9 @@ function TaskRow({ task }: { task: GridTask }) {
       </span>
 
       {/* Mission name (when not grouped by mission) */}
-      {task.objectiveTitle && (
+      {task.missionTitle && (
         <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden sm:inline">
-          {task.objectiveTitle}
+          {task.missionTitle}
         </span>
       )}
 
@@ -151,7 +151,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
   // When viewing a single mission's tasks, filter to just those
   const visibleTasks = useMemo(() => {
     if (!missionFilter) return tasks;
-    return tasks.filter(t => t.objectiveId === missionFilter);
+    return tasks.filter(t => t.missionId === missionFilter);
   }, [tasks, missionFilter]);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
@@ -198,7 +198,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     if (groupBy !== 'mission') return [];
     const map = new Map<string | null, GridTask[]>();
     for (const t of nonWaitingTasks) {
-      const key = t.objectiveId;
+      const key = t.missionId;
       const existing = map.get(key) || [];
       existing.push(t);
       map.set(key, existing);
@@ -207,7 +207,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     for (const [id, groupTasks] of map) {
       groups.push({
         id,
-        title: id ? (groupTasks[0].objectiveTitle || 'Untitled mission') : 'No mission',
+        title: id ? (groupTasks[0].missionTitle || 'Untitled mission') : 'No mission',
         tasks: sortTasks(groupTasks),
         missionType: null,
       });
@@ -405,9 +405,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                     <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-surface-3 text-text-secondary shrink-0">
                       {task.workspaceName}
                     </span>
-                    {task.objectiveTitle && (
+                    {task.missionTitle && (
                       <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden sm:inline">
-                        {task.objectiveTitle}
+                        {task.missionTitle}
                       </span>
                     )}
                     <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right">

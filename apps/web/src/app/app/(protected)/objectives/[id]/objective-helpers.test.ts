@@ -9,7 +9,7 @@ import {
   timeAgo,
   type TaskData,
   type TaskResult,
-  type ObjectiveArtifact,
+  type MissionArtifact,
 } from './objective-helpers';
 
 // ─── Fixtures ───────────────────────────────────────────────────
@@ -24,7 +24,7 @@ function makePlanningTask(overrides: Partial<TaskData> = {}): TaskData {
     mode: 'planning',
     result: {
       summary: '**Transactions**: 333 personal, 100% classified\n**Overdue**: None',
-      structuredOutput: { tasksCreated: 2, objectiveComplete: false },
+      structuredOutput: { tasksCreated: 2, missionComplete: false },
     } as TaskResult,
     workers: [],
     ...overrides,
@@ -85,7 +85,7 @@ describe('extractRunHistory', () => {
     const history = extractRunHistory([makePlanningTask()]);
     expect(history[0].summary).toContain('**Transactions**');
     expect(history[0].tasksCreated).toBe(2);
-    expect(history[0].objectiveComplete).toBe(false);
+    expect(history[0].missionComplete).toBe(false);
   });
 
   test('handles tasks with no result', () => {
@@ -94,7 +94,7 @@ describe('extractRunHistory', () => {
     expect(history).toHaveLength(1);
     expect(history[0].summary).toBeUndefined();
     expect(history[0].tasksCreated).toBeUndefined();
-    expect(history[0].objectiveComplete).toBe(false);
+    expect(history[0].missionComplete).toBe(false);
   });
 
   test('handles tasks with no structuredOutput', () => {
@@ -148,8 +148,8 @@ describe('getLatestReport', () => {
 
   test('skips runs with empty/whitespace summary', () => {
     const runs = [
-      { taskId: 'no-summary', createdAt: new Date(), summary: '   ', tasksCreated: 0, objectiveComplete: false },
-      { taskId: 'has-summary', createdAt: new Date(), summary: 'Real report', tasksCreated: 1, objectiveComplete: false },
+      { taskId: 'no-summary', createdAt: new Date(), summary: '   ', tasksCreated: 0, missionComplete: false },
+      { taskId: 'has-summary', createdAt: new Date(), summary: 'Real report', tasksCreated: 1, missionComplete: false },
     ];
     const report = getLatestReport(runs);
     expect(report!.taskId).toBe('has-summary');
@@ -157,16 +157,16 @@ describe('getLatestReport', () => {
 
   test('skips runs with undefined summary', () => {
     const runs = [
-      { taskId: 'no-summary', createdAt: new Date(), summary: undefined, tasksCreated: 0, objectiveComplete: false },
-      { taskId: 'has-summary', createdAt: new Date(), summary: 'Report content', tasksCreated: 0, objectiveComplete: false },
+      { taskId: 'no-summary', createdAt: new Date(), summary: undefined, tasksCreated: 0, missionComplete: false },
+      { taskId: 'has-summary', createdAt: new Date(), summary: 'Report content', tasksCreated: 0, missionComplete: false },
     ];
     expect(getLatestReport(runs)!.taskId).toBe('has-summary');
   });
 
   test('returns null when no runs have summaries', () => {
     const runs = [
-      { taskId: 'a', createdAt: new Date(), summary: undefined, tasksCreated: 0, objectiveComplete: false },
-      { taskId: 'b', createdAt: new Date(), summary: '', tasksCreated: 0, objectiveComplete: false },
+      { taskId: 'a', createdAt: new Date(), summary: undefined, tasksCreated: 0, missionComplete: false },
+      { taskId: 'b', createdAt: new Date(), summary: '', tasksCreated: 0, missionComplete: false },
     ];
     expect(getLatestReport(runs)).toBeNull();
   });
@@ -224,7 +224,7 @@ describe('collectArtifacts', () => {
 
 describe('categorizeArtifacts', () => {
   test('separates keyed from regular artifacts', () => {
-    const artifacts: ObjectiveArtifact[] = [
+    const artifacts: MissionArtifact[] = [
       { id: '1', type: 'report', title: 'Report', key: 'spending-report', shareToken: 'abc', taskTitle: 'T1', workerStatus: 'completed' },
       { id: '2', type: 'content', title: 'Log', key: null, shareToken: 'def', taskTitle: 'T1', workerStatus: 'completed' },
       { id: '3', type: 'data', title: 'Data', key: 'data-export', shareToken: null, taskTitle: 'T2', workerStatus: 'completed' },
@@ -238,7 +238,7 @@ describe('categorizeArtifacts', () => {
   });
 
   test('returns all as regular when none are keyed', () => {
-    const artifacts: ObjectiveArtifact[] = [
+    const artifacts: MissionArtifact[] = [
       { id: '1', type: 'content', title: 'A', key: null, shareToken: null, taskTitle: 'T', workerStatus: 'completed' },
     ];
     const { keyed, regular } = categorizeArtifacts(artifacts);
@@ -247,7 +247,7 @@ describe('categorizeArtifacts', () => {
   });
 
   test('returns all as keyed when all are keyed', () => {
-    const artifacts: ObjectiveArtifact[] = [
+    const artifacts: MissionArtifact[] = [
       { id: '1', type: 'report', title: 'A', key: 'key-a', shareToken: null, taskTitle: 'T', workerStatus: 'completed' },
     ];
     const { keyed, regular } = categorizeArtifacts(artifacts);

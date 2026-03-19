@@ -17,7 +17,7 @@ export type PendingSuggestion = {
 export type UnifiedScheduleItem = {
   id: string;
   name: string;
-  type: 'heartbeat' | 'cron-objective' | 'workspace-schedule';
+  type: 'heartbeat' | 'cron-mission' | 'workspace-schedule';
   workspaceId: string | null;
   workspaceName: string | null;
   cronExpression: string;
@@ -27,14 +27,14 @@ export type UnifiedScheduleItem = {
   consecutiveFailures: number;
   isEnabled: boolean;
   href: string;
-  apiType: 'objective' | 'taskSchedule';
+  apiType: 'mission' | 'taskSchedule';
   apiId: string;
   apiWorkspaceId: string | null;
   pendingSuggestion?: PendingSuggestion | null;
 };
 
 type WorkspaceOption = { id: string; name: string };
-type FilterType = 'all' | 'heartbeat' | 'cron-objective' | 'workspace-schedule';
+type FilterType = 'all' | 'heartbeat' | 'cron-mission' | 'workspace-schedule';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -69,7 +69,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
       </span>
     );
   }
-  if (type === 'cron-objective') {
+  if (type === 'cron-mission') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -310,7 +310,7 @@ export default function SchedulesUnified({
     return diff > 0 && diff < 24 * 60 * 60 * 1000;
   }).length;
   const heartbeats = items.filter(i => i.type === 'heartbeat').length;
-  const objectives = items.filter(i => i.type === 'cron-objective').length;
+  const missions = items.filter(i => i.type === 'cron-mission').length;
   const scheduleCount = items.filter(i => i.type === 'workspace-schedule').length;
 
   async function handleToggle(item: UnifiedScheduleItem) {
@@ -323,7 +323,7 @@ export default function SchedulesUnified({
     setToggling(prev => new Set(prev).add(item.id));
 
     try {
-      if (item.apiType === 'objective') {
+      if (item.apiType === 'mission') {
         await fetch(`/api/missions/${item.apiId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -392,7 +392,7 @@ export default function SchedulesUnified({
   const filterTabs: { key: FilterType; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: total },
     { key: 'heartbeat', label: 'Heartbeats', count: heartbeats },
-    { key: 'cron-objective', label: 'Objectives', count: objectives },
+    { key: 'cron-mission', label: 'Missions', count: missions },
     { key: 'workspace-schedule', label: 'Workspace', count: scheduleCount },
   ];
 
@@ -410,7 +410,7 @@ export default function SchedulesUnified({
           </div>
           <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Set up heartbeats for periodic monitoring or schedule objectives to run automatically on a cron.
+            Set up heartbeats for periodic monitoring or schedule missions to run automatically on a cron.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
@@ -483,7 +483,7 @@ export default function SchedulesUnified({
         )}
         <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
           {heartbeats > 0 && <span>{heartbeats} heartbeat{heartbeats !== 1 ? 's' : ''}</span>}
-          {objectives > 0 && <span>{objectives} objective{objectives !== 1 ? 's' : ''}</span>}
+          {missions > 0 && <span>{missions} mission{missions !== 1 ? 's' : ''}</span>}
           {scheduleCount > 0 && <span>{scheduleCount} workspace schedule{scheduleCount !== 1 ? 's' : ''}</span>}
         </div>
       </div>
@@ -562,9 +562,9 @@ export default function SchedulesUnified({
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
                 <path d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
-              Objective
+              Mission
             </div>
-            Scheduled goal. Creates a planning task on each run to make progress toward the objective.
+            Scheduled goal. Creates a planning task on each run to make progress toward the mission.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-text-secondary font-medium">

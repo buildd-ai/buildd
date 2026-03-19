@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds } from '@/lib/team-access';
-import { getWorkspaceRoles } from '@/lib/objective-context';
+import { getWorkspaceRoles } from '@/lib/mission-context';
 
 // GET /api/roles — list roles with current load
 export async function GET(req: NextRequest) {

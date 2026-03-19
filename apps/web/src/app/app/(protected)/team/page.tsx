@@ -99,7 +99,7 @@ export default async function TeamPage() {
         columns: { id: true, title: true, workspaceId: true, roleSlug: true, context: true },
         with: {
           workspace: { columns: { name: true } },
-          objective: { columns: { title: true } },
+          mission: { columns: { title: true } },
         },
       },
     },
@@ -133,7 +133,7 @@ export default async function TeamPage() {
           workerStatus: w.status,
           startedAt: w.startedAt ? timeAgo(w.startedAt) : '',
           prUrl: (w as any).prUrl || undefined,
-          missionTitle: task.objective?.title || undefined,
+          missionTitle: task.mission?.title || undefined,
         };
       }
     }

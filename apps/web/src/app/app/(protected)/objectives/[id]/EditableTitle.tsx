@@ -4,10 +4,10 @@ import { useState, useRef, useEffect, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 export default function EditableTitle({
-  objectiveId,
+  missionId,
   initialTitle,
 }: {
-  objectiveId: string;
+  missionId: string;
   initialTitle: string;
 }) {
   const router = useRouter();
@@ -27,7 +27,7 @@ export default function EditableTitle({
       setEditing(false);
       return;
     }
-    await fetch(`/api/missions/${objectiveId}`, {
+    await fetch(`/api/missions/${missionId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: trimmed }),

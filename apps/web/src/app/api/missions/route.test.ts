@@ -5,13 +5,13 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
-const mockObjectivesFindMany = mock(() => [] as any[]);
+const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
-let insertedObjectiveValues: any = null;
+let insertedMissionValues: any = null;
 let insertedScheduleValues: any = null;
-const mockObjectivesInsert = mock(() => ({
+const mockMissionsInsert = mock(() => ({
   values: mock((vals: any) => {
-    insertedObjectiveValues = vals;
+    insertedMissionValues = vals;
     return {
       returning: mock(() => [{ id: 'obj-1', ...vals }]),
     };
@@ -25,7 +25,7 @@ const mockSchedulesInsert = mock(() => ({
     };
   }),
 }));
-const mockObjectivesUpdate = mock(() => ({
+const mockMissionsUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
       returning: mock(() => []),
@@ -54,15 +54,15 @@ mock.module('@/lib/schedule-helpers', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      objectives: { findMany: mockObjectivesFindMany },
+      missions: { findMany: mockMissionsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: (table: any) => {
-      if (table === 'objectives') return mockObjectivesInsert();
+      if (table === 'missions') return mockMissionsInsert();
       if (table === 'taskSchedules') return mockSchedulesInsert();
-      return mockObjectivesInsert();
+      return mockMissionsInsert();
     },
-    update: () => mockObjectivesUpdate(),
+    update: () => mockMissionsUpdate(),
   },
 }));
 
@@ -74,7 +74,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  objectives: 'objectives',
+  missions: 'missions',
   workspaces: { id: 'id', teamId: 'teamId' },
   taskSchedules: 'taskSchedules',
 }));
@@ -86,10 +86,10 @@ describe('POST /api/missions', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockObjectivesInsert.mockReset();
+    mockMissionsInsert.mockReset();
     mockSchedulesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    insertedObjectiveValues = null;
+    insertedMissionValues = null;
     insertedScheduleValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
@@ -97,9 +97,9 @@ describe('POST /api/missions', () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
 
-    mockObjectivesInsert.mockImplementation(() => ({
+    mockMissionsInsert.mockImplementation(() => ({
       values: mock((vals: any) => {
-        insertedObjectiveValues = vals;
+        insertedMissionValues = vals;
         return {
           returning: mock(() => [{ id: 'obj-1', ...vals }]),
         };
@@ -134,10 +134,10 @@ describe('POST /api/missions', () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    // Objective should NOT have heartbeat fields
-    expect(insertedObjectiveValues).not.toBeNull();
-    expect(insertedObjectiveValues.isHeartbeat).toBeUndefined();
-    expect(insertedObjectiveValues.heartbeatChecklist).toBeUndefined();
+    // Mission should NOT have heartbeat fields
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.isHeartbeat).toBeUndefined();
+    expect(insertedMissionValues.heartbeatChecklist).toBeUndefined();
 
     // Schedule template context should have heartbeat config
     expect(insertedScheduleValues).not.toBeNull();
@@ -158,8 +158,8 @@ describe('POST /api/missions', () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    expect(insertedObjectiveValues).not.toBeNull();
-    expect(insertedObjectiveValues.title).toBe('Ship auth module');
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.title).toBe('Ship auth module');
     // No schedule created
     expect(insertedScheduleValues).toBeNull();
   });

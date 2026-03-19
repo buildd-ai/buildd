@@ -90,9 +90,9 @@ export default function NewTaskPage() {
   // Mode state (planning vs execution)
   const [mode, setMode] = useState<TaskModeValue>('execution');
 
-  // Objective linking
-  const [objectiveId, setObjectiveId] = useState('');
-  const [availableObjectives, setAvailableObjectives] = useState<{ id: string; title: string; status: string }[]>([]);
+  // Mission linking
+  const [missionId, setMissionId] = useState('');
+  const [availableMissions, setAvailableMissions] = useState<{ id: string; title: string; status: string }[]>([]);
 
   // Dependencies
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
@@ -179,15 +179,15 @@ export default function NewTaskPage() {
       .finally(() => setLoadingWorkspaces(false));
   }, []);
 
-  // Fetch objectives (team-level, not workspace-specific)
+  // Fetch missions (team-level, not workspace-specific)
   useEffect(() => {
     fetch('/api/missions')
       .then(res => res.json())
       .then(data => {
-        const objs = (data.objectives || []).filter((o: any) => o.status === 'active' || o.status === 'paused');
-        setAvailableObjectives(objs.map((o: any) => ({ id: o.id, title: o.title, status: o.status })));
+        const missions = (data.missions || []).filter((m: any) => m.status === 'active' || m.status === 'paused');
+        setAvailableMissions(missions.map((m: any) => ({ id: m.id, title: m.title, status: m.status })));
       })
-      .catch(() => setAvailableObjectives([]));
+      .catch(() => setAvailableMissions([]));
   }, []);
 
   // Set default runner preference from workspace config
@@ -367,7 +367,7 @@ export default function NewTaskPage() {
             ...(project.trim() && { project: project.trim() }),
             ...(attachments && { attachments }),
             ...(parsedOutputSchema && { outputSchema: parsedOutputSchema }),
-            ...(objectiveId && { objectiveId }),
+            ...(missionId && { missionId }),
             ...(runnerPreference !== 'any' && { runnerPreference }),
             ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
             ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
@@ -657,7 +657,7 @@ export default function NewTaskPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 Advanced options
-                {(selectedCategory || workflowType !== 'single' || project || objectiveId || useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || runnerPreference !== 'any') && (
+                {(selectedCategory || workflowType !== 'single' || project || missionId || useOutputSchema || taskTargetBranch || selectedDeps.length > 0 || mode === 'planning' || runnerPreference !== 'any') && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -740,22 +740,22 @@ export default function NewTaskPage() {
                     </div>
                   </div>
 
-                  {/* Objective picker */}
-                  {availableObjectives.length > 0 && (
+                  {/* Mission picker */}
+                  {availableMissions.length > 0 && (
                     <div>
-                      <label htmlFor="objectiveId" className="block text-sm font-medium mb-2">
+                      <label htmlFor="missionId" className="block text-sm font-medium mb-2">
                         Mission <span className="text-text-muted font-normal">(optional)</span>
                       </label>
                       <Select
-                        id="objectiveId"
-                        value={objectiveId}
-                        onChange={setObjectiveId}
+                        id="missionId"
+                        value={missionId}
+                        onChange={setMissionId}
                         placeholder="Link to a mission..."
                         options={[
                           { value: '', label: 'None' },
-                          ...availableObjectives.map(o => ({
-                            value: o.id,
-                            label: `${o.status === 'paused' ? '⏸ ' : ''}${o.title}`,
+                          ...availableMissions.map(m => ({
+                            value: m.id,
+                            label: `${m.status === 'paused' ? '⏸ ' : ''}${m.title}`,
                           })),
                         ]}
                       />

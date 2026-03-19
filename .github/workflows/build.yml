@@ -219,6 +219,7 @@ jobs:
                apps/web/tests/integration/schedule-triggers.test.ts \
                apps/web/tests/integration/artifacts.test.ts \
                apps/web/tests/integration/recipes.test.ts \
+               apps/web/tests/integration/missions-smoke.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333

@@ -37,7 +37,7 @@ Check `authType` field to know which limits apply.
 
 Postgres via Neon + Drizzle ORM.
 
-**Key tables**: `accounts`, `workspaces`, `tasks`, `workers`, `objectives` (missions), `taskSchedules`, `accountWorkspaces`
+**Key tables**: `accounts`, `workspaces`, `tasks`, `workers`, `missions`, `taskSchedules`, `accountWorkspaces`
 
 ### Schema Changes (Important!)
 
@@ -73,39 +73,11 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ## Missions
 
-Missions (stored in the `objectives` table) are high-level goals that organize and generate tasks. **Tasks are not missions.** Tasks are concrete units of work; missions are containers that track progress across multiple tasks and optionally create them on a schedule.
+Missions are high-level goals that organize and generate tasks. Tasks are concrete units of work; missions are containers that track progress across multiple tasks and optionally create them on a schedule.
 
-### Terminology
-
-The UI and API both say **"mission"** (`/api/missions`). The database table is still `objectives` — don't rename the table.
-
-### Three Mission Types
-
-Type is derived from two fields — no explicit `type` column:
-
-| Type | `cronExpression` | `isHeartbeat` | Purpose |
-|------|-----------------|---------------|---------|
-| **BUILD** | `null` | `false` | Ship something. One-time goal, tracks task completion as progress %. |
-| **WATCH** | set | `true` | Monitor signals. Recurring scans on a cron, flags findings. Has heartbeat checklist, active hours, structured output (`status: ok/action_taken/error`). |
-| **BRIEF** | set | `false` | Produce findings. Recurring research/analysis, surfaces latest result. |
-
-Classification logic: `!cronExpression → build`, `isHeartbeat → watch`, else `brief`.
-
-### How Missions Relate to Tasks
-
-- Missions can auto-create tasks via a linked `taskSchedule` (cron fires → new task with template)
-- Tasks link back via `tasks.objectiveId` foreign key
-- Each scheduled task gets enriched context: last 10 task summaries, active tasks, failed tasks, dedup warnings (`lib/objective-context.ts`)
-- BUILD missions track progress as `completedTasks / totalTasks`
-- WATCH missions count "new signals" (completed tasks in last 24h)
-
-### Key Paths
-
-- Mission list page: `apps/web/src/app/app/(protected)/missions/page.tsx`
-- Mission detail: `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`
-- New mission form: `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx`
-- API: `apps/web/src/app/api/missions/` (CRUD + `/[id]/run` for manual trigger)
-- Context builder: `apps/web/src/lib/objective-context.ts`
+- **DB table**: `missions` (with `tasks.missionId` FK)
+- **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
+- **Context builder**: `apps/web/src/lib/mission-context.ts`
 
 ## When Modifying
 
@@ -136,6 +108,8 @@ bun test apps/runner/__tests__/unit/        # Runner unit tests
 bun run test:integration                    # Integration tests (live server)
 bun run test:e2e                            # E2E tests (full stack)
 ```
+
+**Smoke tests** (`*-smoke.test.ts`): Lightweight guards that always run in CI. Cover CRUD + auth + endpoint existence for a feature. Full suites (e.g., `missions.test.ts`) run on-demand or when affected code changes.
 
 See `.agent/testing.md` and `.agent/testing-strategy.md` for full details.
 

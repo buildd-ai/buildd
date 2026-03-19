@@ -6,14 +6,14 @@ import { formatHour } from './heartbeat-helpers';
 import { Select } from '@/components/ui/Select';
 
 interface ActiveHoursConfigProps {
-  objectiveId: string;
+  missionId: string;
   activeHoursStart: number | null;
   activeHoursEnd: number | null;
   activeHoursTimezone: string | null;
 }
 
 export default function ActiveHoursConfig({
-  objectiveId,
+  missionId,
   activeHoursStart,
   activeHoursEnd,
   activeHoursTimezone,
@@ -30,7 +30,7 @@ export default function ActiveHoursConfig({
   async function save(body: Record<string, unknown>) {
     setSaving(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

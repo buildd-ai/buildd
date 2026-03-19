@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
 
 export default function EditableDescription({
-  objectiveId,
+  missionId,
   initialDescription,
 }: {
-  objectiveId: string;
+  missionId: string;
   initialDescription: string | null;
 }) {
   const router = useRouter();
@@ -25,7 +25,7 @@ export default function EditableDescription({
     }
     setSaving(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: trimmed || null }),

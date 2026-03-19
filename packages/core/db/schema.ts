@@ -302,8 +302,8 @@ export const workspaces = pgTable('workspaces', {
   configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
-// Objectives — first-class goals that tasks can be linked to
-export const objectives = pgTable('objectives', {
+// Missions — first-class goals that tasks can be linked to
+export const missions = pgTable('missions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
@@ -313,16 +313,17 @@ export const objectives = pgTable('objectives', {
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   scheduleId: uuid('schedule_id'),
-  parentObjectiveId: uuid('parent_objective_id'),
+  parentMissionId: uuid('parent_mission_id'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  teamIdx: index('objectives_team_idx').on(t.teamId),
-  workspaceIdx: index('objectives_workspace_idx').on(t.workspaceId),
-  statusIdx: index('objectives_status_idx').on(t.status),
-  parentIdx: index('objectives_parent_idx').on(t.parentObjectiveId),
+  teamIdx: index('missions_team_idx').on(t.teamId),
+  workspaceIdx: index('missions_workspace_idx').on(t.workspaceId),
+  statusIdx: index('missions_status_idx').on(t.status),
+  parentIdx: index('missions_parent_idx').on(t.parentMissionId),
 }));
+
 
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -352,8 +353,8 @@ export const tasks = pgTable('tasks', {
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
-  // Objective linking
-  objectiveId: uuid('objective_id').references(() => objectives.id, { onDelete: 'set null' }),
+  // Mission linking
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   // Role routing — if set, only runners with this skill can claim
   roleSlug: text('role_slug'),
   // Workflow DAG: task IDs that must complete before this task is claimable
@@ -371,7 +372,7 @@ export const tasks = pgTable('tasks', {
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
-  objectiveIdx: index('tasks_objective_idx').on(t.objectiveId),
+  missionIdx: index('tasks_mission_idx').on(t.missionId),
 }));
 
 export const workers = pgTable('workers', {
@@ -676,7 +677,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   members: many(teamMembers),
   accounts: many(accounts),
   workspaces: many(workspaces),
-  objectives: many(objectives),
+  missions: many(missions),
   invitations: many(teamInvitations),
 }));
 
@@ -709,14 +710,14 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
   workspace: one(workspaces, { fields: [accountWorkspaces.workspaceId], references: [workspaces.id] }),
 }));
 
-export const objectivesRelations = relations(objectives, ({ one, many }) => ({
-  team: one(teams, { fields: [objectives.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [objectives.workspaceId], references: [workspaces.id] }),
-  createdByUser: one(users, { fields: [objectives.createdByUserId], references: [users.id] }),
-  parentObjective: one(objectives, { fields: [objectives.parentObjectiveId], references: [objectives.id], relationName: 'subObjectives' }),
-  subObjectives: many(objectives, { relationName: 'subObjectives' }),
+export const missionsRelations = relations(missions, ({ one, many }) => ({
+  team: one(teams, { fields: [missions.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [missions.workspaceId], references: [workspaces.id] }),
+  createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
+  parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
+  subMissions: many(missions, { relationName: 'subMissions' }),
   tasks: many(tasks),
-  schedule: one(taskSchedules, { fields: [objectives.scheduleId], references: [taskSchedules.id] }),
+  schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
@@ -729,7 +730,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   taskSchedules: many(taskSchedules),
   taskRecipes: many(taskRecipes),
   workspaceSkills: many(workspaceSkills),
-  objectives: many(objectives),
+  missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
@@ -737,7 +738,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id], relationName: 'claimedTasks' }),
-  objective: one(objectives, { fields: [tasks.objectiveId], references: [objectives.id] }),
+  mission: one(missions, { fields: [tasks.missionId], references: [missions.id] }),
   workers: many(workers, { relationName: 'taskWorkers' }),
 
   // Creator tracking relations

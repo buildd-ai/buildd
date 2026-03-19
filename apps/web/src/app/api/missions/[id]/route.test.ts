@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
-const mockObjectivesFindFirst = mock(() => ({
+const mockMissionsFindFirst = mock(() => ({
   id: 'obj-1',
   teamId: 'team-1',
   title: 'Existing Mission',
@@ -14,7 +14,7 @@ const mockObjectivesFindFirst = mock(() => ({
   priority: 0,
 }) as any);
 let updatedSetData: any = null;
-const mockObjectivesUpdate = mock(() => ({
+const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
     updatedSetData = data;
     return {
@@ -56,13 +56,13 @@ mock.module('@/lib/schedule-helpers', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      objectives: { findFirst: mockObjectivesFindFirst },
+      missions: { findFirst: mockMissionsFindFirst },
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaces: { findFirst: mock(() => ({ id: 'ws-1' })) },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
-      return mockObjectivesUpdate();
+      return mockMissionsUpdate();
     },
     insert: () => ({
       values: mock((vals: any) => {
@@ -86,7 +86,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  objectives: 'objectives',
+  missions: 'missions',
   tasks: 'tasks',
   taskSchedules: 'taskSchedules',
   workspaces: { id: 'id', teamId: 'teamId' },
@@ -101,8 +101,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockObjectivesFindFirst.mockReset();
-    mockObjectivesUpdate.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsUpdate.mockReset();
     mockScheduleFindFirst.mockReset();
     mockScheduleUpdate.mockReset();
     updatedSetData = null;
@@ -112,7 +112,7 @@ describe('PATCH /api/missions/[id]', () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockReturnValue({
+    mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
       title: 'Existing Mission',
@@ -120,7 +120,7 @@ describe('PATCH /api/missions/[id]', () => {
       scheduleId: null,
       priority: 0,
     });
-    mockObjectivesUpdate.mockImplementation(() => ({
+    mockMissionsUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
         updatedSetData = data;
         return {
@@ -140,7 +140,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('stores heartbeat config in schedule template context', async () => {
     // Mission with existing schedule
-    mockObjectivesFindFirst.mockReturnValue({
+    mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
       title: 'Health Check',
@@ -171,7 +171,7 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('stores active hours in schedule template context', async () => {
-    mockObjectivesFindFirst.mockReturnValue({
+    mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
       title: 'Monitor',

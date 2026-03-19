@@ -1,13 +1,13 @@
 import { db } from '@buildd/core/db';
-import { objectives, workspaces } from '@buildd/core/db/schema';
+import { missions, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import StatusBadge from '@/components/StatusBadge';
-import ObjectiveActions from './ObjectiveActions';
-import ObjectiveConfig from './ObjectiveConfig';
+import MissionActions from './MissionActions';
+import MissionConfig from './MissionConfig';
 import EditableTitle from './EditableTitle';
 import EditableDescription from './EditableDescription';
 import PrioritySelector from './PrioritySelector';
@@ -39,7 +39,7 @@ function timeAgo(date: Date | string): string {
   return `${days}d ago`;
 }
 
-export default async function ObjectiveDetailPage({
+export default async function MissionDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -50,9 +50,9 @@ export default async function ObjectiveDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  const [objective, teamWorkspaces] = await Promise.all([
-    db.query.objectives.findFirst({
-      where: eq(objectives.id, id),
+  const [mission, teamWorkspaces] = await Promise.all([
+    db.query.missions.findFirst({
+      where: eq(missions.id, id),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
@@ -76,7 +76,7 @@ export default async function ObjectiveDetailPage({
             },
           },
         },
-        subObjectives: { columns: { id: true, title: true, status: true } },
+        subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
       },
     }),
@@ -86,22 +86,22 @@ export default async function ObjectiveDetailPage({
     }),
   ]);
 
-  if (!objective || !teamIds.includes(objective.teamId)) {
+  if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
   }
 
-  const totalTasks = objective.tasks?.length || 0;
-  const completedTasks = objective.tasks?.filter(t => t.status === 'completed').length || 0;
+  const totalTasks = mission.tasks?.length || 0;
+  const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
   const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-  const activeTasks = objective.tasks?.filter(t => !['completed', 'failed'].includes(t.status)) || [];
-  const doneTasks = objective.tasks?.filter(t => ['completed', 'failed'].includes(t.status)) || [];
+  const activeTasks = mission.tasks?.filter(t => !['completed', 'failed'].includes(t.status)) || [];
+  const doneTasks = mission.tasks?.filter(t => ['completed', 'failed'].includes(t.status)) || [];
 
   // Planning history — completed planning tasks
-  const planningHistory = objective.tasks?.filter(t => t.mode === 'planning' && t.status === 'completed') || [];
+  const planningHistory = mission.tasks?.filter(t => t.mode === 'planning' && t.status === 'completed') || [];
 
   // Insights — structured outputs from completed execution tasks
-  const insights = objective.tasks
+  const insights = mission.tasks
     ?.filter(t => t.mode !== 'planning' && t.status === 'completed' && (t.result as any)?.structuredOutput)
     .map(t => ({
       taskId: t.id,
@@ -111,14 +111,14 @@ export default async function ObjectiveDetailPage({
     })) || [];
 
   // Configuration from schedule template
-  const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+  const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
   const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
   const recipeId = templateContext?.recipeId as string | undefined;
   const configModel = templateContext?.model as string | undefined;
   const outputSchema = templateContext?.outputSchema as unknown | undefined;
 
   // Collect all artifacts across all workers
-  const allArtifacts = objective.tasks?.flatMap(t =>
+  const allArtifacts = mission.tasks?.flatMap(t =>
     t.workers?.flatMap(w =>
       (w.artifacts || []).map(a => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
     ) || []
@@ -132,23 +132,23 @@ export default async function ObjectiveDetailPage({
   const activeHoursTimezone = (templateContext?.activeHoursTimezone as string) ?? null;
 
   const heartbeatTasks = isHeartbeat
-    ? (objective.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
+    ? (mission.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
     : [];
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
-    (objective.tasks || []).map(t => ({
+    (mission.tasks || []).map(t => ({
       id: t.id,
       createdAt: t.createdAt,
       status: t.status,
       result: t.result,
     }))
   );
-  const scheduleCron = (objective.schedule as any)?.cronExpression || null;
-  const heartbeatOverdue = isHeartbeat && objective.schedule?.nextRunAt && scheduleCron
-    ? checkOverdue(objective.schedule.nextRunAt, scheduleCron)
+  const scheduleCron = (mission.schedule as any)?.cronExpression || null;
+  const heartbeatOverdue = isHeartbeat && mission.schedule?.nextRunAt && scheduleCron
+    ? checkOverdue(mission.schedule.nextRunAt, scheduleCron)
     : false;
 
   // Collect recent worker activity across all tasks
-  const recentActivity = objective.tasks
+  const recentActivity = mission.tasks
     ?.flatMap(t =>
       (t.workers || []).map(w => ({
         taskId: t.id,
@@ -180,21 +180,21 @@ export default async function ObjectiveDetailPage({
     <div className="max-w-4xl mx-auto p-6">
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-sm text-text-secondary mb-4">
-        <Link href="/app/objectives" className="hover:text-text-primary">
-          Objectives
+        <Link href="/app/missions" className="hover:text-text-primary">
+          Missions
         </Link>
         <span>/</span>
-        <span className="text-text-primary truncate">{objective.title}</span>
+        <span className="text-text-primary truncate">{mission.title}</span>
       </div>
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start justify-between gap-4 mb-6">
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-3 mb-2">
-            <EditableTitle objectiveId={objective.id} initialTitle={objective.title} />
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ${STATUS_STYLES[objective.status]?.bg || ''}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[objective.status]?.dot || ''}`} />
-              {objective.status}
+            <EditableTitle missionId={mission.id} initialTitle={mission.title} />
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ${STATUS_STYLES[mission.status]?.bg || ''}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[mission.status]?.dot || ''}`} />
+              {mission.status}
             </span>
             {isHeartbeat && (
               <HeartbeatStatusBadge
@@ -205,19 +205,19 @@ export default async function ObjectiveDetailPage({
             )}
           </div>
           <div className="flex items-center gap-3 text-sm text-text-secondary">
-            {objective.workspace && (
-              <Link href={`/app/workspaces/${objective.workspace.id}`} className="text-primary hover:underline">
-                {objective.workspace.name}
+            {mission.workspace && (
+              <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-primary hover:underline">
+                {mission.workspace.name}
               </Link>
             )}
-            <PrioritySelector objectiveId={objective.id} initialPriority={objective.priority} />
+            <PrioritySelector missionId={mission.id} initialPriority={mission.priority} />
           </div>
         </div>
-        <ObjectiveActions
-          objectiveId={objective.id}
-          status={objective.status}
+        <MissionActions
+          missionId={mission.id}
+          status={mission.status}
           cronExpression={scheduleCron}
-          hasWorkspace={!!objective.workspaceId}
+          hasWorkspace={!!mission.workspaceId}
         />
       </div>
 
@@ -240,13 +240,13 @@ export default async function ObjectiveDetailPage({
 
       {/* Description */}
       <div className="mb-6">
-        <EditableDescription objectiveId={objective.id} initialDescription={objective.description} />
+        <EditableDescription missionId={mission.id} initialDescription={mission.description} />
       </div>
 
       {/* Heartbeat Checklist */}
       {isHeartbeat && (
         <HeartbeatChecklistEditor
-          objectiveId={objective.id}
+          missionId={mission.id}
           checklist={heartbeatChecklist}
         />
       )}
@@ -255,8 +255,8 @@ export default async function ObjectiveDetailPage({
       {!scheduleCron && (
         <div className="mb-6">
           <ScheduleWizard
-            objectiveId={objective.id}
-            hasWorkspace={!!objective.workspaceId}
+            missionId={mission.id}
+            hasWorkspace={!!mission.workspaceId}
             workspaces={teamWorkspaces}
           />
         </div>
@@ -271,9 +271,9 @@ export default async function ObjectiveDetailPage({
             </svg>
             <span className="text-text-secondary">Schedule:</span>
             <code className="text-xs bg-surface-3 px-1.5 py-0.5 rounded">{scheduleCron}</code>
-            {objective.schedule?.nextRunAt && (
+            {mission.schedule?.nextRunAt && (
               <span className="text-text-muted">
-                Next: {new Date(objective.schedule.nextRunAt).toLocaleString()}
+                Next: {new Date(mission.schedule.nextRunAt).toLocaleString()}
               </span>
             )}
           </div>
@@ -283,7 +283,7 @@ export default async function ObjectiveDetailPage({
       {/* Active Hours (heartbeat only) */}
       {isHeartbeat && (
         <ActiveHoursConfig
-          objectiveId={objective.id}
+          missionId={mission.id}
           activeHoursStart={activeHoursStart}
           activeHoursEnd={activeHoursEnd}
           activeHoursTimezone={activeHoursTimezone}
@@ -291,10 +291,10 @@ export default async function ObjectiveDetailPage({
       )}
 
       {/* Configuration */}
-      <ObjectiveConfig
-        objectiveId={objective.id}
-        workspaceId={objective.workspaceId}
-        workspace={objective.workspace}
+      <MissionConfig
+        missionId={mission.id}
+        workspaceId={mission.workspaceId}
+        workspace={mission.workspace}
         skillSlugs={skillSlugs}
         recipeId={recipeId || null}
         model={configModel || null}
@@ -314,7 +314,7 @@ export default async function ObjectiveDetailPage({
         />
       )}
 
-      {/* Planning History (non-heartbeat objectives) */}
+      {/* Planning History (non-heartbeat missions) */}
       {!isHeartbeat && planningHistory.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
@@ -342,7 +342,7 @@ export default async function ObjectiveDetailPage({
                         <span className="text-xs text-text-muted">({tasksCreated} task{tasksCreated !== 1 ? 's' : ''} created)</span>
                       )}
                     </div>
-                    {!!structured?.objectiveComplete && (
+                    {!!structured?.missionComplete && (
                       <span className="text-xs bg-status-success/10 text-status-success px-2 py-0.5 rounded-full">Complete</span>
                     )}
                   </div>
@@ -535,17 +535,17 @@ export default async function ObjectiveDetailPage({
         </div>
       )}
 
-      {/* Sub-objectives */}
-      {objective.subObjectives && objective.subObjectives.length > 0 && (
+      {/* Sub-missions */}
+      {mission.subMissions && mission.subMissions.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-            Sub-objectives
+            Sub-missions
           </h2>
           <div className="space-y-2">
-            {objective.subObjectives.map(sub => (
+            {mission.subMissions.map(sub => (
               <Link
                 key={sub.id}
-                href={`/app/objectives/${sub.id}`}
+                href={`/app/missions/${sub.id}`}
                 className="flex items-center gap-3 p-3 bg-surface-2 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
               >
                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[sub.status]?.bg || ''}`}>
