@@ -313,6 +313,8 @@ export async function PATCH(
           ...(lastQuestion && { lastQuestion }),
           // Structured output from SDK (validated JSON matching task.outputSchema)
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
+          // Artifact protocol: hint for the orchestrator on what to consider next
+          ...(body.nextSuggestion && typeof body.nextSuggestion === 'string' && { nextSuggestion: body.nextSuggestion }),
         };
 
         // Snapshot unique MCP servers into task result

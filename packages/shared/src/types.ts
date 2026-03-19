@@ -275,6 +275,29 @@ export interface TaskResult {
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
   mcpServers?: string[];
+  nextSuggestion?: string;
+}
+
+/**
+ * Structured artifact protocol for task results.
+ *
+ * This defines the TARGET shape that task results should converge towards.
+ * Existing tasks may not match this shape — consumers must handle missing fields.
+ * The orchestrator uses this structure to reason about completed work and decide next steps.
+ */
+export interface TaskArtifactResult {
+  type: 'summary' | 'finding' | 'report' | 'review' | 'error';
+  output: string;
+  status: 'completed' | 'needs_followup' | 'blocked';
+  nextSuggestion?: string;
+  metadata?: {
+    pr?: string;
+    prNumber?: number;
+    branch?: string;
+    filesChanged?: number;
+    commitCount?: number;
+    custom?: Record<string, unknown>;
+  };
 }
 
 export interface Task {

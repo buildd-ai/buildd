@@ -288,6 +288,7 @@ export default async function MissionDetailPage({
                         {cycle.tasks.map((task) => {
                           const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
                           const roleColor = role?.color || '#8A8478';
+                          const taskResult = task.result as { summary?: string; nextSuggestion?: string } | null;
                           const latestWorker = task.workers?.[0];
                           const isRunning = latestWorker?.status === 'running';
                           const isDone = task.status === 'completed';
@@ -373,6 +374,15 @@ export default async function MissionDetailPage({
                                     question={waitingFor.prompt}
                                     options={waitingFor.options}
                                   />
+                                </div>
+                              )}
+
+                              {isDone && taskResult?.nextSuggestion && (
+                                <div className="pl-7 pb-0.5">
+                                  <p className="text-[11px] text-text-muted italic leading-relaxed">
+                                    <span className="text-text-secondary">Suggested:</span>{' '}
+                                    &ldquo;{taskResult.nextSuggestion}&rdquo;
+                                  </p>
                                 </div>
                               )}
                             </div>

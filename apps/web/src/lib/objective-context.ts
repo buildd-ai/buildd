@@ -183,9 +183,13 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       const result = t.result as Record<string, unknown> | null;
       const summary = result?.summary as string || 'no summary';
       const structuredOutput = result?.structuredOutput;
+      const nextSuggestion = result?.nextSuggestion as string | undefined;
       let line = `- [${t.title}] ${timeAgo(t.createdAt)}: ${summary}`;
       if (structuredOutput) {
         line += `\n  ${JSON.stringify(structuredOutput)}`;
+      }
+      if (nextSuggestion) {
+        line += `\n  → Next: "${nextSuggestion}"`;
       }
       descParts.push(line);
     }
@@ -296,6 +300,7 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
         mode: t.mode,
         summary: result?.summary || null,
         structuredOutput: result?.structuredOutput || null,
+        nextSuggestion: result?.nextSuggestion || null,
         completedAt: t.createdAt,
       };
     }),
