@@ -50,7 +50,7 @@ function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: Worksp
 
   return (
     <div className="mb-4" ref={ref}>
-      <label className="block text-xs text-text-muted mb-1.5">Workspace</label>
+      <label className="block text-xs text-text-muted mb-1.5">Workspace <span className="text-text-muted/60">(optional)</span></label>
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -73,6 +73,17 @@ function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: Worksp
       </button>
       {open && (
         <div className="mt-1 bg-surface-1 border border-border-default rounded-sm shadow-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => { onChange(''); setOpen(false); }}
+            className={`w-full px-4 py-2.5 text-sm text-left transition-colors ${
+              !value
+                ? 'bg-primary/10 text-primary'
+                : 'text-text-muted hover:bg-surface-2'
+            }`}
+          >
+            None
+          </button>
           {workspaces.map(ws => (
             <button
               key={ws.id}
@@ -97,7 +108,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
   const router = useRouter();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [workspaceId, setWorkspaceId] = useState(workspaces.length === 1 ? workspaces[0].id : '');
+  const [workspaceId, setWorkspaceId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -233,8 +244,8 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
           />
         </div>
 
-        {/* Workspace picker — only show if multiple workspaces */}
-        {workspaces.length > 1 && (
+        {/* Workspace picker — always show, optional */}
+        {workspaces.length > 0 && (
           <WorkspaceDropdown
             workspaces={workspaces}
             value={workspaceId}
@@ -251,6 +262,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             <div className="flex flex-wrap gap-2">
               {roles
                 .filter(r => !workspaceId || r.workspaceId === workspaceId)
+                .filter((r, i, arr) => arr.findIndex(x => x.slug === r.slug) === i)
                 .map(role => (
                 <button
                   key={role.slug}
