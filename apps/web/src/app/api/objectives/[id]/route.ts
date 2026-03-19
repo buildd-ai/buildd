@@ -59,11 +59,12 @@ export async function GET(
 
     // Extract skill/recipe config from schedule template
     const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+    const isHeartbeat = templateContext?.heartbeat === true;
 
     // Compute heartbeat status from most recent completed task with structuredOutput
     let lastHeartbeatStatus: string | null = null;
     let lastHeartbeatAt: string | null = null;
-    if (objective.isHeartbeat) {
+    if (isHeartbeat) {
       const lastCompletedTask = objective.tasks?.find(
         (t: any) => t.status === 'completed' && t.result?.structuredOutput?.status
       );
@@ -82,6 +83,12 @@ export async function GET(
       recipeId: templateContext?.recipeId || null,
       outputSchema: templateContext?.outputSchema || null,
       model: templateContext?.model || null,
+      // Derived from schedule's taskTemplate.context for backward compatibility
+      isHeartbeat,
+      heartbeatChecklist: templateContext?.heartbeatChecklist || null,
+      activeHoursStart: templateContext?.activeHoursStart ?? null,
+      activeHoursEnd: templateContext?.activeHoursEnd ?? null,
+      activeHoursTimezone: templateContext?.activeHoursTimezone || null,
       lastHeartbeatStatus,
       lastHeartbeatAt,
     });
@@ -124,7 +131,7 @@ export async function PATCH(
 
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, defaultRoleSlug } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
 
     // Validate active hours range
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -149,33 +156,30 @@ export async function PATCH(
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
-    if (isHeartbeat !== undefined) updateData.isHeartbeat = isHeartbeat;
-    if (heartbeatChecklist !== undefined) updateData.heartbeatChecklist = heartbeatChecklist || null;
-    if (activeHoursStart !== undefined) updateData.activeHoursStart = activeHoursStart ?? null;
-    if (activeHoursEnd !== undefined) updateData.activeHoursEnd = activeHoursEnd ?? null;
-    if (activeHoursTimezone !== undefined) updateData.activeHoursTimezone = activeHoursTimezone || null;
-    if (defaultRoleSlug !== undefined) updateData.defaultRoleSlug = defaultRoleSlug || null;
 
     // Handle cronExpression changes or skill/recipe updates on existing schedule
-    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined || isHeartbeat !== undefined;
+    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined || isHeartbeat !== undefined
+      || heartbeatChecklist !== undefined || activeHoursStart !== undefined || activeHoursEnd !== undefined || activeHoursTimezone !== undefined;
     if (scheduleNeedsUpdate) {
-      if (cronExpression !== undefined) updateData.cronExpression = cronExpression || null;
-
       const effectiveWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
-      const effectiveCron = cronExpression !== undefined ? cronExpression : existing.cronExpression;
 
-      // Build template context with skill/recipe/schema
+      // Resolve existing cron from schedule if not provided
+      let existingCron: string | null = null;
       const templateContext: Record<string, unknown> = {};
       // Preserve existing context from schedule if updating
       if (existing.scheduleId) {
         const existingSchedule = await db.query.taskSchedules.findFirst({
           where: eq(taskSchedules.id, existing.scheduleId),
-          columns: { taskTemplate: true },
+          columns: { taskTemplate: true, cronExpression: true },
         });
-        if (existingSchedule?.taskTemplate?.context) {
-          Object.assign(templateContext, existingSchedule.taskTemplate.context);
+        if (existingSchedule) {
+          existingCron = existingSchedule.cronExpression;
+          if (existingSchedule.taskTemplate?.context) {
+            Object.assign(templateContext, existingSchedule.taskTemplate.context);
+          }
         }
       }
+      const effectiveCron = cronExpression !== undefined ? cronExpression : existingCron;
       if (skillSlugs !== undefined) {
         if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
         else delete templateContext.skillSlugs;
@@ -195,6 +199,22 @@ export async function PATCH(
       if (isHeartbeat !== undefined) {
         if (isHeartbeat) templateContext.heartbeat = true;
         else delete templateContext.heartbeat;
+      }
+      if (heartbeatChecklist !== undefined) {
+        if (heartbeatChecklist) templateContext.heartbeatChecklist = heartbeatChecklist;
+        else delete templateContext.heartbeatChecklist;
+      }
+      if (activeHoursStart !== undefined) {
+        if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
+        else delete templateContext.activeHoursStart;
+      }
+      if (activeHoursEnd !== undefined) {
+        if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
+        else delete templateContext.activeHoursEnd;
+      }
+      if (activeHoursTimezone !== undefined) {
+        if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
+        else delete templateContext.activeHoursTimezone;
       }
 
       if (effectiveCron && effectiveWorkspaceId) {

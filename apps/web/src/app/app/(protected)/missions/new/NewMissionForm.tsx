@@ -112,8 +112,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  const [defaultRoleSlug, setDefaultRoleSlug] = useState('');
-
   // Schedule state
   const [cronExpression, setCronExpression] = useState('');
   const [customCron, setCustomCron] = useState(false);
@@ -177,10 +175,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
 
       if (cronExpression) {
         payload.cronExpression = cronExpression;
-      }
-
-      if (defaultRoleSlug) {
-        payload.defaultRoleSlug = defaultRoleSlug;
       }
 
       const res = await fetch('/api/missions', {
@@ -253,39 +247,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             value={workspaceId}
             onChange={setWorkspaceId}
           />
-        )}
-
-        {/* Assign to role */}
-        {roles.length > 0 && (
-          <div className="mb-4">
-            <label className="block text-xs text-text-muted mb-1.5">
-              Assign to role <span className="text-text-muted/60">(optional)</span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {roles
-                .filter(r => !workspaceId || r.workspaceId === workspaceId)
-                .filter((r, i, arr) => arr.findIndex(x => x.slug === r.slug) === i)
-                .map(role => (
-                <button
-                  key={role.slug}
-                  type="button"
-                  onClick={() => setDefaultRoleSlug(defaultRoleSlug === role.slug ? '' : role.slug)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                    defaultRoleSlug === role.slug
-                      ? 'bg-primary/10 border-primary text-primary'
-                      : 'bg-surface-2 border-border-default text-text-secondary hover:text-text-primary hover:border-border-default/80'
-                  }`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: role.color }}
-                  />
-                  {role.name}
-                </button>
-              ))}
-            </div>
-            <p className="text-[11px] text-text-muted mt-1">Tasks from this mission will be routed to the selected role.</p>
-          </div>
         )}
 
         {/* Schedule section — always visible, optional */}

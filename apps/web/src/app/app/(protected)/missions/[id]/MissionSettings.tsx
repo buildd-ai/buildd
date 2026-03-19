@@ -1,14 +1,13 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { cronToHuman, timeAgo } from '@/lib/mission-helpers';
 
 interface MissionSettingsProps {
   missionId: string;
   currentStatus: string;
   cronExpression: string | null;
-  defaultRoleSlug: string | null;
   workspaceId: string | null;
   roles: { slug: string; name: string; color: string }[];
   schedule: {
@@ -22,7 +21,6 @@ export default function MissionSettings({
   missionId,
   currentStatus,
   cronExpression,
-  defaultRoleSlug,
   workspaceId,
   roles,
   schedule,
@@ -30,29 +28,11 @@ export default function MissionSettings({
 }: MissionSettingsProps) {
   const router = useRouter();
   const [status, setStatus] = useState(currentStatus);
-  const [roleSlug, setRoleSlug] = useState(defaultRoleSlug);
-  const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
-  const [roleLoading, setRoleLoading] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskLoading, setTaskLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRunLoading, setManualRunLoading] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!roleDropdownOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setRoleDropdownOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [roleDropdownOpen]);
-
-  const currentRole = roles.find((r) => r.slug === roleSlug);
 
   async function patchMission(body: Record<string, unknown>) {
     try {
@@ -89,17 +69,6 @@ export default function MissionSettings({
     setStatusLoading(false);
   }
 
-  async function handleRoleChange(slug: string | null) {
-    setRoleDropdownOpen(false);
-    setRoleLoading(true);
-    const ok = await patchMission({ defaultRoleSlug: slug });
-    if (ok) {
-      setRoleSlug(slug);
-      router.refresh();
-    }
-    setRoleLoading(false);
-  }
-
   async function handleAddTask(e: React.FormEvent) {
     e.preventDefault();
     const title = taskTitle.trim();
@@ -115,7 +84,6 @@ export default function MissionSettings({
           title,
           workspaceId,
           objectiveId: missionId,
-          ...(roleSlug ? { roleSlug } : {}),
         }),
       });
       if (res.ok) {
@@ -181,67 +149,6 @@ export default function MissionSettings({
             <span className="text-text-muted">(paused)</span>
           )}
         </button>
-
-        <div className="h-4 border-r border-card-border" />
-
-        {/* Role Badge */}
-        <div className="relative" ref={dropdownRef}>
-          <button
-            onClick={() => setRoleDropdownOpen(!roleDropdownOpen)}
-            disabled={roleLoading}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-          >
-            {currentRole ? (
-              <>
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: currentRole.color }}
-                />
-                <span>{currentRole.name}</span>
-              </>
-            ) : (
-              <span className="text-text-muted">No role</span>
-            )}
-            <svg
-              className="w-3 h-3 text-text-muted"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-            </svg>
-          </button>
-
-          {roleDropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 min-w-[160px] bg-surface-3 border border-card-border rounded-lg shadow-lg z-10 py-1">
-              <button
-                onClick={() => handleRoleChange(null)}
-                className="w-full text-left px-3 py-1.5 text-[12px] text-text-muted hover:bg-card-hover transition-colors"
-              >
-                None
-              </button>
-              {roles.map((role) => (
-                <button
-                  key={role.slug}
-                  onClick={() => handleRoleChange(role.slug)}
-                  className="w-full text-left px-3 py-1.5 text-[12px] text-text-secondary hover:bg-card-hover transition-colors flex items-center gap-2"
-                >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: role.color }}
-                  />
-                  <span>{role.name}</span>
-                  {role.slug === roleSlug && (
-                    <svg className="w-3 h-3 ml-auto text-accent-text" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                    </svg>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
 
         {/* Schedule Info */}
         {cronExpression && (

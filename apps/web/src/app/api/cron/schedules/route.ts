@@ -280,21 +280,23 @@ export async function GET(req: NextRequest) {
           where: eq(objectives.scheduleId, schedule.id),
           columns: {
             id: true,
-            isHeartbeat: true,
-            activeHoursStart: true,
-            activeHoursEnd: true,
-            activeHoursTimezone: true,
-            defaultRoleSlug: true,
           },
         });
 
-        // Active hours gating for heartbeat objectives
+        // Read heartbeat/activeHours config from the schedule's taskTemplate.context
+        const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
+        const isHeartbeat = templateCtx?.heartbeat === true;
+        const activeHoursStart = templateCtx?.activeHoursStart as number | undefined;
+        const activeHoursEnd = templateCtx?.activeHoursEnd as number | undefined;
+        const activeHoursTimezone = templateCtx?.activeHoursTimezone as string | undefined;
+
+        // Active hours gating for heartbeat schedules
         if (
-          linkedObjective?.isHeartbeat &&
-          linkedObjective.activeHoursStart != null &&
-          linkedObjective.activeHoursEnd != null
+          isHeartbeat &&
+          activeHoursStart != null &&
+          activeHoursEnd != null
         ) {
-          const tz = linkedObjective.activeHoursTimezone || schedule.timezone || 'UTC';
+          const tz = activeHoursTimezone || schedule.timezone || 'UTC';
           const currentHourStr = new Date().toLocaleString('en-US', {
             timeZone: tz,
             hour: 'numeric',
@@ -302,7 +304,7 @@ export async function GET(req: NextRequest) {
           });
           const currentHour = parseInt(currentHourStr, 10);
 
-          if (!isWithinActiveHours(currentHour, linkedObjective.activeHoursStart, linkedObjective.activeHoursEnd)) {
+          if (!isWithinActiveHours(currentHour, activeHoursStart, activeHoursEnd)) {
             // Outside active hours — advance nextRunAt, skip task creation
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
             const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
@@ -341,7 +343,6 @@ export async function GET(req: NextRequest) {
             creationSource: linkedObjective ? 'orchestrator' : 'schedule',
             ...(externalId ? { externalId } : {}),
             ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
-            ...(linkedObjective?.defaultRoleSlug ? { roleSlug: linkedObjective.defaultRoleSlug } : {}),
           })
           .returning();
 

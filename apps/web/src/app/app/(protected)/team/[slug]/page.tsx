@@ -133,23 +133,39 @@ export default async function RoleProfilePage({
   // Filter to matching role slug
   const currentWorker = activeWorker?.task && (activeWorker.task as any).roleSlug === slug ? activeWorker : null;
 
-  // Assigned missions (objectives with defaultRoleSlug = slug)
-  const assignedMissions = await db.query.objectives.findMany({
-    where: and(
-      eq(objectives.defaultRoleSlug, slug),
-      inArray(objectives.status, ['active', 'paused', 'completed']),
-    ),
-    with: {
-      tasks: {
-        columns: { id: true, status: true },
-      },
-      schedule: {
-        columns: { lastRunAt: true, nextRunAt: true } as any,
-      },
-    },
-    orderBy: [desc(objectives.updatedAt)],
-    limit: 20,
-  });
+  // Find missions that have tasks routed to this role (via tasks.roleSlug)
+  const missionIdsWithRole = await db
+    .selectDistinct({ objectiveId: tasks.objectiveId })
+    .from(tasks)
+    .where(and(
+      eq(tasks.roleSlug, slug),
+      inArray(tasks.workspaceId, wsIds),
+      sql`${tasks.objectiveId} IS NOT NULL`,
+    ))
+    .limit(20);
+
+  const missionIds = missionIdsWithRole
+    .map(r => r.objectiveId)
+    .filter(Boolean) as string[];
+
+  const assignedMissions = missionIds.length > 0
+    ? await db.query.objectives.findMany({
+        where: and(
+          inArray(objectives.id, missionIds),
+          inArray(objectives.status, ['active', 'paused', 'completed']),
+        ),
+        with: {
+          tasks: {
+            columns: { id: true, status: true },
+          },
+          schedule: {
+            columns: { lastRunAt: true, nextRunAt: true, cronExpression: true } as any,
+          },
+        },
+        orderBy: [desc(objectives.updatedAt)],
+        limit: 20,
+      })
+    : [];
 
   // Recent tasks
   const recentTasks = await db.query.tasks.findMany({
@@ -301,7 +317,7 @@ export default async function RoleProfilePage({
                     const health = deriveMissionHealth({
                       status: mission.status,
                       activeAgents: mActiveAgents,
-                      cronExpression: mission.cronExpression,
+                      cronExpression: (mission.schedule as any)?.cronExpression || null,
                       lastRunAt: (mission.schedule as any)?.lastRunAt || null,
                       nextRunAt: (mission.schedule as any)?.nextRunAt || null,
                     });

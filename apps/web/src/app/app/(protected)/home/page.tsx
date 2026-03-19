@@ -197,7 +197,7 @@ export default async function HomePage() {
               eq(objectives.status, 'active')
             ),
             orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-            columns: { id: true, title: true, description: true, defaultRoleSlug: true },
+            columns: { id: true, title: true, description: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -236,7 +236,7 @@ export default async function HomePage() {
             id: obj.id,
             title: obj.title,
             description: obj.description,
-            defaultRoleSlug: obj.defaultRoleSlug,
+            defaultRoleSlug: null as string | null,
             totalTasks: obj.tasks.length,
             completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
             activeWorkers: activeWorkerCounts[obj.id] || 0,

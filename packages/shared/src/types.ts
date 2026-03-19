@@ -238,7 +238,6 @@ export interface Objective {
   description: string | null;
   status: ObjectiveStatusValue;
   priority: number;
-  cronExpression: string | null;
   scheduleId: string | null;
   parentObjectiveId: string | null;
   createdByUserId: string | null;
