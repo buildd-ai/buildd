@@ -69,7 +69,7 @@ mock.module('@buildd/core/db/schema', () => ({
 import { POST } from './route';
 
 function createMockRequest(): NextRequest {
-  return new NextRequest('http://localhost:3000/api/objectives/obj-123/run', {
+  return new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json' }),
   });
@@ -79,7 +79,7 @@ async function callHandler(request: NextRequest, id: string) {
   return POST(request, { params: Promise.resolve({ id }) });
 }
 
-describe('POST /api/objectives/[id]/run', () => {
+describe('POST /api/missions/[id]/run', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
@@ -118,7 +118,7 @@ describe('POST /api/objectives/[id]/run', () => {
     const response = await callHandler(createMockRequest(), 'nonexistent');
     expect(response.status).toBe(404);
     const data = await response.json();
-    expect(data.error).toBe('Objective not found');
+    expect(data.error).toBe('Mission not found');
   });
 
   it('returns 404 when objective belongs to different team', async () => {
@@ -239,7 +239,7 @@ describe('POST /api/objectives/[id]/run', () => {
     mockInsertReturning.mockResolvedValue([createdTask]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
 
-    const request = new NextRequest('http://localhost:3000/api/objectives/obj-123/run', {
+    const request = new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
       method: 'POST',
       headers: new Headers({
         'content-type': 'application/json',
@@ -255,7 +255,7 @@ describe('POST /api/objectives/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });
 
-    const request = new NextRequest('http://localhost:3000/api/objectives/obj-123/run', {
+    const request = new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
       method: 'POST',
       headers: new Headers({
         'authorization': 'Bearer bld_testapikey',

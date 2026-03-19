@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, objectives, taskRecipes, workspaceSkills, workers } from '@buildd/core/db/schema';
+import { tasks, objectives, taskRecipes, taskSchedules, workspaceSkills, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
@@ -103,7 +103,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
 /**
  * Build rich context for an objective planning task.
  * Queries task history, active tasks, failures, available roles, and optional recipe playbook.
- * Detects heartbeat mode and produces specialised instructions.
+ * Detects heartbeat mode from the schedule's taskTemplate context and produces specialised instructions.
  */
 export async function buildObjectiveContext(objectiveId: string, templateContext?: Record<string, unknown>) {
   const objective = await db.query.objectives.findFirst({
@@ -114,16 +114,42 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       description: true,
       status: true,
       priority: true,
-      isHeartbeat: true,
-      heartbeatChecklist: true,
       workspaceId: true,
+      scheduleId: true,
     },
   });
   if (!objective) return null;
 
+  // Resolve heartbeat config from the schedule's taskTemplate.context
+  let isHeartbeat = false;
+  let heartbeatChecklist: string | null = null;
+  if (objective.scheduleId) {
+    const schedule = await db.query.taskSchedules.findFirst({
+      where: eq(taskSchedules.id, objective.scheduleId),
+      columns: { taskTemplate: true },
+    });
+    const ctx = schedule?.taskTemplate?.context as Record<string, unknown> | undefined;
+    if (ctx?.heartbeat === true) {
+      isHeartbeat = true;
+      heartbeatChecklist = (ctx.heartbeatChecklist as string) || null;
+    }
+  }
+  // Also check templateContext passed in (e.g. from cron handler)
+  if (templateContext?.heartbeat === true) {
+    isHeartbeat = true;
+    if (templateContext.heartbeatChecklist) {
+      heartbeatChecklist = templateContext.heartbeatChecklist as string;
+    }
+  }
+
   // ── Heartbeat mode ──
-  if ((objective as any).isHeartbeat === true) {
-    return buildHeartbeatContext(objective as any);
+  if (isHeartbeat) {
+    return buildHeartbeatContext({
+      id: objective.id,
+      title: objective.title,
+      description: objective.description,
+      heartbeatChecklist,
+    });
   }
 
   // ── Standard objective context ──

@@ -66,7 +66,6 @@ export default async function HomePage() {
     id: string;
     title: string;
     description: string | null;
-    defaultRoleSlug: string | null;
     totalTasks: number;
     completedTasks: number;
     activeWorkers: number;
@@ -197,7 +196,7 @@ export default async function HomePage() {
               eq(objectives.status, 'active')
             ),
             orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
-            columns: { id: true, title: true, description: true, defaultRoleSlug: true },
+            columns: { id: true, title: true, description: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -236,7 +235,6 @@ export default async function HomePage() {
             id: obj.id,
             title: obj.title,
             description: obj.description,
-            defaultRoleSlug: obj.defaultRoleSlug,
             totalTasks: obj.tasks.length,
             completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
             activeWorkers: activeWorkerCounts[obj.id] || 0,
@@ -475,8 +473,6 @@ export default async function HomePage() {
                     const pct = mission.totalTasks > 0
                       ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
                       : 0;
-                    const role = mission.defaultRoleSlug ? rolesMap.get(mission.defaultRoleSlug) : null;
-
                     return (
                       <Link
                         key={mission.id}
@@ -485,12 +481,6 @@ export default async function HomePage() {
                       >
                         <div className="flex items-start justify-between gap-3 mb-2">
                           <div className="flex items-center gap-2 min-w-0">
-                            {role && (
-                              <span
-                                className="w-2 h-2 rounded-full shrink-0"
-                                style={{ backgroundColor: role.color }}
-                              />
-                            )}
                             <span className="text-[15px] font-medium text-text-primary truncate">
                               {mission.title}
                             </span>
@@ -517,9 +507,6 @@ export default async function HomePage() {
                           </div>
                         )}
                         <div className="flex items-center gap-3 text-[11px] text-text-muted">
-                          {role && (
-                            <span>{role.name}</span>
-                          )}
                           {mission.totalTasks > 0 && (
                             <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
                           )}

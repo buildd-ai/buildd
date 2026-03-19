@@ -7,19 +7,23 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockObjectivesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
-let insertedValues: any = null;
+let insertedObjectiveValues: any = null;
+let insertedScheduleValues: any = null;
 const mockObjectivesInsert = mock(() => ({
   values: mock((vals: any) => {
-    insertedValues = vals;
+    insertedObjectiveValues = vals;
     return {
       returning: mock(() => [{ id: 'obj-1', ...vals }]),
     };
   }),
 }));
 const mockSchedulesInsert = mock(() => ({
-  values: mock((vals: any) => ({
-    returning: mock(() => [{ id: 'sched-1', ...vals }]),
-  })),
+  values: mock((vals: any) => {
+    insertedScheduleValues = vals;
+    return {
+      returning: mock(() => [{ id: 'sched-1', ...vals }]),
+    };
+  }),
 }));
 const mockObjectivesUpdate = mock(() => ({
   set: mock(() => ({
@@ -77,14 +81,16 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST } from './route';
 
-describe('POST /api/objectives', () => {
+describe('POST /api/missions', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
     mockObjectivesInsert.mockReset();
+    mockSchedulesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    insertedValues = null;
+    insertedObjectiveValues = null;
+    insertedScheduleValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -93,19 +99,30 @@ describe('POST /api/objectives', () => {
 
     mockObjectivesInsert.mockImplementation(() => ({
       values: mock((vals: any) => {
-        insertedValues = vals;
+        insertedObjectiveValues = vals;
         return {
           returning: mock(() => [{ id: 'obj-1', ...vals }]),
         };
       }),
     }));
+
+    mockSchedulesInsert.mockImplementation(() => ({
+      values: mock((vals: any) => {
+        insertedScheduleValues = vals;
+        return {
+          returning: mock(() => [{ id: 'sched-1', ...vals }]),
+        };
+      }),
+    }));
   });
 
-  it('creates a heartbeat objective', async () => {
-    const req = new NextRequest('http://localhost/api/objectives', {
+  it('creates a mission with schedule containing heartbeat config', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Health Check',
+        workspaceId: 'ws-1',
+        cronExpression: '0 */6 * * *',
         isHeartbeat: true,
         heartbeatChecklist: '- [ ] Check API latency\n- [ ] Check error rates',
         activeHoursStart: 9,
@@ -117,30 +134,38 @@ describe('POST /api/objectives', () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    expect(insertedValues).not.toBeNull();
-    expect(insertedValues.isHeartbeat).toBe(true);
-    expect(insertedValues.heartbeatChecklist).toBe('- [ ] Check API latency\n- [ ] Check error rates');
-    expect(insertedValues.activeHoursStart).toBe(9);
-    expect(insertedValues.activeHoursEnd).toBe(17);
-    expect(insertedValues.activeHoursTimezone).toBe('America/New_York');
+    // Objective should NOT have heartbeat fields
+    expect(insertedObjectiveValues).not.toBeNull();
+    expect(insertedObjectiveValues.isHeartbeat).toBeUndefined();
+    expect(insertedObjectiveValues.heartbeatChecklist).toBeUndefined();
+
+    // Schedule template context should have heartbeat config
+    expect(insertedScheduleValues).not.toBeNull();
+    const ctx = insertedScheduleValues.taskTemplate.context;
+    expect(ctx.heartbeat).toBe(true);
+    expect(ctx.heartbeatChecklist).toBe('- [ ] Check API latency\n- [ ] Check error rates');
+    expect(ctx.activeHoursStart).toBe(9);
+    expect(ctx.activeHoursEnd).toBe(17);
+    expect(ctx.activeHoursTimezone).toBe('America/New_York');
   });
 
-  it('creates a non-heartbeat objective by default', async () => {
-    const req = new NextRequest('http://localhost/api/objectives', {
+  it('creates a simple mission without schedule', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'Regular Objective' }),
+      body: JSON.stringify({ title: 'Ship auth module' }),
     });
 
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    expect(insertedValues).not.toBeNull();
-    expect(insertedValues.isHeartbeat).toBe(false);
-    expect(insertedValues.heartbeatChecklist).toBeNull();
+    expect(insertedObjectiveValues).not.toBeNull();
+    expect(insertedObjectiveValues.title).toBe('Ship auth module');
+    // No schedule created
+    expect(insertedScheduleValues).toBeNull();
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/objectives', {
+    const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Bad Hours',
@@ -155,7 +180,7 @@ describe('POST /api/objectives', () => {
   });
 
   it('rejects activeHoursEnd outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/objectives', {
+    const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Bad Hours',
@@ -169,11 +194,13 @@ describe('POST /api/objectives', () => {
     expect(body.error).toContain('activeHoursEnd');
   });
 
-  it('accepts activeHoursStart of 0', async () => {
-    const req = new NextRequest('http://localhost/api/objectives', {
+  it('accepts activeHoursStart of 0 in schedule context', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Midnight Start',
+        workspaceId: 'ws-1',
+        cronExpression: '0 * * * *',
         activeHoursStart: 0,
         activeHoursEnd: 23,
       }),
@@ -181,7 +208,8 @@ describe('POST /api/objectives', () => {
 
     const res = await POST(req);
     expect(res.status).toBe(201);
-    expect(insertedValues.activeHoursStart).toBe(0);
-    expect(insertedValues.activeHoursEnd).toBe(23);
+    const ctx = insertedScheduleValues.taskTemplate.context;
+    expect(ctx.activeHoursStart).toBe(0);
+    expect(ctx.activeHoursEnd).toBe(23);
   });
 });

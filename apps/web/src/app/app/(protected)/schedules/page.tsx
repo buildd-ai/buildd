@@ -39,8 +39,6 @@ export default async function SchedulesPage() {
     columns: {
       id: true,
       title: true,
-      cronExpression: true,
-      isHeartbeat: true,
       status: true,
       workspaceId: true,
     },
@@ -48,11 +46,13 @@ export default async function SchedulesPage() {
       schedule: {
         columns: {
           id: true,
+          cronExpression: true,
           nextRunAt: true,
           lastRunAt: true,
           totalRuns: true,
           consecutiveFailures: true,
           enabled: true,
+          taskTemplate: true,
         },
       },
     },
@@ -89,14 +89,17 @@ export default async function SchedulesPage() {
 
   // Objectives with cron (heartbeats and scheduled)
   for (const obj of scheduledObjectives) {
-    if (!obj.cronExpression) continue;
+    const schedCron = (obj.schedule as any)?.cronExpression as string | null;
+    if (!schedCron) continue;
+    const schedCtx = (obj.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+    const isHeartbeat = schedCtx?.heartbeat === true;
     items.push({
       id: obj.id,
       name: obj.title,
-      type: obj.isHeartbeat ? 'heartbeat' : 'cron-objective',
+      type: isHeartbeat ? 'heartbeat' : 'cron-objective',
       workspaceId: obj.workspaceId,
       workspaceName: obj.workspaceId ? (wsNameMap.get(obj.workspaceId) ?? null) : null,
-      cronExpression: obj.cronExpression,
+      cronExpression: schedCron,
       nextRunAt: obj.schedule?.nextRunAt?.toISOString() ?? null,
       lastRunAt: obj.schedule?.lastRunAt?.toISOString() ?? null,
       totalRuns: obj.schedule?.totalRuns ?? 0,
