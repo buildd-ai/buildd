@@ -36,7 +36,7 @@ export default function MissionSettings({
 
   async function patchMission(body: Record<string, unknown>) {
     try {
-      const res = await fetch(`/api/objectives/${missionId}`, {
+      const res = await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -107,7 +107,7 @@ export default function MissionSettings({
     setManualRunLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/objectives/${missionId}/run`, {
+      const res = await fetch(`/api/missions/${missionId}/run`, {
         method: 'POST',
         credentials: 'include',
       });

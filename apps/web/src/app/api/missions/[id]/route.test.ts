@@ -8,12 +8,10 @@ const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockObjectivesFindFirst = mock(() => ({
   id: 'obj-1',
   teamId: 'team-1',
-  title: 'Existing Objective',
+  title: 'Existing Mission',
   workspaceId: 'ws-1',
-  cronExpression: null,
   scheduleId: null,
   priority: 0,
-  isHeartbeat: false,
 }) as any);
 let updatedSetData: any = null;
 const mockObjectivesUpdate = mock(() => ({
@@ -26,7 +24,16 @@ const mockObjectivesUpdate = mock(() => ({
     };
   }),
 }));
-const mockObjectivesFindFirstForGet = mock(() => null as any);
+
+let insertedScheduleValues: any = null;
+let updatedScheduleData: any = null;
+const mockScheduleFindFirst = mock(() => null as any);
+const mockScheduleUpdate = mock(() => ({
+  set: mock((data: any) => {
+    updatedScheduleData = data;
+    return { where: mock(() => ({})) };
+  }),
+}));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -50,14 +57,20 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       objectives: { findFirst: mockObjectivesFindFirst },
-      taskSchedules: { findFirst: mock(() => null) },
+      taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaces: { findFirst: mock(() => ({ id: 'ws-1' })) },
     },
-    update: () => mockObjectivesUpdate(),
+    update: (table: any) => {
+      if (table === 'taskSchedules') return mockScheduleUpdate();
+      return mockObjectivesUpdate();
+    },
     insert: () => ({
-      values: mock((vals: any) => ({
-        returning: mock(() => [{ id: 'sched-1', ...vals }]),
-      })),
+      values: mock((vals: any) => {
+        insertedScheduleValues = vals;
+        return {
+          returning: mock(() => [{ id: 'sched-new', ...vals }]),
+        };
+      }),
     }),
     delete: () => ({
       where: mock(() => ({})),
@@ -83,14 +96,18 @@ import { PATCH } from './route';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
-describe('PATCH /api/objectives/[id]', () => {
+describe('PATCH /api/missions/[id]', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
     mockObjectivesFindFirst.mockReset();
     mockObjectivesUpdate.mockReset();
+    mockScheduleFindFirst.mockReset();
+    mockScheduleUpdate.mockReset();
     updatedSetData = null;
+    insertedScheduleValues = null;
+    updatedScheduleData = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -98,12 +115,10 @@ describe('PATCH /api/objectives/[id]', () => {
     mockObjectivesFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
-      title: 'Existing Objective',
+      title: 'Existing Mission',
       workspaceId: 'ws-1',
-      cronExpression: null,
       scheduleId: null,
       priority: 0,
-      isHeartbeat: false,
     });
     mockObjectivesUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
@@ -115,12 +130,33 @@ describe('PATCH /api/objectives/[id]', () => {
         };
       }),
     }));
+    mockScheduleUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedScheduleData = data;
+        return { where: mock(() => ({})) };
+      }),
+    }));
   });
 
-  it('updates heartbeat checklist', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+  it('stores heartbeat config in schedule template context', async () => {
+    // Mission with existing schedule
+    mockObjectivesFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Health Check',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({
+      cronExpression: '0 */6 * * *',
+      taskTemplate: { context: {} },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({
+        isHeartbeat: true,
         heartbeatChecklist: '- [ ] Check DB connections\n- [ ] Check queue depth',
       }),
     });
@@ -128,25 +164,27 @@ describe('PATCH /api/objectives/[id]', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
-    expect(updatedSetData).not.toBeNull();
-    expect(updatedSetData.heartbeatChecklist).toBe('- [ ] Check DB connections\n- [ ] Check queue depth');
+    expect(updatedScheduleData).not.toBeNull();
+    const ctx = updatedScheduleData.taskTemplate.context;
+    expect(ctx.heartbeat).toBe(true);
+    expect(ctx.heartbeatChecklist).toBe('- [ ] Check DB connections\n- [ ] Check queue depth');
   });
 
-  it('updates isHeartbeat flag', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
-      method: 'PATCH',
-      body: JSON.stringify({ isHeartbeat: true }),
+  it('stores active hours in schedule template context', async () => {
+    mockObjectivesFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Monitor',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({
+      cronExpression: '0 * * * *',
+      taskTemplate: { context: {} },
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
-    expect(res.status).toBe(200);
-
-    expect(updatedSetData).not.toBeNull();
-    expect(updatedSetData.isHeartbeat).toBe(true);
-  });
-
-  it('updates active hours', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({
         activeHoursStart: 8,
@@ -158,13 +196,33 @@ describe('PATCH /api/objectives/[id]', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
-    expect(updatedSetData.activeHoursStart).toBe(8);
-    expect(updatedSetData.activeHoursEnd).toBe(20);
-    expect(updatedSetData.activeHoursTimezone).toBe('Europe/London');
+    const ctx = updatedScheduleData.taskTemplate.context;
+    expect(ctx.activeHoursStart).toBe(8);
+    expect(ctx.activeHoursEnd).toBe(20);
+    expect(ctx.activeHoursTimezone).toBe('Europe/London');
+  });
+
+  it('creates new schedule when adding cron to mission', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        cronExpression: '0 9 * * *',
+        isHeartbeat: true,
+      }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.cronExpression).toBe('0 9 * * *');
+    expect(insertedScheduleValues.taskTemplate.context.heartbeat).toBe(true);
+    // Schedule ID should be set on the objective
+    expect(updatedSetData.scheduleId).toBe('sched-new');
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ activeHoursStart: 24 }),
     });
@@ -176,7 +234,7 @@ describe('PATCH /api/objectives/[id]', () => {
   });
 
   it('rejects activeHoursEnd outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ activeHoursEnd: -5 }),
     });
@@ -188,7 +246,7 @@ describe('PATCH /api/objectives/[id]', () => {
   });
 
   it('updates workspaceId', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ workspaceId: 'ws-new' }),
     });
@@ -201,7 +259,7 @@ describe('PATCH /api/objectives/[id]', () => {
   });
 
   it('clears workspaceId with null', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ workspaceId: null }),
     });
@@ -214,7 +272,7 @@ describe('PATCH /api/objectives/[id]', () => {
   });
 
   it('updates status to completed', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
@@ -222,12 +280,11 @@ describe('PATCH /api/objectives/[id]', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
-    expect(updatedSetData).not.toBeNull();
     expect(updatedSetData.status).toBe('completed');
   });
 
   it('updates status to archived', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
@@ -235,12 +292,11 @@ describe('PATCH /api/objectives/[id]', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
-    expect(updatedSetData).not.toBeNull();
     expect(updatedSetData.status).toBe('archived');
   });
 
   it('rejects invalid status', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'invalid' }),
     });
@@ -249,23 +305,5 @@ describe('PATCH /api/objectives/[id]', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Invalid status');
-  });
-
-  it('clears active hours with null', async () => {
-    const req = new NextRequest('http://localhost/api/objectives/obj-1', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        activeHoursStart: null,
-        activeHoursEnd: null,
-        activeHoursTimezone: null,
-      }),
-    });
-
-    const res = await PATCH(req, { params: makeParams('obj-1') });
-    expect(res.status).toBe(200);
-
-    expect(updatedSetData.activeHoursStart).toBeNull();
-    expect(updatedSetData.activeHoursEnd).toBeNull();
-    expect(updatedSetData.activeHoursTimezone).toBeNull();
   });
 });
