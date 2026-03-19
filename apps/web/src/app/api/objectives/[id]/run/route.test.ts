@@ -211,6 +211,10 @@ describe('POST /api/objectives/[id]/run', () => {
 
     // Verify dispatch was called
     expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, mockWorkspace);
+
+    // Verify creationSource is 'orchestrator'
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.creationSource).toBe('orchestrator');
   });
 
   it('works with API key auth (admin level)', async () => {
