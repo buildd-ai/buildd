@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 
 interface GridTask {
   id: string;
@@ -341,13 +342,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                 onClick={() => setFilter(f.key)}
                 className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
                   filter === f.key
-                    ? 'bg-text-primary text-white'
+                    ? 'bg-text-primary text-surface-1'
                     : 'text-text-desc hover:text-text-primary hover:bg-surface-2'
                 }`}
               >
                 {f.label}
                 {f.count > 0 && (
-                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-white/70' : 'text-text-desc'}`}>
+                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
                     {f.count}
                   </span>
                 )}
@@ -367,18 +368,16 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
           />
 
           {/* Group by dropdown */}
-          <div className="relative">
-            <select
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-              className="appearance-none px-3 py-1.5 pr-7 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary cursor-pointer focus:outline-none focus:border-text-secondary"
-            >
-              <option value="mission">Group: Mission</option>
-              <option value="status">Group: Status</option>
-              <option value="none">Group: None</option>
-            </select>
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-muted pointer-events-none">&#9662;</span>
-          </div>
+          <Select
+            value={groupBy}
+            onChange={(v) => setGroupBy(v as GroupBy)}
+            options={[
+              { value: 'mission', label: 'Group: Mission' },
+              { value: 'status', label: 'Group: Status' },
+              { value: 'none', label: 'Group: None' },
+            ]}
+            size="sm"
+          />
         </div>
 
         {/* Task list */}

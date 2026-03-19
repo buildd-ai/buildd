@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Select } from '@/components/ui/Select';
 
 interface UserTeam {
     id: string;
@@ -68,20 +69,17 @@ export function TeamTransferSection({ workspaceId, currentTeamId, teams }: Props
                     <label htmlFor="team-select" className="block text-sm font-medium text-text-secondary mb-1">
                         Target team
                     </label>
-                    <select
+                    <Select
                         id="team-select"
                         value={selectedTeamId}
-                        onChange={(e) => setSelectedTeamId(e.target.value)}
+                        onChange={setSelectedTeamId}
                         disabled={transferring}
-                        className="w-full bg-bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-                    >
-                        <option value="">Select a team...</option>
-                        {otherTeams.map(team => (
-                            <option key={team.id} value={team.id}>
-                                {team.name} ({team.memberCount} member{team.memberCount !== 1 ? 's' : ''})
-                            </option>
-                        ))}
-                    </select>
+                        placeholder="Select a team..."
+                        options={otherTeams.map(team => ({
+                            value: team.id,
+                            label: `${team.name} (${team.memberCount} member${team.memberCount !== 1 ? 's' : ''})`,
+                        }))}
+                    />
                 </div>
 
                 <button

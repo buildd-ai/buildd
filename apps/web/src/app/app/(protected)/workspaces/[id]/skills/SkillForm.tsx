@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
@@ -173,15 +174,11 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
           {/* Model */}
           <div>
             <label className="block text-sm font-medium mb-1.5">Model</label>
-            <select
+            <Select
               value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-            >
-              {MODEL_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+              onChange={setModel}
+              options={MODEL_OPTIONS}
+            />
           </div>
 
           {/* Can Delegate To */}
