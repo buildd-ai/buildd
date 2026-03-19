@@ -8,6 +8,7 @@ import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
+import MissionInlineEdit from './MissionInlineEdit';
 
 export const dynamic = 'force-dynamic';
 
@@ -173,20 +174,16 @@ export default async function MissionDetailPage({
 
       {/* ── Status Block ── */}
       <div className="mb-6">
-        <div className="flex flex-wrap items-center gap-3 mb-2">
-          <h1 className="text-xl font-semibold text-text-primary font-sans">
-            {objective.title}
-          </h1>
-          <span className={`health-pill ${healthDisplay.colorClass}`}>
-            {healthDisplay.label}
-          </span>
-        </div>
-
-        {objective.description && (
-          <p className="text-[13px] text-text-desc leading-relaxed mb-4">
-            {objective.description}
-          </p>
-        )}
+        <MissionInlineEdit
+          missionId={id}
+          initialTitle={objective.title}
+          initialDescription={objective.description}
+          healthPill={
+            <span className={`health-pill ${healthDisplay.colorClass}`}>
+              {healthDisplay.label}
+            </span>
+          }
+        />
 
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
