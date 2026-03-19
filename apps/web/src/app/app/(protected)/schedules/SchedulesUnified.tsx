@@ -3,6 +3,7 @@
 import { useState, useMemo, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 export type PendingSuggestion = {
   cronExpression?: string;
@@ -509,16 +510,16 @@ export default function SchedulesUnified({
         </div>
 
         {workspaces.length > 1 && (
-          <select
+          <Select
             value={workspaceFilter}
-            onChange={e => setWorkspaceFilter(e.target.value)}
-            className="ml-auto text-xs bg-surface-2 border border-border-default rounded-md px-2 py-1.5 text-text-secondary focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            <option value="all">All workspaces</option>
-            {workspaces.map(ws => (
-              <option key={ws.id} value={ws.id}>{ws.name}</option>
-            ))}
-          </select>
+            onChange={setWorkspaceFilter}
+            options={[
+              { value: 'all', label: 'All workspaces' },
+              ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
+            ]}
+            size="sm"
+            className="ml-auto"
+          />
         )}
       </div>
 

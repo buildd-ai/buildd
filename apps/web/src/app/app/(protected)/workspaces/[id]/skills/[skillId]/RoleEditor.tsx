@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
@@ -17,8 +18,8 @@ const AVAILABLE_TOOLS = [
 ];
 
 const COLOR_PALETTE = [
-  '#C45A3B', '#5B7BB3', '#6B8E5E', '#D97706',
-  '#9B59B6', '#2C8C99', '#C4783B', '#8A8478',
+  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
+  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
 interface McpServerConfig {
@@ -602,15 +603,11 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             {/* Model */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Model</label>
-              <select
+              <Select
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
-              >
-                {MODEL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                onChange={setModel}
+                options={MODEL_OPTIONS}
+              />
             </div>
 
             {/* Can Delegate To */}
@@ -810,16 +807,15 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 {isRole && (
                   <div>
                     <span className="text-[13px] text-text-primary block mb-1">Workspace</span>
-                    <select
+                    <Select
                       value={repoUrl || ''}
-                      onChange={(e) => setRepoUrl(e.target.value)}
-                      className="w-full px-2 py-1.5 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
-                    >
-                      <option value="">No linked workspace</option>
-                      {userWorkspaces.map(ws => (
-                        <option key={ws.id} value={ws.id}>{ws.name}</option>
-                      ))}
-                    </select>
+                      onChange={setRepoUrl}
+                      options={[
+                        { value: '', label: 'No linked workspace' },
+                        ...userWorkspaces.map(ws => ({ value: ws.id, label: ws.name })),
+                      ]}
+                      size="sm"
+                    />
                     <p className="text-[11px] text-text-muted mt-1">Link to a workspace for builder roles</p>
                   </div>
                 )}

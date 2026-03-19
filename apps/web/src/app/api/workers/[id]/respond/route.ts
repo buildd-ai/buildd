@@ -98,6 +98,8 @@ export async function POST(
       status: 'pending',
       parentTaskId: task?.id,
       objectiveId: task?.objectiveId,
+      roleSlug: task?.roleSlug,
+      mode: task?.mode,
       context: {
         baseBranch: worker.branch,
         userInput: message,

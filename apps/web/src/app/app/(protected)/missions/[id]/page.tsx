@@ -8,6 +8,7 @@ import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
+import MissionInlineEdit from './MissionInlineEdit';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +45,8 @@ export default async function MissionDetailPage({
           createdAt: true,
           result: true,
           mode: true,
+          roleSlug: true,
+          creationSource: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -104,21 +107,51 @@ export default async function MissionDetailPage({
     ?.flatMap((t) => t.workers || [])
     .filter((w) => w.status === 'running').length || 0;
 
+  const scheduleCron = (objective.schedule as any)?.cronExpression || null;
   const health = deriveMissionHealth({
     status: objective.status,
     activeAgents,
-    cronExpression: objective.cronExpression,
+    cronExpression: scheduleCron,
     lastRunAt: (objective.schedule as any)?.lastRunAt || null,
     nextRunAt: (objective.schedule as any)?.nextRunAt || null,
   });
   const healthDisplay = HEALTH_DISPLAY[health];
 
-  const activeTasks = objective.tasks?.filter(
-    (t) => !['completed', 'failed'].includes(t.status)
-  ) || [];
-  const doneTasks = objective.tasks?.filter(
-    (t) => ['completed', 'failed'].includes(t.status)
-  ) || [];
+  // Build roles map for color lookup
+  const rolesMap = new Map<string, { name: string; color: string }>();
+  roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
+
+  // Build orchestration timeline: group tasks into cycles
+  // Planning tasks = evaluation nodes, execution tasks = branches
+  const allTasks = (objective.tasks || []).slice().sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+
+  type TimelineCycle = {
+    evaluation: typeof allTasks[0] | null;
+    tasks: typeof allTasks;
+  };
+
+  const cycles: TimelineCycle[] = [];
+  let currentCycle: TimelineCycle = { evaluation: null, tasks: [] };
+
+  for (const task of allTasks) {
+    if (task.mode === 'planning') {
+      // Start a new cycle
+      if (currentCycle.evaluation || currentCycle.tasks.length > 0) {
+        cycles.push(currentCycle);
+      }
+      currentCycle = { evaluation: task, tasks: [] };
+    } else {
+      currentCycle.tasks.push(task);
+    }
+  }
+  if (currentCycle.evaluation || currentCycle.tasks.length > 0) {
+    cycles.push(currentCycle);
+  }
+
+  // Show newest first
+  cycles.reverse();
 
   // Collect all artifacts
   const allArtifacts = objective.tasks?.flatMap((t) =>
@@ -126,40 +159,6 @@ export default async function MissionDetailPage({
       (w.artifacts || []).map((a) => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
     ) || []
   ) || [];
-
-  // Collect recent worker activity
-  const recentActivity = objective.tasks
-    ?.flatMap((t) =>
-      (t.workers || []).map((w) => ({
-        taskId: t.id,
-        taskTitle: t.title,
-        workerId: w.id,
-        status: w.status,
-        currentAction: w.currentAction,
-        prUrl: w.prUrl,
-        prNumber: w.prNumber,
-        branch: w.branch,
-        turns: w.turns,
-        costUsd: w.costUsd,
-        commitCount: w.commitCount,
-        filesChanged: w.filesChanged,
-        startedAt: w.startedAt,
-        completedAt: w.completedAt,
-      }))
-    )
-    .sort((a, b) => {
-      const aTime = a.completedAt || a.startedAt;
-      const bTime = b.completedAt || b.startedAt;
-      if (!bTime) return -1;
-      if (!aTime) return 1;
-      return new Date(bTime).getTime() - new Date(aTime).getTime();
-    })
-    .slice(0, 8) || [];
-
-  // Last evaluation — most recent planning-mode completed task
-  const lastEvaluation = objective.tasks?.find(
-    (t) => t.mode === 'planning' && t.status === 'completed' && t.result
-  );
 
   return (
     <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
@@ -174,20 +173,16 @@ export default async function MissionDetailPage({
 
       {/* ── Status Block ── */}
       <div className="mb-6">
-        <div className="flex flex-wrap items-center gap-3 mb-2">
-          <h1 className="text-xl font-semibold text-text-primary font-sans">
-            {objective.title}
-          </h1>
-          <span className={`health-pill ${healthDisplay.colorClass}`}>
-            {healthDisplay.label}
-          </span>
-        </div>
-
-        {objective.description && (
-          <p className="text-[13px] text-text-desc leading-relaxed mb-4">
-            {objective.description}
-          </p>
-        )}
+        <MissionInlineEdit
+          missionId={id}
+          initialTitle={objective.title}
+          initialDescription={objective.description}
+          healthPill={
+            <span className={`health-pill ${healthDisplay.colorClass}`}>
+              {healthDisplay.label}
+            </span>
+          }
+        />
 
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
@@ -231,116 +226,186 @@ export default async function MissionDetailPage({
         <MissionSettings
           missionId={id}
           currentStatus={objective.status}
-          cronExpression={objective.cronExpression}
-          defaultRoleSlug={objective.defaultRoleSlug}
+          cronExpression={scheduleCron}
           workspaceId={objective.workspaceId}
           roles={roles}
           schedule={objective.schedule ? {
             nextRunAt: (objective.schedule as any).nextRunAt?.toISOString?.() || (objective.schedule as any).nextRunAt || null,
             lastRunAt: (objective.schedule as any).lastRunAt?.toISOString?.() || (objective.schedule as any).lastRunAt || null,
           } : null}
-          hasSchedule={!!objective.cronExpression}
+          hasSchedule={!!scheduleCron}
         />
       </div>
 
-      {/* ── Orchestrator / Last Evaluation ── */}
-      {lastEvaluation && (
+      {/* ── Orchestration Timeline ── */}
+      {cycles.length > 0 && (
         <div className="mb-6">
-          <h2 className="section-label mb-3">Last Evaluation</h2>
-          <div className="card p-4">
-            <p className="text-[13px] text-text-secondary leading-relaxed line-clamp-4">
-              {(lastEvaluation.result as any)?.summary || 'Evaluation completed'}
-            </p>
-            <div className="text-[11px] text-text-muted mt-2">
-              {timeAgo(lastEvaluation.createdAt)}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Task Tree ── */}
-      {activeTasks.length > 0 && (
-        <div className="mb-6">
-          <h2 className="section-label mb-3">Active Tasks ({activeTasks.length})</h2>
-          <div className="space-y-1.5">
-            {activeTasks.map((task) => {
-              const latestWorker = task.workers?.[0];
-              const waitingWorker = task.workers?.find(
-                (w) => w.status === 'waiting_input' && w.waitingFor
-              );
-              const waitingFor = waitingWorker?.waitingFor as {
-                type: string;
-                prompt: string;
-                options?: string[];
-              } | null;
+          <h2 className="section-label mb-3">Timeline</h2>
+          <div className="relative">
+            {cycles.map((cycle, ci) => {
+              const isLast = ci === cycles.length - 1;
+              const evalResult = cycle.evaluation?.result as { summary?: string } | null;
 
               return (
-                <div key={task.id}>
-                  <Link
-                    href={`/app/tasks/${task.id}`}
-                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors group"
-                  >
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[task.status] || 'bg-text-muted'}`}
-                    />
-                    <span className="flex-1 text-[13px] text-text-primary truncate group-hover:text-accent-text transition-colors">
-                      {task.title}
-                    </span>
-                    {latestWorker?.currentAction && !waitingWorker && (
-                      <span className="hidden md:block text-[11px] text-text-muted truncate max-w-[200px]">
-                        {latestWorker.currentAction}
-                      </span>
+                <div key={cycle.evaluation?.id || `cycle-${ci}`} className="flex gap-0">
+                  {/* Spine */}
+                  <div className="flex flex-col items-center w-8 shrink-0">
+                    {cycle.evaluation ? (
+                      <span className="w-3 h-3 rounded-full bg-[#D97706] shrink-0 mt-0.5" />
+                    ) : (
+                      <span className="w-3 h-3 rounded-full bg-text-muted shrink-0 mt-0.5" />
                     )}
-                    <span className="text-[11px] text-text-muted shrink-0">
-                      {timeAgo(task.createdAt)}
-                    </span>
-                  </Link>
-                  {waitingWorker && waitingFor && (
-                    <div className="px-3 pb-2">
-                      <span className="section-label text-status-warning">Needs your input</span>
-                      <WorkerRespondInput
-                        workerId={waitingWorker.id}
-                        question={waitingFor.prompt}
-                        options={waitingFor.options}
-                      />
-                    </div>
-                  )}
+                    {!isLast && (
+                      <div className="w-0.5 flex-1 bg-border-default min-h-[16px]" />
+                    )}
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 pb-5 min-w-0">
+                    {/* Evaluation header */}
+                    {cycle.evaluation && (
+                      <div className="mb-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[12px] font-semibold text-[#92400E]">Evaluate</span>
+                          <span className="text-[11px] text-text-muted">{timeAgo(cycle.evaluation.createdAt)}</span>
+                        </div>
+                        {evalResult?.summary && (
+                          <p className="text-[12px] text-text-secondary italic leading-relaxed mt-1 line-clamp-2">
+                            {evalResult.summary}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Task branches */}
+                    {cycle.tasks.length > 0 && (
+                      <div className="space-y-0.5">
+                        {cycle.tasks.map((task) => {
+                          const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
+                          const roleColor = role?.color || '#8A8478';
+                          const taskResult = task.result as { summary?: string; nextSuggestion?: string } | null;
+                          const latestWorker = task.workers?.[0];
+                          const isRunning = latestWorker?.status === 'running';
+                          const isDone = task.status === 'completed';
+                          const isFailed = task.status === 'failed';
+                          const waitingWorker = task.workers?.find(
+                            (w) => w.status === 'waiting_input' && w.waitingFor
+                          );
+                          const waitingFor = waitingWorker?.waitingFor as {
+                            type: string;
+                            prompt: string;
+                            options?: string[];
+                          } | null;
+
+                          return (
+                            <div key={task.id}>
+                              <Link
+                                href={`/app/tasks/${task.id}`}
+                                className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group ${
+                                  isRunning
+                                    ? 'bg-status-info/5 border border-status-info/20'
+                                    : 'hover:bg-card-hover'
+                                }`}
+                              >
+                                {/* Branch line + role dot */}
+                                <span className="flex items-center gap-1.5 shrink-0 w-5">
+                                  <span className="w-2 h-px bg-border-default" />
+                                  <span
+                                    className="w-2 h-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: roleColor }}
+                                  />
+                                </span>
+
+                                <span className={`flex-1 text-[13px] truncate transition-colors ${
+                                  isDone ? 'text-text-secondary' : 'text-text-primary group-hover:text-accent-text'
+                                }`}>
+                                  {task.title}
+                                </span>
+
+                                {role && (
+                                  <span
+                                    className="text-[11px] font-medium shrink-0"
+                                    style={{ color: roleColor }}
+                                  >
+                                    {role.name}
+                                  </span>
+                                )}
+
+                                <span className="flex-1" />
+
+                                {latestWorker?.prUrl && (
+                                  <span className="text-[11px] text-accent-text shrink-0">
+                                    PR #{latestWorker.prNumber}
+                                  </span>
+                                )}
+
+                                {isRunning && (
+                                  <span className="flex items-center gap-1 shrink-0">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
+                                    <span className="text-[11px] text-status-info font-medium">Running</span>
+                                  </span>
+                                )}
+
+                                {isDone && (
+                                  <span className="text-[13px] text-status-success shrink-0">&#10003;</span>
+                                )}
+
+                                {isFailed && (
+                                  <span className="text-[11px] text-status-error shrink-0">Failed</span>
+                                )}
+
+                                {!isRunning && !isDone && !isFailed && (
+                                  <span className="text-[11px] text-text-muted shrink-0">
+                                    {timeAgo(task.createdAt)}
+                                  </span>
+                                )}
+                              </Link>
+
+                              {waitingWorker && waitingFor && (
+                                <div className="pl-7 pb-1">
+                                  <span className="section-label text-status-warning">Needs your input</span>
+                                  <WorkerRespondInput
+                                    workerId={waitingWorker.id}
+                                    question={waitingFor.prompt}
+                                    options={waitingFor.options}
+                                  />
+                                </div>
+                              )}
+
+                              {isDone && taskResult?.nextSuggestion && (
+                                <div className="pl-7 pb-0.5">
+                                  <p className="text-[11px] text-text-muted italic leading-relaxed">
+                                    <span className="text-text-secondary">Suggested:</span>{' '}
+                                    &ldquo;{taskResult.nextSuggestion}&rdquo;
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* No tasks spawned */}
+                    {cycle.evaluation && cycle.tasks.length === 0 && (
+                      <p className="text-[12px] text-text-muted italic">No tasks needed</p>
+                    )}
+                  </div>
                 </div>
               );
             })}
-          </div>
-        </div>
-      )}
 
-      {doneTasks.length > 0 && (
-        <div className="mb-6">
-          <h2 className="section-label mb-3">Completed ({doneTasks.length})</h2>
-          <div className="space-y-1.5">
-            {doneTasks.slice(0, 5).map((task) => {
-              const latestWorker = task.workers?.[0];
-              return (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors opacity-70 group"
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[task.status] || 'bg-text-muted'}`}
-                  />
-                  <span className="flex-1 text-[13px] text-text-primary truncate">
-                    {task.title}
-                  </span>
-                  {latestWorker?.prUrl && (
-                    <span className="text-[11px] text-accent-text shrink-0">
-                      PR #{latestWorker.prNumber}
-                    </span>
-                  )}
-                  <span className="text-[11px] text-text-muted shrink-0">
-                    {timeAgo(task.createdAt)}
-                  </span>
-                </Link>
-              );
-            })}
+            {/* Next evaluation indicator */}
+            {scheduleCron && (objective.schedule as any)?.nextRunAt && (
+              <div className="flex gap-0 items-center">
+                <div className="flex flex-col items-center w-8 shrink-0">
+                  <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
+                </div>
+                <span className="text-[12px] text-text-muted italic pl-2">
+                  Next evaluation {timeAgo((objective.schedule as any).nextRunAt)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -360,56 +425,6 @@ export default async function MissionDetailPage({
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>
           </Link>
-        </div>
-      )}
-
-      {/* ── Activity Feed ── */}
-      {recentActivity.length > 0 && (
-        <div className="mb-6">
-          <h2 className="section-label mb-3">Recent Activity</h2>
-          <div className="space-y-2">
-            {recentActivity.map((w) => (
-              <div
-                key={w.workerId}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-card border border-card-border"
-              >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[w.status] || 'bg-text-muted'}`}
-                />
-                <div className="flex-1 min-w-0">
-                  <Link
-                    href={`/app/tasks/${w.taskId}`}
-                    className="text-[13px] text-text-primary hover:text-accent-text truncate block transition-colors"
-                  >
-                    {w.taskTitle}
-                  </Link>
-                  {w.currentAction && (
-                    <p className="text-[11px] text-text-muted truncate mt-0.5">
-                      {w.currentAction}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2.5 text-[11px] text-text-muted shrink-0">
-                  {w.commitCount ? (
-                    <span>{w.commitCount} commit{w.commitCount !== 1 ? 's' : ''}</span>
-                  ) : null}
-                  {w.prUrl && (
-                    <a
-                      href={w.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-accent-text hover:underline"
-                    >
-                      PR #{w.prNumber}
-                    </a>
-                  )}
-                  {(w.completedAt || w.startedAt) && (
-                    <span>{timeAgo(w.completedAt || w.startedAt!)}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

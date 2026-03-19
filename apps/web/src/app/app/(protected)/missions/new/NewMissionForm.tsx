@@ -112,8 +112,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  const [defaultRoleSlug, setDefaultRoleSlug] = useState('');
-
   // Schedule state
   const [cronExpression, setCronExpression] = useState('');
   const [customCron, setCustomCron] = useState(false);
@@ -147,8 +145,10 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
     return () => clearTimeout(timer);
   }, [cronExpression, validateCron]);
 
+  const needsWorkspace = !!cronExpression && !workspaceId;
+
   function canSubmit(): boolean {
-    return name.trim().length > 0;
+    return name.trim().length > 0 && !needsWorkspace;
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -175,10 +175,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
 
       if (cronExpression) {
         payload.cronExpression = cronExpression;
-      }
-
-      if (defaultRoleSlug) {
-        payload.defaultRoleSlug = defaultRoleSlug;
       }
 
       const res = await fetch('/api/missions', {
@@ -251,39 +247,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             value={workspaceId}
             onChange={setWorkspaceId}
           />
-        )}
-
-        {/* Assign to role */}
-        {roles.length > 0 && (
-          <div className="mb-4">
-            <label className="block text-xs text-text-muted mb-1.5">
-              Assign to role <span className="text-text-muted/60">(optional)</span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {roles
-                .filter(r => !workspaceId || r.workspaceId === workspaceId)
-                .filter((r, i, arr) => arr.findIndex(x => x.slug === r.slug) === i)
-                .map(role => (
-                <button
-                  key={role.slug}
-                  type="button"
-                  onClick={() => setDefaultRoleSlug(defaultRoleSlug === role.slug ? '' : role.slug)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                    defaultRoleSlug === role.slug
-                      ? 'bg-primary/10 border-primary text-primary'
-                      : 'bg-surface-2 border-border-default text-text-secondary hover:text-text-primary hover:border-border-default/80'
-                  }`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: role.color }}
-                  />
-                  {role.name}
-                </button>
-              ))}
-            </div>
-            <p className="text-[11px] text-text-muted mt-1">Tasks from this mission will be routed to the selected role.</p>
-          </div>
         )}
 
         {/* Schedule section — always visible, optional */}
@@ -381,6 +344,16 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             <div className="text-xs text-text-muted mt-2">Validating...</div>
           )}
         </div>
+
+        {/* Workspace validation warning */}
+        {needsWorkspace && (
+          <div className="mb-4 flex items-center gap-2 text-sm text-status-warning">
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            A workspace is required for scheduled missions.
+          </div>
+        )}
 
         {/* Error */}
         {error && (

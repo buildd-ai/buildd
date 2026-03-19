@@ -75,7 +75,7 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Keep PRs focused — one concern per PR
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 `,
-    color: '#C45A3B', // terracotta
+    color: '#D4724A', // terracotta
     model: 'inherit',
   },
   {

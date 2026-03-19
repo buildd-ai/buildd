@@ -77,7 +77,7 @@ Missions (stored in the `objectives` table) are high-level goals that organize a
 
 ### Terminology
 
-The UI says **"mission"** everywhere. The API and database still use **"objective"** (`/api/objectives`, `objectives` table). Don't rename the API/DB — just keep UI-facing copy consistent with "mission".
+The UI and API both say **"mission"** (`/api/missions`). The database table is still `objectives` — don't rename the table.
 
 ### Three Mission Types
 
@@ -104,7 +104,7 @@ Classification logic: `!cronExpression → build`, `isHeartbeat → watch`, else
 - Mission list page: `apps/web/src/app/app/(protected)/missions/page.tsx`
 - Mission detail: `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`
 - New mission form: `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx`
-- API: `apps/web/src/app/api/objectives/` (CRUD + `/[id]/run` for manual trigger)
+- API: `apps/web/src/app/api/missions/` (CRUD + `/[id]/run` for manual trigger)
 - Context builder: `apps/web/src/lib/objective-context.ts`
 
 ## When Modifying

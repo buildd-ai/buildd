@@ -124,12 +124,12 @@ export default async function ObjectiveDetailPage({
     ) || []
   ) || [];
 
-  // Heartbeat data
-  const isHeartbeat = objective.isHeartbeat === true;
-  const heartbeatChecklist = objective.heartbeatChecklist ?? null;
-  const activeHoursStart = objective.activeHoursStart ?? null;
-  const activeHoursEnd = objective.activeHoursEnd ?? null;
-  const activeHoursTimezone = objective.activeHoursTimezone ?? null;
+  // Heartbeat data — derived from schedule's taskTemplate.context
+  const isHeartbeat = (templateContext?.heartbeat === true) || false;
+  const heartbeatChecklist = (templateContext?.heartbeatChecklist as string) ?? null;
+  const activeHoursStart = (templateContext?.activeHoursStart as number) ?? null;
+  const activeHoursEnd = (templateContext?.activeHoursEnd as number) ?? null;
+  const activeHoursTimezone = (templateContext?.activeHoursTimezone as string) ?? null;
 
   const heartbeatTasks = isHeartbeat
     ? (objective.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
@@ -142,8 +142,9 @@ export default async function ObjectiveDetailPage({
       result: t.result,
     }))
   );
-  const heartbeatOverdue = isHeartbeat && objective.schedule?.nextRunAt && objective.cronExpression
-    ? checkOverdue(objective.schedule.nextRunAt, objective.cronExpression)
+  const scheduleCron = (objective.schedule as any)?.cronExpression || null;
+  const heartbeatOverdue = isHeartbeat && objective.schedule?.nextRunAt && scheduleCron
+    ? checkOverdue(objective.schedule.nextRunAt, scheduleCron)
     : false;
 
   // Collect recent worker activity across all tasks
@@ -215,7 +216,7 @@ export default async function ObjectiveDetailPage({
         <ObjectiveActions
           objectiveId={objective.id}
           status={objective.status}
-          cronExpression={objective.cronExpression}
+          cronExpression={scheduleCron}
           hasWorkspace={!!objective.workspaceId}
         />
       </div>
@@ -251,7 +252,7 @@ export default async function ObjectiveDetailPage({
       )}
 
       {/* Schedule Wizard — no schedule configured */}
-      {!objective.cronExpression && (
+      {!scheduleCron && (
         <div className="mb-6">
           <ScheduleWizard
             objectiveId={objective.id}
@@ -262,14 +263,14 @@ export default async function ObjectiveDetailPage({
       )}
 
       {/* Schedule */}
-      {objective.cronExpression && (
+      {scheduleCron && (
         <div className="mb-6 p-3 bg-surface-2 rounded-lg border border-border-default">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="text-text-secondary">Schedule:</span>
-            <code className="text-xs bg-surface-3 px-1.5 py-0.5 rounded">{objective.cronExpression}</code>
+            <code className="text-xs bg-surface-3 px-1.5 py-0.5 rounded">{scheduleCron}</code>
             {objective.schedule?.nextRunAt && (
               <span className="text-text-muted">
                 Next: {new Date(objective.schedule.nextRunAt).toLocaleString()}

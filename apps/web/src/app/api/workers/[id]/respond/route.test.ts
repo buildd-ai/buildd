@@ -105,6 +105,8 @@ const baseWorker = {
     description: 'Fix the authentication bug in login flow',
     workspaceId: 'workspace-1',
     objectiveId: 'objective-1',
+    roleSlug: 'frontend-dev',
+    mode: 'execution',
   },
 };
 
@@ -347,6 +349,22 @@ describe('POST /api/workers/[id]/respond', () => {
 
     const insertedValues = mockInsertValues.mock.calls[0][0];
     expect(insertedValues.context.iteration).toBe(2);
+  });
+
+  it('inherits roleSlug and mode from original task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.roleSlug).toBe('frontend-dev');
+    expect(insertedValues.mode).toBe('execution');
   });
 
   it('includes structured description with milestones and question', async () => {

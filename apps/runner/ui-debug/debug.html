@@ -652,6 +652,9 @@
               <div class="detail-meta" id="detailMeta"></div>
             </div>
             <div class="actions">
+              <a class="btn" id="dashboardLink" href="#" target="_blank" style="display:none; text-decoration:none; color:var(--accent);">
+                Respond on dashboard &rarr;
+              </a>
               <button class="btn btn-danger" id="abortBtn" onclick="abortWorker()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                   <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -912,6 +915,15 @@
       // Show/hide input bar based on status
       const canMessage = w.status === 'working' || w.status === 'waiting';
       document.getElementById('inputBar').style.display = canMessage ? 'flex' : 'none';
+
+      // Show dashboard link for waiting workers (inputAsRetry default)
+      const $dashLink = document.getElementById('dashboardLink');
+      if (w.status === 'waiting' && w.taskId) {
+        $dashLink.href = `https://app.buildd.dev/app/tasks/${w.taskId}`;
+        $dashLink.style.display = 'inline-flex';
+      } else {
+        $dashLink.style.display = 'none';
+      }
 
       // Render active tab
       if (currentTab === 'messages') renderMessages(w);

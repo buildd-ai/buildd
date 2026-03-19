@@ -86,6 +86,7 @@ export const CreationSource = {
   LOCAL_UI: 'local_ui',
   SCHEDULE: 'schedule',
   WEBHOOK: 'webhook',
+  ORCHESTRATOR: 'orchestrator',
 } as const;
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
@@ -237,7 +238,6 @@ export interface Objective {
   description: string | null;
   status: ObjectiveStatusValue;
   priority: number;
-  cronExpression: string | null;
   scheduleId: string | null;
   parentObjectiveId: string | null;
   createdByUserId: string | null;
@@ -274,6 +274,29 @@ export interface TaskResult {
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
   mcpServers?: string[];
+  nextSuggestion?: string;
+}
+
+/**
+ * Structured artifact protocol for task results.
+ *
+ * This defines the TARGET shape that task results should converge towards.
+ * Existing tasks may not match this shape — consumers must handle missing fields.
+ * The orchestrator uses this structure to reason about completed work and decide next steps.
+ */
+export interface TaskArtifactResult {
+  type: 'summary' | 'finding' | 'report' | 'review' | 'error';
+  output: string;
+  status: 'completed' | 'needs_followup' | 'blocked';
+  nextSuggestion?: string;
+  metadata?: {
+    pr?: string;
+    prNumber?: number;
+    branch?: string;
+    filesChanged?: number;
+    commitCount?: number;
+    custom?: Record<string, unknown>;
+  };
 }
 
 export interface Task {

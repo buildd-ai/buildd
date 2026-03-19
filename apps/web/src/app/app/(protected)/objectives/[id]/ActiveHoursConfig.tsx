@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatHour } from './heartbeat-helpers';
+import { Select } from '@/components/ui/Select';
 
 interface ActiveHoursConfigProps {
   objectiveId: string;
@@ -88,27 +89,21 @@ export default function ActiveHoursConfig({
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-3 text-sm">
             <label className="text-text-secondary w-12 shrink-0">From</label>
-            <select
-              value={start}
-              onChange={e => handleChange('start', parseInt(e.target.value))}
+            <Select
+              value={String(start)}
+              onChange={v => handleChange('start', parseInt(v))}
               disabled={disabled}
-              className="px-2 py-1 bg-surface-1 border border-border-default rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              {hours.map(h => (
-                <option key={h} value={h}>{formatHour(h)}</option>
-              ))}
-            </select>
+              options={hours.map(h => ({ value: String(h), label: formatHour(h) }))}
+              size="sm"
+            />
             <label className="text-text-secondary w-6 shrink-0">to</label>
-            <select
-              value={end}
-              onChange={e => handleChange('end', parseInt(e.target.value))}
+            <Select
+              value={String(end)}
+              onChange={v => handleChange('end', parseInt(v))}
               disabled={disabled}
-              className="px-2 py-1 bg-surface-1 border border-border-default rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              {hours.map(h => (
-                <option key={h} value={h}>{formatHour(h)}</option>
-              ))}
-            </select>
+              options={hours.map(h => ({ value: String(h), label: formatHour(h) }))}
+              size="sm"
+            />
           </div>
           <div className="flex items-center gap-3 text-sm">
             <label className="text-text-secondary w-12 shrink-0">Zone</label>

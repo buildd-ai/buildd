@@ -33,6 +33,9 @@ export default async function ObjectivesPage() {
           orderBy: (tasks, { desc }) => [desc(tasks.updatedAt)],
           limit: 1,
         },
+        schedule: {
+          columns: { cronExpression: true, taskTemplate: true },
+        },
       },
     }),
     db.query.workspaces.findMany({
@@ -51,8 +54,8 @@ export default async function ObjectivesPage() {
       description: obj.description,
       status: obj.status,
       priority: obj.priority,
-      cronExpression: obj.cronExpression,
-      isHeartbeat: obj.isHeartbeat,
+      cronExpression: (obj.schedule as any)?.cronExpression || null,
+      isHeartbeat: (obj.schedule as any)?.taskTemplate?.context?.heartbeat === true,
       workspaceId: obj.workspaceId,
       workspace: obj.workspace ?? null,
       lastOutput: lastTask
