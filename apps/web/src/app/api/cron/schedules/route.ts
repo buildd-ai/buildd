@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, objectives, workers, workerHeartbeats } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { buildObjectiveContext, isWithinActiveHours } from '@/lib/objective-context';
+import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -275,9 +275,9 @@ export async function GET(req: NextRequest) {
           ? `schedule-${schedule.id}-${triggerResult.currentValue}`
           : undefined;
 
-        // Check if this schedule is linked to an objective
-        const linkedObjective = await db.query.objectives.findFirst({
-          where: eq(objectives.scheduleId, schedule.id),
+        // Check if this schedule is linked to a mission
+        const linkedMission = await db.query.missions.findFirst({
+          where: eq(missions.scheduleId, schedule.id),
           columns: {
             id: true,
           },
@@ -318,12 +318,12 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // If linked to an objective, build rich planning context
-        if (linkedObjective) {
-          const objContext = await buildObjectiveContext(linkedObjective.id, template.context);
-          if (objContext) {
-            taskDescription = objContext.description;
-            Object.assign(taskContext, objContext.context);
+        // If linked to a mission, build rich planning context
+        if (linkedMission) {
+          const missionContext = await buildMissionContext(linkedMission.id, template.context);
+          if (missionContext) {
+            taskDescription = missionContext.description;
+            Object.assign(taskContext, missionContext.context);
           }
         }
 
@@ -340,9 +340,9 @@ export async function GET(req: NextRequest) {
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
-            creationSource: linkedObjective ? 'orchestrator' : 'schedule',
+            creationSource: linkedMission ? 'orchestrator' : 'schedule',
             ...(externalId ? { externalId } : {}),
-            ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
+            ...(linkedMission ? { missionId: linkedMission.id } : {}),
           })
           .returning();
 

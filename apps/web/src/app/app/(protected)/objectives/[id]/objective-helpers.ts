@@ -57,7 +57,7 @@ export interface RunHistoryItem {
   createdAt: Date | string;
   summary: string | undefined;
   tasksCreated: number | undefined;
-  objectiveComplete: boolean;
+  missionComplete: boolean;
 }
 
 export interface ActivityItem {
@@ -77,7 +77,7 @@ export interface ActivityItem {
   completedAt: Date | string | null;
 }
 
-export interface ObjectiveArtifact extends ArtifactData {
+export interface MissionArtifact extends ArtifactData {
   taskTitle: string;
   workerStatus: string;
 }
@@ -85,7 +85,7 @@ export interface ObjectiveArtifact extends ArtifactData {
 /**
  * Extract completed planning/recurring tasks as "Run History" items.
  * These are tasks with mode='planning' that completed — they represent
- * each execution of a recurring objective.
+ * each execution of a recurring mission.
  */
 export function extractRunHistory(tasks: TaskData[]): RunHistoryItem[] {
   return tasks
@@ -98,7 +98,7 @@ export function extractRunHistory(tasks: TaskData[]): RunHistoryItem[] {
         createdAt: t.createdAt,
         summary: result?.summary,
         tasksCreated: structured?.tasksCreated as number | undefined,
-        objectiveComplete: !!structured?.objectiveComplete,
+        missionComplete: !!structured?.missionComplete,
       };
     });
 }
@@ -115,7 +115,7 @@ export function getLatestReport(runHistory: RunHistoryItem[]): RunHistoryItem | 
  * Collect all artifacts from all workers across all tasks.
  * Annotates each with task title and worker status.
  */
-export function collectArtifacts(tasks: TaskData[]): ObjectiveArtifact[] {
+export function collectArtifacts(tasks: TaskData[]): MissionArtifact[] {
   return tasks.flatMap(t =>
     (t.workers || []).flatMap(w =>
       (w.artifacts || []).map(a => ({
@@ -132,12 +132,12 @@ export function collectArtifacts(tasks: TaskData[]): ObjectiveArtifact[] {
  * Keyed artifacts are workspace-level deduplicated artifacts that agents
  * update across runs. They represent persistent state.
  */
-export function categorizeArtifacts(artifacts: ObjectiveArtifact[]): {
-  keyed: ObjectiveArtifact[];
-  regular: ObjectiveArtifact[];
+export function categorizeArtifacts(artifacts: MissionArtifact[]): {
+  keyed: MissionArtifact[];
+  regular: MissionArtifact[];
 } {
-  const keyed: ObjectiveArtifact[] = [];
-  const regular: ObjectiveArtifact[] = [];
+  const keyed: MissionArtifact[] = [];
+  const regular: MissionArtifact[] = [];
 
   for (const a of artifacts) {
     if (a.key) {

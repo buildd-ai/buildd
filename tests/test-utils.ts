@@ -124,15 +124,16 @@ export function createTestApi(server: string, apiKey: string) {
 export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
   const taskIds: string[] = [];
   const workerIds: string[] = [];
+  const missionIds: string[] = [];
   let cleanupDone = false;
 
   async function runCleanup() {
     if (cleanupDone) return;
     cleanupDone = true;
 
-    console.log(`Cleanup: ${workerIds.length} workers, ${taskIds.length} tasks...`);
+    console.log(`Cleanup: ${workerIds.length} workers, ${taskIds.length} tasks, ${missionIds.length} missions...`);
 
-    // Clean workers and tasks in parallel to avoid timeouts
+    // Clean workers, tasks, and missions in parallel to avoid timeouts
     await Promise.all([
       ...workerIds.map(wid =>
         api(`/api/workers/${wid}`, {
@@ -151,6 +152,11 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
           console.log(`  Warning: failed to clean task ${tid}: ${err.message}`);
         })
       ),
+      ...missionIds.map(mid =>
+        api(`/api/missions/${mid}`, { method: 'DELETE' }).catch(err => {
+          console.log(`  Warning: failed to clean mission ${mid}: ${err.message}`);
+        })
+      ),
     ]);
   }
 
@@ -164,6 +170,7 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
   return {
     trackTask(id: string) { taskIds.push(id); },
     trackWorker(id: string) { workerIds.push(id); },
+    trackMission(id: string) { missionIds.push(id); },
     runCleanup,
     /** Remove SIGINT handler (call in afterAll after runCleanup) */
     dispose() { process.removeListener('SIGINT', handler); },

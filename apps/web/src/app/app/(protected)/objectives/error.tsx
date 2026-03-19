@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 
-export default function ObjectivesError({
+export default function MissionsError({
   error,
   reset,
 }: {
@@ -17,9 +17,9 @@ export default function ObjectivesError({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
           </svg>
         </div>
-        <h2 className="text-lg font-semibold text-text-primary mb-2">Failed to load objectives</h2>
+        <h2 className="text-lg font-semibold text-text-primary mb-2">Failed to load missions</h2>
         <p className="text-sm text-text-secondary mb-4">
-          Something went wrong while loading the objectives page.
+          Something went wrong while loading the missions page.
         </p>
         <div className="flex items-center justify-center gap-3">
           <button

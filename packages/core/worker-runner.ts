@@ -115,18 +115,18 @@ export class WorkerRunner extends EventEmitter {
 
       // Extract outputSchema from task for structured output support
       // For planning mode tasks without an explicit schema, inject the default plan schema
-      // Objective planning tasks get a simpler schema since they create tasks via MCP
+      // Mission planning tasks get a simpler schema since they create tasks via MCP
       const taskOutputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
       const isPlanningMode = (worker.task as any)?.mode === 'planning';
-      const isObjectivePlanning = !!(worker.task as any)?.context?.objectiveId;
-      const objectivePlanningSchema = {
+      const isMissionPlanning = !!(worker.task as any)?.context?.missionId;
+      const missionPlanningSchema = {
         type: 'object',
         properties: {
           summary: { type: 'string', description: 'What was planned and why' },
           tasksCreated: { type: 'number', description: 'Number of execution tasks created' },
-          objectiveComplete: { type: 'boolean', description: 'Whether the objective is fully complete' },
+          missionComplete: { type: 'boolean', description: 'Whether the mission is fully complete' },
         },
-        required: ['summary', 'tasksCreated', 'objectiveComplete'],
+        required: ['summary', 'tasksCreated', 'missionComplete'],
       };
       const defaultPlanSchema = {
         type: 'object',
@@ -152,7 +152,7 @@ export class WorkerRunner extends EventEmitter {
         required: ['plan', 'summary'],
       };
       const outputSchema = taskOutputSchema || (isPlanningMode
-        ? (isObjectivePlanning ? objectivePlanningSchema : defaultPlanSchema)
+        ? (isMissionPlanning ? missionPlanningSchema : defaultPlanSchema)
         : null);
 
       // Resolve primary model: task-level override > runner default
@@ -960,30 +960,30 @@ export class WorkerRunner extends EventEmitter {
     // Add planning mode context when task mode is 'planning'
     if (isPlanning) {
       const taskContext = worker.task?.context as Record<string, unknown> | undefined;
-      const objectiveId = taskContext?.objectiveId as string | undefined;
-      const objectiveTitle = taskContext?.objectiveTitle as string | undefined;
+      const missionId = taskContext?.missionId as string | undefined;
+      const missionTitle = taskContext?.missionTitle as string | undefined;
 
-      if (objectiveId) {
-        // Objective-aware planning mode
+      if (missionId) {
+        // Mission-aware planning mode
         parts.push(`
-## Objective Planning
+## Mission Planning
 
-You are the autonomous planner for: "${objectiveTitle || 'Untitled Objective'}"
-Objective ID: ${objectiveId}
+You are the autonomous planner for: "${missionTitle || 'Untitled Mission'}"
+Mission ID: ${missionId}
 
 ### Your Process
 1. Review the task history in the description above
 2. Search team memories (\`buildd_memory\` action: search) for relevant context
 3. Assess: what's been accomplished, what's in progress, what remains
 4. Create 1-3 execution tasks using \`buildd\` action: create_task
-   - Each task auto-links to this objective
+   - Each task auto-links to this mission
    - Set appropriate outputRequirement (artifact_required for research, none for lightweight)
    - Set outputSchema on tasks when you need structured data back
    - Write self-contained descriptions (execution workers don't have your context)
 5. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
 
 ### When Done
-- If all work is complete → update objective status to "completed" via manage_objectives
+- If all work is complete → update mission status to "completed" via manage_objectives
 - Otherwise → complete with a summary of what you planned and why
 
 ### Guidelines

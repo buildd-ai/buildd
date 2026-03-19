@@ -349,7 +349,7 @@ export async function PATCH(
         if (status === 'completed') {
           const taskForArtifact = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            columns: { context: true, objectiveId: true, title: true },
+            columns: { context: true, missionId: true, title: true },
           });
           const ctx = (taskForArtifact?.context || {}) as Record<string, unknown>;
           const structuredOutput = body.structuredOutput;
@@ -357,20 +357,20 @@ export async function PATCH(
 
           if (structuredOutput || summary) {
             const isHeartbeat = ctx.heartbeat === true;
-            const objectiveId = taskForArtifact?.objectiveId as string | undefined;
-            const objectiveTitle = ctx.objectiveTitle as string | undefined;
+            const missionId = taskForArtifact?.missionId as string | undefined;
+            const missionTitle = ctx.missionTitle as string | undefined;
             const scheduleId = ctx.scheduleId as string | undefined;
             const scheduleName = ctx.scheduleName as string | undefined;
 
             let artifactKey: string | null = null;
             let artifactTitle: string | null = null;
 
-            if (isHeartbeat && objectiveId) {
-              artifactKey = `heartbeat-${objectiveId}`;
-              artifactTitle = `Heartbeat: ${objectiveTitle || 'Status'}`;
-            } else if (objectiveId) {
-              artifactKey = `objective-${objectiveId}`;
-              artifactTitle = `${objectiveTitle || 'Objective'} — Latest`;
+            if (isHeartbeat && missionId) {
+              artifactKey = `heartbeat-${missionId}`;
+              artifactTitle = `Heartbeat: ${missionTitle || 'Status'}`;
+            } else if (missionId) {
+              artifactKey = `mission-${missionId}`;
+              artifactTitle = `${missionTitle || 'Mission'} — Latest`;
             } else if (scheduleId) {
               artifactKey = `schedule-${scheduleId}`;
               artifactTitle = `${scheduleName || 'Schedule'} — Latest`;

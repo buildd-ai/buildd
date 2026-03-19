@@ -83,7 +83,7 @@ export default function MissionSettings({
         body: JSON.stringify({
           title,
           workspaceId,
-          objectiveId: missionId,
+          missionId: missionId,
         }),
       });
       if (res.ok) {

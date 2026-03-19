@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills, objectives } from '@buildd/core/db/schema';
+import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, inArray, eq, and, sql, gt, asc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -29,7 +29,7 @@ export default async function DashboardPage() {
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
   let connectedAccountIds = new Set<string>();
   let dashboardSkills: any[] = [];
-  let dashboardObjectives: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
+  let dashboardMissions: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -161,16 +161,16 @@ export default async function DashboardPage() {
         }));
       }
 
-      // Get active objectives
+      // Get active missions
       if (teamIds.length > 0) {
-        const activeObjs = await db.query.objectives.findMany({
-          where: inArray(objectives.teamId, teamIds),
+        const activeMissns = await db.query.missions.findMany({
+          where: inArray(missions.teamId, teamIds),
           columns: { id: true, title: true, status: true, priority: true },
-          orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+          orderBy: [desc(missions.priority), desc(missions.createdAt)],
           with: { tasks: { columns: { id: true, status: true } } },
         });
 
-        dashboardObjectives = activeObjs
+        dashboardMissions = activeMissns
           .filter(obj => obj.status === 'active' || obj.status === 'paused')
           .slice(0, 5)
           .map(obj => {
@@ -352,7 +352,7 @@ export default async function DashboardPage() {
         />
 
         {/* Objectives */}
-        {dashboardObjectives.length > 0 && (
+        {dashboardMissions.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
               <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Missions</span>
@@ -364,7 +364,7 @@ export default async function DashboardPage() {
               </Link>
             </div>
             <div className="border border-border-default rounded-[10px] overflow-hidden">
-              {dashboardObjectives.map((obj) => (
+              {dashboardMissions.map((obj) => (
                 <Link
                   key={obj.id}
                   href={`/app/missions/${obj.id}`}

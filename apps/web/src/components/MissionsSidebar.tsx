@@ -76,7 +76,7 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
       return pathname === '/app/home' || pathname === '/app/dashboard';
     }
     if (href === '/app/missions') {
-      return pathname.startsWith('/app/missions') || pathname.startsWith('/app/objectives');
+      return pathname.startsWith('/app/missions');
     }
     if (href === '/app/team') {
       return pathname.startsWith('/app/team');

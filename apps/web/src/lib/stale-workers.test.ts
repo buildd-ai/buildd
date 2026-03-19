@@ -123,7 +123,7 @@ describe('cleanupStuckWaitingInput', () => {
       project: 'web',
       context: {},
       requiredCapabilities: [],
-      objectiveId: null,
+      missionId: null,
       runnerPreference: 'any',
       mode: 'execution',
       outputRequirement: 'auto',
@@ -161,7 +161,7 @@ describe('cleanupStuckWaitingInput', () => {
       project: 'web',
       context: {},
       requiredCapabilities: [],
-      objectiveId: null,
+      missionId: null,
       runnerPreference: 'any',
       mode: 'execution',
       outputRequirement: 'auto',
@@ -201,7 +201,7 @@ describe('cleanupStuckWaitingInput', () => {
       project: null,
       context: { key: 'value' },
       requiredCapabilities: ['docker'],
-      objectiveId: 'obj-1',
+      missionId: 'obj-1',
       runnerPreference: 'any',
       mode: 'execution',
       outputRequirement: 'pr_required',
@@ -233,14 +233,14 @@ describe('cleanupStuckWaitingInput', () => {
       .mockResolvedValueOnce({
         id: 'task-1', workspaceId: 'ws-1', title: 'Task 1', description: 'Desc 1',
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
-        objectiveId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+        missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
       // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
       .mockResolvedValueOnce({ parentTaskId: null })
       .mockResolvedValueOnce({
         id: 'task-2', workspaceId: 'ws-1', title: 'Task 2', description: 'Desc 2',
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
-        objectiveId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+        missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
       // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
       .mockResolvedValueOnce({ parentTaskId: null });
@@ -263,7 +263,7 @@ describe('cleanupStuckWaitingInput', () => {
     mockTasksFindFirst.mockResolvedValue({
       id: 'task-1', workspaceId: 'ws-1', title: 'Setup DB', description: 'Set up the database',
       priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
-      objectiveId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+      missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
     });
 
     let capturedValues: any = null;

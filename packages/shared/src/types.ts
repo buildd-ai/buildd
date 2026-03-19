@@ -104,14 +104,14 @@ export const TaskCategory = {
 
 export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
 
-export const ObjectiveStatus = {
+export const MissionStatus = {
   ACTIVE: 'active',
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ARCHIVED: 'archived',
 } as const;
 
-export type ObjectiveStatusValue = typeof ObjectiveStatus[keyof typeof ObjectiveStatus];
+export type MissionStatusValue = typeof MissionStatus[keyof typeof MissionStatus];
 
 export const OutputRequirement = {
   PR_REQUIRED: 'pr_required',
@@ -230,24 +230,24 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
-export interface Objective {
+export interface Mission {
   id: string;
   teamId: string;
   workspaceId: string | null;
   title: string;
   description: string | null;
-  status: ObjectiveStatusValue;
+  status: MissionStatusValue;
   priority: number;
   scheduleId: string | null;
-  parentObjectiveId: string | null;
+  parentMissionId: string | null;
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
   // Relations
   workspace?: Workspace;
   tasks?: Task[];
-  subObjectives?: Objective[];
-  parentObjective?: Objective;
+  subMissions?: Mission[];
+  parentMission?: Mission;
   // Computed
   progress?: number;
   totalTasks?: number;
@@ -324,15 +324,15 @@ export interface Task {
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
-  // Objective linking
-  objectiveId: string | null;
+  // Mission linking
+  missionId: string | null;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: string[];
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
-  objective?: Objective;
+  mission?: Mission;
   worker?: Worker;
   account?: Account;
   // Creator tracking relations
@@ -626,19 +626,19 @@ export interface CreateTaskInput {
   outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
-  // Objective linking
-  objectiveId?: string;
+  // Mission linking
+  missionId?: string;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn?: string[];
 }
 
-export interface CreateObjectiveInput {
+export interface CreateMissionInput {
   title: string;
   description?: string;
   workspaceId?: string;
   cronExpression?: string;
   priority?: number;
-  parentObjectiveId?: string;
+  parentMissionId?: string;
 }
 
 export interface CreateWorkerInput {
