@@ -294,8 +294,6 @@ export default async function RoleProfilePage({
               ) : (
                 <div className="space-y-2">
                   {assignedMissions.map(mission => {
-                    const mTotalTasks = mission.tasks?.length || 0;
-                    const mCompletedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
                     const mActiveAgents = mission.tasks
                       ?.filter(t => t.status === 'running').length || 0;
                     const health = deriveMissionHealth({
@@ -304,8 +302,6 @@ export default async function RoleProfilePage({
                       cronExpression: mission.cronExpression,
                       lastRunAt: (mission.schedule as any)?.lastRunAt || null,
                       nextRunAt: (mission.schedule as any)?.nextRunAt || null,
-                      completedTasks: mCompletedTasks,
-                      totalTasks: mTotalTasks,
                     });
                     const display = HEALTH_DISPLAY[health];
 

@@ -1216,7 +1216,9 @@ export class WorkerManager {
 
       // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
       // Prompt-level instruction alone is unreliable — enforce at hook level.
-      if (toolName === 'AskUserQuestion' && (opts?.inputPolicy || 'autonomous') === 'autonomous') {
+      if (toolName === 'AskUserQuestion'
+          && (opts?.inputPolicy || 'autonomous') === 'autonomous'
+          && this.config.inputAsRetry === false) {
         console.log(`[Worker ${worker.id}] Blocked AskUserQuestion (inputPolicy=autonomous)`);
         return {
           hookSpecificOutput: {
@@ -2080,8 +2082,13 @@ export class WorkerManager {
       } else if (inputPolicy === 'important-only') {
         promptParts.push(`## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`);
       } else {
-        // 'autonomous' — default until resume is fixed
-        promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
+        if (this.config.inputAsRetry !== false) {
+          // inputAsRetry (default): allow AskUserQuestion for genuine blockers — session aborts and user responds async
+          promptParts.push(`## Communication\nIf you hit a genuine blocker you cannot resolve autonomously, use AskUserQuestion. The session will end and the user will respond asynchronously. For everything else, make reasonable decisions autonomously and proceed.`);
+        } else {
+          // inputAsRetry explicitly disabled — hard block
+          promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
+        }
       }
 
       // Add task metadata
@@ -2958,7 +2965,7 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.currentAction = firstQuestion?.header || 'Question';
             this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
 
-            if (this.config.inputAsRetry) {
+            if (this.config.inputAsRetry !== false) {
               // inputAsRetry mode: snapshot state, sync notification, then abort.
               // The ralph-loop retry system will create a follow-up task with the user's answer.
               console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
