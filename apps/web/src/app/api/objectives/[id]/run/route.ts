@@ -97,7 +97,7 @@ export async function POST(
         runnerPreference: template?.runnerPreference || 'any',
         requiredCapabilities: template?.requiredCapabilities || [],
         context: taskContext,
-        creationSource: 'api',
+        creationSource: 'orchestrator',
         objectiveId: objective.id,
       })
       .returning();

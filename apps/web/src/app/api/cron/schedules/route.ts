@@ -338,7 +338,7 @@ export async function GET(req: NextRequest) {
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
-            creationSource: 'schedule',
+            creationSource: linkedObjective ? 'orchestrator' : 'schedule',
             ...(externalId ? { externalId } : {}),
             ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
             ...(linkedObjective?.defaultRoleSlug ? { roleSlug: linkedObjective.defaultRoleSlug } : {}),
