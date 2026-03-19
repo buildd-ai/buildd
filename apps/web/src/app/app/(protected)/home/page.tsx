@@ -78,7 +78,7 @@ export default async function HomePage() {
   let pendingSuggestions: {
     scheduleId: string;
     scheduleName: string;
-    workspaceId: string;
+    workspaceId: string | null;
     reason: string;
     cronExpression?: string;
     enabled?: boolean;

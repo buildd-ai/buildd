@@ -440,6 +440,7 @@ export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   key: text('key'),
   type: text('type').notNull(),
   title: text('title'),
@@ -454,6 +455,7 @@ export const artifacts = pgTable('artifacts', {
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
+  missionIdx: index('artifacts_mission_idx').on(t.missionId),
 }));
 
 // observations table removed — memory is now stored in external memory service
@@ -492,7 +494,7 @@ export type RecipeStep = {
 // Task schedules - cron-based automated task creation
 export const taskSchedules = pgTable('task_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   cronExpression: text('cron_expression').notNull(),
   timezone: text('timezone').default('UTC').notNull(),
@@ -718,6 +720,7 @@ export const missionsRelations = relations(missions, ({ one, many }) => ({
   subMissions: many(missions, { relationName: 'subMissions' }),
   tasks: many(tasks),
   schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
+  artifacts: many(artifacts),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
@@ -760,6 +763,7 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
 export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
   workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
+  mission: one(missions, { fields: [artifacts.missionId], references: [missions.id] }),
 }));
 
 

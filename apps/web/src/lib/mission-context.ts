@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers } from '@buildd/core/db/schema';
+import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
@@ -185,6 +185,14 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     columns: { id: true, title: true, result: true },
   });
 
+  // Prior artifacts linked to this mission
+  const priorArtifacts = await db.query.artifacts.findMany({
+    where: eq(artifacts.missionId, mission.id),
+    orderBy: [desc(artifacts.updatedAt)],
+    limit: 10,
+    columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
+  });
+
   // Recipe playbook (if configured)
   const recipeId = templateContext?.recipeId as string | undefined;
   let recipeSteps: unknown[] | null = null;
@@ -243,6 +251,32 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       descParts.push(`- [ ] ${step.title || step.ref}${step.description ? `: ${step.description}` : ''}`);
     }
   }
+
+  if (priorArtifacts.length > 0) {
+    descParts.push('\n## Prior Artifacts');
+    for (const a of priorArtifacts) {
+      const preview = a.content?.slice(0, 150) || '';
+      const keyLabel = a.key ? ` (key: ${a.key})` : '';
+      descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 150 ? '...' : ''}\n  ID: ${a.id}`);
+    }
+    descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
+  }
+
+  // TODO: Memory bridge — inject relevant memories when memory-client module is available.
+  // Non-fatal: memory service may be unavailable. Example:
+  // try {
+  //   const { getMemoryClient } = await import('./memory-client');
+  //   const memClient = getMemoryClient();
+  //   if (memClient && mission.title) {
+  //     const results = await memClient.search({ query: mission.title, limit: 5 });
+  //     if (results?.results?.length) {
+  //       descParts.push('\n## Relevant Team Memory');
+  //       for (const m of results.results.slice(0, 3)) {
+  //         descParts.push(`- **[${m.type}] ${m.title}**: ${m.content?.split('\n')[0] || ''}`);
+  //       }
+  //     }
+  //   }
+  // } catch { /* non-fatal */ }
 
   // Fetch available roles for orchestrator context
   let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
@@ -336,6 +370,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       status: t.status,
     })),
     ...(recipeSteps ? { recipeSteps } : {}),
+    priorArtifacts: priorArtifacts.map(a => ({
+      artifactId: a.id, key: a.key, type: a.type, title: a.title, updatedAt: a.updatedAt,
+    })),
   };
 
   return { description: descParts.join('\n'), context: contextData };

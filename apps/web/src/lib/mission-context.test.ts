@@ -59,6 +59,7 @@ const mockFindFirst = mock(() => Promise.resolve(null));
 const mockFindMany = mock(() => Promise.resolve([]));
 const mockScheduleFindFirst = mock(() => Promise.resolve(null));
 const mockSkillsFindMany = mock(() => Promise.resolve([]));
+const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 
 // Mock for db.select().from().innerJoin().where().groupBy() chain (workers query)
 const mockSelectResult = mock(() => Promise.resolve([]));
@@ -76,6 +77,7 @@ mock.module('@buildd/core/db', () => ({
       taskRecipes: { findFirst: mock(() => Promise.resolve(null)) },
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaceSkills: { findMany: mockSkillsFindMany },
+      artifacts: { findMany: mockArtifactsFindMany },
     },
     select: mockSelect,
   },
@@ -96,6 +98,7 @@ mock.module('@buildd/core/db/schema', () => ({
   taskSchedules: { id: 'id' },
   workspaceSkills: { workspaceId: 'workspaceId', isRole: 'isRole', enabled: 'enabled' },
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },
+  artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
 }));
 
 // Dynamic import so mocks are wired up
@@ -107,6 +110,8 @@ describe('buildMissionContext', () => {
     mockFindMany.mockReset();
     mockScheduleFindFirst.mockReset();
     mockSkillsFindMany.mockReset();
+    mockArtifactsFindMany.mockReset();
+    mockArtifactsFindMany.mockResolvedValue([]);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -397,6 +402,124 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Prior Heartbeats');
     expect(result!.description).toContain('[ok] All systems nominal');
     expect(result!.description).toContain('[action_taken] Cleared stale cache');
+  });
+
+  it('includes prior artifacts in description when mission has linked artifacts', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-art',
+      title: 'Research mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([
+      {
+        id: 'art-1',
+        key: 'mission-obj-art-research',
+        type: 'document',
+        title: 'Research Report',
+        content: 'This is the research findings from the first run.',
+        updatedAt: new Date(Date.now() - 3600000),
+      },
+    ]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-art');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Prior Artifacts');
+    expect(result!.description).toContain('Research Report');
+    expect(result!.description).toContain('document');
+    expect(result!.description).toContain('mission-obj-art-research');
+    expect(result!.description).toContain('This is the research findings');
+    expect(result!.description).toContain('get_artifact');
+  });
+
+  it('includes artifact metadata in context data', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-art2',
+      title: 'Analysis mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    const updatedAt = new Date(Date.now() - 7200000);
+    mockArtifactsFindMany.mockResolvedValueOnce([
+      {
+        id: 'art-2',
+        key: 'mission-obj-art2-analysis',
+        type: 'code',
+        title: 'Analysis Output',
+        content: 'Some analysis content here.',
+        updatedAt,
+      },
+    ]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-art2');
+    expect(result).not.toBeNull();
+    const artifacts = result!.context.priorArtifacts as any[];
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].artifactId).toBe('art-2');
+    expect(artifacts[0].key).toBe('mission-obj-art2-analysis');
+    expect(artifacts[0].type).toBe('code');
+    expect(artifacts[0].title).toBe('Analysis Output');
+    expect(artifacts[0].updatedAt).toBe(updatedAt);
+  });
+
+  it('omits artifacts section when no linked artifacts exist', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-noart',
+      title: 'New mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]); // no artifacts
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-noart');
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('## Prior Artifacts');
+    expect(result!.description).not.toContain('get_artifact');
+    const artifacts = result!.context.priorArtifacts as any[];
+    expect(artifacts).toHaveLength(0);
+  });
+
+  it('handles memory service unavailability gracefully', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-mem',
+      title: 'Memory test mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    // Memory service is not available (no memory-client module) — should not throw
+    const result = await buildMissionContext('obj-mem');
+    expect(result).not.toBeNull();
+    expect(result!.context.missionId).toBe('obj-mem');
   });
 
   it('detects heartbeat from templateContext argument', async () => {

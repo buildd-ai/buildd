@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts } from '@buildd/core/db/schema';
+import { workers, artifacts, tasks } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -43,6 +43,13 @@ export async function POST(
   if (worker.accountId !== account.id) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
+
+  const linkedTask = worker.taskId
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true },
+      })
+    : null;
 
   const body = await req.json();
   const { type, title, content, url, metadata, key, storageKey } = body;
@@ -129,6 +136,7 @@ export async function POST(
     .values({
       workerId: id,
       workspaceId: worker.workspaceId || null,
+      missionId: linkedTask?.missionId ?? null,
       key: key || null,
       type,
       title,

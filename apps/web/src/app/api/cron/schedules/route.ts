@@ -168,16 +168,15 @@ export async function GET(req: NextRequest) {
         // Check maxConcurrentFromSchedule - count active tasks from this schedule
         if (schedule.maxConcurrentFromSchedule > 0) {
           const activeStatuses = ['pending', 'assigned', 'in_progress'];
+          const concurrentConditions = [
+            ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
+            inArray(tasks.status, activeStatuses),
+            sql`${tasks.context}->>'scheduleId' = ${schedule.id}`,
+          ] as const;
           const [activeCount] = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(tasks)
-            .where(
-              and(
-                eq(tasks.workspaceId, schedule.workspaceId),
-                inArray(tasks.status, activeStatuses),
-                sql`${tasks.context}->>'scheduleId' = ${schedule.id}`
-              )
-            );
+            .where(and(...concurrentConditions));
 
           if ((activeCount?.count ?? 0) >= schedule.maxConcurrentFromSchedule) {
             // Too many active tasks from this schedule, skip but advance nextRunAt
@@ -258,12 +257,13 @@ export async function GET(req: NextRequest) {
         // for this schedule with the same trigger value
         if (triggerResult) {
           const externalId = `schedule-${schedule.id}-${triggerResult.currentValue}`;
+          const dedupConditions = [
+            ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
+            eq(tasks.externalId, externalId),
+            inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+          ] as const;
           const existing = await db.query.tasks.findFirst({
-            where: and(
-              eq(tasks.workspaceId, schedule.workspaceId),
-              eq(tasks.externalId, externalId),
-              inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
-            ),
+            where: and(...dedupConditions),
           });
           if (existing) {
             skipped++;
@@ -280,8 +280,25 @@ export async function GET(req: NextRequest) {
           where: eq(missions.scheduleId, schedule.id),
           columns: {
             id: true,
+            workspaceId: true,
           },
         });
+
+        // Resolve workspace: schedule.workspaceId takes priority, fall back to mission.workspaceId
+        let taskWorkspaceId = schedule.workspaceId;
+        if (!taskWorkspaceId && linkedMission?.workspaceId) {
+          taskWorkspaceId = linkedMission.workspaceId;
+        }
+        if (!taskWorkspaceId) {
+          const newFailures = (schedule.consecutiveFailures || 0) + 1;
+          await db.update(taskSchedules).set({
+            consecutiveFailures: newFailures,
+            lastError: 'No workspace: schedule and mission both lack workspaceId',
+            updatedAt: now,
+          }).where(eq(taskSchedules.id, schedule.id));
+          errors++;
+          continue;
+        }
 
         // Read heartbeat/activeHours config from the schedule's taskTemplate.context
         const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -331,7 +348,7 @@ export async function GET(req: NextRequest) {
         const [task] = await db
           .insert(tasks)
           .values({
-            workspaceId: schedule.workspaceId,
+            workspaceId: taskWorkspaceId,
             title: taskTitle,
             description: taskDescription,
             priority: template.priority || 0,
@@ -354,7 +371,7 @@ export async function GET(req: NextRequest) {
 
         // Dispatch task
         const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, schedule.workspaceId),
+          where: eq(workspaces.id, taskWorkspaceId),
         });
 
         if (workspace) {
@@ -363,7 +380,7 @@ export async function GET(req: NextRequest) {
 
         // Fire schedule triggered event
         await triggerEvent(
-          channels.workspace(schedule.workspaceId),
+          channels.workspace(taskWorkspaceId),
           events.SCHEDULE_TRIGGERED,
           { schedule: { id: schedule.id, name: schedule.name }, task }
         );
