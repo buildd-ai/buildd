@@ -2,14 +2,14 @@
 
 > Part of `.agent/claude-agent-sdk.md` docs. See index file for table of contents.
 
-## Buildd Integration Status (v0.2.77)
+## Buildd Integration Status (v0.2.79)
 
 Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 - `SDKTaskStartedMessage` — subagent lifecycle tracking
 - `SDKRateLimitEvent` — rate limit surfacing to dashboard
 - `SDKTaskNotificationMessage` — subagent completion tracking
 - `SDKFilesPersistedEvent` — file checkpoint tracking
-- All 13 original hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange) + 3 new hooks available: PostCompact, Elicitation, ElicitationResult (v0.2.76)
+- All 13 original hook events (PreToolUse, PostToolUse, PostToolUseFailure, Notification, PreCompact, PermissionRequest, TeammateIdle, TaskCompleted, SubagentStart, SubagentStop, SessionStart, SessionEnd, ConfigChange) + 4 new hooks available: PostCompact, Elicitation, ElicitationResult (v0.2.76), StopFailure (v0.2.78)
 - Structured output via `outputFormat`
 - File checkpointing via `enableFileCheckpointing`
 - Agent teams via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
@@ -22,6 +22,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | Enhancement | SDK Feature | Priority | Status |
 |-------------|------------|----------|--------|
+| **Bump SDK pin to `>=0.2.79`** | `StopFailure` hook event, `--console` auth login flag, `claude -p` subprocess hang fix, non-streaming 2-min per-attempt timeout, `SessionEnd` hooks fire on `/resume` switch, 18MB startup memory reduction, sandbox security warning fix, `--worktree` skills/hooks loading fix, `git log HEAD` sandbox fix, `deny: ["mcp__servername"]` tool removal fix, large session resume truncation fix, infinite stop-hook loop fix, plugin agent frontmatter (`effort`/`maxTurns`/`disallowedTools`), line-by-line response streaming, tmux passthrough notifications | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.77`** | Opus 4.6 64k default / 128k max output tokens, `allowRead` sandbox filesystem setting, compound bash permission rule fix, PreToolUse hook security fix, auto-updater memory leak fix, session resume memory optimization, Write tool CRLF fix, non-streaming cost tracking fix, worktree race condition fix, Agent tool `resume` parameter removed (use `SendMessage`), `SendMessage` auto-resumes stopped agents | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.76`** | MCP elicitation support, `Elicitation`/`ElicitationResult` hooks, `PostCompact` hook, `worktree.sparsePaths` setting, `/effort` slash command, deferred tools compaction fix, auto-compaction circuit breaker, stale worktree cleanup, code review inline comment confirmation | **P1** | **Done** |
 | **Bump SDK pin to `>=0.2.74`** | `autoMemoryDirectory` setting, `/context` optimization suggestions, managed policy `ask` rule enforcement, full model IDs in agent frontmatter, streaming memory leak fix, `SessionEnd` hook timeout config, `modelOverrides` setting, subagent model downgrade fix on Bedrock/Vertex, RTL text rendering fix, CPU freeze fix on complex bash permission prompts | **P1** | **Done** |
@@ -57,6 +58,7 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 - **Background agent definitions** — `useBackgroundAgents` config adds `background: true` to skill-as-subagent definitions; `SubagentTask.isBackground` tracks background status in runner
 
+- **SDK pin `>=0.2.79`** — All packages now pin `>=0.2.79`
 - **SDK pin `>=0.2.77`** — All packages now pin `>=0.2.77`
 - **SDK pin `>=0.2.76`** — All packages now pin `>=0.2.76`
 - **SDK pin `>=0.2.74`** — All packages now pin `>=0.2.74`
@@ -87,6 +89,8 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 | CLI Version | SDK Version | Key Changes |
 |-------------|-------------|-------------|
+| 2.1.79 | 0.2.79 | **`--console` flag for `claude auth login`**; **"Show turn duration" toggle** in `/config`; **`/remote-control` command** (VSCode); **AI-generated session tab titles** (VSCode); **`claude -p` subprocess hang fix** (no explicit stdin); **Ctrl+C fix in `-p` mode**; **`/btw` side-question output fix**; **`SessionEnd` hooks fire on `/resume` session switch**; **~18MB startup memory reduction**; **Non-streaming 2-min per-attempt timeout** (prevents indefinite hangs); **`CLAUDE_CODE_PLUGIN_SEED_DIR`** supports multiple directories; voice mode startup fix; enterprise 429 retry fix; custom status line workspace trust fix; `/permissions` tab navigation fix |
+| 2.1.78 | 0.2.78 | **`StopFailure` hook event** (fires on API error turn-end: rate limit, auth failure); **`${CLAUDE_PLUGIN_DATA}` variable** for plugin persistent state; **Plugin agent frontmatter** (`effort`, `maxTurns`, `disallowedTools`); **Line-by-line response streaming**; **tmux passthrough notifications** (iTerm2/Kitty/Ghostty popups through tmux); **`git log HEAD` sandbox fix** (ambiguous argument); **Stub file `git status` pollution fix**; **Large session resume truncation fix** (`cc log`/`--resume` >5MB with subagents); **Infinite stop-hook loop fix** (API errors re-fed to model); **`deny: ["mcp__servername"]` tool removal fix**; **`sandbox.filesystem.allowWrite` absolute path fix**; **Security: silent sandbox disable warning** when dependencies missing; **Protected dirs writable in `bypassPermissions` fix**; **`--worktree` skills/hooks loading fix**; **`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` fix**; **`ANTHROPIC_BETAS` Haiku fix**; **`ANTHROPIC_CUSTOM_MODEL_OPTION`** env var for `/model` picker; Bash PATH fix for VS Code Dock/Spotlight launch; queued prompt newline separator fix; ctrl+u readline fix; voice mode WSL2/WSLg fix; `/plugin uninstall` data prompt |
 | 2.1.77 | 0.2.77 | **Opus 4.6 64k default / 128k max output tokens**; **`allowRead` sandbox filesystem setting** (re-allow reads within `denyRead` regions); **`/copy N`** copies Nth-latest response; **Compound bash permission rule fix** (compound commands now save per-subcommand rules); **PreToolUse hook security fix** (`"allow"` no longer bypasses `deny` rules); **Auto-updater memory leak fix** (tens of GB from overlapping downloads); **Session resume optimization** (up to 45% faster, ~100-150MB less peak memory); **Progress message memory fix** (survived compaction); **Write tool CRLF fix**; **Non-streaming cost tracking fix**; **Beta schema stripping fix** (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`); **Worktree race condition fix** (stale cleanup vs resumed agent); **Agent tool `resume` removed** (use `SendMessage({to: agentId})`); **`SendMessage` auto-resumes stopped agents**; **macOS startup ~60ms faster** (parallel keychain read); **Background bash 5GB output kill**; auto-session naming from plans; `/fork` renamed to `/branch`; many terminal UI, clipboard, and IDE integration fixes |
 | 2.1.76 | 0.2.76 | **MCP elicitation support** (structured input mid-task); **`Elicitation`/`ElicitationResult` hooks**; **`PostCompact` hook**; **`worktree.sparsePaths`** setting (sparse checkout for large monorepos); **`/effort` slash command**; `-n`/`--name` CLI flag for session display names; **deferred tools compaction fix** (array/number params rejected after compact); **auto-compaction circuit breaker** (stops after 3 retries); stale worktree cleanup; improved worktree startup perf; background agent partial result preservation on kill; model fallback notifications always visible; slash command "Unknown skill" fix; plan mode re-approval fix; voice mode keypress fix; 1M-context spurious errors fix; clipboard fix in tmux over SSH |
 | 2.1.75 | 0.2.75 | **Code review inline comment confirmation** — `confirmed=true` required to post inline comments, preventing subagent probe comments from reaching customer PRs |
@@ -126,6 +130,17 @@ Features fully integrated in both `worker-runner.ts` and `runner/workers.ts`:
 
 ### Key Fixes for Buildd Workers
 
+- **`StopFailure` hook event** — New hook fires when a turn ends due to API error (rate limit, auth failure, etc.) (v0.2.78). Enables workers to handle API failures gracefully instead of silently stopping.
+- **`claude -p` subprocess hang fix** — `claude -p` no longer hangs when spawned without explicit stdin (v0.2.79). Critical for Buildd workers using subprocess execution patterns.
+- **Non-streaming 2-min per-attempt timeout** — API fallback to non-streaming mode now has a 2-minute per-attempt timeout (v0.2.79). Prevents workers from hanging indefinitely on failed API calls.
+- **`SessionEnd` hooks fire on `/resume` switch** — Switching sessions via `/resume` now correctly fires `SessionEnd` hooks (v0.2.79). Ensures proper cleanup in worker session management.
+- **Startup memory reduction** — ~18MB less memory on startup across all scenarios (v0.2.79). Benefits runner process memory footprint.
+- **Large session resume truncation fix** — `cc log` and `--resume` no longer silently truncate conversation history on sessions >5MB with subagents (v0.2.78). Important for long-running Buildd workers with many subagent interactions.
+- **Infinite stop-hook loop fix** — API errors no longer trigger stop hooks that re-feed blocking errors to the model in an infinite loop (v0.2.78). Prevents workers from getting stuck.
+- **`deny: ["mcp__servername"]` tool removal fix** — Deny rules for MCP servers now properly remove tools before sending to the model (v0.2.78). Ensures security policies are enforced for workers using MCP.
+- **`--worktree` skills/hooks loading fix** — Skills and hooks are now loaded from the worktree directory when using `--worktree` flag (v0.2.78). Important for subagent worktrees with custom skill configurations.
+- **Silent sandbox disable security fix** — When `sandbox.enabled: true` is set but dependencies are missing, a visible startup warning is now shown instead of silently disabling the sandbox (v0.2.78). Security improvement for worker sandboxing.
+- **Plugin agent frontmatter** — Plugin-shipped agents now support `effort`, `maxTurns`, and `disallowedTools` in frontmatter (v0.2.78). Enables more granular control over skill-as-subagent behavior.
 - **Opus 4.6 output token increase** — Default max increased to 64k, upper bound to 128k (v0.2.77). Benefits long-form Buildd worker outputs.
 - **Auto-updater memory leak fix** — Overlapping binary downloads from repeated slash-command overlay open/close could accumulate tens of GB (v0.2.77). Critical for long-running runner processes.
 - **Session resume optimization** — Up to 45% faster loading and ~100-150MB less peak memory on fork-heavy sessions (v0.2.77). Benefits workers resuming large sessions.
