@@ -92,8 +92,6 @@ export default async function MissionsPage() {
       cronExpression: obj.cronExpression,
       lastRunAt,
       nextRunAt,
-      completedTasks,
-      totalTasks,
     });
 
     return {
