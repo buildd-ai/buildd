@@ -140,7 +140,7 @@ export default function MissionSettings({
     setError(null);
     try {
       const res = await fetch(`/api/objectives/${missionId}/run`, {
-        method: 'GET',
+        method: 'POST',
         credentials: 'include',
       });
       if (res.ok) {
