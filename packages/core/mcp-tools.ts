@@ -1031,7 +1031,8 @@ export async function handleBuilddAction(
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
-          const heartbeatInfo = data.isHeartbeat ? `\nHeartbeat: enabled${data.activeHoursStart != null && data.activeHoursEnd != null ? ` (active ${data.activeHoursStart}:00-${data.activeHoursEnd}:00${data.activeHoursTimezone ? ` ${data.activeHoursTimezone}` : ''})` : ''}${data.heartbeatChecklist ? `\nChecklist: ${data.heartbeatChecklist}` : ''}` : '';
+          const schedCtx = data.schedule?.taskTemplate?.context;
+          const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
           return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
