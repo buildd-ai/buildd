@@ -304,8 +304,6 @@ export default async function RoleProfilePage({
                       cronExpression: mission.cronExpression,
                       lastRunAt: (mission.schedule as any)?.lastRunAt || null,
                       nextRunAt: (mission.schedule as any)?.nextRunAt || null,
-                      completedTasks: mCompletedTasks,
-                      totalTasks: mTotalTasks,
                     });
                     const display = HEALTH_DISPLAY[health];
 
