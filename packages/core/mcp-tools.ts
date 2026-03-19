@@ -43,14 +43,14 @@ export type ToolResult = {
 // Trigger level: can create tasks and artifacts, but cannot claim or execute
 export const triggerActions = [
   'list_tasks', 'create_task', 'create_artifact',
-  'list_artifacts', 'emit_event',
+  'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
 ] as const;
 
 export const workerActions = [
   'list_tasks', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
-  'upload_artifact', 'list_artifacts', 'update_artifact',
+  'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events',
   'list_artifact_templates',
   'suggest_schedule_update',
@@ -88,6 +88,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
+    get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
@@ -809,6 +810,28 @@ export async function handleBuilddAction(
 
       const summary = allArtifacts.map(({ workspace, artifact: a }) => formatArtifact(a, workspace)).join('\n\n');
       return text(`${allArtifacts.length} artifact(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'get_artifact': {
+      if (!params.artifactId) throw new Error('artifactId is required');
+
+      const data = await api(`/api/artifacts/${params.artifactId}`);
+      const art = data.artifact;
+
+      const meta = [
+        `**Title:** ${art.title || '(untitled)'}`,
+        `**Type:** ${art.type}`,
+        `**ID:** ${art.id}`,
+        art.key && `**Key:** ${art.key}`,
+        `**Created:** ${art.createdAt}`,
+        `**Updated:** ${art.updatedAt}`,
+        art.shareUrl && `**Share URL:** ${art.shareUrl}`,
+        art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
+      ].filter(Boolean).join('\n');
+
+      const content = art.content || '(no content)';
+
+      return text(`${meta}\n\n## Content\n\n${content}`);
     }
 
     case 'update_artifact': {
