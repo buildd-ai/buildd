@@ -215,9 +215,37 @@ describe('buildObjectiveContext', () => {
     expect(result!.description).toContain('reuse');
   });
 
-  // nextSuggestion surfacing is added in the artifact-protocol PR
-  // This test will work once that PR merges into dev
-  it.todo('surfaces nextSuggestion from completed tasks');
+  it('surfaces nextSuggestion from completed tasks', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-5',
+      title: 'Ship auth',
+      description: null,
+      status: 'active',
+      priority: 0,
+      isHeartbeat: false,
+      heartbeatChecklist: null,
+      workspaceId: 'ws-1',
+    });
+    mockFindMany.mockResolvedValueOnce([
+      {
+        id: 't1',
+        title: 'Fix middleware',
+        mode: 'execution',
+        result: { summary: 'Fixed CORS', nextSuggestion: 'Tests pass, ready for review' },
+        createdAt: new Date(),
+        roleSlug: 'builder',
+      },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildObjectiveContext('obj-5');
+    expect(result!.description).toContain('→ Next: "Tests pass, ready for review"');
+    // Also in structured context
+    const completions = result!.context.recentCompletions as any[];
+    expect(completions[0].nextSuggestion).toBe('Tests pass, ready for review');
+  });
 
   it('returns heartbeat context with checklist and protocol', async () => {
     mockFindFirst.mockResolvedValueOnce({
