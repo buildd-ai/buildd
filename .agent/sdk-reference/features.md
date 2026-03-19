@@ -200,7 +200,7 @@ type SDKFilesPersistedEvent = {
 
 ## 11. Hook Events Reference
 
-### Official HookEvent Type (18 events)
+### Official HookEvent Type (19 events)
 
 ```typescript
 type HookEvent =
@@ -212,6 +212,7 @@ type HookEvent =
   | 'SessionStart'        // Session initialization
   | 'SessionEnd'          // Session termination
   | 'Stop'                // Agent execution stop
+  | 'StopFailure'         // Turn ended due to API error (rate limit, auth failure) (v0.2.78+)
   | 'SubagentStart'       // Subagent initialization
   | 'SubagentStop'        // Subagent completion
   | 'PreCompact'          // Conversation compaction
