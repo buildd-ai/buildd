@@ -10,10 +10,17 @@ export function deriveMissionHealth(opts: {
   cronExpression: string | null;
   lastRunAt: string | Date | null;
   nextRunAt: string | Date | null;
+  completedTasks?: number;
+  totalTasks?: number;
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
   if (opts.activeAgents > 0) return 'active';
+
+  // Non-scheduled mission with all tasks done → shipped
+  if (!opts.cronExpression && opts.totalTasks && opts.totalTasks > 0 && opts.completedTasks === opts.totalTasks) {
+    return 'shipped';
+  }
 
   if (opts.cronExpression) {
     // Parse cron interval to determine if stalled
