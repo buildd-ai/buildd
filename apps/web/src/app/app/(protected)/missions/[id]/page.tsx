@@ -110,6 +110,8 @@ export default async function MissionDetailPage({
     cronExpression: objective.cronExpression,
     lastRunAt: (objective.schedule as any)?.lastRunAt || null,
     nextRunAt: (objective.schedule as any)?.nextRunAt || null,
+    completedTasks,
+    totalTasks,
   });
   const healthDisplay = HEALTH_DISPLAY[health];
 
