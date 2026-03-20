@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to 0.2.80 (fixes getSessionMessages dropping parallel tool results)
+
 ### Fixed
 
 - Use task terminology on task creation page
