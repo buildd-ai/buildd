@@ -746,9 +746,24 @@ export class WorkerManager {
   private checkStale() {
     const now = Date.now();
     const timeout = this.adaptiveStaleTimeout;
+    // Hard absolute timeout: no worker process should run longer than 30 minutes
+    // without producing activity. This catches zombie processes that ignore probes.
+    const HARD_TIMEOUT_MS = 30 * 60 * 1000;
+
     for (const worker of this.workers.values()) {
       // Skip stale check for workers waiting on user input (plan approval, questions)
       if (worker.status === 'waiting') continue;
+
+      // Hard timeout: kill any worker (working or stale) that has been idle too long
+      if ((worker.status === 'working' || worker.status === 'stale') &&
+          now - worker.lastActivity > HARD_TIMEOUT_MS) {
+        const idleSec = Math.round((now - worker.lastActivity) / 1000);
+        console.log(`[Worker ${worker.id}] Hard timeout — idle ${idleSec}s, aborting`);
+        sessionLog(worker.id, 'warn', 'hard_timeout', `Aborting after ${idleSec}s idle (hard timeout ${HARD_TIMEOUT_MS / 1000}s)`);
+        this.probedWorkers.delete(worker.id);
+        this.abort(worker.id, `Hard timeout: idle ${idleSec}s`).catch(() => {});
+        continue;
+      }
 
       if (worker.status === 'working') {
         if (now - worker.lastActivity > timeout) {
@@ -767,15 +782,18 @@ export class WorkerManager {
               this.addMilestone(worker, { type: 'status', label: 'Idle probe sent', ts: now });
               this.emit({ type: 'worker_update', worker });
             } catch {
-              // Session stream closed — fall through to stale
-              worker.status = 'stale';
-              this.emit({ type: 'worker_update', worker });
+              // Session stream closed — abort the worker
+              console.log(`[Worker ${worker.id}] Probe failed (stream closed) — aborting`);
+              this.probedWorkers.delete(worker.id);
+              this.abort(worker.id, 'Stale: probe failed (stream closed)').catch(() => {});
             }
           } else {
-            // Already probed or no session — mark stale
-            worker.status = 'stale';
+            // Already probed or no session — abort the worker (not just mark stale)
+            const idleSec = Math.round((now - worker.lastActivity) / 1000);
+            console.log(`[Worker ${worker.id}] Stale after probe — idle ${idleSec}s, aborting`);
+            sessionLog(worker.id, 'warn', 'stale_abort', `Aborting after probe failed — idle ${idleSec}s`);
             this.probedWorkers.delete(worker.id);
-            this.emit({ type: 'worker_update', worker });
+            this.abort(worker.id, `Stale: no response to probe after ${idleSec}s`).catch(() => {});
           }
         }
       }
