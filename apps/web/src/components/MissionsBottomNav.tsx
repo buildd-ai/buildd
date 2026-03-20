@@ -59,7 +59,6 @@ export default function MissionsBottomNav() {
           const isActive =
             pathname === tab.href ||
             (tab.href === '/app/home' && pathname === '/app/dashboard') ||
-            (tab.href === '/app/missions' && pathname.startsWith('/app/objectives')) ||
             (tab.href === '/app/missions' && pathname.startsWith('/app/missions')) ||
             (tab.href === '/app/team' && pathname.startsWith('/app/team')) ||
             (tab.href === '/app/you' && pathname.startsWith('/app/settings')) ||

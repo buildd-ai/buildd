@@ -49,7 +49,7 @@ export function validateActiveHours(
 }
 
 /**
- * Cron presets appropriate for heartbeat objectives.
+ * Cron presets appropriate for heartbeat missions.
  */
 export const HEARTBEAT_CRON_PRESETS: { label: string; value: string }[] = [
   { label: 'Every 30 min', value: '*/30 * * * *' },
@@ -58,9 +58,9 @@ export const HEARTBEAT_CRON_PRESETS: { label: string; value: string }[] = [
 ];
 
 /**
- * Standard cron presets for regular objectives.
+ * Standard cron presets for regular missions.
  */
-export const OBJECTIVE_CRON_PRESETS: { label: string; value: string }[] = [
+export const MISSION_CRON_PRESETS: { label: string; value: string }[] = [
   { label: 'Daily 9am', value: '0 9 * * *' },
   { label: 'Weekdays 9am', value: '0 9 * * 1-5' },
   { label: 'Weekly Mon 9am', value: '0 9 * * 1' },

@@ -363,7 +363,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
         category: originalTask.category,
         project: originalTask.project,
         requiredCapabilities: originalTask.requiredCapabilities,
-        objectiveId: originalTask.objectiveId,
+        missionId: originalTask.missionId,
         runnerPreference: originalTask.runnerPreference,
         mode: originalTask.mode,
         outputRequirement: originalTask.outputRequirement,

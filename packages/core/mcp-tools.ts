@@ -59,7 +59,7 @@ export const workerActions = [
 export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
   'approve_plan', 'reject_plan',
-  'manage_objectives',
+  'manage_missions',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -84,7 +84,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), parentTaskId? (link retry to original task), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
     create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
@@ -96,7 +96,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (string[]), requiredEnvVars? (Record<string, string>) } [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team objectives [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -458,7 +458,7 @@ export async function handleBuilddAction(
       }
       if (params.category) taskBody.category = params.category;
       if (params.roleSlug && typeof params.roleSlug === 'string') taskBody.roleSlug = params.roleSlug;
-      // outputRequirement inheritance from objective is handled by the API route;
+      // outputRequirement inheritance from mission is handled by the API route;
       // only pass through if explicitly provided by the caller.
       if (params.outputRequirement) taskBody.outputRequirement = params.outputRequirement;
       if (params.outputSchema && typeof params.outputSchema === 'object') {
@@ -466,16 +466,16 @@ export async function handleBuilddAction(
       }
       if (params.project) taskBody.project = params.project;
 
-      // Auto-link to objective: explicit param takes precedence, then inherit from caller's task
-      if (params.objectiveId) {
-        taskBody.objectiveId = params.objectiveId;
+      // Auto-link to mission: explicit param takes precedence, then inherit from caller's task
+      if (params.missionId) {
+        taskBody.missionId = params.missionId;
       } else if (ctx.workerId) {
-        // Fetch caller worker's task to inherit objectiveId
+        // Fetch caller worker's task to inherit missionId
         try {
           const workerData = await api(`/api/workers/${ctx.workerId}`);
-          const callerObjectiveId = workerData?.task?.objectiveId || workerData?.task?.context?.objectiveId;
-          if (callerObjectiveId) {
-            taskBody.objectiveId = callerObjectiveId;
+          const callerMissionId = workerData?.task?.missionId || workerData?.task?.context?.missionId;
+          if (callerMissionId) {
+            taskBody.missionId = callerMissionId;
           }
         } catch {
           // Non-fatal — skip auto-linking if worker lookup fails
@@ -529,7 +529,7 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.objectiveId ? `\nLinked to objective: ${taskBody.objectiveId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -984,25 +984,25 @@ export async function handleBuilddAction(
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
-    case 'manage_objectives': {
+    case 'manage_missions': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
-      const objAction = params.action as string;
-      if (!objAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
+      const missionAction = params.action as string;
+      if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
 
-      switch (objAction) {
+      switch (missionAction) {
         case 'list': {
           const qs = new URLSearchParams();
           if (params.workspaceId) qs.set('workspaceId', params.workspaceId as string);
           if (params.status) qs.set('status', params.status as string);
           const data = await api(`/api/missions?${qs}`);
-          const objs = data.objectives || [];
-          if (objs.length === 0) return text('No objectives found.');
-          const summary = objs.map((o: any) =>
-            `- **${o.title}** [${o.status}] — ${o.progress}% (${o.completedTasks}/${o.totalTasks} tasks)\n  ID: ${o.id}${o.workspace ? `\n  Workspace: ${o.workspace.name}` : ''}`
+          const missions = data.missions || [];
+          if (missions.length === 0) return text('No missions found.');
+          const summary = missions.map((m: any) =>
+            `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}`
           ).join('\n\n');
-          return text(`${objs.length} objective(s):\n\n${summary}`);
+          return text(`${missions.length} mission(s):\n\n${summary}`);
         }
         case 'create': {
           if (!params.title) throw new Error('title is required');
@@ -1023,11 +1023,11 @@ export async function handleBuilddAction(
             method: 'POST',
             body: JSON.stringify(body),
           });
-          return text(`Objective created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}`);
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}`);
         }
         case 'get': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
-          const data = await api(`/api/missions/${params.objectiveId}`);
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}`);
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
@@ -1036,7 +1036,7 @@ export async function handleBuilddAction(
           return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
+          if (!params.missionId) throw new Error('missionId is required');
           const body: Record<string, unknown> = {};
           if (params.title !== undefined) body.title = params.title;
           if (params.description !== undefined) body.description = params.description;
@@ -1053,35 +1053,35 @@ export async function handleBuilddAction(
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
-          const data = await api(`/api/missions/${params.objectiveId}`, {
+          const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
-          return text(`Objective updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+          return text(`Mission updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
         }
         case 'delete': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
-          await api(`/api/missions/${params.objectiveId}`, { method: 'DELETE' });
-          return text(`Objective deleted: ${params.objectiveId}`);
+          if (!params.missionId) throw new Error('missionId is required');
+          await api(`/api/missions/${params.missionId}`, { method: 'DELETE' });
+          return text(`Mission deleted: ${params.missionId}`);
         }
         case 'link_task': {
-          if (!params.objectiveId || !params.taskId) throw new Error('objectiveId and taskId are required');
+          if (!params.missionId || !params.taskId) throw new Error('missionId and taskId are required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ objectiveId: params.objectiveId }),
+            body: JSON.stringify({ missionId: params.missionId }),
           });
-          return text(`Task ${params.taskId} linked to objective ${params.objectiveId}`);
+          return text(`Task ${params.taskId} linked to mission ${params.missionId}`);
         }
         case 'unlink_task': {
           if (!params.taskId) throw new Error('taskId is required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ objectiveId: null }),
+            body: JSON.stringify({ missionId: null }),
           });
-          return text(`Task ${params.taskId} unlinked from objective`);
+          return text(`Task ${params.taskId} unlinked from mission`);
         }
         default:
-          throw new Error(`Unknown objectives action: ${objAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
       }
     }
 

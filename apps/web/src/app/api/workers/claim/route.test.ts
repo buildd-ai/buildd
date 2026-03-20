@@ -93,6 +93,22 @@ mock.module('@/lib/pusher', () => ({
 mock.module('@/lib/notify', () => ({
   notify: mock(() => {}),
 }));
+mock.module('@/lib/stale-workers', () => ({
+  cleanupStaleWorkers: mock(() => Promise.resolve()),
+}));
+mock.module('@/lib/api-response', () => ({
+  jsonResponse: (data: any, init?: any) => {
+    const body = JSON.stringify(data);
+    return new Response(body, { ...init, headers: { 'content-type': 'application/json' } });
+  },
+}));
+mock.module('@/lib/storage', () => ({
+  isStorageConfigured: () => false,
+  generateDownloadUrl: mock(() => ''),
+}));
+mock.module('@/lib/pushover', () => ({
+  notify: mock(() => Promise.resolve()),
+}));
 
 import { POST } from './route';
 
@@ -126,6 +142,8 @@ describe('POST /api/workers/claim', () => {
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no open workspaces
+    mockWorkspacesFindMany.mockResolvedValue([]);
     // Default: no secrets
     mockSecretsFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
@@ -173,11 +191,8 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    // First findMany call (stale workers) returns empty
-    // Second findMany call (active workers) returns 2
-    mockWorkersFindMany
-      .mockResolvedValueOnce([]) // stale workers
-      .mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }]); // active workers
+    // cleanupStaleWorkers is mocked as no-op, so only the active workers query hits findMany
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -189,6 +204,7 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.error).toBe('Max concurrent workers limit reached');
     expect(data.limit).toBe(2);
+    expect(data.current).toBe(2);
   });
 
   it('returns 429 when daily cost limit exceeded for API auth type', async () => {
@@ -201,10 +217,8 @@ describe('POST /api/workers/claim', () => {
       totalCost: '15.00',
     });
 
-    // No stale workers, no active workers
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    // No active workers (cleanupStaleWorkers is mocked)
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -227,9 +241,7 @@ describe('POST /api/workers/claim', () => {
       activeSessions: 2,
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -250,9 +262,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -275,9 +285,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
@@ -301,9 +309,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])   // stale workers
-      .mockResolvedValueOnce([]);  // active workers
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -368,9 +374,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -419,9 +423,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -448,9 +450,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -503,9 +503,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -558,9 +556,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -588,9 +584,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])   // stale workers
-      .mockResolvedValueOnce([]);  // active workers for concurrency check
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
@@ -674,9 +668,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -739,9 +731,7 @@ describe('POST /api/workers/claim', () => {
       { workspaceId: 'ws-1', canClaim: true },
     ]);
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -819,9 +809,7 @@ describe('POST /api/workers/claim', () => {
       currentDailyCostCents: 0,
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 

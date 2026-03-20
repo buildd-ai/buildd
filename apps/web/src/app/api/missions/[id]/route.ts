@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { objectives, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -36,36 +36,36 @@ export async function GET(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
-    const objective = await db.query.objectives.findFirst({
-      where: eq(objectives.id, id),
+    const mission = await db.query.missions.findFirst({
+      where: eq(missions.id, id),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, updatedAt: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
         },
-        subObjectives: { columns: { id: true, title: true, status: true } },
+        subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
       },
     });
 
-    if (!objective || !teamIds.includes(objective.teamId)) {
+    if (!mission || !teamIds.includes(mission.teamId)) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
-    const totalTasks = objective.tasks?.length || 0;
-    const completedTasks = objective.tasks?.filter(t => t.status === 'completed').length || 0;
+    const totalTasks = mission.tasks?.length || 0;
+    const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
     const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
     // Extract config from schedule template
-    const templateContext = (objective.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+    const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
     const isHeartbeat = templateContext?.heartbeat === true;
 
     // Compute heartbeat status from most recent completed task
     let lastHeartbeatStatus: string | null = null;
     let lastHeartbeatAt: string | null = null;
     if (isHeartbeat) {
-      const lastCompletedTask = objective.tasks?.find(
+      const lastCompletedTask = mission.tasks?.find(
         (t: any) => t.status === 'completed' && t.result?.structuredOutput?.status
       );
       if (lastCompletedTask) {
@@ -75,7 +75,7 @@ export async function GET(
     }
 
     return NextResponse.json({
-      ...objective,
+      ...mission,
       totalTasks,
       completedTasks,
       progress,
@@ -115,8 +115,8 @@ export async function PATCH(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
-    const existing = await db.query.objectives.findFirst({
-      where: eq(objectives.id, id),
+    const existing = await db.query.missions.findFirst({
+      where: eq(missions.id, id),
     });
 
     if (!existing || !teamIds.includes(existing.teamId)) {
@@ -134,7 +134,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'activeHoursEnd must be between 0 and 23' }, { status: 400 });
     }
 
-    const updateData: Partial<typeof objectives.$inferInsert> = {
+    const updateData: Partial<typeof missions.$inferInsert> = {
       updatedAt: new Date(),
     };
 
@@ -252,9 +252,9 @@ export async function PATCH(
     }
 
     const [updated] = await db
-      .update(objectives)
+      .update(missions)
       .set(updateData)
-      .where(eq(objectives.id, id))
+      .where(eq(missions.id, id))
       .returning();
 
     return NextResponse.json(updated);
@@ -287,8 +287,8 @@ export async function DELETE(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
-    const existing = await db.query.objectives.findFirst({
-      where: eq(objectives.id, id),
+    const existing = await db.query.missions.findFirst({
+      where: eq(missions.id, id),
     });
 
     if (!existing || !teamIds.includes(existing.teamId)) {
@@ -299,7 +299,7 @@ export async function DELETE(
       await db.delete(taskSchedules).where(eq(taskSchedules.id, existing.scheduleId));
     }
 
-    await db.delete(objectives).where(eq(objectives.id, id));
+    await db.delete(missions).where(eq(missions.id, id));
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { objectives, taskSchedules, workspaces } from '@buildd/core/db/schema';
+import { missions, taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, isNotNull, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -33,9 +33,9 @@ export default async function SchedulesPage() {
   });
   const wsNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
 
-  // Fetch all objectives with cron expressions (heartbeat + scheduled)
-  const scheduledObjectives = await db.query.objectives.findMany({
-    where: inArray(objectives.teamId, teamIds),
+  // Fetch all missions with cron expressions (heartbeat + scheduled)
+  const scheduledMissions = await db.query.missions.findMany({
+    where: inArray(missions.teamId, teamIds),
     columns: {
       id: true,
       title: true,
@@ -56,14 +56,14 @@ export default async function SchedulesPage() {
         },
       },
     },
-    orderBy: [desc(objectives.createdAt)],
+    orderBy: [desc(missions.createdAt)],
   });
 
-  // Fetch all workspace-level task schedules (standalone, no objective wrapper)
-  // Exclude schedules that are already linked to an objective (they appear via the objective)
-  const objectiveScheduleIds = new Set(
-    scheduledObjectives
-      .map(o => o.schedule?.id)
+  // Fetch all workspace-level task schedules (standalone, no mission wrapper)
+  // Exclude schedules that are already linked to a mission (they appear via the mission)
+  const missionScheduleIds = new Set(
+    scheduledMissions
+      .map(m => m.schedule?.id)
       .filter(Boolean) as string[]
   );
 
@@ -87,47 +87,47 @@ export default async function SchedulesPage() {
   // Build unified list
   const items: UnifiedScheduleItem[] = [];
 
-  // Objectives with cron (heartbeats and scheduled)
-  for (const obj of scheduledObjectives) {
-    const schedCron = (obj.schedule as any)?.cronExpression as string | null;
+  // Missions with cron (heartbeats and scheduled)
+  for (const mission of scheduledMissions) {
+    const schedCron = (mission.schedule as any)?.cronExpression as string | null;
     if (!schedCron) continue;
-    const schedCtx = (obj.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+    const schedCtx = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
     const isHeartbeat = schedCtx?.heartbeat === true;
     items.push({
-      id: obj.id,
-      name: obj.title,
-      type: isHeartbeat ? 'heartbeat' : 'cron-objective',
-      workspaceId: obj.workspaceId,
-      workspaceName: obj.workspaceId ? (wsNameMap.get(obj.workspaceId) ?? null) : null,
+      id: mission.id,
+      name: mission.title,
+      type: isHeartbeat ? 'heartbeat' : 'cron-mission',
+      workspaceId: mission.workspaceId,
+      workspaceName: mission.workspaceId ? (wsNameMap.get(mission.workspaceId) ?? null) : null,
       cronExpression: schedCron,
-      nextRunAt: obj.schedule?.nextRunAt?.toISOString() ?? null,
-      lastRunAt: obj.schedule?.lastRunAt?.toISOString() ?? null,
-      totalRuns: obj.schedule?.totalRuns ?? 0,
-      consecutiveFailures: obj.schedule?.consecutiveFailures ?? 0,
-      isEnabled: obj.status === 'active',
-      href: `/app/missions/${obj.id}`,
-      apiType: 'objective',
-      apiId: obj.id,
+      nextRunAt: mission.schedule?.nextRunAt?.toISOString() ?? null,
+      lastRunAt: mission.schedule?.lastRunAt?.toISOString() ?? null,
+      totalRuns: mission.schedule?.totalRuns ?? 0,
+      consecutiveFailures: mission.schedule?.consecutiveFailures ?? 0,
+      isEnabled: mission.status === 'active',
+      href: `/app/missions/${mission.id}`,
+      apiType: 'mission',
+      apiId: mission.id,
       apiWorkspaceId: null,
     });
   }
 
-  // Standalone workspace schedules (not linked to an objective)
+  // Standalone workspace schedules (not linked to a mission)
   for (const s of standaloneSchedules) {
-    if (objectiveScheduleIds.has(s.id)) continue;
+    if (missionScheduleIds.has(s.id)) continue;
     items.push({
       id: s.id,
       name: s.name,
       type: 'workspace-schedule',
       workspaceId: s.workspaceId,
-      workspaceName: wsNameMap.get(s.workspaceId) ?? null,
+      workspaceName: s.workspaceId ? (wsNameMap.get(s.workspaceId) ?? null) : null,
       cronExpression: s.cronExpression,
       nextRunAt: s.nextRunAt?.toISOString() ?? null,
       lastRunAt: s.lastRunAt?.toISOString() ?? null,
       totalRuns: s.totalRuns,
       consecutiveFailures: s.consecutiveFailures,
       isEnabled: s.enabled,
-      href: `/app/workspaces/${s.workspaceId}/schedules`,
+      href: s.workspaceId ? `/app/workspaces/${s.workspaceId}/schedules` : '/app/schedules',
       apiType: 'taskSchedule',
       apiId: s.id,
       apiWorkspaceId: s.workspaceId,

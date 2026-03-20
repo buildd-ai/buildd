@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { objectives, workspaces, taskSchedules } from '@buildd/core/db/schema';
+import { missions, workspaces, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -31,43 +31,43 @@ export async function GET(req: NextRequest) {
     }
 
     if (teamIds.length === 0) {
-      return NextResponse.json({ objectives: [] });
+      return NextResponse.json({ missions: [] });
     }
 
     const { searchParams } = new URL(req.url);
     const statusFilter = searchParams.get('status');
     const workspaceIdFilter = searchParams.get('workspaceId');
 
-    let where = inArray(objectives.teamId, teamIds);
+    let where = inArray(missions.teamId, teamIds);
     if (statusFilter) {
-      where = and(where, eq(objectives.status, statusFilter as any))!;
+      where = and(where, eq(missions.status, statusFilter as any))!;
     }
     if (workspaceIdFilter) {
-      where = and(where, eq(objectives.workspaceId, workspaceIdFilter))!;
+      where = and(where, eq(missions.workspaceId, workspaceIdFilter))!;
     }
 
-    const results = await db.query.objectives.findMany({
+    const results = await db.query.missions.findMany({
       where,
-      orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+      orderBy: [desc(missions.priority), desc(missions.createdAt)],
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: { columns: { id: true, status: true } },
       },
     });
 
-    const objectivesWithProgress = results.map(obj => {
-      const totalTasks = obj.tasks?.length || 0;
-      const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
+    const missionsWithProgress = results.map(mission => {
+      const totalTasks = mission.tasks?.length || 0;
+      const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
       const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
       return {
-        ...obj,
+        ...mission,
         totalTasks,
         completedTasks,
         progress,
       };
     });
 
-    return NextResponse.json({ objectives: objectivesWithProgress });
+    return NextResponse.json({ missions: missionsWithProgress });
   } catch (error) {
     console.error('List missions error:', error);
     return NextResponse.json({ error: 'Failed to list missions' }, { status: 500 });
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, cronExpression, priority, parentObjectiveId, skillSlugs, recipeId, outputSchema, model,
+    const { title, description, workspaceId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
 
     if (!title) {
@@ -126,21 +126,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const [objective] = await db
-      .insert(objectives)
+    const [mission] = await db
+      .insert(missions)
       .values({
         teamId,
         title,
         description: description || null,
         workspaceId: workspaceId || null,
         priority: priority || 0,
-        parentObjectiveId: parentObjectiveId || null,
+        parentMissionId: parentMissionId || null,
         createdByUserId: user?.id || null,
       })
       .returning();
 
-    // Auto-create schedule if cronExpression provided and workspaceId is set
-    if (cronExpression && workspaceId) {
+    // Auto-create schedule if cronExpression provided (workspaceId is optional — resolved at task fire time)
+    if (cronExpression) {
       const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
       const [schedule] = await db
         .insert(taskSchedules)
         .values({
-          workspaceId,
+          workspaceId: workspaceId || null,
           name: `Mission: ${title}`,
           cronExpression,
           timezone: 'UTC',
@@ -172,14 +172,14 @@ export async function POST(req: NextRequest) {
         .returning();
 
       await db
-        .update(objectives)
+        .update(missions)
         .set({ scheduleId: schedule.id, updatedAt: new Date() })
-        .where(eq(objectives.id, objective.id));
+        .where(eq(missions.id, mission.id));
 
-      objective.scheduleId = schedule.id;
+      mission.scheduleId = schedule.id;
     }
 
-    return NextResponse.json(objective, { status: 201 });
+    return NextResponse.json(mission, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });

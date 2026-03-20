@@ -23,11 +23,11 @@ interface SchedulePreview {
 }
 
 export default function ScheduleWizard({
-  objectiveId,
+  missionId,
   hasWorkspace,
   workspaces,
 }: {
-  objectiveId: string;
+  missionId: string;
   hasWorkspace: boolean;
   workspaces: Workspace[];
 }) {
@@ -84,7 +84,7 @@ export default function ScheduleWizard({
 
     setSaving(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

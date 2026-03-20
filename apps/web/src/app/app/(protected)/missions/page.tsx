@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { objectives, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, workspaceSkills } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -43,9 +43,9 @@ export default async function MissionsPage() {
     roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
   }
 
-  const allObjectives = await db.query.objectives.findMany({
-    where: inArray(objectives.teamId, teamIds),
-    orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+  const allMissions = await db.query.missions.findMany({
+    where: inArray(missions.teamId, teamIds),
+    orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
     with: {
       workspace: { columns: { id: true, name: true } },
@@ -65,7 +65,7 @@ export default async function MissionsPage() {
   });
 
   // Compute mission data
-  const missions = allObjectives.map((obj) => {
+  const missionsList = allMissions.map((obj) => {
     const totalTasks = obj.tasks?.length || 0;
     const completedTasks = obj.tasks?.filter((t: any) => t.status === 'completed').length || 0;
     const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
@@ -116,7 +116,7 @@ export default async function MissionsPage() {
     };
   });
 
-  const activeCount = missions.filter(
+  const activeCount = missionsList.filter(
     (m) => m.health === 'active' || m.health === 'on-schedule'
   ).length;
 
@@ -137,7 +137,7 @@ export default async function MissionsPage() {
         </Link>
       </div>
 
-      {missions.length === 0 ? (
+      {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No missions yet.</p>
           <p className="text-xs text-text-muted">
@@ -145,8 +145,8 @@ export default async function MissionsPage() {
           </p>
         </div>
       ) : (
-        <div className={missions.length > 4 ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'space-y-3'}>
-          {missions.map((mission) => (
+        <div className={missionsList.length > 4 ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'space-y-3'}>
+          {missionsList.map((mission) => (
             <MissionCard key={mission.id} mission={mission} />
           ))}
         </div>

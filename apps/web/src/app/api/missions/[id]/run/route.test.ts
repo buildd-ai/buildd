@@ -5,10 +5,10 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
-const mockBuildObjectiveContext = mock(() => Promise.resolve(null as any));
+const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
 const mockDispatchNewTask = mock(() => Promise.resolve());
 
-const mockObjectivesFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
@@ -31,9 +31,9 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
 }));
 
-// Mock objective-context
-mock.module('@/lib/objective-context', () => ({
-  buildObjectiveContext: mockBuildObjectiveContext,
+// Mock mission-context
+mock.module('@/lib/mission-context', () => ({
+  buildMissionContext: mockBuildMissionContext,
 }));
 
 // Mock task-dispatch
@@ -45,7 +45,7 @@ mock.module('@/lib/task-dispatch', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      objectives: { findFirst: mockObjectivesFindFirst },
+      missions: { findFirst: mockMissionsFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: mockInsert,
@@ -59,8 +59,8 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  objectives: { id: 'id', teamId: 'teamId', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', objectiveId: 'objectiveId' },
+  missions: { id: 'id', teamId: 'teamId', workspaceId: 'workspaceId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId' },
   taskSchedules: { id: 'id' },
   workspaces: { id: 'id' },
 }));
@@ -84,9 +84,9 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockBuildObjectiveContext.mockReset();
+    mockBuildMissionContext.mockReset();
     mockDispatchNewTask.mockReset();
-    mockObjectivesFindFirst.mockReset();
+    mockMissionsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
     mockInsertValues.mockReset();
@@ -110,10 +110,10 @@ describe('POST /api/missions/[id]/run', () => {
     expect(data.error).toBe('Unauthorized');
   });
 
-  it('returns 404 when objective not found', async () => {
+  it('returns 404 when mission not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockResolvedValue(null);
 
     const response = await callHandler(createMockRequest(), 'nonexistent');
     expect(response.status).toBe(404);
@@ -121,10 +121,10 @@ describe('POST /api/missions/[id]/run', () => {
     expect(data.error).toBe('Mission not found');
   });
 
-  it('returns 404 when objective belongs to different team', async () => {
+  it('returns 404 when mission belongs to different team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockResolvedValue({
+    mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-other',
       workspaceId: 'ws-1',
@@ -135,10 +135,10 @@ describe('POST /api/missions/[id]/run', () => {
     expect(response.status).toBe(404);
   });
 
-  it('returns 400 when objective has no workspaceId', async () => {
+  it('returns 400 when mission has no workspaceId', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockResolvedValue({
+    mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-1',
       workspaceId: null,
@@ -152,10 +152,10 @@ describe('POST /api/missions/[id]/run', () => {
     expect(data.error).toContain('workspace');
   });
 
-  it('returns 400 when objective is not active', async () => {
+  it('returns 400 when mission is not active', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockResolvedValue({
+    mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-1',
       workspaceId: 'ws-1',
@@ -172,9 +172,9 @@ describe('POST /api/missions/[id]/run', () => {
   it('creates planning task and returns it with 201', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockObjectivesFindFirst.mockResolvedValue({
+    mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
-      title: 'My Objective',
+      title: 'My Mission',
       description: 'Do stuff',
       teamId: 'team-1',
       workspaceId: 'ws-1',
@@ -183,18 +183,18 @@ describe('POST /api/missions/[id]/run', () => {
       schedule: null,
     });
 
-    mockBuildObjectiveContext.mockResolvedValue({
-      description: '## Objective: My Objective\nDo stuff',
-      context: { objectiveId: 'obj-123', objectiveTitle: 'My Objective', recentCompletions: [], activeTasks: [] },
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission: My Mission\nDo stuff',
+      context: { missionId: 'obj-123', missionTitle: 'My Mission', recentCompletions: [], activeTasks: [] },
     });
 
     const createdTask = {
       id: 'task-new',
-      title: 'Objective: My Objective',
+      title: 'Mission: My Mission',
       workspaceId: 'ws-1',
       status: 'pending',
       mode: 'planning',
-      objectiveId: 'obj-123',
+      missionId: 'obj-123',
     };
     mockInsertReturning.mockResolvedValue([createdTask]);
 
@@ -207,7 +207,7 @@ describe('POST /api/missions/[id]/run', () => {
     const data = await response.json();
     expect(data.task.id).toBe('task-new');
     expect(data.task.mode).toBe('planning');
-    expect(data.task.objectiveId).toBe('obj-123');
+    expect(data.task.missionId).toBe('obj-123');
 
     // Verify dispatch was called
     expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, mockWorkspace);
@@ -220,9 +220,9 @@ describe('POST /api/missions/[id]/run', () => {
   it('works with API key auth (admin level)', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
-    mockObjectivesFindFirst.mockResolvedValue({
+    mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
-      title: 'My Objective',
+      title: 'My Mission',
       teamId: 'team-1',
       workspaceId: 'ws-1',
       status: 'active',
@@ -230,12 +230,12 @@ describe('POST /api/missions/[id]/run', () => {
       schedule: null,
     });
 
-    mockBuildObjectiveContext.mockResolvedValue({
-      description: '## Objective: My Objective',
-      context: { objectiveId: 'obj-123', objectiveTitle: 'My Objective', recentCompletions: [], activeTasks: [] },
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission: My Mission',
+      context: { missionId: 'obj-123', missionTitle: 'My Mission', recentCompletions: [], activeTasks: [] },
     });
 
-    const createdTask = { id: 'task-new', title: 'Objective: My Objective', workspaceId: 'ws-1', status: 'pending' };
+    const createdTask = { id: 'task-new', title: 'Mission: My Mission', workspaceId: 'ws-1', status: 'pending' };
     mockInsertReturning.mockResolvedValue([createdTask]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
 

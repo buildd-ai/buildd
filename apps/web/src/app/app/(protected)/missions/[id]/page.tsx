@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { objectives, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -32,8 +32,8 @@ export default async function MissionDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  const objective = await db.query.objectives.findFirst({
-    where: eq(objectives.id, id),
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, id),
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
@@ -81,7 +81,7 @@ export default async function MissionDetailPage({
     },
   });
 
-  if (!objective || !teamIds.includes(objective.teamId)) {
+  if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
   }
 
@@ -99,21 +99,21 @@ export default async function MissionDetailPage({
     });
   }
 
-  const totalTasks = objective.tasks?.length || 0;
-  const completedTasks = objective.tasks?.filter((t) => t.status === 'completed').length || 0;
+  const totalTasks = mission.tasks?.length || 0;
+  const completedTasks = mission.tasks?.filter((t) => t.status === 'completed').length || 0;
   const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-  const activeAgents = objective.tasks
+  const activeAgents = mission.tasks
     ?.flatMap((t) => t.workers || [])
     .filter((w) => w.status === 'running').length || 0;
 
-  const scheduleCron = (objective.schedule as any)?.cronExpression || null;
+  const scheduleCron = (mission.schedule as any)?.cronExpression || null;
   const health = deriveMissionHealth({
-    status: objective.status,
+    status: mission.status,
     activeAgents,
     cronExpression: scheduleCron,
-    lastRunAt: (objective.schedule as any)?.lastRunAt || null,
-    nextRunAt: (objective.schedule as any)?.nextRunAt || null,
+    lastRunAt: (mission.schedule as any)?.lastRunAt || null,
+    nextRunAt: (mission.schedule as any)?.nextRunAt || null,
   });
   const healthDisplay = HEALTH_DISPLAY[health];
 
@@ -123,7 +123,7 @@ export default async function MissionDetailPage({
 
   // Build orchestration timeline: group tasks into cycles
   // Planning tasks = evaluation nodes, execution tasks = branches
-  const allTasks = (objective.tasks || []).slice().sort(
+  const allTasks = (mission.tasks || []).slice().sort(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 
@@ -154,7 +154,7 @@ export default async function MissionDetailPage({
   cycles.reverse();
 
   // Collect all artifacts
-  const allArtifacts = objective.tasks?.flatMap((t) =>
+  const allArtifacts = mission.tasks?.flatMap((t) =>
     t.workers?.flatMap((w) =>
       (w.artifacts || []).map((a) => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
     ) || []
@@ -168,15 +168,15 @@ export default async function MissionDetailPage({
           Missions
         </Link>
         <span>/</span>
-        <span className="text-text-secondary truncate">{objective.title}</span>
+        <span className="text-text-secondary truncate">{mission.title}</span>
       </div>
 
       {/* ── Status Block ── */}
       <div className="mb-6">
         <MissionInlineEdit
           missionId={id}
-          initialTitle={objective.title}
-          initialDescription={objective.description}
+          initialTitle={mission.title}
+          initialDescription={mission.description}
           healthPill={
             <span className={`health-pill ${healthDisplay.colorClass}`}>
               {healthDisplay.label}
@@ -209,13 +209,13 @@ export default async function MissionDetailPage({
         )}
 
         {/* Workspace link */}
-        {objective.workspace && (
+        {mission.workspace && (
           <div className="flex items-center gap-2 text-[12px] text-text-muted">
             <Link
-              href={`/app/workspaces/${objective.workspace.id}`}
+              href={`/app/workspaces/${mission.workspace.id}`}
               className="text-accent-text hover:underline"
             >
-              {objective.workspace.name}
+              {mission.workspace.name}
             </Link>
           </div>
         )}
@@ -225,13 +225,13 @@ export default async function MissionDetailPage({
       <div className="mb-6">
         <MissionSettings
           missionId={id}
-          currentStatus={objective.status}
+          currentStatus={mission.status}
           cronExpression={scheduleCron}
-          workspaceId={objective.workspaceId}
+          workspaceId={mission.workspaceId}
           roles={roles}
-          schedule={objective.schedule ? {
-            nextRunAt: (objective.schedule as any).nextRunAt?.toISOString?.() || (objective.schedule as any).nextRunAt || null,
-            lastRunAt: (objective.schedule as any).lastRunAt?.toISOString?.() || (objective.schedule as any).lastRunAt || null,
+          schedule={mission.schedule ? {
+            nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
+            lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
           } : null}
           hasSchedule={!!scheduleCron}
         />
@@ -396,13 +396,13 @@ export default async function MissionDetailPage({
             })}
 
             {/* Next evaluation indicator */}
-            {scheduleCron && (objective.schedule as any)?.nextRunAt && (
+            {scheduleCron && (mission.schedule as any)?.nextRunAt && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
                   <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
                 </div>
                 <span className="text-[12px] text-text-muted italic pl-2">
-                  Next evaluation {timeAgo((objective.schedule as any).nextRunAt)}
+                  Next evaluation {timeAgo((mission.schedule as any).nextRunAt)}
                 </span>
               </div>
             )}

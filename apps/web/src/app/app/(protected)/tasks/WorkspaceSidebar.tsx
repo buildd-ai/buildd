@@ -23,7 +23,7 @@ interface Task {
   dependsOn?: string[];
   updatedAt: Date;
   waitingFor?: { type: string; prompt: string; options?: string[] } | null;
-  objectiveId?: string | null;
+  missionId?: string | null;
   resultSummary?: string | null;
 }
 
@@ -369,8 +369,8 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
     }
   };
 
-  // Build objective title lookup for task badges (from workspace tasks)
-  const objectiveTitleMap = new Map<string, string>();
+  // Build mission title lookup for task badges (from workspace tasks)
+  const missionTitleMap = new Map<string, string>();
 
   // Collect all distinct projects across all tasks for the filter
   const allProjects = new Map<string, string | undefined>();
@@ -636,10 +636,10 @@ export default function WorkspaceSidebar({ workspaces: initialWorkspaces }: Prop
                                           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                         </svg>
                                       )}
-                                      {task.objectiveId && objectiveTitleMap.has(task.objectiveId) && (
+                                      {task.missionId && missionTitleMap.has(task.missionId) && (
                                         <span
                                           className="shrink-0"
-                                          title={objectiveTitleMap.get(task.objectiveId)}
+                                          title={missionTitleMap.get(task.missionId)}
                                         >
                                           <svg className="w-3 h-3 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />

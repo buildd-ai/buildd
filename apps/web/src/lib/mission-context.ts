@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, objectives, taskRecipes, taskSchedules, workspaceSkills, workers } from '@buildd/core/db/schema';
+import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
@@ -101,13 +101,13 @@ export async function getWorkspaceRoles(workspaceId: string) {
 }
 
 /**
- * Build rich context for an objective planning task.
+ * Build rich context for a mission planning task.
  * Queries task history, active tasks, failures, available roles, and optional recipe playbook.
  * Detects heartbeat mode from the schedule's taskTemplate context and produces specialised instructions.
  */
-export async function buildObjectiveContext(objectiveId: string, templateContext?: Record<string, unknown>) {
-  const objective = await db.query.objectives.findFirst({
-    where: eq(objectives.id, objectiveId),
+export async function buildMissionContext(missionId: string, templateContext?: Record<string, unknown>) {
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
     columns: {
       id: true,
       title: true,
@@ -118,14 +118,14 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       scheduleId: true,
     },
   });
-  if (!objective) return null;
+  if (!mission) return null;
 
   // Resolve heartbeat config from the schedule's taskTemplate.context
   let isHeartbeat = false;
   let heartbeatChecklist: string | null = null;
-  if (objective.scheduleId) {
+  if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: eq(taskSchedules.id, objective.scheduleId),
+      where: eq(taskSchedules.id, mission.scheduleId),
       columns: { taskTemplate: true },
     });
     const ctx = schedule?.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -145,18 +145,18 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
   // ── Heartbeat mode ──
   if (isHeartbeat) {
     return buildHeartbeatContext({
-      id: objective.id,
-      title: objective.title,
-      description: objective.description,
+      id: mission.id,
+      title: mission.title,
+      description: mission.description,
       heartbeatChecklist,
     });
   }
 
-  // ── Standard objective context ──
+  // ── Standard mission context ──
   // Last 10 completed tasks
   const completedTasks = await db.query.tasks.findMany({
     where: and(
-      eq(tasks.objectiveId, objectiveId),
+      eq(tasks.missionId, missionId),
       eq(tasks.status, 'completed')
     ),
     orderBy: [desc(tasks.createdAt)],
@@ -167,7 +167,7 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
   // Active tasks
   const activeTasks = await db.query.tasks.findMany({
     where: and(
-      eq(tasks.objectiveId, objectiveId),
+      eq(tasks.missionId, missionId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
     limit: 5,
@@ -177,12 +177,20 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
   // Recent failed tasks
   const failedTasks = await db.query.tasks.findMany({
     where: and(
-      eq(tasks.objectiveId, objectiveId),
+      eq(tasks.missionId, missionId),
       eq(tasks.status, 'failed')
     ),
     orderBy: [desc(tasks.createdAt)],
     limit: 3,
     columns: { id: true, title: true, result: true },
+  });
+
+  // Prior artifacts linked to this mission
+  const priorArtifacts = await db.query.artifacts.findMany({
+    where: eq(artifacts.missionId, mission.id),
+    orderBy: [desc(artifacts.updatedAt)],
+    limit: 10,
+    columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
   // Recipe playbook (if configured)
@@ -200,8 +208,8 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
 
   // Build rich description
   const descParts: string[] = [];
-  descParts.push(`## Objective: ${objective.title}`);
-  if (objective.description) descParts.push(objective.description);
+  descParts.push(`## Mission: ${mission.title}`);
+  if (mission.description) descParts.push(mission.description);
 
   if (completedTasks.length > 0) {
     descParts.push('\n## Prior Results (last 10)');
@@ -244,10 +252,36 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
     }
   }
 
+  if (priorArtifacts.length > 0) {
+    descParts.push('\n## Prior Artifacts');
+    for (const a of priorArtifacts) {
+      const preview = a.content?.slice(0, 150) || '';
+      const keyLabel = a.key ? ` (key: ${a.key})` : '';
+      descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 150 ? '...' : ''}\n  ID: ${a.id}`);
+    }
+    descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
+  }
+
+  // TODO: Memory bridge — inject relevant memories when memory-client module is available.
+  // Non-fatal: memory service may be unavailable. Example:
+  // try {
+  //   const { getMemoryClient } = await import('./memory-client');
+  //   const memClient = getMemoryClient();
+  //   if (memClient && mission.title) {
+  //     const results = await memClient.search({ query: mission.title, limit: 5 });
+  //     if (results?.results?.length) {
+  //       descParts.push('\n## Relevant Team Memory');
+  //       for (const m of results.results.slice(0, 3)) {
+  //         descParts.push(`- **[${m.type}] ${m.title}**: ${m.content?.split('\n')[0] || ''}`);
+  //       }
+  //     }
+  //   }
+  // } catch { /* non-fatal */ }
+
   // Fetch available roles for orchestrator context
   let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
-  if (objective.workspaceId) {
-    roles = await getWorkspaceRoles(objective.workspaceId);
+  if (mission.workspaceId) {
+    roles = await getWorkspaceRoles(mission.workspaceId);
   }
 
   // Detect role patterns from completed tasks — if tasks consistently use the same role,
@@ -314,8 +348,8 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
 
   // Build context JSONB
   const contextData: Record<string, unknown> = {
-    objectiveId: objective.id,
-    objectiveTitle: objective.title,
+    missionId: mission.id,
+    missionTitle: mission.title,
     orchestrator: true,
     availableRoles: roles,
     recentCompletions: completedTasks.map(t => {
@@ -336,16 +370,19 @@ export async function buildObjectiveContext(objectiveId: string, templateContext
       status: t.status,
     })),
     ...(recipeSteps ? { recipeSteps } : {}),
+    priorArtifacts: priorArtifacts.map(a => ({
+      artifactId: a.id, key: a.key, type: a.type, title: a.title, updatedAt: a.updatedAt,
+    })),
   };
 
   return { description: descParts.join('\n'), context: contextData };
 }
 
 /**
- * Build context specifically for heartbeat objectives.
+ * Build context specifically for heartbeat missions.
  * Produces a checklist-focused description with compact prior results.
  */
-async function buildHeartbeatContext(objective: {
+async function buildHeartbeatContext(mission: {
   id: string;
   title: string;
   description: string | null;
@@ -354,7 +391,7 @@ async function buildHeartbeatContext(objective: {
   // Last 3 completed heartbeat results (compact)
   const priorHeartbeats = await db.query.tasks.findMany({
     where: and(
-      eq(tasks.objectiveId, objective.id),
+      eq(tasks.missionId, mission.id),
       eq(tasks.status, 'completed')
     ),
     orderBy: [desc(tasks.createdAt)],
@@ -363,11 +400,11 @@ async function buildHeartbeatContext(objective: {
   });
 
   const descParts: string[] = [];
-  descParts.push(`## Heartbeat: ${objective.title}`);
-  if (objective.description) descParts.push(objective.description);
+  descParts.push(`## Heartbeat: ${mission.title}`);
+  if (mission.description) descParts.push(mission.description);
 
   descParts.push('\n## Checklist');
-  descParts.push(objective.heartbeatChecklist || '(no checklist configured)');
+  descParts.push(mission.heartbeatChecklist || '(no checklist configured)');
 
   descParts.push('\n## Protocol');
   descParts.push(`You are running a periodic heartbeat check. Follow the checklist above.
@@ -389,10 +426,10 @@ async function buildHeartbeatContext(objective: {
   }
 
   const contextData: Record<string, unknown> = {
-    objectiveId: objective.id,
-    objectiveTitle: objective.title,
+    missionId: mission.id,
+    missionTitle: mission.title,
     heartbeat: true,
-    heartbeatChecklist: objective.heartbeatChecklist,
+    heartbeatChecklist: mission.heartbeatChecklist,
     outputSchema: HEARTBEAT_OUTPUT_SCHEMA,
   };
 
