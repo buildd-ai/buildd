@@ -101,6 +101,11 @@ mock.module('@/lib/mission-context', () => ({
   isWithinActiveHours: mock(() => true),
 }));
 
+const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
+mock.module('@/lib/orchestrator-workspace', () => ({
+  getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -144,6 +149,8 @@ describe('GET /api/cron/schedules', () => {
     mockTasksFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkerHeartbeatsFindMany.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     taskSchedulesUpdateCalls = [];
     tasksInsertValues = null;
 
@@ -171,10 +178,28 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues.workspaceId).toBe('ws-from-mission');
   });
 
-  it('should fail gracefully when both schedule and mission lack workspace', async () => {
+  it('should auto-create orchestrator workspace when mission has teamId but no workspace', async () => {
     const schedule = makeSchedule({ workspaceId: null });
     mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: null, teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'orchestrator-ws', name: '__coordination' });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created).toBe(1);
+    expect(body.errors).toBe(0);
+
+    // Verify orchestrator workspace was used
+    expect(mockGetOrCreateCoordinationWorkspace).toHaveBeenCalledWith('team-1');
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.workspaceId).toBe('orchestrator-ws');
+  });
+
+  it('should fail gracefully when no mission and schedule lacks workspace', async () => {
+    const schedule = makeSchedule({ workspaceId: null });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue(null);
 
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);

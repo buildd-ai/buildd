@@ -4,6 +4,7 @@ import { eq, inArray, isNotNull, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import SchedulesUnified, { type UnifiedScheduleItem } from './SchedulesUnified';
 
 export const dynamic = 'force-dynamic';
@@ -146,5 +147,5 @@ export default async function SchedulesPage() {
     return 0;
   });
 
-  return <SchedulesUnified items={items} workspaces={userWorkspaces} />;
+  return <SchedulesUnified items={items} workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} />;
 }

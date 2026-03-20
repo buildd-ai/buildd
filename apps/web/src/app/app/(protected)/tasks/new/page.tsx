@@ -9,6 +9,7 @@ import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
+import { isSystemWorkspace } from '@buildd/shared';
 import type { TaskCategoryValue, TaskModeValue, RunnerPreferenceValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
 
@@ -151,7 +152,7 @@ export default function NewTaskPage() {
     fetch('/api/workspaces')
       .then(res => res.json())
       .then(data => {
-        const ws = data.workspaces || [];
+        const ws = (data.workspaces || []).filter((w: Workspace) => !isSystemWorkspace(w.name));
         setWorkspaces(ws);
 
         if (ws.length > 0) {

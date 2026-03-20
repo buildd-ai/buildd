@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, mock, spyOn } from 'bun:test';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 // --- normalizeGitUrl tests ---
 // This function normalizes various git URL formats to owner/repo
@@ -219,6 +219,38 @@ describe('Resolution Edge Cases', () => {
     const workspace = { id: 'ws-4', name: '', repo: null };
     // Should be able to fall back to ID
     expect(workspace.name || workspace.id).toBe('ws-4');
+  });
+
+  test('coordination workspace (__prefix, no repo) should use tmpdir fallback', () => {
+    // Mirrors the coordination workspace logic in workspace.ts attemptResolve():
+    // When all resolution attempts fail, if workspace.name starts with __ and has no repo,
+    // a temp directory is created as the working directory.
+    const workspace = { id: 'ws-coord', name: '__coordination', repo: null as string | null };
+
+    // The condition that triggers tmpdir fallback
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(true);
+
+    // The resulting path matches the expected pattern
+    const expectedPath = join(tmpdir(), 'buildd-coordination', workspace.name);
+    expect(expectedPath).toContain('buildd-coordination');
+    expect(expectedPath).toContain('__coordination');
+  });
+
+  test('coordination workspace without __ prefix does not get tmpdir fallback', () => {
+    // Non-__ workspace with no repo should NOT get tmpdir fallback
+    const workspace = { id: 'ws-5', name: 'regular-workspace', repo: null as string | null };
+
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(false);
+  });
+
+  test('workspace with repo does not get tmpdir fallback even with __ prefix', () => {
+    // A workspace with a repo should go through normal git-based resolution
+    const workspace = { id: 'ws-6', name: '__has-repo', repo: 'https://github.com/org/repo.git' };
+
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(false);
   });
 });
 

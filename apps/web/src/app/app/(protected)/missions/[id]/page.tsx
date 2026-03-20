@@ -9,6 +9,7 @@ import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-help
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
+import ExpandableText from './ExpandableText';
 
 export const dynamic = 'force-dynamic';
 
@@ -270,9 +271,7 @@ export default async function MissionDetailPage({
                           <span className="text-[11px] text-text-muted">{timeAgo(cycle.evaluation.createdAt)}</span>
                         </div>
                         {evalResult?.summary && (
-                          <p className="text-[12px] text-text-secondary italic leading-relaxed mt-1 line-clamp-2">
-                            {evalResult.summary}
-                          </p>
+                          <ExpandableText text={evalResult.summary} />
                         )}
                       </div>
                     )}

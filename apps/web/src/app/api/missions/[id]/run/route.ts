@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 
 async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
   if (apiAccount) return [apiAccount.teamId];
@@ -54,12 +55,9 @@ export async function POST(
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
-    if (!mission.workspaceId) {
-      return NextResponse.json(
-        { error: 'Mission must have a workspace to create tasks' },
-        { status: 400 }
-      );
-    }
+    // Resolve workspace: use mission's workspace or auto-create an orchestrator workspace
+    const workspaceId = mission.workspaceId
+      || (await getOrCreateCoordinationWorkspace(mission.teamId)).id;
 
     if (mission.status !== 'active') {
       return NextResponse.json(
@@ -88,7 +86,7 @@ export async function POST(
     const [task] = await db
       .insert(tasks)
       .values({
-        workspaceId: mission.workspaceId,
+        workspaceId,
         title: taskTitle,
         description: taskDescription,
         priority: template?.priority || mission.priority || 0,
@@ -104,7 +102,7 @@ export async function POST(
 
     // Dispatch the task
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
+      where: eq(workspaces.id, workspaceId),
     });
 
     if (workspace) {
