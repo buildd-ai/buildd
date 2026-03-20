@@ -4,6 +4,7 @@ import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import WorkspaceSidebar from './WorkspaceSidebar';
 import MobileTasksLayout from './MobileTasksLayout';
 
@@ -102,15 +103,17 @@ export default async function TasksLayout({
           return acc;
         }, {} as Record<string, TaskSummary[]>);
 
-        workspacesWithTasks = userWorkspaces.map(ws => ({
-          id: ws.id,
-          name: ws.name,
-          gitConfig: ws.gitConfig ? {
-            targetBranch: ws.gitConfig.targetBranch,
-            defaultBranch: ws.gitConfig.defaultBranch,
-          } : null,
-          tasks: tasksByWorkspace[ws.id] || [],
-        }));
+        workspacesWithTasks = userWorkspaces
+          .filter(ws => !isSystemWorkspace(ws.name))
+          .map(ws => ({
+            id: ws.id,
+            name: ws.name,
+            gitConfig: ws.gitConfig ? {
+              targetBranch: ws.gitConfig.targetBranch,
+              defaultBranch: ws.gitConfig.defaultBranch,
+            } : null,
+            tasks: tasksByWorkspace[ws.id] || [],
+          }));
       }
 
     } catch (error) {

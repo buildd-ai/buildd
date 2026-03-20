@@ -4,6 +4,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import ArtifactList from '@/components/ArtifactList';
 
 export const dynamic = 'force-dynamic';
@@ -102,7 +103,7 @@ export default async function ArtifactsPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Artifacts</h1>
             <p className="text-text-muted mt-1">
-              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.length} workspace{userWorkspaces.length !== 1 ? 's' : ''}
+              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length} workspace{userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>

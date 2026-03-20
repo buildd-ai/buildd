@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import WorkspaceList from './WorkspaceList';
 
 interface WorkspaceWithRunners {
@@ -141,7 +142,7 @@ export default async function WorkspacesPage() {
           </Link>
         </div>
 
-        <WorkspaceList workspaces={allWorkspaces} teams={userTeams} />
+        <WorkspaceList workspaces={allWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} teams={userTeams} />
       </div>
     </main>
   );

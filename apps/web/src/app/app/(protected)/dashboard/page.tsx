@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import DashboardStartTask from './DashboardStartTask';
 import OnboardingChecklist from './OnboardingChecklist';
 import RetryTaskButton from './RetryTaskButton';
@@ -196,6 +197,9 @@ export default async function DashboardPage() {
     }
   }
 
+  // Filter system workspaces from UI display
+  const visibleWorkspaces = userWorkspaces.filter(ws => !isSystemWorkspace(ws.name));
+
   // --- Helpers ---
 
   function timeAgo(date: Date | string): string {
@@ -318,7 +322,7 @@ export default async function DashboardPage() {
             className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workspaces</div>
-            <div className="text-2xl font-semibold">{userWorkspaces.length}</div>
+            <div className="text-2xl font-semibold">{visibleWorkspaces.length}</div>
           </Link>
           <Link
             href="/app/tasks"
@@ -345,7 +349,7 @@ export default async function DashboardPage() {
         {/* Onboarding Checklist */}
         <OnboardingChecklist
           hasGithub={githubOrgs.length > 0}
-          hasWorkspaces={userWorkspaces.length > 0}
+          hasWorkspaces={visibleWorkspaces.length > 0}
           hasCompletedTask={completedRecentCount > 0}
           hasConnectedAgent={connectedAgents.length > 0}
           githubConfigured={githubConfigured}
@@ -496,7 +500,7 @@ export default async function DashboardPage() {
               {/* Mobile: Start Task modal */}
               <div className="md:hidden">
                 <DashboardStartTask
-                  workspaces={userWorkspaces.map(w => ({ id: w.id, name: w.name }))}
+                  workspaces={visibleWorkspaces.map(w => ({ id: w.id, name: w.name }))}
                 />
               </div>
             </div>
@@ -564,12 +568,12 @@ export default async function DashboardPage() {
         </div>
 
         {/* Skills */}
-        {userWorkspaces.length > 0 && (
+        {visibleWorkspaces.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
               <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Skills</span>
               <Link
-                href={`/app/workspaces/${dashboardSkills[0]?.workspace?.id || userWorkspaces[0]?.id}/skills`}
+                href={`/app/workspaces/${dashboardSkills[0]?.workspace?.id || visibleWorkspaces[0]?.id}/skills`}
                 className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 Manage
@@ -586,7 +590,7 @@ export default async function DashboardPage() {
                   ].map((template) => (
                     <Link
                       key={template.name}
-                      href={`/app/workspaces/${userWorkspaces[0]?.id}/skills`}
+                      href={`/app/workspaces/${visibleWorkspaces[0]?.id}/skills`}
                       className="border border-dashed border-border-default rounded-[10px] p-4 hover:border-text-muted hover:bg-surface-2 transition-colors"
                     >
                       <div className="text-[13px] font-medium text-text-primary mb-1">{template.name}</div>
