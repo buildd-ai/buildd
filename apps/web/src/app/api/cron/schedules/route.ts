@@ -7,6 +7,7 @@ import { computeNextRunAt, computeStaggerOffset } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
+import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -281,6 +282,7 @@ export async function GET(req: NextRequest) {
           columns: {
             id: true,
             workspaceId: true,
+            teamId: true,
           },
         });
 
@@ -289,6 +291,11 @@ export async function GET(req: NextRequest) {
         if (!taskWorkspaceId && linkedMission?.workspaceId) {
           taskWorkspaceId = linkedMission.workspaceId;
         }
+        // Auto-create orchestrator workspace if mission has a teamId but no workspace
+        if (!taskWorkspaceId && linkedMission?.teamId) {
+          taskWorkspaceId = (await getOrCreateCoordinationWorkspace(linkedMission.teamId)).id;
+        }
+
         if (!taskWorkspaceId) {
           const newFailures = (schedule.consecutiveFailures || 0) + 1;
           await db.update(taskSchedules).set({
