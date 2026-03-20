@@ -1139,12 +1139,14 @@ export class WorkerManager {
     }
 
     // Set up git worktree for isolation (if branching strategy is not 'none')
+    // Skip worktree setup entirely for coordination workspaces (no repo)
+    const hasRepo = !!fullTask.workspace?.repo;
     const gitConfig = fullTask.workspace?.gitConfig;
     const branchingStrategy = gitConfig?.branchingStrategy || 'feature';
     const defaultBranch = gitConfig?.defaultBranch || 'main';
 
     let sessionCwd = workspacePath;
-    if (branchingStrategy !== 'none' && claimedWorker.branch) {
+    if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 

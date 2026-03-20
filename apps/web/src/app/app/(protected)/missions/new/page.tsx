@@ -4,6 +4,7 @@ import { inArray, desc, eq, and } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import NewMissionForm from './NewMissionForm';
 
 export const dynamic = 'force-dynamic';
@@ -47,5 +48,5 @@ export default async function NewMissionPage() {
     });
   }
 
-  return <NewMissionForm workspaces={teamWorkspaces} roles={roles} />;
+  return <NewMissionForm workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} roles={roles} />;
 }

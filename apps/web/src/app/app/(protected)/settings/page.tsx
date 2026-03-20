@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
@@ -96,7 +97,7 @@ export default async function SettingsPage() {
         {/* API Keys — compact view */}
         <ApiKeysSection
           accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
-          workspaces={userWorkspaces}
+          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
         />
 
         {/* Teams */}
@@ -161,11 +162,11 @@ export default async function SettingsPage() {
         </section>
 
         {/* Workspaces — links to per-workspace settings */}
-        {userWorkspaces.length > 0 && (
+        {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length > 0 && (
           <section>
             <h2 className="section-label mb-4">Workspaces</h2>
             <div className="card divide-y divide-border-default">
-              {userWorkspaces.map((ws) => (
+              {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).map((ws) => (
                 <Link
                   key={ws.id}
                   href={`/app/workspaces/${ws.id}/skills`}
