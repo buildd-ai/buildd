@@ -4,6 +4,7 @@ import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import MissionsList from './MissionsList';
 
 export const dynamic = 'force-dynamic';
@@ -74,7 +75,7 @@ export default async function MissionsPage() {
       <MissionsList
         missions={shaped}
         teamId={teamIds[0]}
-        workspaces={teamWorkspaces}
+        workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
       />
     </div>
   );

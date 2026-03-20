@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { execSync } from 'child_process';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 export interface WorkspaceResolver {
   resolve(workspace: { id: string; name: string; repo?: string | null }): string | null;
@@ -235,6 +235,16 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
       if (kebabExists) {
         return { path: byKebab, attempts };
       }
+    }
+
+    // Coordination workspace fallback: workspaces with no repo (e.g. __coordination)
+    // get a temp directory so they have a clean working directory without needing a git repo
+    if (!workspace.repo && workspace.name.startsWith('__')) {
+      const tmpPath = join(tmpdir(), 'buildd-coordination', workspace.name);
+      mkdirSync(tmpPath, { recursive: true });
+      attempts.push({ path: tmpPath, exists: true, method: 'coordination-tmpdir' });
+      console.log(`Coordination workspace "${workspace.name}" resolved to temp dir: ${tmpPath}`);
+      return { path: tmpPath, attempts };
     }
 
     return { path: null, attempts };
