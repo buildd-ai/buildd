@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, objectives, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -46,7 +46,7 @@ export default async function HomePage() {
     id: string;
     taskId: string;
     taskTitle: string;
-    objectiveTitle: string | null;
+    missionTitle: string | null;
     workerName: string;
     status: string;
     startedAt: Date | null;
@@ -59,7 +59,7 @@ export default async function HomePage() {
     title: string;
     workerName: string;
     timestamp: Date;
-    objectiveTitle: string | null;
+    missionTitle: string | null;
   }[] = [];
 
   let missions: {
@@ -78,7 +78,7 @@ export default async function HomePage() {
   let pendingSuggestions: {
     scheduleId: string;
     scheduleName: string;
-    workspaceId: string;
+    workspaceId: string | null;
     reason: string;
     cronExpression?: string;
     enabled?: boolean;
@@ -137,9 +137,9 @@ export default async function HomePage() {
           limit: 10,
           with: {
             task: {
-              columns: { id: true, title: true, mode: true, category: true, objectiveId: true, roleSlug: true },
+              columns: { id: true, title: true, mode: true, category: true, missionId: true, roleSlug: true },
               with: {
-                objective: {
+                mission: {
                   columns: { title: true },
                 },
               },
@@ -151,7 +151,7 @@ export default async function HomePage() {
           id: w.id,
           taskId: w.task?.id || '',
           taskTitle: w.task?.title || w.name,
-          objectiveTitle: (w.task as any)?.objective?.title || null,
+          missionTitle: (w.task as any)?.mission?.title || null,
           workerName: w.name,
           status: w.status,
           startedAt: w.startedAt,
@@ -168,9 +168,9 @@ export default async function HomePage() {
           limit: 6,
           with: {
             task: {
-              columns: { id: true, title: true, objectiveId: true },
+              columns: { id: true, title: true, missionId: true },
               with: {
-                objective: {
+                mission: {
                   columns: { title: true },
                 },
               },
@@ -184,18 +184,18 @@ export default async function HomePage() {
           title: w.task?.title || w.name,
           workerName: w.name,
           timestamp: w.completedAt || w.updatedAt,
-          objectiveTitle: (w.task as any)?.objective?.title || null,
+          missionTitle: (w.task as any)?.mission?.title || null,
         }));
 
-        // Active objectives (missions) with task progress
+        // Active missions with task progress
         const teamIds = await getUserTeamIds(user.id);
         if (teamIds.length > 0) {
-          const activeObjectives = await db.query.objectives.findMany({
+          const activeMissions = await db.query.missions.findMany({
             where: and(
-              inArray(objectives.teamId, teamIds),
-              eq(objectives.status, 'active')
+              inArray(missionsTable.teamId, teamIds),
+              eq(missionsTable.status, 'active')
             ),
-            orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+            orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
             columns: { id: true, title: true, description: true },
             with: {
               tasks: {
@@ -205,39 +205,39 @@ export default async function HomePage() {
             limit: 10,
           });
 
-          // Count active workers per objective
-          const objectiveIds = activeObjectives.map(o => o.id);
+          // Count active workers per mission
+          const missionIds = activeMissions.map(m => m.id);
           let activeWorkerCounts: Record<string, number> = {};
-          if (objectiveIds.length > 0) {
+          if (missionIds.length > 0) {
             const workerCounts = await db
               .select({
-                objectiveId: tasks.objectiveId,
+                missionId: tasks.missionId,
                 activeCount: sql<number>`count(distinct ${workers.id})::int`,
               })
               .from(workers)
               .innerJoin(tasks, eq(workers.taskId, tasks.id))
               .where(
                 and(
-                  inArray(tasks.objectiveId, objectiveIds),
+                  inArray(tasks.missionId, missionIds),
                   inArray(workers.status, ['running', 'starting', 'waiting_input'])
                 )
               )
-              .groupBy(tasks.objectiveId);
+              .groupBy(tasks.missionId);
 
             for (const row of workerCounts) {
-              if (row.objectiveId) {
-                activeWorkerCounts[row.objectiveId] = row.activeCount;
+              if (row.missionId) {
+                activeWorkerCounts[row.missionId] = row.activeCount;
               }
             }
           }
 
-          missions = activeObjectives.map(obj => ({
-            id: obj.id,
-            title: obj.title,
-            description: obj.description,
-            totalTasks: obj.tasks.length,
-            completedTasks: obj.tasks.filter(t => t.status === 'completed').length,
-            activeWorkers: activeWorkerCounts[obj.id] || 0,
+          missions = activeMissions.map(mission => ({
+            id: mission.id,
+            title: mission.title,
+            description: mission.description,
+            totalTasks: mission.tasks.length,
+            completedTasks: mission.tasks.filter(t => t.status === 'completed').length,
+            activeWorkers: activeWorkerCounts[mission.id] || 0,
           }));
         }
 
@@ -400,7 +400,7 @@ export default async function HomePage() {
                             <div className="text-[12px] font-light text-text-secondary mt-0.5 truncate">
                               {item.workerName}
                               {item.startedAt && ` \u00B7 ${timeAgo(item.startedAt)}`}
-                              {item.objectiveTitle && ` \u00B7 ${item.objectiveTitle}`}
+                              {item.missionTitle && ` \u00B7 ${item.missionTitle}`}
                             </div>
                           </div>
                           {role && (
@@ -595,7 +595,7 @@ export default async function HomePage() {
                         </div>
                         <div className="text-[10px] text-text-muted mt-0.5">
                           via {event.workerName}
-                          {event.objectiveTitle && ` \u00B7 ${event.objectiveTitle}`}
+                          {event.missionTitle && ` \u00B7 ${event.missionTitle}`}
                         </div>
                       </div>
                       <span className="font-mono text-[11px] text-text-muted whitespace-nowrap flex-shrink-0 pt-0.5">

@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsFindMany = mock(() => [] as any);
 const mockArtifactsInsert = mock(() => ({
@@ -38,6 +39,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
       artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
     insert: () => mockArtifactsInsert(),
@@ -52,6 +54,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
+  tasks: 'tasks',
   artifacts: 'artifacts',
 }));
 
@@ -162,14 +165,16 @@ describe('POST /api/workers/[id]/artifacts', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
     mockArtifactsUpdate.mockReset();
     mockTriggerEvent.mockReset();
     mockArtifactsFindFirst.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue(null);
     mockArtifactsInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', type: 'content', title: 'Test' }]),
+      values: mock((vals: any) => ({
+        returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', type: 'content', title: 'Test', ...vals }]),
       })),
     });
   });
@@ -278,5 +283,65 @@ describe('POST /api/workers/[id]/artifacts', () => {
     const data = await res.json();
     expect(data.artifact).toBeDefined();
     expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  it('artifact created by mission-linked worker gets missionId set', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1' });
+
+    let insertedValues: any = null;
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertedValues = vals;
+        return {
+          returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', ...vals }]),
+        };
+      }),
+    });
+
+    const req = createMockPostRequest(
+      { type: 'content', title: 'Mission Artifact', content: 'Some content' },
+      'bld_test'
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(insertedValues?.missionId).toBe('mission-1');
+  });
+
+  it('artifact created by non-mission worker gets missionId null', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+
+    let insertedValues: any = null;
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertedValues = vals;
+        return {
+          returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', ...vals }]),
+        };
+      }),
+    });
+
+    const req = createMockPostRequest(
+      { type: 'content', title: 'Standalone Artifact', content: 'Some content' },
+      'bld_test'
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(insertedValues?.missionId).toBeNull();
   });
 });

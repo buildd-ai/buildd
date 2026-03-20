@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, objectives } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -32,8 +32,8 @@ export default async function TasksPage({
     hasArtifact: boolean;
     filesChanged: number | null;
     waitingPrompt: string | null;
-    objectiveId: string | null;
-    objectiveTitle: string | null;
+    missionId: string | null;
+    missionTitle: string | null;
   }> = [];
 
   if (!isDev && user) {
@@ -62,22 +62,22 @@ export default async function TasksPage({
             updatedAt: true,
             workspaceId: true,
             result: true,
-            objectiveId: true,
+            missionId: true,
           },
           orderBy: [desc(tasks.updatedAt)],
           limit: 200,
         });
 
-        // Fetch objective titles for tasks that have objectiveId
-        const objectiveIds = [...new Set(recentTasks.map(t => t.objectiveId).filter(Boolean))] as string[];
-        const objectiveTitleMap = new Map<string, string>();
-        if (objectiveIds.length > 0) {
-          const objs = await db.query.objectives.findMany({
-            where: inArray(objectives.id, objectiveIds),
+        // Fetch mission titles for tasks that have missionId
+        const missionIds = [...new Set(recentTasks.map(t => t.missionId).filter(Boolean))] as string[];
+        const missionTitleMap = new Map<string, string>();
+        if (missionIds.length > 0) {
+          const misns = await db.query.missions.findMany({
+            where: inArray(missions.id, missionIds),
             columns: { id: true, title: true },
           });
-          for (const o of objs) {
-            objectiveTitleMap.set(o.id, o.title);
+          for (const m of misns) {
+            missionTitleMap.set(m.id, m.title);
           }
         }
 
@@ -111,8 +111,8 @@ export default async function TasksPage({
             hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
             filesChanged: result?.files?.length ?? null,
             waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
-            objectiveId: t.objectiveId || null,
-            objectiveTitle: t.objectiveId ? (objectiveTitleMap.get(t.objectiveId) || null) : null,
+            missionId: t.missionId || null,
+            missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
           };
         });
       }
@@ -125,8 +125,8 @@ export default async function TasksPage({
   let missionTitle: string | null = null;
   if (missionId && user) {
     try {
-      const mission = await db.query.objectives.findFirst({
-        where: eq(objectives.id, missionId),
+      const mission = await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
         columns: { title: true },
       });
       missionTitle = mission?.title || null;

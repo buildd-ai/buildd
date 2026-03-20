@@ -33,7 +33,7 @@ export default async function TasksLayout({
       dependsOn?: string[];
       updatedAt: Date;
       waitingFor?: { type: string; prompt: string; options?: string[] } | null;
-      objectiveId?: string | null;
+      missionId?: string | null;
       resultSummary?: string | null;
     }>;
   }> = [];
@@ -62,7 +62,7 @@ export default async function TasksLayout({
             workspaceId: true,
             updatedAt: true,
             priority: true,
-            objectiveId: true,
+            missionId: true,
             result: true,
           },
           orderBy: [desc(tasks.priority), desc(tasks.updatedAt)],
@@ -81,7 +81,7 @@ export default async function TasksLayout({
         }
 
         // Group tasks by workspace
-        type TaskSummary = { id: string; title: string; description?: string | null; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; objectiveId?: string | null; resultSummary?: string | null };
+        type TaskSummary = { id: string; title: string; description?: string | null; status: string; category?: string | null; dependsOn?: string[]; updatedAt: Date; waitingFor?: { type: string; prompt: string; options?: string[] } | null; missionId?: string | null; resultSummary?: string | null };
         const tasksByWorkspace = allTasks.reduce((acc, task) => {
           if (!acc[task.workspaceId]) acc[task.workspaceId] = [];
           // Only override status with waiting_input if the task isn't already completed/failed
@@ -96,7 +96,7 @@ export default async function TasksLayout({
             dependsOn: (task.dependsOn as string[]) || [],
             updatedAt: task.updatedAt,
             waitingFor: !isTerminal ? (waitingForByTaskId.get(task.id) || null) : null,
-            objectiveId: task.objectiveId,
+            missionId: task.missionId,
             resultSummary: taskResult?.summary || null,
           });
           return acc;

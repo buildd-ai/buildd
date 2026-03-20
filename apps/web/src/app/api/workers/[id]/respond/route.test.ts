@@ -104,7 +104,7 @@ const baseWorker = {
     title: 'Fix auth bug',
     description: 'Fix the authentication bug in login flow',
     workspaceId: 'workspace-1',
-    objectiveId: 'objective-1',
+    missionId: 'mission-1',
     roleSlug: 'frontend-dev',
     mode: 'execution',
   },
@@ -238,7 +238,7 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(insertedValues.title).toBe('Continue: Fix auth bug');
     expect(insertedValues.workspaceId).toBe('workspace-1');
     expect(insertedValues.parentTaskId).toBe('task-1');
-    expect(insertedValues.objectiveId).toBe('objective-1');
+    expect(insertedValues.missionId).toBe('mission-1');
     expect(insertedValues.status).toBe('pending');
 
     // Verify context

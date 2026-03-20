@@ -94,21 +94,24 @@ jobs:
             | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "Reusing existing Neon branch: $EXISTING"
-            BRANCH_ID="$EXISTING"
-          else
-            echo "Creating Neon branch: $BRANCH_NAME"
-            RESPONSE=$(curl -s -X POST \
+            echo "Deleting stale Neon branch: $EXISTING"
+            curl -sf -X DELETE \
               -H "Authorization: Bearer $NEON_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
-            BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
-            if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
-              echo "::error::Failed to create Neon branch"
-              echo "$RESPONSE" | jq .
-              exit 1
-            fi
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$EXISTING" || true
+            sleep 2
+          fi
+
+          echo "Creating Neon branch: $BRANCH_NAME"
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+          if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+            echo "::error::Failed to create Neon branch"
+            echo "$RESPONSE" | jq .
+            exit 1
           fi
 
           ENDPOINTS=$(curl -sf \
@@ -137,10 +140,10 @@ jobs:
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
+              set -e
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
               rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
-              rm -rf ~/.bun/install/cache
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
               cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
               test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
@@ -219,6 +222,7 @@ jobs:
                apps/web/tests/integration/schedule-triggers.test.ts \
                apps/web/tests/integration/artifacts.test.ts \
                apps/web/tests/integration/recipes.test.ts \
+               apps/web/tests/integration/missions-smoke.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks, objectives, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaceSkills, workers, tasks, missions, accountWorkspaces } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, sql, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -123,7 +123,7 @@ export default async function RoleProfilePage({
         columns: { id: true, title: true, workspaceId: true, roleSlug: true },
         with: {
           workspace: { columns: { name: true } },
-          objective: { columns: { title: true } },
+          mission: { columns: { title: true } },
         },
       },
     },
@@ -135,24 +135,24 @@ export default async function RoleProfilePage({
 
   // Find missions that have tasks routed to this role (via tasks.roleSlug)
   const missionIdsWithRole = await db
-    .selectDistinct({ objectiveId: tasks.objectiveId })
+    .selectDistinct({ missionId: tasks.missionId })
     .from(tasks)
     .where(and(
       eq(tasks.roleSlug, slug),
       inArray(tasks.workspaceId, wsIds),
-      sql`${tasks.objectiveId} IS NOT NULL`,
+      sql`${tasks.missionId} IS NOT NULL`,
     ))
     .limit(20);
 
   const missionIds = missionIdsWithRole
-    .map(r => r.objectiveId)
+    .map(r => r.missionId)
     .filter(Boolean) as string[];
 
   const assignedMissions = missionIds.length > 0
-    ? await db.query.objectives.findMany({
+    ? await db.query.missions.findMany({
         where: and(
-          inArray(objectives.id, missionIds),
-          inArray(objectives.status, ['active', 'paused', 'completed']),
+          inArray(missions.id, missionIds),
+          inArray(missions.status, ['active', 'paused', 'completed']),
         ),
         with: {
           tasks: {
@@ -162,7 +162,7 @@ export default async function RoleProfilePage({
             columns: { lastRunAt: true, nextRunAt: true, cronExpression: true } as any,
           },
         },
-        orderBy: [desc(objectives.updatedAt)],
+        orderBy: [desc(missions.updatedAt)],
         limit: 20,
       })
     : [];
@@ -291,10 +291,10 @@ export default async function RoleProfilePage({
                         <span className="text-accent-text">PR #{(currentWorker as any).prNumber}</span>
                       </>
                     )}
-                    {(currentWorker.task as any).objective?.title && (
+                    {(currentWorker.task as any).mission?.title && (
                       <>
                         <span>&middot;</span>
-                        <span className="text-accent-text truncate max-w-[160px]">{(currentWorker.task as any).objective.title}</span>
+                        <span className="text-accent-text truncate max-w-[160px]">{(currentWorker.task as any).mission.title}</span>
                       </>
                     )}
                   </div>

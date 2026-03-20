@@ -10,8 +10,8 @@ interface WorkspaceOption {
   name: string;
 }
 
-interface ObjectiveConfigProps {
-  objectiveId: string;
+interface MissionConfigProps {
+  missionId: string;
   workspaceId: string | null;
   workspace: { id: string; name: string } | null;
   skillSlugs: string[];
@@ -21,8 +21,8 @@ interface ObjectiveConfigProps {
   workspaces: WorkspaceOption[];
 }
 
-export default function ObjectiveConfig({
-  objectiveId,
+export default function MissionConfig({
+  missionId,
   workspaceId,
   workspace,
   skillSlugs: initialSkillSlugs,
@@ -30,7 +30,7 @@ export default function ObjectiveConfig({
   model: initialModel,
   outputSchema: initialOutputSchema,
   workspaces,
-}: ObjectiveConfigProps) {
+}: MissionConfigProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [saving, setSaving] = useState<string | null>(null);
@@ -60,10 +60,10 @@ export default function ObjectiveConfig({
 
   const disabled = saving !== null || isPending;
 
-  const patchObjective = useCallback(async (body: Record<string, unknown>, field: string) => {
+  const patchMission = useCallback(async (body: Record<string, unknown>, field: string) => {
     setSaving(field);
     try {
-      const res = await fetch(`/api/missions/${objectiveId}`, {
+      const res = await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -74,7 +74,7 @@ export default function ObjectiveConfig({
     } finally {
       setSaving(null);
     }
-  }, [objectiveId, router]);
+  }, [missionId, router]);
 
   // Skills handlers
   function handleAddSkill() {
@@ -87,26 +87,26 @@ export default function ObjectiveConfig({
     setSkillSlugs(updated);
     setNewSkill('');
     setShowSkillInput(false);
-    patchObjective({ skillSlugs: updated }, 'skills');
+    patchMission({ skillSlugs: updated }, 'skills');
   }
 
   function handleRemoveSkill(slug: string) {
     const updated = skillSlugs.filter((s: string) => s !== slug);
     setSkillSlugs(updated);
-    patchObjective({ skillSlugs: updated }, 'skills');
+    patchMission({ skillSlugs: updated }, 'skills');
   }
 
   // Recipe handler
   function handleSaveRecipe() {
     const trimmed = recipeId.trim();
-    patchObjective({ recipeId: trimmed || null }, 'recipe');
+    patchMission({ recipeId: trimmed || null }, 'recipe');
     setEditingRecipe(false);
   }
 
   // Model handler
   function handleModelChange(value: string) {
     setModel(value);
-    patchObjective({ model: value || null }, 'model');
+    patchMission({ model: value || null }, 'model');
   }
 
   // Output schema handler
@@ -114,7 +114,7 @@ export default function ObjectiveConfig({
     const trimmed = outputSchemaStr.trim();
     if (!trimmed) {
       setSchemaError(null);
-      patchObjective({ outputSchema: null }, 'schema');
+      patchMission({ outputSchema: null }, 'schema');
       setEditingSchema(false);
       return;
     }
@@ -122,7 +122,7 @@ export default function ObjectiveConfig({
       const parsed = JSON.parse(trimmed);
       setSchemaError(null);
       setOutputSchemaStr(JSON.stringify(parsed, null, 2));
-      patchObjective({ outputSchema: parsed }, 'schema');
+      patchMission({ outputSchema: parsed }, 'schema');
       setEditingSchema(false);
     } catch {
       setSchemaError('Invalid JSON');
@@ -132,7 +132,7 @@ export default function ObjectiveConfig({
   // Workspace handler
   function handleWorkspaceChange(value: string) {
     setSelectedWorkspaceId(value);
-    patchObjective({ workspaceId: value || null }, 'workspace');
+    patchMission({ workspaceId: value || null }, 'workspace');
   }
 
   const workspaceOptions = [
@@ -363,7 +363,7 @@ export default function ObjectiveConfig({
                     onClick={() => {
                       setOutputSchemaStr('');
                       setSchemaError(null);
-                      patchObjective({ outputSchema: null }, 'schema');
+                      patchMission({ outputSchema: null }, 'schema');
                       setEditingSchema(false);
                     }}
                     disabled={disabled}

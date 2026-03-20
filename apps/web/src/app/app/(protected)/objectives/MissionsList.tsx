@@ -8,7 +8,7 @@ import { useBrowserTimezone } from '@/hooks/useBrowserTimezone';
 import {
   DEFAULT_HEARTBEAT_CHECKLIST,
   HEARTBEAT_CRON_PRESETS,
-  OBJECTIVE_CRON_PRESETS,
+  MISSION_CRON_PRESETS,
   getHourOptions,
   validateActiveHours,
 } from '@/lib/heartbeat-helpers';
@@ -24,7 +24,7 @@ interface WorkspaceOption {
   name: string;
 }
 
-interface ObjectiveItem {
+interface MissionItem {
   id: string;
   title: string;
   description: string | null;
@@ -91,7 +91,7 @@ function PauseToggle({ id, status }: { id: string; status: string }) {
   );
 }
 
-function LastOutputChip({ output }: { output: ObjectiveItem['lastOutput'] }) {
+function LastOutputChip({ output }: { output: MissionItem['lastOutput'] }) {
   if (!output) return <span className="text-text-muted text-[11px] font-mono">no runs yet</span>;
 
   const ago = timeAgo(output.updatedAt);
@@ -148,12 +148,12 @@ function LastOutputChip({ output }: { output: ObjectiveItem['lastOutput'] }) {
   return <span className="text-[11px] font-mono text-text-muted">{output.status} · {ago}</span>;
 }
 
-export default function ObjectivesList({
-  objectives,
+export default function MissionsList({
+  missions,
   teamId,
   workspaces,
 }: {
-  objectives: ObjectiveItem[];
+  missions: MissionItem[];
   teamId: string;
   workspaces: WorkspaceOption[];
 }) {
@@ -253,11 +253,11 @@ export default function ObjectivesList({
     ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
   ];
 
-  const cronPresets = isHeartbeat ? HEARTBEAT_CRON_PRESETS : OBJECTIVE_CRON_PRESETS;
+  const cronPresets = isHeartbeat ? HEARTBEAT_CRON_PRESETS : MISSION_CRON_PRESETS;
 
-  const activeObjectives = objectives.filter(o => o.status === 'active');
-  const pausedObjectives = objectives.filter(o => o.status === 'paused');
-  const displayed = filterActive ? activeObjectives : objectives;
+  const activeMissions = missions.filter(o => o.status === 'active');
+  const pausedMissions = missions.filter(o => o.status === 'paused');
+  const displayed = filterActive ? activeMissions : missions;
 
   return (
     <div>
@@ -271,9 +271,9 @@ export default function ObjectivesList({
             }`}
           >
             Active
-            {activeObjectives.length > 0 && (
+            {activeMissions.length > 0 && (
               <span className={`ml-1.5 text-[10px] font-mono ${filterActive ? 'text-text-muted' : 'text-text-muted'}`}>
-                {activeObjectives.length}
+                {activeMissions.length}
               </span>
             )}
           </button>
@@ -284,7 +284,7 @@ export default function ObjectivesList({
             }`}
           >
             All
-            <span className="ml-1.5 text-[10px] font-mono text-text-muted">{objectives.length}</span>
+            <span className="ml-1.5 text-[10px] font-mono text-text-muted">{missions.length}</span>
           </button>
         </div>
 
@@ -293,7 +293,7 @@ export default function ObjectivesList({
             onClick={() => setShowForm(true)}
             className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
           >
-            + New objective
+            + New mission
           </button>
         )}
       </div>
@@ -305,7 +305,7 @@ export default function ObjectivesList({
             type="text"
             value={title}
             onChange={e => setTitle(e.target.value)}
-            placeholder="Objective title"
+            placeholder="Mission title"
             className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
             autoFocus
             disabled={creating}
@@ -514,21 +514,21 @@ export default function ObjectivesList({
         </form>
       )}
 
-      {/* Objectives list */}
-      {objectives.length === 0 ? (
+      {/* Missions list */}
+      {missions.length === 0 ? (
         <div className="text-center py-12 text-text-secondary">
           <div className="w-12 h-12 mx-auto mb-4 bg-surface-3 rounded-full flex items-center justify-center">
             <svg className="w-6 h-6 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </div>
-          <p>No objectives yet. Create one to get started.</p>
+          <p>No missions yet. Create one to get started.</p>
         </div>
       ) : displayed.length === 0 ? (
         <div className="text-center py-10 text-text-secondary text-sm">
-          No active objectives.{' '}
+          No active missions.{' '}
           <button onClick={() => setFilterActive(false)} className="text-primary hover:underline">
-            Show all {objectives.length}
+            Show all {missions.length}
           </button>
         </div>
       ) : (
@@ -539,7 +539,7 @@ export default function ObjectivesList({
             return (
               <Link
                 key={obj.id}
-                href={`/app/objectives/${obj.id}`}
+                href={`/app/missions/${obj.id}`}
                 className={`block p-4 bg-surface-2 border border-border-default rounded-xl transition-all duration-150 shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] hover:-translate-y-px hover:border-border-default/80 ${
                   isPaused ? 'opacity-60' : ''
                 }`}
@@ -601,12 +601,12 @@ export default function ObjectivesList({
           })}
 
           {/* Paused hint when in active filter */}
-          {filterActive && pausedObjectives.length > 0 && (
+          {filterActive && pausedMissions.length > 0 && (
             <button
               onClick={() => setFilterActive(false)}
               className="w-full pt-1 text-xs text-text-muted hover:text-text-secondary transition-colors text-left pl-1"
             >
-              + {pausedObjectives.length} paused
+              + {pausedMissions.length} paused
             </button>
           )}
         </div>

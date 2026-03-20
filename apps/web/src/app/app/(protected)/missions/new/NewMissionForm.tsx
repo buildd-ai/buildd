@@ -145,10 +145,8 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
     return () => clearTimeout(timer);
   }, [cronExpression, validateCron]);
 
-  const needsWorkspace = !!cronExpression && !workspaceId;
-
   function canSubmit(): boolean {
-    return name.trim().length > 0 && !needsWorkspace;
+    return name.trim().length > 0;
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -344,16 +342,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             <div className="text-xs text-text-muted mt-2">Validating...</div>
           )}
         </div>
-
-        {/* Workspace validation warning */}
-        {needsWorkspace && (
-          <div className="mb-4 flex items-center gap-2 text-sm text-status-warning">
-            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-            </svg>
-            A workspace is required for scheduled missions.
-          </div>
-        )}
 
         {/* Error */}
         {error && (

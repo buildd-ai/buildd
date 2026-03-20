@@ -5,11 +5,11 @@ import { useRouter } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
 
 interface HeartbeatChecklistEditorProps {
-  objectiveId: string;
+  missionId: string;
   checklist: string | null;
 }
 
-export default function HeartbeatChecklistEditor({ objectiveId, checklist }: HeartbeatChecklistEditorProps) {
+export default function HeartbeatChecklistEditor({ missionId, checklist }: HeartbeatChecklistEditorProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
@@ -19,7 +19,7 @@ export default function HeartbeatChecklistEditor({ objectiveId, checklist }: Hea
   async function handleSave() {
     setSaving(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ heartbeatChecklist: value.trim() || null }),

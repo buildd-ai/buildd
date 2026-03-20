@@ -162,6 +162,13 @@
       "when": 1773882537172,
       "tag": "0022_mixed_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1773923008871,
+      "tag": "0023_nice_vulture",
+      "breakpoints": true
     }
   ]
 }

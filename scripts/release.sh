@@ -76,9 +76,17 @@ if [ "${1:-}" = "--cleanup" ]; then
   exit 0
 fi
 
+# Switch to dev if not already there
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" != "dev" ]; then
+  echo "Switching to dev (was on ${CURRENT_BRANCH})..."
+  git checkout dev
+fi
+
 # Ensure dev is up-to-date with main to avoid PR conflicts
 echo "Syncing main into dev..."
 git fetch origin
+git pull origin dev --ff-only 2>/dev/null || true
 if ! git merge origin/main --no-edit 2>/dev/null; then
   echo "❌ Merge conflicts when syncing main into dev."
   echo "   Resolve conflicts, commit, then re-run: bun run release"

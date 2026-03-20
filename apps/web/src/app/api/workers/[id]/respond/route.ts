@@ -97,7 +97,7 @@ export async function POST(
       description,
       status: 'pending',
       parentTaskId: task?.id,
-      objectiveId: task?.objectiveId,
+      missionId: task?.missionId,
       roleSlug: task?.roleSlug,
       mode: task?.mode,
       context: {

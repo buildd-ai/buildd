@@ -49,7 +49,7 @@ export default function MissionInlineEdit({
       const setter = field === 'title' ? setSavingTitle : setSavingDescription;
       setter(true);
       try {
-        const res = await fetch(`/api/objectives/${missionId}`, {
+        const res = await fetch(`/api/missions/${missionId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },

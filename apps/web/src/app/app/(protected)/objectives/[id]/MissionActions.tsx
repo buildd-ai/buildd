@@ -3,13 +3,13 @@
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
-export default function ObjectiveActions({
-  objectiveId,
+export default function MissionActions({
+  missionId,
   status,
   cronExpression: initialCron,
   hasWorkspace,
 }: {
-  objectiveId: string;
+  missionId: string;
   status: string;
   cronExpression: string | null;
   hasWorkspace: boolean;
@@ -24,7 +24,7 @@ export default function ObjectiveActions({
   async function handleRunNow() {
     setRunning(true);
     try {
-      const res = await fetch(`/api/missions/${objectiveId}/run`, {
+      const res = await fetch(`/api/missions/${missionId}/run`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -39,10 +39,10 @@ export default function ObjectiveActions({
     }
   }
 
-  async function patchObjective(body: Record<string, unknown>) {
+  async function patchMission(body: Record<string, unknown>) {
     setLoading(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, {
+      await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -54,11 +54,11 @@ export default function ObjectiveActions({
   }
 
   async function handleDelete() {
-    if (!confirm('Delete this objective? Linked tasks will be preserved.')) return;
+    if (!confirm('Delete this mission? Linked tasks will be preserved.')) return;
     setLoading(true);
     try {
-      await fetch(`/api/missions/${objectiveId}`, { method: 'DELETE' });
-      router.push('/app/objectives');
+      await fetch(`/api/missions/${missionId}`, { method: 'DELETE' });
+      router.push('/app/missions');
     } finally {
       setLoading(false);
     }
@@ -66,7 +66,7 @@ export default function ObjectiveActions({
 
   async function handleSaveCron() {
     const trimmed = cronValue.trim();
-    await patchObjective({ cronExpression: trimmed || null });
+    await patchMission({ cronExpression: trimmed || null });
     setEditingCron(false);
   }
 
@@ -100,7 +100,7 @@ export default function ObjectiveActions({
 
         {status === 'active' && (
           <button
-            onClick={() => patchObjective({ status: 'paused' })}
+            onClick={() => patchMission({ status: 'paused' })}
             disabled={disabled}
             className="px-3 py-1.5 text-xs font-medium border border-border-default text-text-secondary rounded-md hover:bg-surface-3 hover:text-text-primary disabled:opacity-50 transition-colors"
           >
@@ -109,7 +109,7 @@ export default function ObjectiveActions({
         )}
         {status === 'paused' && (
           <button
-            onClick={() => patchObjective({ status: 'active' })}
+            onClick={() => patchMission({ status: 'active' })}
             disabled={disabled}
             className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
           >
@@ -118,7 +118,7 @@ export default function ObjectiveActions({
         )}
         {(status === 'active' || status === 'paused') && (
           <button
-            onClick={() => patchObjective({ status: 'completed' })}
+            onClick={() => patchMission({ status: 'completed' })}
             disabled={disabled}
             className="px-3 py-1.5 text-xs font-medium bg-status-success text-white rounded-md hover:bg-status-success/90 disabled:opacity-50 transition-colors"
           >
@@ -127,7 +127,7 @@ export default function ObjectiveActions({
         )}
         {status === 'completed' && (
           <button
-            onClick={() => patchObjective({ status: 'archived' })}
+            onClick={() => patchMission({ status: 'archived' })}
             disabled={disabled}
             className="px-3 py-1.5 text-xs font-medium border border-border-default text-text-muted rounded-md hover:bg-surface-3 hover:text-text-secondary disabled:opacity-50 transition-colors"
           >
