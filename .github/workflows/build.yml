@@ -54,10 +54,10 @@ jobs:
           TESTS="${{ steps.affected.outputs.tests }}"
           if [ "$TESTS" = "ALL" ]; then
             echo "Running all tests..."
-            bun test apps/web/src apps/runner/__tests__/unit
+            bun test --only-failures apps/web/src apps/runner/__tests__/unit
           else
             echo "Running affected tests: $TESTS"
-            bun test $TESTS
+            bun test --only-failures $TESTS
           fi
 
       - name: Build
@@ -114,13 +114,42 @@ jobs:
             exit 1
           fi
 
-          ENDPOINTS=$(curl -sf \
-            -H "Authorization: Bearer $NEON_API_KEY" \
-            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
-          HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+          # Extract connection URI directly from the API response — avoids static
+          # password secrets that may not match the new branch endpoint immediately.
+          CONNECTION_URI=$(echo "$RESPONSE" | jq -r '.connection_uris[0].connection_uri // empty')
+
+          if [ -z "$CONNECTION_URI" ]; then
+            echo "::warning::connection_uris not in branch response, fetching connection string via endpoint API"
+            ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
+            if [ -n "$ENDPOINT_ID" ]; then
+              # Get connection URI from the endpoint's connection_uri API
+              CONN_RESPONSE=$(curl -sf \
+                -H "Authorization: Bearer $NEON_API_KEY" \
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
+              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
+            fi
+          fi
+
+          if [ -z "$CONNECTION_URI" ]; then
+            echo "::warning::Could not extract connection URI from API, falling back to manual construction"
+            ENDPOINTS=$(curl -sf \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+            CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
+          fi
+
+          # Ensure sslmode=require is present
+          if [[ "$CONNECTION_URI" != *"sslmode=require"* ]]; then
+            if [[ "$CONNECTION_URI" == *"?"* ]]; then
+              CONNECTION_URI="${CONNECTION_URI}&sslmode=require"
+            else
+              CONNECTION_URI="${CONNECTION_URI}?sslmode=require"
+            fi
+          fi
 
           echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
-          echo "database_url=postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "database_url=$CONNECTION_URI" >> "$GITHUB_OUTPUT"
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
