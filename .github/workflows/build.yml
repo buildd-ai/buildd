@@ -94,21 +94,24 @@ jobs:
             | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "Reusing existing Neon branch: $EXISTING"
-            BRANCH_ID="$EXISTING"
-          else
-            echo "Creating Neon branch: $BRANCH_NAME"
-            RESPONSE=$(curl -s -X POST \
+            echo "Deleting stale Neon branch: $EXISTING"
+            curl -sf -X DELETE \
               -H "Authorization: Bearer $NEON_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
-            BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
-            if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
-              echo "::error::Failed to create Neon branch"
-              echo "$RESPONSE" | jq .
-              exit 1
-            fi
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$EXISTING" || true
+            sleep 2
+          fi
+
+          echo "Creating Neon branch: $BRANCH_NAME"
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+          if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+            echo "::error::Failed to create Neon branch"
+            echo "$RESPONSE" | jq .
+            exit 1
           fi
 
           ENDPOINTS=$(curl -sf \
