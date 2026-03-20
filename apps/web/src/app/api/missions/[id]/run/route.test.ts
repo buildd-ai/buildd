@@ -7,6 +7,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
 const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
 
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -39,6 +40,11 @@ mock.module('@/lib/mission-context', () => ({
 // Mock task-dispatch
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
+}));
+
+// Mock orchestrator-workspace
+mock.module('@/lib/orchestrator-workspace', () => ({
+  getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace,
 }));
 
 // Mock database
@@ -86,6 +92,8 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetUserTeamIds.mockReset();
     mockBuildMissionContext.mockReset();
     mockDispatchNewTask.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     mockMissionsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
@@ -135,21 +143,37 @@ describe('POST /api/missions/[id]/run', () => {
     expect(response.status).toBe(404);
   });
 
-  it('returns 400 when mission has no workspaceId', async () => {
+  it('auto-creates orchestrator workspace when mission has no workspaceId', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
+      title: 'No WS Mission',
       teamId: 'team-1',
       workspaceId: null,
       status: 'active',
+      priority: 0,
       schedule: null,
     });
 
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-123', missionTitle: 'No WS Mission', recentCompletions: [], activeTasks: [] },
+    });
+
+    const createdTask = { id: 'task-new', title: 'Mission: No WS Mission', workspaceId: 'orchestrator-ws', status: 'pending' };
+    mockInsertReturning.mockResolvedValue([createdTask]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'orchestrator-ws', name: '__coordination' });
+
     const response = await callHandler(createMockRequest(), 'obj-123');
-    expect(response.status).toBe(400);
-    const data = await response.json();
-    expect(data.error).toContain('workspace');
+    expect(response.status).toBe(201);
+
+    // Verify orchestrator workspace was requested for the right team
+    expect(mockGetOrCreateCoordinationWorkspace).toHaveBeenCalledWith('team-1');
+
+    // Verify task was created with orchestrator workspace
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.workspaceId).toBe('orchestrator-ws');
   });
 
   it('returns 400 when mission is not active', async () => {
