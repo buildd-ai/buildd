@@ -61,7 +61,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
  * 5. Fallback: Pusher TASK_ASSIGNED (connected local workers)
  */
 export async function dispatchNewTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number },
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
   workspace: {
     id?: string;
     name?: string;
@@ -84,6 +84,8 @@ export async function dispatchNewTask(
     workspaceId: task.workspaceId,
     mode: task.mode,
     priority: task.priority,
+    // Include missionId so dashboard can filter events per mission
+    ...(task.missionId && { missionId: task.missionId }),
     // Include workspace info so runners can resolve workspace path before claiming
     ...(workspace.name && { workspace: { name: workspace.name, repo: workspace.repo || null } }),
   };
