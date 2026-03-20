@@ -59,9 +59,14 @@ describe('Missions smoke', () => {
     expect(found).toBeDefined();
   }, TIMEOUT);
 
-  test('DELETE /api/missions/{id} — cleanup', async () => {
-    const { status } = await apiRaw(`/api/missions/${missionId}`, { method: 'DELETE' });
-    expect(status).toBe(200);
+  test('GET /api/missions/{id} — verify missions endpoint works', async () => {
+    const res = await fetch(`${SERVER}/api/missions/${missionId}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${API_KEY}`,
+      },
+    });
+    expect(res.status).toBe(200);
   }, TIMEOUT);
 
   test('GET /api/missions — 401 without auth', async () => {
@@ -71,13 +76,8 @@ describe('Missions smoke', () => {
     expect(res.status).toBe(401);
   }, TIMEOUT);
 
-  test('GET /api/missions/{id} — verify missions endpoint works', async () => {
-    const res = await fetch(`${SERVER}/api/missions/${missionId}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-      },
-    });
-    expect(res.status).toBe(200);
+  test('DELETE /api/missions/{id} — cleanup', async () => {
+    const { status } = await apiRaw(`/api/missions/${missionId}`, { method: 'DELETE' });
+    expect(status).toBe(200);
   }, TIMEOUT);
 });
