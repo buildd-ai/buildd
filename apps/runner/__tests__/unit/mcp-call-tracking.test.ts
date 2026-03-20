@@ -66,15 +66,6 @@ mock.module('../../src/buildd', () => ({
   },
 }));
 
-mock.module('../../src/outbox', () => ({
-  Outbox: class {
-    start() {}
-    stop() {}
-    shouldQueue() { return false; }
-    enqueue() {}
-  },
-}));
-
 mock.module('../../src/history', () => ({
   HistoryStore: class {
     init() { return Promise.resolve(); }

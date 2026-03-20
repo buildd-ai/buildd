@@ -167,5 +167,5 @@ This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
 ## Docs
 
 - **Testing guides**: `docs/testing.md` and `docs/testing-strategy.md`
-- **Internal knowledge base** (architecture, SDK research, plans): `~/.buildd/knowledge/` (closed-source, separate repo)
+- **Internal knowledge base** (architecture, SDK research, plans): `buildd-ai/knowledge-base` repo (private)
 - **Product documentation**: Check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.
