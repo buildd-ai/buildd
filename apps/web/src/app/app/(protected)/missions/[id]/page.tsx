@@ -9,6 +9,7 @@ import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-help
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
+import MissionAutoRefresh from './MissionAutoRefresh';
 import ExpandableText from './ExpandableText';
 
 export const dynamic = 'force-dynamic';
@@ -161,8 +162,19 @@ export default async function MissionDetailPage({
     ) || []
   ) || [];
 
+  const missionTaskIds = allTasks.map((t) => t.id);
+
   return (
     <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
+      {/* Real-time updates via Pusher */}
+      {mission.workspaceId && (
+        <MissionAutoRefresh
+          missionId={id}
+          workspaceId={mission.workspaceId}
+          taskIds={missionTaskIds}
+        />
+      )}
+
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
         <Link href="/app/missions" className="hover:text-text-secondary transition-colors">
@@ -246,13 +258,15 @@ export default async function MissionDetailPage({
             {cycles.map((cycle, ci) => {
               const isLast = ci === cycles.length - 1;
               const evalResult = cycle.evaluation?.result as { summary?: string } | null;
+              const evalWorker = cycle.evaluation?.workers?.[0];
+              const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
 
               return (
-                <div key={cycle.evaluation?.id || `cycle-${ci}`} className="flex gap-0">
+                <div key={cycle.evaluation?.id || `cycle-${ci}`} className={`flex gap-0 ${ci === 0 ? 'animate-card-enter' : ''}`}>
                   {/* Spine */}
                   <div className="flex flex-col items-center w-8 shrink-0">
                     {cycle.evaluation ? (
-                      <span className="w-3 h-3 rounded-full bg-[#D97706] shrink-0 mt-0.5" />
+                      <span className={`w-3 h-3 rounded-full shrink-0 mt-0.5 ${evalIsRunning ? 'bg-status-info animate-status-pulse' : 'bg-[#D97706]'}`} />
                     ) : (
                       <span className="w-3 h-3 rounded-full bg-text-muted shrink-0 mt-0.5" />
                     )}
@@ -267,8 +281,17 @@ export default async function MissionDetailPage({
                     {cycle.evaluation && (
                       <div className="mb-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[12px] font-semibold text-[#92400E]">Evaluate</span>
-                          <span className="text-[11px] text-text-muted">{timeAgo(cycle.evaluation.createdAt)}</span>
+                          <span className="flex items-center gap-1.5">
+                            <span className={`text-[12px] font-semibold ${evalIsRunning ? 'text-status-info' : 'text-[#92400E]'}`}>
+                              {evalIsRunning ? 'Planning...' : 'Evaluate'}
+                            </span>
+                            {evalIsRunning && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
+                            )}
+                          </span>
+                          <span className="text-[11px] text-text-muted">
+                            {evalIsRunning ? 'In progress' : timeAgo(cycle.evaluation.createdAt)}
+                          </span>
                         </div>
                         {evalResult?.summary && (
                           <ExpandableText text={evalResult.summary} />
@@ -279,7 +302,7 @@ export default async function MissionDetailPage({
                     {/* Task branches */}
                     {cycle.tasks.length > 0 && (
                       <div className="space-y-0.5">
-                        {cycle.tasks.map((task) => {
+                        {cycle.tasks.map((task, ti) => {
                           const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
                           const roleColor = role?.color || '#8A8478';
                           const taskResult = task.result as { summary?: string; nextSuggestion?: string } | null;
@@ -297,7 +320,7 @@ export default async function MissionDetailPage({
                           } | null;
 
                           return (
-                            <div key={task.id}>
+                            <div key={task.id} className="animate-timeline-enter" style={{ animationDelay: `${ti * 60}ms` }}>
                               <Link
                                 href={`/app/tasks/${task.id}`}
                                 className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group ${

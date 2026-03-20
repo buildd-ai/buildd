@@ -72,6 +72,7 @@ const config: Config = {
         'slide-up': 'slide-up 300ms ease-out',
         'dropdown-in': 'dropdown-in 100ms ease-out',
         'status-pulse': 'status-pulse 2s ease-in-out infinite',
+        'timeline-enter': 'timeline-enter 400ms ease-out both',
       },
       keyframes: {
         'pulse-border': {
@@ -93,6 +94,10 @@ const config: Config = {
         'status-pulse': {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.3' },
+        },
+        'timeline-enter': {
+          '0%': { opacity: '0', transform: 'translateX(-8px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
         },
       },
     },
