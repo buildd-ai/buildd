@@ -54,10 +54,10 @@ jobs:
           TESTS="${{ steps.affected.outputs.tests }}"
           if [ "$TESTS" = "ALL" ]; then
             echo "Running all tests..."
-            bun test apps/web/src apps/runner/__tests__/unit
+            bun test --only-failures apps/web/src apps/runner/__tests__/unit
           else
             echo "Running affected tests: $TESTS"
-            bun test $TESTS
+            bun test --only-failures $TESTS
           fi
 
       - name: Build
