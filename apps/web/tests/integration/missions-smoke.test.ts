@@ -17,7 +17,8 @@ import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/
 
 const TIMEOUT = 15_000;
 
-const { server: SERVER, apiKey: API_KEY } = requireTestEnv();
+const { server: SERVER, apiKey } = requireTestEnv();
+const API_KEY = process.env.BUILDD_ADMIN_API_KEY || apiKey;
 const { api, apiRaw } = createTestApi(SERVER, API_KEY);
 
 let cleanup: ReturnType<typeof createCleanup>;
