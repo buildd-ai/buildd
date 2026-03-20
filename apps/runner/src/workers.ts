@@ -512,6 +512,22 @@ export class WorkerManager {
       }
     });
 
+    // Progress heartbeat: when the server confirms a progress update (from the agent's
+    // update_progress MCP call), reset lastActivity. This prevents the hard timeout from
+    // killing workers that are actively reporting progress even if the SDK stream is slow.
+    channel.bind('worker:progress', () => {
+      const worker = this.workers.get(workerId);
+      if (worker && (worker.status === 'working' || worker.status === 'stale')) {
+        worker.lastActivity = Date.now();
+        // If worker was stale but server got progress, recover it
+        if (worker.status === 'stale') {
+          worker.status = 'working';
+          this.probedWorkers.delete(workerId);
+          console.log(`[Worker ${workerId}] Recovered from stale via server progress`);
+        }
+      }
+    });
+
     this.pusherChannels.set(workerId, channel);
   }
 
@@ -748,6 +764,9 @@ export class WorkerManager {
     const timeout = this.adaptiveStaleTimeout;
     // Hard absolute timeout: no worker process should run longer than 30 minutes
     // without producing activity. This catches zombie processes that ignore probes.
+    // The timer resets on ANY SDK message (tool calls, text, MCP calls like update_progress)
+    // because handleMessage() updates worker.lastActivity on every message.
+    // So an agent actively reporting progress via update_progress will never hit this.
     const HARD_TIMEOUT_MS = 30 * 60 * 1000;
 
     for (const worker of this.workers.values()) {
