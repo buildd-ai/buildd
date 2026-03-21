@@ -59,6 +59,7 @@ export const workerActions = [
 export const adminActions = [
   'create_schedule', 'update_schedule', 'list_schedules',
   'register_skill', 'list_skills', 'update_skill', 'delete_skill',
+  'manage_secrets',
   'approve_plan', 'reject_plan',
   'manage_missions',
   'list_recipes', 'create_recipe', 'run_recipe',
@@ -98,6 +99,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled? } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
+    manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
@@ -846,6 +848,55 @@ export async function handleBuilddAction(
       });
 
       return text(`Skill "${params.slug}" deleted successfully.`);
+    }
+
+    case 'manage_secrets': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const subAction = params.action as string;
+      if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
+        throw new Error('action is required: "list", "set", or "delete"');
+      }
+
+      if (subAction === 'list') {
+        const data = await api('/api/secrets');
+        const secrets = data.secrets || [];
+        if (secrets.length === 0) return text('No secrets found.');
+
+        const summary = secrets.map((s: any) =>
+          `- **${s.label || s.purpose}** (${s.purpose})\n  ID: ${s.id} | Created: ${s.createdAt}`
+        ).join('\n');
+        return text(`${secrets.length} secret(s):\n\n${summary}`);
+      }
+
+      if (subAction === 'set') {
+        if (!params.label) throw new Error('label is required (env var name, e.g. "buildd-api-key")');
+        if (!params.value) throw new Error('value is required (the secret value)');
+
+        const data = await api('/api/secrets', {
+          method: 'POST',
+          body: JSON.stringify({
+            value: params.value,
+            purpose: params.purpose || 'mcp_credential',
+            label: params.label,
+          }),
+        });
+
+        return text(`Secret stored: label="${params.label}" | ID: ${data.id}`);
+      }
+
+      if (subAction === 'delete') {
+        if (!params.secretId) throw new Error('secretId is required');
+
+        await api(`/api/secrets?id=${params.secretId}`, {
+          method: 'DELETE',
+        });
+
+        return text(`Secret ${params.secretId} deleted.`);
+      }
+
+      return text('Unknown action');
     }
 
     case 'create_artifact': {

@@ -1,17 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@buildd/core/db';
+import { accounts } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { hashApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
-// POST /api/secrets — store an encrypted secret (session auth, team-scoped)
-export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+/**
+ * Dual auth: API key (Bearer token) or session cookie.
+ * Returns the list of team IDs the caller belongs to.
+ */
+async function authenticateAndGetTeamIds(req: NextRequest): Promise<{ teamIds: string[]; accountId?: string } | null> {
+  // Try API key auth first
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  if (apiKey) {
+    const account = await db.query.accounts.findFirst({
+      where: eq(accounts.apiKey, hashApiKey(apiKey)),
+    });
+    if (account) {
+      return { teamIds: [account.teamId], accountId: account.id };
+    }
   }
 
-  const teamIds = await getUserTeamIds(user.id);
-  if (teamIds.length === 0) {
+  // Fall back to session auth
+  if (process.env.NODE_ENV === 'development') {
+    return { teamIds: [] };
+  }
+
+  const user = await getCurrentUser();
+  if (user) {
+    const teamIds = await getUserTeamIds(user.id);
+    return { teamIds };
+  }
+
+  return null;
+}
+
+// POST /api/secrets — store an encrypted secret (session or API key auth, team-scoped)
+export async function POST(req: NextRequest) {
+  const auth = await authenticateAndGetTeamIds(req);
+  if (!auth) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (auth.teamIds.length === 0) {
     return NextResponse.json({ error: 'No team found' }, { status: 403 });
   }
 
@@ -32,9 +66,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'label is required for mcp_credential secrets' }, { status: 400 });
   }
 
-  // Verify the requested team belongs to the user
-  const targetTeamId = teamId || teamIds[0];
-  if (!teamIds.includes(targetTeamId)) {
+  // Verify the requested team belongs to the caller
+  const targetTeamId = teamId || auth.teamIds[0];
+  if (!auth.teamIds.includes(targetTeamId)) {
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   }
 
@@ -42,7 +76,7 @@ export async function POST(req: NextRequest) {
     const provider = getSecretsProvider();
     const id = await provider.set(null, value, {
       teamId: targetTeamId,
-      accountId,
+      accountId: accountId || auth.accountId,
       workspaceId,
       purpose,
       label,
@@ -57,18 +91,16 @@ export async function POST(req: NextRequest) {
 
 // GET /api/secrets — list secret metadata (never values)
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
-  if (!user) {
+  const auth = await authenticateAndGetTeamIds(req);
+  if (!auth) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-
-  const teamIds = await getUserTeamIds(user.id);
-  if (teamIds.length === 0) {
+  if (auth.teamIds.length === 0) {
     return NextResponse.json({ secrets: [] });
   }
 
-  const teamId = req.nextUrl.searchParams.get('teamId') || teamIds[0];
-  if (!teamIds.includes(teamId)) {
+  const teamId = req.nextUrl.searchParams.get('teamId') || auth.teamIds[0];
+  if (!auth.teamIds.includes(teamId)) {
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   }
 
@@ -84,9 +116,12 @@ export async function GET(req: NextRequest) {
 
 // DELETE /api/secrets?id=xxx — remove a secret
 export async function DELETE(req: NextRequest) {
-  const user = await getCurrentUser();
-  if (!user) {
+  const auth = await authenticateAndGetTeamIds(req);
+  if (!auth) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (auth.teamIds.length === 0) {
+    return NextResponse.json({ error: 'No team found' }, { status: 403 });
   }
 
   const id = req.nextUrl.searchParams.get('id');
@@ -94,16 +129,10 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'id is required' }, { status: 400 });
   }
 
-  const teamIds = await getUserTeamIds(user.id);
-  if (teamIds.length === 0) {
-    return NextResponse.json({ error: 'No team found' }, { status: 403 });
-  }
-
   try {
-    // Verify the secret belongs to one of the user's teams by listing first
+    // Verify the secret belongs to one of the caller's teams by listing first
     const provider = getSecretsProvider();
-    // We check ownership by listing all secrets for user's teams and verifying the ID is there
-    for (const teamId of teamIds) {
+    for (const teamId of auth.teamIds) {
       const teamSecrets = await provider.list(teamId);
       if (teamSecrets.some(s => s.id === id)) {
         await provider.delete(id);
