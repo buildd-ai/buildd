@@ -237,14 +237,27 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
       }
     }
 
-    // Coordination workspace fallback: workspaces with no repo (e.g. __coordination)
-    // get a temp directory so they have a clean working directory without needing a git repo
-    if (!workspace.repo && workspace.name.startsWith('__')) {
-      const tmpPath = join(tmpdir(), 'buildd-coordination', workspace.name);
-      mkdirSync(tmpPath, { recursive: true });
-      attempts.push({ path: tmpPath, exists: true, method: 'coordination-tmpdir' });
-      console.log(`Coordination workspace "${workspace.name}" resolved to temp dir: ${tmpPath}`);
-      return { path: tmpPath, attempts };
+    // No-repo workspace fallback: create a persistent project directory
+    // - Workspaces prefixed with '__' (e.g. __coordination) get a temp directory
+    // - All other no-repo workspaces get a persistent directory in the first project root
+    //   so agents can bootstrap new projects without an existing repo
+    if (!workspace.repo) {
+      if (workspace.name.startsWith('__')) {
+        const tmpPath = join(tmpdir(), 'buildd-coordination', workspace.name);
+        mkdirSync(tmpPath, { recursive: true });
+        attempts.push({ path: tmpPath, exists: true, method: 'coordination-tmpdir' });
+        console.log(`Coordination workspace "${workspace.name}" resolved to temp dir: ${tmpPath}`);
+        return { path: tmpPath, attempts };
+      }
+
+      // Persistent project directory for new projects without repos
+      if (roots.length > 0) {
+        const projectDir = join(roots[0], workspace.name);
+        mkdirSync(projectDir, { recursive: true });
+        attempts.push({ path: projectDir, exists: true, method: 'no-repo-project-dir' });
+        console.log(`No-repo workspace "${workspace.name}" resolved to project dir: ${projectDir}`);
+        return { path: projectDir, attempts };
+      }
     }
 
     return { path: null, attempts };

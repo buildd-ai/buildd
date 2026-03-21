@@ -4,8 +4,76 @@ import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
+/** Maximum number of failed worker attempts before a task is permanently failed */
+const MAX_WORKER_RETRIES = 3;
+
 /** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Decide what to do with a task whose worker just died:
+ * 1. If the worker produced deliverables → promote to completed
+ * 2. If retry cap reached (3+ failed workers) → fail permanently
+ * 3. Otherwise → reset to pending for another attempt
+ *
+ * Always resolves dependencies afterward.
+ */
+async function resolveStaleTask(
+  taskId: string,
+  workspaceId: string,
+  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null } | undefined,
+) {
+  // Check if the stale worker produced deliverables
+  let hasDeliverables = false;
+  if (staleWorker) {
+    try {
+      const artifactCount = await getWorkerArtifactCount(staleWorker.id);
+      const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
+      hasDeliverables = deliverables.hasAny;
+    } catch { /* non-fatal — default to pending */ }
+  }
+
+  if (hasDeliverables) {
+    await db
+      .update(tasks)
+      .set({ status: 'completed', updatedAt: new Date() })
+      .where(eq(tasks.id, taskId));
+  } else {
+    // Count how many workers have already failed on this task
+    const failedWorkers = await db.query.workers.findMany({
+      where: and(
+        eq(workers.taskId, taskId),
+        eq(workers.status, 'failed'),
+      ),
+      columns: { id: true },
+    });
+
+    if (failedWorkers.length >= MAX_WORKER_RETRIES) {
+      // Retry cap reached — permanently fail the task
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          result: { error: `Task failed after ${failedWorkers.length} worker attempts` } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    } else {
+      // Retries remaining — reset to pending
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    }
+  }
+
+  await resolveCompletedTask(taskId, workspaceId);
+}
 
 /**
  * Clean up stale workers for a specific account.
@@ -72,40 +140,11 @@ export async function cleanupStaleWorkers(accountId: string) {
         });
 
         if (otherActiveWorkers.length === 0) {
-          // Check if the stale worker actually produced deliverables
-          // If so, promote the task to completed instead of resetting to pending
           const staleWorker = staleWorkers.find(w => w.taskId === t.id);
-          let hasDeliverables = false;
-          if (staleWorker) {
-            try {
-              const artifactCount = await getWorkerArtifactCount(staleWorker.id);
-              const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
-              hasDeliverables = deliverables.hasAny;
-            } catch { /* non-fatal — default to pending */ }
-          }
-
-          if (hasDeliverables) {
-            await db
-              .update(tasks)
-              .set({
-                status: 'completed',
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, t.id));
-          } else {
-            await db
-              .update(tasks)
-              .set({
-                status: 'pending',
-                claimedBy: null,
-                claimedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, t.id));
-          }
+          await resolveStaleTask(t.id, t.workspaceId, staleWorker);
+        } else {
+          await resolveCompletedTask(t.id, t.workspaceId);
         }
-
-        await resolveCompletedTask(t.id, t.workspaceId);
       }
     }
   }
@@ -147,11 +186,17 @@ export async function cleanupStaleWorkers(accountId: string) {
         .where(inArray(workers.id, orphanIds));
 
       if (orphanTaskIds.length > 0) {
+        // Fetch workspace IDs for dependency resolution
+        const orphanTasks = await db.query.tasks.findMany({
+          where: inArray(tasks.id, orphanTaskIds),
+          columns: { id: true, workspaceId: true },
+        });
+
         // Only reset tasks that have NO other active workers
-        for (const taskId of orphanTaskIds) {
+        for (const task of orphanTasks) {
           const otherActiveWorkers = await db.query.workers.findMany({
             where: and(
-              eq(workers.taskId, taskId),
+              eq(workers.taskId, task.id),
               inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
               not(inArray(workers.id, orphanIds)),
             ),
@@ -160,37 +205,8 @@ export async function cleanupStaleWorkers(accountId: string) {
           });
 
           if (otherActiveWorkers.length === 0) {
-            // Check if the orphaned worker actually produced deliverables
-            // If so, promote the task to completed instead of resetting to pending
-            const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === taskId);
-            let hasDeliverables = false;
-            if (orphanWorker) {
-              try {
-                const artifactCount = await getWorkerArtifactCount(orphanWorker.id);
-                const deliverables = checkWorkerDeliverables(orphanWorker, { artifactCount });
-                hasDeliverables = deliverables.hasAny;
-              } catch { /* non-fatal — default to pending */ }
-            }
-
-            if (hasDeliverables) {
-              await db
-                .update(tasks)
-                .set({
-                  status: 'completed',
-                  updatedAt: new Date(),
-                })
-                .where(eq(tasks.id, taskId));
-            } else {
-              await db
-                .update(tasks)
-                .set({
-                  status: 'pending',
-                  claimedBy: null,
-                  claimedAt: null,
-                  updatedAt: new Date(),
-                })
-                .where(eq(tasks.id, taskId));
-            }
+            const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === task.id);
+            await resolveStaleTask(task.id, task.workspaceId, orphanWorker);
           }
         }
       }
