@@ -84,6 +84,13 @@ export async function GET(
             conditions.push(eq(workspaceSkills.enabled, false));
         }
 
+        const isRoleParam = url.searchParams.get('isRole');
+        if (isRoleParam === 'true') {
+            conditions.push(eq(workspaceSkills.isRole, true));
+        } else if (isRoleParam === 'false') {
+            conditions.push(eq(workspaceSkills.isRole, false));
+        }
+
         const results = await db
             .select()
             .from(workspaceSkills)
