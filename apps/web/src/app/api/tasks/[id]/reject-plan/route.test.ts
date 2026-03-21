@@ -189,4 +189,52 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(inserted.context.planFeedback).toBe('Add error handling steps');
     expect(inserted.context.previousPlanTaskId).toBe('plan-task-1');
   });
+
+  it('preserves missionId on revised planning task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: 'mission-42',
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: {},
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'Try again' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0].missionId).toBe('mission-42');
+  });
+
+  it('preserves null missionId when task has no mission', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: null,
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: {},
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'Try again' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0].missionId).toBeNull();
+  });
 });

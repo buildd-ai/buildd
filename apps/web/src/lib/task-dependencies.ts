@@ -76,7 +76,7 @@ async function maybeCreateAggregationTask(
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
     where: eq(tasks.id, parentTaskId),
-    columns: { id: true, mode: true, title: true, workspaceId: true },
+    columns: { id: true, mode: true, title: true, workspaceId: true, missionId: true },
   });
 
   if (!parent || parent.mode !== 'planning') return;
@@ -108,6 +108,7 @@ async function maybeCreateAggregationTask(
     description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
     mode: 'execution',
     parentTaskId,
+    missionId: parent.missionId,
     status: 'pending',
     creationSource: 'api',
     outputRequirement: 'artifact_required',

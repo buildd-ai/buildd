@@ -98,6 +98,7 @@ export async function POST(
           title: step.title,
           description: step.description || null,
           parentTaskId: id,
+          missionId: task.missionId,
           mode: 'execution',
           creationSource: 'api',
           status: 'pending',

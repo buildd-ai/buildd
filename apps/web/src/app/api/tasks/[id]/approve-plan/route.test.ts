@@ -292,6 +292,35 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     expect(mockInsertValues).toHaveLength(0);
   });
 
+  it('preserves missionId on child execution tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      missionId: 'mission-42',
+      result: {
+        structuredOutput: {
+          plan: [
+            { ref: 'step-1', title: 'Research', description: 'Do research' },
+            { ref: 'step-2', title: 'Implement', description: 'Write code' },
+          ],
+          summary: 'Two step plan',
+        },
+      },
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest();
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    expect(mockInsertValues).toHaveLength(2);
+    expect(mockInsertValues[0].missionId).toBe('mission-42');
+    expect(mockInsertValues[1].missionId).toBe('mission-42');
+  });
+
   it('returns 400 when plan has circular dependencies', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({

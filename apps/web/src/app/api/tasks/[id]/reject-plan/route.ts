@@ -70,6 +70,7 @@ export async function POST(
         status: 'pending',
         creationSource: 'api',
         parentTaskId: task.parentTaskId,
+        missionId: task.missionId,
         priority: task.priority,
         context: {
           ...existingContext,
