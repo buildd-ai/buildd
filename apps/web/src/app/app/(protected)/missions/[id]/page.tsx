@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
@@ -222,13 +223,13 @@ export default async function MissionDetailPage({
         )}
 
         {/* Workspace link */}
-        {mission.workspace && (
+        {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
           <div className="flex items-center gap-2 text-[12px] text-text-muted">
             <Link
               href={`/app/workspaces/${mission.workspace.id}`}
               className="text-accent-text hover:underline"
             >
-              {mission.workspace.name}
+              {displayWorkspaceName(mission.workspace.name)}
             </Link>
           </div>
         )}

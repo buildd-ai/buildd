@@ -4,6 +4,7 @@ import { desc, eq, inArray, and, gte } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { displayWorkspaceName } from '@buildd/shared';
 import TaskGrid from './TaskGrid';
 
 export default async function TasksPage({
@@ -104,7 +105,7 @@ export default async function TasksPage({
             status: isWaiting ? 'waiting_input' : t.status,
             category: t.category,
             updatedAt: t.updatedAt.toISOString(),
-            workspaceName: wsNameMap.get(t.workspaceId) || 'Unknown',
+            workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
             prUrl: result?.prUrl || null,
             prNumber: result?.prNumber || null,
             summary: result?.summary || null,

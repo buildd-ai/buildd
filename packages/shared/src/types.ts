@@ -7,6 +7,12 @@ export function isSystemWorkspace(name: string): boolean {
   return name.startsWith('__');
 }
 
+/** Returns a user-friendly display name for a workspace, replacing internal names */
+export function displayWorkspaceName(name: string): string {
+  if (isSystemWorkspace(name)) return 'Organizer';
+  return name;
+}
+
 // ============================================================================
 // ENUMS & CONSTANTS
 // ============================================================================

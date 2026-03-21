@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { displayWorkspaceName } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
@@ -228,7 +229,7 @@ export default async function TaskDetailPage({
               )}
             </div>
             <p className="text-[14px] text-text-secondary">
-              {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
+              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
           <div className="flex gap-2 flex-wrap">
