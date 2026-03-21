@@ -14,6 +14,7 @@ export default function MobileTasksLayout({ sidebar, workspaces, children }: Pro
   const pathname = usePathname();
   // Auto-open sidebar on mobile when on the tasks index route (no task selected)
   const isIndexRoute = pathname === '/app/tasks';
+  const isTaskDetail = /^\/app\/tasks\/[^/]+$/.test(pathname);
   const [sidebarOpen, setSidebarOpen] = useState(isIndexRoute);
   const [modalOpen, setModalOpen] = useState(false);
   const router = useRouter();
@@ -41,8 +42,8 @@ export default function MobileTasksLayout({ sidebar, workspaces, children }: Pro
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Mobile header bar */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center gap-2 px-3 py-2.5 bg-surface-2 border-b border-border-default">
+      {/* Mobile header bar — hidden on task detail to give full-page view */}
+      <div className={`md:hidden fixed top-0 left-0 right-0 z-10 flex items-center gap-2 px-3 py-2.5 bg-surface-2 border-b border-border-default ${isTaskDetail ? 'hidden' : ''}`}>
         <button
           onClick={() => setSidebarOpen(true)}
           className="p-2 -ml-1 text-text-secondary hover:bg-surface-3 rounded-lg"
@@ -63,27 +64,27 @@ export default function MobileTasksLayout({ sidebar, workspaces, children }: Pro
         )}
       </div>
 
-      {/* Mobile overlay */}
-      {sidebarOpen && (
+      {/* Mobile overlay — hidden on task detail */}
+      {sidebarOpen && !isTaskDetail && (
         <div
           className="md:hidden fixed inset-0 z-30 bg-black/40"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar - hidden on mobile by default, overlay when open */}
+      {/* Sidebar - hidden on mobile task detail, overlay on mobile index, always visible on desktop */}
       <div
         className={`
           fixed inset-y-0 left-0 z-40 w-[85vw] md:w-auto transform transition-transform duration-200 ease-in-out
           md:relative md:translate-x-0 md:transition-none
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          ${isTaskDetail ? '-translate-x-full md:translate-x-0' : sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
       >
         {sidebar}
       </div>
 
-      {/* Main content - add top padding on mobile for the header bar */}
-      <main className="flex-1 overflow-auto pt-12 md:pt-0">
+      {/* Main content - add top padding on mobile for the header bar (not on task detail) */}
+      <main className={`flex-1 overflow-auto ${isTaskDetail ? 'pt-0' : 'pt-12'} md:pt-0`}>
         {children}
       </main>
 

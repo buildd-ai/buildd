@@ -11,11 +11,11 @@ const migrationsFolder = join(__dirname, '..', 'drizzle');
 async function main() {
   console.log('Running migrations from:', migrationsFolder);
 
-  // Retry loop to handle Neon preview branch endpoints that need time to start up.
-  // New branch endpoints can return "password authentication failed" for a few seconds
-  // while the compute is initializing and roles are being synced.
+  // Retry loop for Neon preview branch cold starts. The CI now extracts
+  // the connection URI directly from the Neon API, so "password authentication
+  // failed" should be rare. Retries mainly cover ECONNREFUSED / endpoint-disabled.
   const maxAttempts = 12;
-  const retryDelayMs = 10000;
+  const retryDelayMs = 5000;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {

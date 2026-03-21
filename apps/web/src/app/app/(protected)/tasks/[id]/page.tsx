@@ -182,11 +182,26 @@ export default async function TaskDetailPage({
           hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
         />
 
-        {/* Breadcrumbs — hidden on mobile (mobile header has nav) */}
-        <nav aria-label="Breadcrumb" className="hidden md:block text-sm text-text-secondary mb-4">
-          <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
-          <span className="mx-2">/</span>
-          <span className="text-text-primary">{task.title}</span>
+        {/* Breadcrumbs */}
+        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+          {task.mission ? (
+            <>
+              <Link href={`/app/missions/${task.mission.id}`} className="hover:text-text-primary inline-flex items-center gap-1">
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                {task.mission.title}
+              </Link>
+              <span className="mx-2">/</span>
+            </>
+          ) : (
+            <>
+              <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                Tasks
+              </Link>
+              <span className="mx-2">/</span>
+            </>
+          )}
+          <span className="text-text-primary hidden md:inline">{task.title}</span>
         </nav>
 
         {/* Header */}
