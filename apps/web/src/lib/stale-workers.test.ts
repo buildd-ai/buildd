@@ -428,3 +428,121 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     expect(mockCheckWorkerDeliverables).not.toHaveBeenCalled();
   });
 });
+
+describe('cleanupStaleWorkers — retry cap', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  it('resets task to pending when fewer than 3 failed workers exist', async () => {
+    // Call sequence:
+    // 1. Stale workers → 1 stale worker
+    // 2. Other active workers for the task → none
+    // 3. Failed workers count (retry cap) → 2 failed (below cap)
+    // 4. Heartbeat orphans → none
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }]) // 2 failed workers (below cap of 3)
+      .mockResolvedValueOnce([]); // heartbeat check — no orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.claimedBy).toBeNull();
+    expect(taskUpdateSet.claimedAt).toBeNull();
+  });
+
+  it('permanently fails task when 3+ failed workers exist (retry cap reached)', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }]) // 3 failed (at cap)
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result).toBeDefined();
+    expect(taskUpdateSet.result.error).toContain('3 worker attempts');
+  });
+
+  it('still promotes to completed with deliverables even when retry cap is reached', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #1',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: 'https://github.com/pr/1', prNumber: 1, commitCount: 3 },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      // Note: failed workers count query should NOT be called when deliverables exist
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Deliverables take priority — task promoted to completed regardless of retry count
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+});
