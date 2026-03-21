@@ -36,6 +36,16 @@ mock.module('@/lib/stale-workers', () => ({
   cleanupStuckWaitingInput: mockCleanupStuckWaitingInput,
 }));
 
+// Mock worker-deliverables to prevent cross-file mock contamination from stale-workers.test.ts
+const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
+const mockCheckWorkerDeliverables = mock(() => ({
+  hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+}));
+mock.module('@/lib/worker-deliverables', () => ({
+  checkWorkerDeliverables: mockCheckWorkerDeliverables,
+  getWorkerArtifactCount: mockGetWorkerArtifactCount,
+}));
+
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
@@ -89,6 +99,12 @@ describe('POST /api/tasks/cleanup', () => {
     mockCleanupStaleWorkers.mockResolvedValue(undefined);
     mockCleanupStuckWaitingInput.mockReset();
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
 
     // Default: no stale heartbeats
     mockHeartbeatsFindMany.mockResolvedValue([]);
