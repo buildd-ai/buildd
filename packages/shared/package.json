@@ -1,6 +1,6 @@
 {
   "name": "@buildd/shared",
-  "version": "0.52.1",
+  "version": "0.53.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
