@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq, and, sql, inArray, like } from 'drizzle-orm';
+import { tasks, missions } from '@buildd/core/db/schema';
+import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 /**
@@ -68,6 +68,7 @@ async function checkChildrenCompleted(
  * If the parent task has mode='planning', create an aggregation child task
  * to synthesize the results of all completed sub-tasks.
  * Guards against duplicate creation by checking for existing aggregation tasks.
+ * Cancels stale pending aggregators (>1 hour old) and skips if mission is already completed.
  */
 async function maybeCreateAggregationTask(
   parentTaskId: string,
@@ -81,9 +82,18 @@ async function maybeCreateAggregationTask(
 
   if (!parent || parent.mode !== 'planning') return;
 
+  // Skip if the parent's mission is already completed
+  if (parent.missionId) {
+    const mission = await db.query.missions.findFirst({
+      where: eq(missions.id, parent.missionId),
+      columns: { id: true, status: true },
+    });
+    if (mission?.status === 'completed') return;
+  }
+
   // Guard: check if an aggregation task already exists
   const existing = await db
-    .select({ id: tasks.id })
+    .select({ id: tasks.id, status: tasks.status, createdAt: tasks.createdAt })
     .from(tasks)
     .where(
       and(
@@ -92,7 +102,23 @@ async function maybeCreateAggregationTask(
       )
     );
 
-  if (existing.length > 0) return;
+  if (existing.length > 0) {
+    // Cancel stale pending aggregators (created > 1 hour ago) so a fresh one can be created
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const stalePending = existing.filter(
+      (e) => e.status === 'pending' && e.createdAt < oneHourAgo
+    );
+
+    if (stalePending.length > 0) {
+      await db
+        .update(tasks)
+        .set({ status: 'cancelled' })
+        .where(inArray(tasks.id, stalePending.map((e) => e.id)));
+    } else {
+      // Non-stale aggregator exists (pending, in_progress, or completed) — don't create another
+      return;
+    }
+  }
 
   // Build context with child task summaries
   const childSummaries = children.map((c) => ({

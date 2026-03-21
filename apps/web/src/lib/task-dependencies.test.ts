@@ -8,6 +8,9 @@ const mockFrom = mock();
 const mockWhere = mock(() => [] as any);
 const mockInsertValues = mock(() => Promise.resolve());
 const mockInsert = mock();
+const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
+const mockUpdate = mock(() => ({ set: mockUpdateSet }));
+const mockUpdateWhere = mock(() => Promise.resolve());
 
 // Track chained select calls to return different results
 let selectCallCount = 0;
@@ -16,6 +19,10 @@ let selectWhereResults: any[][] = [];
 // Track findFirst calls to return different results per call
 let findFirstCallCount = 0;
 let findFirstResults: any[] = [];
+
+// Track missions findFirst separately
+let missionsFindFirstResults: any[] = [];
+let missionsFindFirstCallCount = 0;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -27,6 +34,12 @@ mock.module('@buildd/core/db', () => ({
           return Promise.resolve(findFirstResults[callIndex] ?? null);
         },
         findMany: mockFindMany,
+      },
+      missions: {
+        findFirst: (...args: any[]) => {
+          const callIndex = missionsFindFirstCallCount++;
+          return Promise.resolve(missionsFindFirstResults[callIndex] ?? null);
+        },
       },
     },
     select: (...args: any[]) => {
@@ -48,6 +61,20 @@ mock.module('@buildd/core/db', () => ({
       mockInsert(...args);
       return {
         values: mockInsertValues,
+      };
+    },
+    update: (...args: any[]) => {
+      mockUpdate(...args);
+      return {
+        set: (...setArgs: any[]) => {
+          mockUpdateSet(...setArgs);
+          return {
+            where: (...whereArgs: any[]) => {
+              mockUpdateWhere(...whereArgs);
+              return Promise.resolve();
+            },
+          };
+        },
       };
     },
   },
@@ -74,10 +101,15 @@ function resetMocks() {
   mockTriggerEvent.mockReset();
   mockInsert.mockReset();
   mockInsertValues.mockReset();
+  mockUpdate.mockReset();
+  mockUpdateSet.mockReset();
+  mockUpdateWhere.mockReset();
   selectCallCount = 0;
   selectWhereResults = [];
   findFirstCallCount = 0;
   findFirstResults = [];
+  missionsFindFirstCallCount = 0;
+  missionsFindFirstResults = [];
 }
 
 describe('task-dependencies', () => {
@@ -220,8 +252,8 @@ describe('task-dependencies aggregation', () => {
   it('creates aggregation task when planning parent children all complete', async () => {
     // findFirst[0]: completed task's parentTaskId
     findFirstResults[0] = { parentTaskId: 'parent-1' };
-    // findFirst[1]: parent is planning mode
-    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan feature X', workspaceId: 'ws-1' };
+    // findFirst[1]: parent is planning mode (no mission)
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan feature X', workspaceId: 'ws-1', missionId: null };
 
     mockFindMany.mockResolvedValue([
       { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: { summary: 'Done step 1' } },
@@ -271,16 +303,16 @@ describe('task-dependencies aggregation', () => {
 
   it('does NOT create duplicate aggregation task', async () => {
     findFirstResults[0] = { parentTaskId: 'parent-1' };
-    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan feature X', workspaceId: 'ws-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan feature X', workspaceId: 'ws-1', missionId: null };
 
     mockFindMany.mockResolvedValue([
       { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
       { id: 'agg-1', status: 'completed', workspaceId: 'ws-1', title: 'Aggregate results: Plan feature X', result: null },
     ]);
 
-    // select[0]: existing aggregation task found
+    // select[0]: existing aggregation task found (recent, not stale)
     // select[1]: no dependsOn tasks
-    selectWhereResults = [[{ id: 'agg-1' }], []];
+    selectWhereResults = [[{ id: 'agg-1', status: 'completed', createdAt: new Date() }], []];
 
     await resolveCompletedTask('child-1', 'ws-1');
 
@@ -289,7 +321,7 @@ describe('task-dependencies aggregation', () => {
 
   it('includes child results in aggregation context', async () => {
     findFirstResults[0] = { parentTaskId: 'parent-1' };
-    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Analyze data', workspaceId: 'ws-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Analyze data', workspaceId: 'ws-1', missionId: null };
 
     const childResults = [
       { id: 'c-1', status: 'completed', workspaceId: 'ws-1', title: 'Gather data', result: { summary: 'Collected 100 records' } },
@@ -318,5 +350,98 @@ describe('task-dependencies aggregation', () => {
         },
       })
     );
+  });
+
+  it('cancels stale pending aggregator and creates a new one', async () => {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: null };
+
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+    ]);
+
+    // select[0]: existing stale pending aggregator (created 2 hours ago)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    selectWhereResults = [
+      [{ id: 'stale-agg', status: 'pending', createdAt: twoHoursAgo }],
+      [], // no dependsOn tasks
+    ];
+
+    await resolveCompletedTask('child-1', 'ws-1');
+
+    // Should cancel the stale aggregator
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ status: 'cancelled' });
+
+    // Should create a new aggregation task
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Aggregate results: Plan X',
+        status: 'pending',
+      })
+    );
+  });
+
+  it('does NOT cancel recent pending aggregator', async () => {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: null };
+
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+    ]);
+
+    // select[0]: recent pending aggregator (created 10 minutes ago)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    selectWhereResults = [
+      [{ id: 'recent-agg', status: 'pending', createdAt: tenMinutesAgo }],
+      [], // no dependsOn tasks
+    ];
+
+    await resolveCompletedTask('child-1', 'ws-1');
+
+    // Should NOT cancel or create
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('skips aggregation when mission is already completed', async () => {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: 'mission-1' };
+
+    // Mission is completed
+    missionsFindFirstResults[0] = { id: 'mission-1', status: 'completed' };
+
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+    ]);
+
+    // select[0]: no dependsOn tasks (aggregation check is skipped, so only dependsOn select runs)
+    selectWhereResults = [[]];
+
+    await resolveCompletedTask('child-1', 'ws-1');
+
+    // Should NOT create aggregation task
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('still creates aggregation when mission is active', async () => {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: 'mission-1' };
+
+    // Mission is active
+    missionsFindFirstResults[0] = { id: 'mission-1', status: 'active' };
+
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+    ]);
+
+    // select[0]: no existing aggregation task
+    // select[1]: no dependsOn tasks
+    selectWhereResults = [[], []];
+
+    await resolveCompletedTask('child-1', 'ws-1');
+
+    expect(mockInsert).toHaveBeenCalledTimes(1);
   });
 });
