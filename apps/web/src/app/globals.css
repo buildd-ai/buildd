@@ -251,6 +251,70 @@ body {
   }
 }
 
+@layer components {
+  /* Mission card accent borders */
+  .mission-card {
+    border-left: 4px solid transparent;
+  }
+  .mission-card-running { border-left-color: var(--status-success); }
+  .mission-card-scheduled { border-left-color: var(--status-info); }
+  .mission-card-attention { border-left-color: var(--status-warning); }
+  .mission-card-completed { border-left-color: var(--text-muted); }
+
+  /* Compact completed cards */
+  .mission-card-compact {
+    opacity: 0.7;
+    transition: opacity 150ms ease, background 150ms ease, transform 150ms ease;
+  }
+  .mission-card-compact:hover {
+    opacity: 0.85;
+  }
+
+  /* Hibernating (far-future schedule) */
+  .mission-card-hibernating {
+    opacity: 0.8;
+  }
+
+  /* Filter pill bar */
+  .filter-pill {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    padding: 5px 12px;
+    border-radius: 9999px;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    transition: all 150ms ease;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .filter-pill:hover {
+    color: var(--text-secondary);
+    background: rgba(255, 245, 230, 0.04);
+  }
+  .filter-pill-active {
+    background: rgba(255, 245, 230, 0.08);
+    color: var(--text-primary);
+  }
+
+  /* Section header label */
+  .section-label-missions {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* Imminent run highlight */
+  .next-run-imminent {
+    color: var(--status-success);
+    font-weight: 500;
+  }
+}
+
 [data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
 [data-theme="light"] .glow-dot-running { --glow-color: rgba(176, 125, 79, 0.25); }
 [data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }
