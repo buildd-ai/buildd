@@ -62,6 +62,7 @@ export const adminActions = [
   'manage_secrets',
   'approve_plan', 'reject_plan',
   'manage_missions',
+  'manage_workspaces',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -103,6 +104,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
+    manage_workspaces: '{ action: "list" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) Create workspace in dashboard or API, 2) Agent claims task in that workspace, 3) Agent uses manage_workspaces action=create_repo to create GitHub repo (or action=update to link existing repo), 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -1295,6 +1297,69 @@ export async function handleBuilddAction(
         }
         default:
           throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+      }
+    }
+
+    // ── Workspaces ─────────────────────────────────────────────────────────
+
+    case 'manage_workspaces': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsAction = params.action as string;
+      if (!wsAction) throw new Error('action is required (list, update, create_repo, init)');
+
+      switch (wsAction) {
+        case 'list': {
+          const data = await api('/api/workspaces');
+          const wsList = data.workspaces || [];
+          if (wsList.length === 0) return text('No workspaces found.');
+          const summary = wsList.map((ws: any) =>
+            `- **${ws.name}**${ws.repo ? ` (${ws.repo})` : ' (no repo)'}\n  ID: ${ws.id}${ws.accessMode ? ` | Access: ${ws.accessMode}` : ''}`
+          ).join('\n\n');
+          return text(`${wsList.length} workspace(s):\n\n${summary}`);
+        }
+        case 'update': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for update');
+          const body: Record<string, unknown> = {};
+          if (params.name !== undefined) body.name = params.name;
+          if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
+          if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
+          if (params.accessMode !== undefined) body.accessMode = params.accessMode;
+          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required (name, repoUrl, defaultBranch, accessMode)');
+          await api(`/api/workspaces/${wsId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}`);
+        }
+        case 'create_repo': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for create_repo');
+          if (!params.name) throw new Error('name (repo name) is required for create_repo');
+          const repoData = await api(`/api/workspaces/${wsId}/create-repo`, {
+            method: 'POST',
+            body: JSON.stringify({
+              name: params.name,
+              org: params.org || undefined,
+              private: params.private !== false,
+              description: params.description || undefined,
+            }),
+          });
+          if (repoData.error) {
+            return errorResult(`Failed to create repo: ${repoData.error}${repoData.hint ? `\nHint: ${repoData.hint}` : ''}`);
+          }
+          return text(`Repository created: ${repoData.repoUrl}\nWorkspace updated with new repo URL.`);
+        }
+        case 'init': {
+          // init is a runner-side action — return instructions for the agent
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for init');
+          return text(`Workspace ${wsId} directory will be auto-created by the runner when a task is claimed. No-repo workspaces are resolved to a persistent project directory on the runner (e.g. /home/coder/project/{workspace-name}/). To set up the project:\n1. The runner creates the directory automatically\n2. Run \`git init\` in the workspace directory\n3. Use manage_workspaces action=create_repo or action=update to link a remote repo`);
+        }
+        default:
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, update, create_repo, init`);
       }
     }
 
