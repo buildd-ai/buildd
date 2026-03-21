@@ -1,0 +1,198 @@
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// Mock functions
+const mockMissionsFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
+const mockInsertReturning = mock(() => [] as any[]);
+const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
+const mockInsert = mock(() => ({ values: mockInsertValues }));
+const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
+const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      missions: { findFirst: mockMissionsFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
+    },
+    insert: mockInsert,
+  },
+}));
+
+mock.module('drizzle-orm', () => ({
+  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  missions: { id: 'id' },
+  tasks: { id: 'id', workspaceId: 'workspaceId' },
+  workspaces: { id: 'id' },
+}));
+
+mock.module('@/lib/mission-context', () => ({
+  buildMissionContext: mockBuildMissionContext,
+}));
+
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
+mock.module('@/lib/orchestrator-workspace', () => ({
+  getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace,
+}));
+
+import { runMission } from './mission-run';
+
+describe('runMission', () => {
+  beforeEach(() => {
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockInsert.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertReturning.mockReset();
+    mockBuildMissionContext.mockReset();
+    mockDispatchNewTask.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockReset();
+    mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
+
+    mockInsert.mockReturnValue({ values: mockInsertValues });
+    mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+  });
+
+  it('throws when mission not found', async () => {
+    mockMissionsFindFirst.mockResolvedValue(null);
+    await expect(runMission('nonexistent')).rejects.toThrow('Mission not found');
+  });
+
+  it('throws when mission is not active', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'paused',
+      title: 'Test',
+      schedule: null,
+    });
+    await expect(runMission('obj-1')).rejects.toThrow('Cannot run mission with status: paused');
+  });
+
+  it('creates planning task with orchestrator creationSource', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      priority: 5,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission: My Mission',
+      context: { missionId: 'obj-1', missionTitle: 'My Mission' },
+    });
+
+    const createdTask = {
+      id: 'task-1',
+      title: 'Mission: My Mission',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      mode: 'planning',
+      missionId: 'obj-1',
+    };
+    mockInsertReturning.mockResolvedValue([createdTask]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
+
+    const result = await runMission('obj-1');
+
+    expect(result.task.id).toBe('task-1');
+    expect(result.task.mode).toBe('planning');
+
+    // Verify task was inserted with correct values
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.creationSource).toBe('orchestrator');
+    expect(insertCall.missionId).toBe('obj-1');
+    expect(insertCall.mode).toBe('planning');
+
+    // Verify dispatch was called
+    expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
+  });
+
+  it('sets manualRun in context when option is true', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-1', { manualRun: true });
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect((insertCall.context as any).manualRun).toBe(true);
+  });
+
+  it('does not set manualRun when option is omitted', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-1');
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect((insertCall.context as any).manualRun).toBeUndefined();
+  });
+
+  it('auto-creates coordination workspace when mission has no workspaceId', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: null,
+      status: 'active',
+      title: 'No WS Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'orchestrator-ws' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'orchestrator-ws', name: '__coordination' });
+
+    await runMission('obj-1');
+
+    expect(mockGetOrCreateCoordinationWorkspace).toHaveBeenCalledWith('team-1');
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.workspaceId).toBe('orchestrator-ws');
+  });
+});

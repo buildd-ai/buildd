@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
+import { runMission } from '@/lib/mission-run';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -179,7 +180,20 @@ export async function POST(req: NextRequest) {
       mission.scheduleId = schedule.id;
     }
 
-    return NextResponse.json(mission, { status: 201 });
+    // Auto-start the organizer: create and dispatch a planning task immediately.
+    // Fire-and-forget — mission creation succeeds even if the organizer fails to start.
+    let organizerTask: { id: string } | null = null;
+    try {
+      const result = await runMission(mission.id);
+      organizerTask = { id: result.task.id };
+    } catch (err) {
+      console.error('Auto-start organizer failed (mission still created):', err);
+    }
+
+    return NextResponse.json(
+      { ...mission, organizerTask },
+      { status: 201 }
+    );
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });

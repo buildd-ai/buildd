@@ -7,6 +7,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
+const mockRunMission = mock(() => Promise.resolve({ task: { id: 'organizer-task-1' } }));
 let insertedMissionValues: any = null;
 let insertedScheduleValues: any = null;
 const mockMissionsInsert = mock(() => ({
@@ -51,6 +52,10 @@ mock.module('@/lib/schedule-helpers', () => ({
   computeNextRunAt: () => new Date('2026-01-01'),
 }));
 
+mock.module('@/lib/mission-run', () => ({
+  runMission: mockRunMission,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -89,6 +94,7 @@ describe('POST /api/missions', () => {
     mockMissionsInsert.mockReset();
     mockSchedulesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockRunMission.mockReset();
     insertedMissionValues = null;
     insertedScheduleValues = null;
 
@@ -96,6 +102,7 @@ describe('POST /api/missions', () => {
     mockAuthenticateApiKey.mockReturnValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
+    mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
 
     mockMissionsInsert.mockImplementation(() => ({
       values: mock((vals: any) => {
@@ -244,5 +251,41 @@ describe('POST /api/missions', () => {
     expect(res.status).toBe(201);
     expect(insertedScheduleValues).not.toBeNull();
     expect(insertedScheduleValues.workspaceId).toBe('ws-1');
+  });
+
+  // Auto-start organizer tests
+  it('auto-starts the organizer after mission creation', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Auto-start Mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    // runMission should have been called with the new mission ID
+    expect(mockRunMission).toHaveBeenCalledWith('obj-1');
+
+    // Response should include the organizerTask
+    const body = await res.json();
+    expect(body.organizerTask).toBeDefined();
+    expect(body.organizerTask.id).toBe('organizer-task-1');
+  });
+
+  it('still succeeds when auto-start organizer fails', async () => {
+    mockRunMission.mockRejectedValue(new Error('dispatch failed'));
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Resilient Mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    const body = await res.json();
+    // Mission created, but organizerTask is null
+    expect(body.title).toBe('Resilient Mission');
+    expect(body.organizerTask).toBeNull();
   });
 });
