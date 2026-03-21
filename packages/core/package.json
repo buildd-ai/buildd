@@ -20,12 +20,12 @@
     "./memory-client": "./memory-client.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.81",
     "@buildd/shared": "workspace:*",
-    "@anthropic-ai/claude-agent-sdk": ">=0.2.80",
-    "zod": "^4.3.6",
     "@neondatabase/serverless": "^0.9.0",
+    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.30.0",
-    "dotenv": "^16.4.5"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
