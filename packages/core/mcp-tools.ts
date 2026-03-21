@@ -994,7 +994,10 @@ export async function handleBuilddAction(
       switch (missionAction) {
         case 'list': {
           const qs = new URLSearchParams();
-          if (params.workspaceId) qs.set('workspaceId', params.workspaceId as string);
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (wsId) qs.set('workspaceId', wsId);
+          }
           if (params.status) qs.set('status', params.status as string);
           const data = await api(`/api/missions?${qs}`);
           const missions = data.missions || [];
@@ -1008,7 +1011,11 @@ export async function handleBuilddAction(
           if (!params.title) throw new Error('title is required');
           const body: Record<string, unknown> = { title: params.title };
           if (params.description) body.description = params.description;
-          if (params.workspaceId) body.workspaceId = params.workspaceId;
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
@@ -1043,7 +1050,11 @@ export async function handleBuilddAction(
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
-          if (params.workspaceId !== undefined) body.workspaceId = params.workspaceId;
+          if (params.workspaceId !== undefined) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
           if (params.recipeId !== undefined) body.recipeId = params.recipeId;
           if (params.model !== undefined) body.model = params.model;
