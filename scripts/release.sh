@@ -46,6 +46,46 @@ EOF
   exit 0
 fi
 
+# Manual tag: create git tag + GitHub release from package.json version on current main HEAD.
+# Useful when release-tag.yml was bypassed (e.g., agent merged without PR title match).
+if [ "${1:-}" = "--tag" ]; then
+  # Read version from apps/web/package.json (canonical source)
+  SEMVER=$(jq -r '.version' apps/web/package.json 2>/dev/null)
+  if [ -z "$SEMVER" ] || [ "$SEMVER" = "null" ]; then
+    echo "Could not read version from apps/web/package.json"
+    exit 1
+  fi
+  TAG="v${SEMVER}"
+
+  # Ensure we're on main with latest
+  git fetch origin main
+  git checkout main
+  git pull origin main --ff-only
+
+  # Check if tag already exists
+  if git rev-parse "$TAG" >/dev/null 2>&1; then
+    echo "Tag ${TAG} already exists"
+    exit 0
+  fi
+
+  echo "Creating tag ${TAG} on main..."
+  git tag "$TAG"
+  git push origin "$TAG"
+
+  # Build release notes from previous tag
+  PREV_TAG=$(git tag --sort=-v:refname --list 'v*' | grep -v "^${TAG}$" | head -1)
+  if [ -n "$PREV_TAG" ]; then
+    NOTES=$(git log "${PREV_TAG}..${TAG}" --format='- %s' --no-merges | grep -v 'chore: bump version')
+  else
+    NOTES="Initial release"
+  fi
+  [ -z "$NOTES" ] && NOTES="See git log for details."
+
+  gh release create "$TAG" --title "$TAG" --notes "$NOTES"
+  echo "Created GitHub release ${TAG}"
+  exit 0
+fi
+
 # Post-release cleanup: delete branches already in main
 if [ "${1:-}" = "--cleanup" ]; then
   echo "🧹 Cleaning up stale branches..."
@@ -178,6 +218,9 @@ if [ -n "$EXISTING_PR" ]; then
 else
   gh pr create --base main --head dev --title "Release ${NEW_VERSION}" --body "$BODY"
 fi
+
+# Note: release-tag.yml auto-creates the git tag when this PR merges (title must match "Release v...").
+# If the automated flow was bypassed, run: bun run release -- --tag
 
 # Create changelog task (if BUILDD_API_KEY is available)
 BUILDD_KEY="${BUILDD_API_KEY:-}"

@@ -2113,6 +2113,23 @@ export class WorkerManager {
       }
       promptParts.push(`## Task\n${taskDescription}`);
 
+      // Inject aggregation context: embed child task results directly so the agent
+      // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)
+      const taskCtx = task.context as { aggregation?: boolean; childTasks?: Array<{ title: string; status: string; taskId: string; result: any }> } | undefined;
+      if (taskCtx?.aggregation && taskCtx.childTasks && taskCtx.childTasks.length > 0) {
+        const aggParts: string[] = ['## Aggregation Context', 'The following sub-task results are available for synthesis:'];
+        for (const child of taskCtx.childTasks) {
+          aggParts.push(`### ${child.title} (status: ${child.status})`);
+          if (child.result) {
+            const resultStr = typeof child.result === 'string' ? child.result : JSON.stringify(child.result, null, 2);
+            aggParts.push(resultStr);
+          } else {
+            aggParts.push('*(no result)*');
+          }
+        }
+        promptParts.push(aggParts.join('\n'));
+      }
+
       // Communication instruction: configurable input policy
       // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
       const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
