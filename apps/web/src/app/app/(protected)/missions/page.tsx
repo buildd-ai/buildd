@@ -5,7 +5,8 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { deriveMissionHealth } from '@/lib/mission-helpers';
+import { MissionGrid } from './MissionGrid';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,12 +106,13 @@ export default async function MissionsPage() {
       progress,
       activeAgents,
       nextScanMins,
-      lastRunAt,
+      nextRunAt: nextRunAt ? String(nextRunAt) : null,
+      lastRunAt: lastRunAt ? String(lastRunAt) : null,
       role: null as { name: string; color: string } | null,
       latestFinding: latestFinding
         ? {
             title: (latestFinding.result as any)?.summary?.slice(0, 120) || 'Finding',
-            time: latestFinding.updatedAt,
+            time: String(latestFinding.updatedAt),
           }
         : null,
     };
@@ -122,7 +124,7 @@ export default async function MissionsPage() {
 
   return (
     <div className="px-7 md:px-10 pt-5 md:pt-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
           <span className="text-xs text-text-secondary font-light">
@@ -145,101 +147,8 @@ export default async function MissionsPage() {
           </p>
         </div>
       ) : (
-        <div className={missionsList.length > 4 ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'space-y-3'}>
-          {missionsList.map((mission) => (
-            <MissionCard key={mission.id} mission={mission} />
-          ))}
-        </div>
+        <MissionGrid missions={missionsList} />
       )}
     </div>
-  );
-}
-
-/* ── Unified Mission Card ── */
-function MissionCard({ mission }: { mission: any }) {
-  const healthDisplay = HEALTH_DISPLAY[mission.health as keyof typeof HEALTH_DISPLAY];
-
-  return (
-    <Link
-      href={`/app/missions/${mission.id}`}
-      className="card card-interactive block p-4 hover:bg-card-hover"
-    >
-      <div className="flex items-start justify-between gap-3 mb-1.5">
-        <div className="flex items-center gap-2 min-w-0">
-          {mission.role && (
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: mission.role.color }}
-            />
-          )}
-          <span className="text-[17px] font-medium text-text-primary leading-tight truncate">
-            {mission.title}
-          </span>
-          <span className={`health-pill ${healthDisplay.colorClass}`}>
-            {healthDisplay.label}
-          </span>
-        </div>
-        {mission.progress > 0 && (
-          <span className="font-display text-2xl text-status-success shrink-0 tabular-nums">
-            {mission.progress}%
-          </span>
-        )}
-      </div>
-
-      {mission.description && (
-        <p className="text-[13px] text-text-secondary font-normal line-clamp-2 mb-3">
-          {mission.description}
-        </p>
-      )}
-
-      {/* Progress bar */}
-      {mission.totalTasks > 0 && (
-        <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] mb-2.5 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-500"
-            style={{
-              width: `${mission.progress}%`,
-              background: 'linear-gradient(90deg, var(--status-success), #7ad4aa)',
-            }}
-          />
-        </div>
-      )}
-
-      <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
-        {mission.role && (
-          <>
-            <span>{mission.role.name}</span>
-            <span className="mx-0.5">&middot;</span>
-          </>
-        )}
-        {mission.totalTasks > 0 && (
-          <span>
-            {mission.completedTasks} of {mission.totalTasks} done
-          </span>
-        )}
-        {mission.activeAgents > 0 && (
-          <>
-            <span className="mx-0.5">&middot;</span>
-            <span className="text-status-success">
-              {mission.activeAgents} agent{mission.activeAgents !== 1 ? 's' : ''} active
-            </span>
-          </>
-        )}
-        {mission.nextScanMins !== null && (
-          <>
-            <span className="mx-0.5">&middot;</span>
-            <span>next run {mission.nextScanMins}m</span>
-          </>
-        )}
-        {mission.latestFinding && (
-          <>
-            <span className="mx-0.5">&middot;</span>
-            <span className="text-accent-text truncate max-w-[180px]">
-              {mission.latestFinding.title}
-            </span>
-          </>
-        )}
-      </div>
-    </Link>
   );
 }

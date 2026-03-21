@@ -1,5 +1,63 @@
 export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle';
 
+export type MissionGroup = 'running' | 'attention' | 'scheduled' | 'completed';
+export type FilterTab = 'all' | 'active' | 'scheduled' | 'completed';
+
+export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: string }> = {
+  running:   { label: 'RUNNING NOW',     color: 'var(--status-success)' },
+  attention: { label: 'NEEDS ATTENTION', color: 'var(--status-warning)' },
+  scheduled: { label: 'SCHEDULED',       color: 'var(--status-info)' },
+  completed: { label: 'COMPLETED',       color: 'var(--text-muted)' },
+};
+
+export const GROUP_ACCENT_CLASS: Record<MissionGroup, string> = {
+  running:   'mission-card-running',
+  attention: 'mission-card-attention',
+  scheduled: 'mission-card-scheduled',
+  completed: 'mission-card-completed',
+};
+
+export const GROUP_ORDER: MissionGroup[] = ['running', 'attention', 'scheduled', 'completed'];
+
+export const FILTER_TO_GROUPS: Record<FilterTab, MissionGroup[] | null> = {
+  all: null,
+  active: ['running', 'attention'],
+  scheduled: ['scheduled'],
+  completed: ['completed'],
+};
+
+export function healthToGroup(health: MissionHealth, progress: number): MissionGroup {
+  switch (health) {
+    case 'active': return 'running';
+    case 'stalled': return 'attention';
+    case 'on-schedule': return 'scheduled';
+    case 'shipped':
+    case 'paused': return 'completed';
+    case 'idle': return progress === 100 ? 'completed' : 'attention';
+  }
+}
+
+export type NextRunUrgency = 'imminent' | 'soon' | 'days' | 'far';
+
+export function formatNextRun(
+  nextScanMins: number | null,
+  nextRunAt: string | null,
+): { text: string; urgency: NextRunUrgency | null } {
+  if (nextScanMins === null || nextScanMins === undefined) return { text: '', urgency: null };
+
+  if (nextScanMins < 60) return { text: `Next run in ${nextScanMins}m`, urgency: 'imminent' };
+  if (nextScanMins < 1440) return { text: `Next run in ${Math.floor(nextScanMins / 60)}h`, urgency: 'soon' };
+  if (nextScanMins < 43200) return { text: `Next run in ${Math.floor(nextScanMins / 1440)}d`, urgency: 'days' };
+
+  // Far future (>30 days)
+  if (nextRunAt) {
+    const date = new Date(nextRunAt);
+    const formatted = date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    return { text: `Hibernating until ${formatted}`, urgency: 'far' };
+  }
+  return { text: `Next run in ${Math.floor(nextScanMins / 1440)}d`, urgency: 'far' };
+}
+
 /**
  * Derive health status for a mission based on its current state.
  * Replaces the old BUILD/WATCH/BRIEF type classification.
