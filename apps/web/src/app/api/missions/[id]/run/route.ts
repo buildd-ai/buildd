@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
-import { buildMissionContext } from '@/lib/mission-context';
-import { dispatchNewTask } from '@/lib/task-dispatch';
-import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
+import { runMission } from '@/lib/mission-run';
+import { db } from '@buildd/core/db';
+import { missions } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 
 async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
   if (apiAccount) return [apiAccount.teamId];
@@ -44,73 +42,22 @@ export async function POST(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
+    // Verify mission exists and belongs to user's team
     const mission = await db.query.missions.findFirst({
       where: eq(missions.id, id),
-      with: {
-        schedule: true,
-      },
+      columns: { id: true, teamId: true },
     });
 
     if (!mission || !teamIds.includes(mission.teamId)) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
-    // Resolve workspace: use mission's workspace or auto-create an orchestrator workspace
-    const workspaceId = mission.workspaceId
-      || (await getOrCreateCoordinationWorkspace(mission.teamId)).id;
-
-    if (mission.status !== 'active') {
-      return NextResponse.json(
-        { error: `Cannot run mission with status: ${mission.status}. Only active missions can be run.` },
-        { status: 400 }
-      );
+    const result = await runMission(id, { manualRun: true });
+    return NextResponse.json({ task: result.task }, { status: 201 });
+  } catch (error: any) {
+    if (error.message?.includes('Cannot run mission with status')) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
-
-    // Get template context from schedule if available
-    const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
-
-    // Build rich mission context
-    const missionContext = await buildMissionContext(id, templateContext);
-
-    const taskTitle = `Mission: ${mission.title}`;
-    const taskDescription = missionContext?.description || mission.description || null;
-    const taskContext: Record<string, unknown> = {
-      ...(missionContext?.context || {}),
-      manualRun: true,
-    };
-
-    // Get template config for mode/priority from schedule if available
-    const template = (mission.schedule as any)?.taskTemplate;
-
-    // Create the planning task
-    const [task] = await db
-      .insert(tasks)
-      .values({
-        workspaceId,
-        title: taskTitle,
-        description: taskDescription,
-        priority: template?.priority || mission.priority || 0,
-        status: 'pending',
-        mode: template?.mode || 'planning',
-        runnerPreference: template?.runnerPreference || 'any',
-        requiredCapabilities: template?.requiredCapabilities || [],
-        context: taskContext,
-        creationSource: 'orchestrator',
-        missionId: mission.id,
-      })
-      .returning();
-
-    // Dispatch the task
-    const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
-    });
-
-    if (workspace) {
-      await dispatchNewTask(task, workspace);
-    }
-
-    return NextResponse.json({ task }, { status: 201 });
-  } catch (error) {
     console.error('Run mission error:', error);
     return NextResponse.json({ error: 'Failed to run mission' }, { status: 500 });
   }
