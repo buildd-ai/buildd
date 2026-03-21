@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
+import { seedDefaultRoles } from '@/lib/default-roles';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -215,6 +216,11 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // Seed default roles (fire-and-forget — don't block workspace creation)
+    seedDefaultRoles(workspace.id).catch(err =>
+      console.error('Failed to seed default roles:', err)
+    );
 
     // Invalidate cache if workspace is open (affects heartbeat queries)
     if (workspace.accessMode === 'open') {

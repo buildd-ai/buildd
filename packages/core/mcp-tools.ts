@@ -57,7 +57,8 @@ export const workerActions = [
 ] as const;
 
 export const adminActions = [
-  'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
+  'create_schedule', 'update_schedule', 'list_schedules',
+  'register_skill', 'list_skills', 'update_skill', 'delete_skill',
   'approve_plan', 'reject_plan',
   'manage_missions',
   'list_recipes', 'create_recipe', 'run_recipe',
@@ -93,7 +94,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     list_schedules: '{ workspaceId? } [admin]',
-    register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (string[]), requiredEnvVars? (Record<string, string>) } [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
+    list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled? } — update skill by slug [admin]',
+    delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
@@ -148,6 +152,39 @@ function resolveWorkerId(param: unknown, ctx: ActionContext): string {
   const workerId = (param as string) || ctx.workerId;
   if (!workerId) throw new Error('workerId is required — pass it explicitly or ensure the MCP server has worker context');
   return workerId;
+}
+
+/**
+ * Resolve a skill's UUID from its slug within a workspace.
+ */
+async function resolveSkillId(api: ApiFn, wsId: string, slug: string): Promise<string> {
+  const data = await api(`/api/workspaces/${wsId}/skills`);
+  const match = (data.skills || []).find((s: any) => s.slug === slug);
+  if (!match) throw new Error(`Skill with slug "${slug}" not found in workspace`);
+  return match.id;
+}
+
+/**
+ * Build a skill update body from params, picking only defined fields.
+ */
+function buildSkillBody(params: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (params.name) body.name = params.name;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.content) body.content = params.content;
+  if (params.source) body.source = params.source;
+  if (params.model) body.model = params.model;
+  if (Array.isArray(params.allowedTools)) body.allowedTools = params.allowedTools;
+  if (Array.isArray(params.canDelegateTo)) body.canDelegateTo = params.canDelegateTo;
+  if (typeof params.background === 'boolean') body.background = params.background;
+  if (typeof params.maxTurns === 'number') body.maxTurns = params.maxTurns;
+  if (params.color) body.color = params.color;
+  if (params.mcpServers && typeof params.mcpServers === 'object') body.mcpServers = params.mcpServers;
+  if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') body.requiredEnvVars = params.requiredEnvVars;
+  if (typeof params.isRole === 'boolean') body.isRole = params.isRole;
+  if (typeof params.enabled === 'boolean') body.enabled = params.enabled;
+  if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
+  return body;
 }
 
 /**
@@ -685,8 +722,10 @@ export async function handleBuilddAction(
       if (typeof params.background === 'boolean') skillBody.background = params.background;
       if (typeof params.maxTurns === 'number') skillBody.maxTurns = params.maxTurns;
       if (params.color) skillBody.color = params.color;
-      if (Array.isArray(params.mcpServers)) skillBody.mcpServers = params.mcpServers;
+      if (params.mcpServers && typeof params.mcpServers === 'object') skillBody.mcpServers = params.mcpServers;
       if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') skillBody.requiredEnvVars = params.requiredEnvVars;
+      if (typeof params.isRole === 'boolean') skillBody.isRole = params.isRole;
+      if (params.slug) skillBody.slug = params.slug;
 
       const data = await api(`/api/workspaces/${wsId}/skills`, {
         method: 'POST',
@@ -695,6 +734,118 @@ export async function handleBuilddAction(
 
       const skill = data.skill;
       return text(`Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`);
+    }
+
+    case 'list_skills': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+
+      // If workspace specified, list its skills
+      if (wsId) {
+        const qp = new URLSearchParams();
+        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+        const qs = qp.toString() ? `?${qp.toString()}` : '';
+
+        const data = await api(`/api/workspaces/${wsId}/skills${qs}`);
+        const skills = data.skills || [];
+        if (skills.length === 0) return text('No skills found.');
+
+        const summary = skills.map((s: any) => {
+          const mcpCount = s.mcpServers
+            ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+            : 0;
+          const tags = [
+            s.isRole ? 'role' : 'skill',
+            s.enabled ? '' : 'DISABLED',
+            s.model !== 'inherit' ? s.model : '',
+            mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
+          ].filter(Boolean).join(', ');
+          return `- **${s.name}** (\`${s.slug}\`) [${tags}]${s.description ? `\n  ${s.description}` : ''}`;
+        }).join('\n');
+
+        return text(`${skills.length} skill(s):\n\n${summary}`);
+      }
+
+      // No workspace — list across all accessible workspaces
+      const wsData = await api('/api/workspaces');
+      const workspaces = wsData.workspaces || [];
+      if (workspaces.length === 0) return text('No workspaces found.');
+
+      const allSkills: { workspace: string; skill: any }[] = [];
+      for (const ws of workspaces) {
+        const qp = new URLSearchParams();
+        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+        const qs = qp.toString() ? `?${qp.toString()}` : '';
+        const data = await api(`/api/workspaces/${ws.id}/skills${qs}`);
+        for (const s of (data.skills || [])) {
+          allSkills.push({ workspace: ws.name, skill: s });
+        }
+      }
+
+      if (allSkills.length === 0) return text('No skills found across any workspace.');
+
+      const summary = allSkills.map(({ workspace, skill: s }) => {
+        const mcpCount = s.mcpServers
+          ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+          : 0;
+        const tags = [
+          s.isRole ? 'role' : 'skill',
+          s.enabled ? '' : 'DISABLED',
+          s.model !== 'inherit' ? s.model : '',
+          mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
+        ].filter(Boolean).join(', ');
+        return `- **${s.name}** (\`${s.slug}\`) [${tags}] — ${workspace}${s.description ? `\n  ${s.description}` : ''}`;
+      }).join('\n');
+
+      return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'update_skill': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.slug) throw new Error('slug is required to identify the skill to update');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const skillId = await resolveSkillId(api, wsId, params.slug as string);
+      const body = buildSkillBody(params);
+
+      if (Object.keys(body).length === 0) {
+        throw new Error('No fields to update. Provide at least one field (name, content, mcpServers, etc.)');
+      }
+
+      const data = await api(`/api/workspaces/${wsId}/skills/${skillId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+
+      const s = data.skill;
+      const mcpCount = s.mcpServers
+        ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+        : 0;
+      return text(`Skill updated: "${s.name}" (slug: ${s.slug})\nModel: ${s.model} | Tools: ${(s.allowedTools || []).length || 'all'} | MCPs: ${mcpCount} | Delegates to: ${(s.canDelegateTo || []).join(', ') || 'none'}\nEnabled: ${s.enabled}`);
+    }
+
+    case 'delete_skill': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.slug) throw new Error('slug is required to identify the skill to delete');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const skillId = await resolveSkillId(api, wsId, params.slug as string);
+
+      await api(`/api/workspaces/${wsId}/skills/${skillId}`, {
+        method: 'DELETE',
+      });
+
+      return text(`Skill "${params.slug}" deleted successfully.`);
     }
 
     case 'create_artifact': {
