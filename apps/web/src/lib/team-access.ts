@@ -22,10 +22,15 @@ export async function verifyWorkspaceAccess(
 ): Promise<{ teamId: string; role: TeamRole } | null> {
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { teamId: true },
+    columns: { teamId: true, accessMode: true },
   });
 
   if (!workspace) return null;
+
+  // Open workspaces are accessible to any authenticated user (matches API key auth behavior)
+  if ((workspace as any).accessMode === 'open' && !requiredRole) {
+    return { teamId: workspace.teamId, role: 'member' };
+  }
 
   const membership = await db.query.teamMembers.findFirst({
     where: and(
