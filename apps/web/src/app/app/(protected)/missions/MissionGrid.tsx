@@ -28,6 +28,7 @@ export interface MissionItem {
   nextScanMins: number | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
+  teamName: string | null;
   role: { name: string; color: string } | null;
   latestFinding: { title: string; time: string } | null;
 }
@@ -211,6 +212,11 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             </span>
           </>
         )}
+        {mission.teamName && (
+          <span className="ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-accent/10 text-accent-text">
+            {mission.teamName}
+          </span>
+        )}
       </div>
     </Link>
   );
@@ -235,19 +241,26 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           </span>
         </div>
       </div>
-      {mission.totalTasks > 0 && (
-        <div className="text-[11px] text-text-muted mt-1">
-          {mission.completedTasks} of {mission.totalTasks} done
-          {mission.latestFinding && (
-            <>
-              <span className="mx-1">&middot;</span>
-              <span className="text-accent-text truncate">
-                {mission.latestFinding.title}
-              </span>
-            </>
-          )}
-        </div>
-      )}
+      <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1">
+        {mission.totalTasks > 0 && (
+          <span>
+            {mission.completedTasks} of {mission.totalTasks} done
+          </span>
+        )}
+        {mission.latestFinding && (
+          <>
+            <span className="mx-0.5">&middot;</span>
+            <span className="text-accent-text truncate">
+              {mission.latestFinding.title}
+            </span>
+          </>
+        )}
+        {mission.teamName && (
+          <span className="ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-accent/10 text-accent-text">
+            {mission.teamName}
+          </span>
+        )}
+      </div>
     </Link>
   );
 }

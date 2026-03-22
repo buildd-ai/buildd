@@ -101,7 +101,7 @@ describe('POST /api/missions', () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1' });
     mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
 
     mockMissionsInsert.mockImplementation(() => ({
