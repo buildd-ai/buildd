@@ -263,7 +263,8 @@ describe.skipIf(!RUN_API_TESTS)('E2E: Server API', () => {
 
     const fetched = await server.getMission(mission.id);
     expect(fetched.id).toBe(mission.id);
-    expect(fetched.totalTasks).toBe(0);
+    // Mission auto-starts an organizer (planning) task on creation
+    expect(fetched.totalTasks).toBe(1);
     expect(fetched.progress).toBe(0);
   });
 
@@ -287,9 +288,9 @@ describe.skipIf(!RUN_API_TESTS)('E2E: Server API', () => {
 
     expect(task.missionId).toBe(mission.id);
 
-    // Mission should reflect the new task
+    // Mission should reflect the new task (plus the auto-created organizer task)
     const updated = await server.getMission(mission.id);
-    expect(updated.totalTasks).toBe(1);
+    expect(updated.totalTasks).toBe(2);
   });
 });
 
