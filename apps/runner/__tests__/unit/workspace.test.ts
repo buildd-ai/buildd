@@ -373,3 +373,6 @@ describe('Clone Existing Repo Detection', () => {
     expect(normalizeGitUrl(cloneUrl)).toBe(normalizeGitUrl(existingRemote));
   });
 });
+
+// Auto-clone tests are in __tests__/standalone/workspace-autoclone.test.ts
+// (separate dir to avoid mock.module('fs') pollution from unit/ test files).
