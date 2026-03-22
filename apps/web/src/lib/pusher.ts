@@ -52,6 +52,7 @@ export const channels = {
   workspace: (id: string) => `${CHANNEL_PREFIX}workspace-${id}`,
   task: (id: string) => `${CHANNEL_PREFIX}task-${id}`,
   worker: (id: string) => `${CHANNEL_PREFIX}worker-${id}`,
+  mission: (id: string) => `${CHANNEL_PREFIX}mission-${id}`,
 } as const;
 
 // Event names
@@ -73,4 +74,8 @@ export const events = {
   // Task dependency events
   CHILDREN_COMPLETED: 'task:children_completed',
   TASK_UNBLOCKED: 'task:unblocked',
+  // Mission loop events
+  MISSION_CYCLE_STARTED: 'mission:cycle_started',
+  MISSION_LOOP_COMPLETED: 'mission:loop_completed',
+  MISSION_LOOP_STALLED: 'mission:loop_stalled',
 } as const;

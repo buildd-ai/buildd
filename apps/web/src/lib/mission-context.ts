@@ -211,6 +211,15 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   descParts.push(`## Mission: ${mission.title}`);
   if (mission.description) descParts.push(mission.description);
 
+  // Surface cycle info from closed-loop re-triggers
+  const cycleNumber = templateContext?.cycleNumber as number | undefined;
+  if (cycleNumber && cycleNumber > 1) {
+    descParts.push(`\n**Planning cycle ${cycleNumber}** — Review what changed since the last cycle.`);
+    if (cycleNumber >= 4) {
+      descParts.push('This mission has been through many cycles. Strongly consider whether objectives are met and the mission can be marked complete.');
+    }
+  }
+
   if (completedTasks.length > 0) {
     descParts.push('\n## Prior Results (last 10)');
     for (const t of completedTasks) {

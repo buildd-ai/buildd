@@ -9,16 +9,27 @@ export interface RunMissionResult {
   task: typeof tasks.$inferSelect;
 }
 
+export interface CycleContext {
+  cycleNumber: number;
+  triggerChainId: string;
+  triggerSource: 'cron' | 'manual' | 'retrigger';
+}
+
+export interface RunMissionOptions {
+  manualRun?: boolean;
+  cycleContext?: CycleContext;
+}
+
 /**
  * Trigger an immediate planning task for a mission.
  * Builds rich mission context (task history, active tasks, failures, recipe)
  * and creates + dispatches a planning task.
  *
- * Used by both manual run endpoint and auto-start after mission creation.
+ * Used by manual run endpoint, auto-start after mission creation, and closed-loop re-triggers.
  */
 export async function runMission(
   missionId: string,
-  options?: { manualRun?: boolean }
+  options?: RunMissionOptions
 ): Promise<RunMissionResult> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -40,14 +51,29 @@ export async function runMission(
   // Get template context from schedule if available
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
 
-  // Build rich mission context
-  const missionContext = await buildMissionContext(missionId, templateContext);
+  // Build cycle context — default to cycle 1 with new chain if not provided
+  const cycleCtx: CycleContext = options?.cycleContext || {
+    cycleNumber: 1,
+    triggerChainId: crypto.randomUUID(),
+    triggerSource: options?.manualRun ? 'manual' : 'cron',
+  };
+
+  // Build rich mission context (pass cycle info so context builder can surface it)
+  const missionContext = await buildMissionContext(missionId, {
+    ...templateContext,
+    cycleNumber: cycleCtx.cycleNumber,
+    triggerChainId: cycleCtx.triggerChainId,
+    triggerSource: cycleCtx.triggerSource,
+  });
 
   const taskTitle = `Mission: ${mission.title}`;
   const taskDescription = missionContext?.description || mission.description || null;
   const taskContext: Record<string, unknown> = {
     ...(missionContext?.context || {}),
     ...(options?.manualRun ? { manualRun: true } : {}),
+    cycleNumber: cycleCtx.cycleNumber,
+    triggerChainId: cycleCtx.triggerChainId,
+    triggerSource: cycleCtx.triggerSource,
   };
 
   // Get template config for mode/priority from schedule if available
