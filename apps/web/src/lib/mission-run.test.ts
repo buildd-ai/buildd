@@ -169,6 +169,64 @@ describe('runMission', () => {
     expect((insertCall.context as any).manualRun).toBeUndefined();
   });
 
+  it('includes cycle context in task context', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-1');
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    const ctx = insertCall.context as Record<string, unknown>;
+    expect(ctx.cycleNumber).toBe(1);
+    expect(ctx.triggerChainId).toBeDefined();
+    expect(ctx.triggerSource).toBe('cron');
+  });
+
+  it('propagates provided cycle context', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-1', {
+      cycleContext: { cycleNumber: 3, triggerChainId: 'chain-abc', triggerSource: 'retrigger' },
+    });
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    const ctx = insertCall.context as Record<string, unknown>;
+    expect(ctx.cycleNumber).toBe(3);
+    expect(ctx.triggerChainId).toBe('chain-abc');
+    expect(ctx.triggerSource).toBe('retrigger');
+  });
+
   it('auto-creates coordination workspace when mission has no workspaceId', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-1',

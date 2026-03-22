@@ -354,8 +354,11 @@ export default async function HomePage() {
   }
 
   const firstName = user ? getFirstName(user.name, user.email) : 'there';
+  // Server runs UTC; assume EST (UTC-5) for time-aware copy
+  const hour = (new Date().getUTCHours() - 5 + 24) % 24;
+  const timePeriod = hour < 12 ? 'overnight' : 'today';
   const subheading = completedLast12h > 0
-    ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} overnight`
+    ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
     : 'Your agents are standing by';
 
   return (

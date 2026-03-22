@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { maybeRetriggerMission } from '@/lib/mission-loop';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -21,6 +22,25 @@ export async function resolveCompletedTask(
 
   if (completedTask?.parentTaskId) {
     await checkChildrenCompleted(completedTask.parentTaskId);
+  }
+
+  // Check if completed task is a planning task with no children (orchestrator decided nothing to do)
+  const completedTaskFull = await db.query.tasks.findFirst({
+    where: eq(tasks.id, completedTaskId),
+    columns: { mode: true, missionId: true },
+  });
+
+  if (completedTaskFull?.mode === 'planning' && completedTaskFull.missionId) {
+    const children = await db.query.tasks.findMany({
+      where: eq(tasks.parentTaskId, completedTaskId),
+      columns: { id: true },
+      limit: 1,
+    });
+    if (children.length === 0) {
+      maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
+        console.error(`[mission-loop] zero-child retrigger failed:`, err)
+      );
+    }
   }
 
   // Check if any tasks have this task in their dependsOn list
@@ -116,6 +136,13 @@ async function maybeCreateAggregationTask(
         .where(inArray(tasks.id, stalePending.map((e) => e.id)));
     } else {
       // Non-stale aggregator exists (pending, in_progress, or completed) — don't create another
+      // If the aggregation is completed and this is a mission task, trigger the closed loop
+      const completedAgg = existing.find((e) => e.status === 'completed');
+      if (completedAgg && parent.missionId) {
+        maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
+          console.error(`[mission-loop] retrigger failed for ${parent.missionId}:`, err)
+        );
+      }
       return;
     }
   }
