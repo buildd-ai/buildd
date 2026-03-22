@@ -2,7 +2,6 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { runMission } from '@/lib/mission-run';
 import type { CycleContext } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
@@ -161,6 +160,8 @@ export async function maybeRetriggerMission(
     triggerSource: 'retrigger',
   };
 
+  // Dynamic import to avoid circular dependency and test mock pollution
+  const { runMission } = await import('@/lib/mission-run');
   await runMission(missionId, { cycleContext: nextCycle });
 
   await triggerEvent(

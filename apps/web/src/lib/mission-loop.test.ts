@@ -42,10 +42,8 @@ mock.module('@buildd/core/db', () => ({
       set: () => ({
         where: () => ({
           returning: () => {
-            const idx = updateReturningResult.length > 0
-              ? updateReturningResult.splice(0, 1)
-              : [undefined];
-            return Promise.resolve(idx[0] !== undefined ? [idx[0]] : []);
+            const val = updateReturningResult.shift();
+            return Promise.resolve(val !== undefined ? [val] : []);
           },
         }),
       }),
@@ -63,6 +61,7 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
+// Mock the dynamic import of mission-run (used inside maybeRetriggerMission)
 mock.module('@/lib/mission-run', () => ({
   runMission: mockRunMission,
 }));
@@ -111,23 +110,20 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
-  it('skips non-heartbeat scheduled missions proceed normally', async () => {
+  it('does not skip non-heartbeat scheduled missions', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
       taskTemplate: { context: { someFlag: true } },
     };
-    // Debounce passes
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
       context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: {},
     };
-    // Depth check passes
     selectResults = [[{ count: 1 }]];
-    // Stall check: 1 recent planning task with children
     tasksFindManyResults = [
-      [{ id: 'pt1' }],   // recent planning tasks
-      [{ id: 'child1' }], // pt1 has children (not stalled)
+      [{ id: 'pt1' }],
+      [{ id: 'child1' }],
     ];
 
     const result = await maybeRetriggerMission('m1', 'pt1');
@@ -137,7 +133,6 @@ describe('mission-loop', () => {
 
   it('skips when debounce window has not passed (idempotency)', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date() };
-    // Atomic update returns empty (debounce window not passed)
     updateReturningResult = [];
     const result = await maybeRetriggerMission('m1', 'pt1');
     expect(result.action).toBe('skipped');
@@ -146,7 +141,6 @@ describe('mission-loop', () => {
 
   it('detects auto-completion from missionComplete in result', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    // Debounce passes
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
       context: { cycleNumber: 2, triggerChainId: 'chain-1' },
@@ -179,7 +173,6 @@ describe('mission-loop', () => {
       context: { cycleNumber: 4, triggerChainId: 'chain-1' },
       result: {},
     };
-    // Depth query returns count >= 5
     selectResults = [[{ count: 5 }]];
 
     const result = await maybeRetriggerMission('m1', 'pt1');
@@ -195,12 +188,7 @@ describe('mission-loop', () => {
       context: { cycleNumber: 3, triggerChainId: 'chain-1' },
       result: {},
     };
-    // Depth check passes
     selectResults = [[{ count: 3 }]];
-    // findMany calls:
-    // [0] recent planning tasks (2 results)
-    // [1] pt-prev1 children (empty = stall)
-    // [2] pt-prev2 children (empty = stall)
     tasksFindManyResults = [
       [{ id: 'pt-prev1' }, { id: 'pt-prev2' }],
       [],
@@ -220,9 +208,7 @@ describe('mission-loop', () => {
       context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: {},
     };
-    // Depth check passes
     selectResults = [[{ count: 1 }]];
-    // findMany: 1 recent planning task with children
     tasksFindManyResults = [
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
