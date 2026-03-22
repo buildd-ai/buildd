@@ -6,6 +6,17 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { Greeting } from './greeting';
+import {
+  deriveMissionHealth,
+  healthToGroup,
+  formatNextRun,
+  HEALTH_DISPLAY,
+  SECTION_DISPLAY,
+  GROUP_ACCENT_CLASS,
+  GROUP_ORDER,
+  type MissionHealth,
+  type MissionGroup,
+} from '@/lib/mission-helpers';
 
 // --- Helpers ---
 
@@ -68,7 +79,12 @@ export default async function HomePage() {
     description: string | null;
     totalTasks: number;
     completedTasks: number;
+    progress: number;
     activeWorkers: number;
+    health: MissionHealth;
+    group: MissionGroup;
+    nextScanMins: number | null;
+    nextRunAt: string | null;
   }[] = [];
 
   let completedLast12h = 0;
@@ -187,26 +203,24 @@ export default async function HomePage() {
           missionTitle: (w.task as any)?.mission?.title || null,
         }));
 
-        // Active missions with task progress
+        // Missions with task progress + health
         const teamIds = await getUserTeamIds(user.id);
         if (teamIds.length > 0) {
-          const activeMissions = await db.query.missions.findMany({
-            where: and(
-              inArray(missionsTable.teamId, teamIds),
-              eq(missionsTable.status, 'active')
-            ),
+          const allMissions = await db.query.missions.findMany({
+            where: inArray(missionsTable.teamId, teamIds),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true },
+            columns: { id: true, title: true, description: true, status: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
               },
+              schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
             },
-            limit: 10,
+            limit: 20,
           });
 
           // Count active workers per mission
-          const missionIds = activeMissions.map(m => m.id);
+          const missionIds = allMissions.map(m => m.id);
           let activeWorkerCounts: Record<string, number> = {};
           if (missionIds.length > 0) {
             const workerCounts = await db
@@ -231,14 +245,40 @@ export default async function HomePage() {
             }
           }
 
-          missions = activeMissions.map(mission => ({
-            id: mission.id,
-            title: mission.title,
-            description: mission.description,
-            totalTasks: mission.tasks.length,
-            completedTasks: mission.tasks.filter(t => t.status === 'completed').length,
-            activeWorkers: activeWorkerCounts[mission.id] || 0,
-          }));
+          missions = allMissions.map(mission => {
+            const totalTasks = mission.tasks.length;
+            const completedTasks = mission.tasks.filter(t => t.status === 'completed').length;
+            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            const activeWorkers = activeWorkerCounts[mission.id] || 0;
+            const nextRunAt = (mission.schedule as any)?.nextRunAt ?? null;
+            const lastRunAt = (mission.schedule as any)?.lastRunAt ?? null;
+            const cronExpression = (mission.schedule as any)?.cronExpression ?? null;
+            const nextScanMins = nextRunAt
+              ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
+              : null;
+
+            const health = deriveMissionHealth({
+              status: mission.status,
+              activeAgents: activeWorkers,
+              cronExpression,
+              lastRunAt,
+              nextRunAt,
+            });
+
+            return {
+              id: mission.id,
+              title: mission.title,
+              description: mission.description,
+              totalTasks,
+              completedTasks,
+              progress,
+              activeWorkers,
+              health,
+              group: healthToGroup(health, progress),
+              nextScanMins,
+              nextRunAt: nextRunAt ? String(nextRunAt) : null,
+            };
+          });
         }
 
         // Schedules with pending agent suggestions
@@ -457,66 +497,131 @@ export default async function HomePage() {
                 <div className="section-label">Missions</div>
                 {missions.length > 0 && (
                   <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
-                    {missions.length} active
+                    {missions.filter(m => m.group === 'running' || m.group === 'scheduled').length} active
                   </Link>
                 )}
               </div>
               {missions.length === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-6">
                   <p className="text-[14px] text-text-secondary">
-                    No active missions. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
+                    No missions yet. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {missions.map((mission) => {
-                    const pct = mission.totalTasks > 0
-                      ? Math.round((mission.completedTasks / mission.totalTasks) * 100)
-                      : 0;
+                <div className="space-y-4">
+                  {GROUP_ORDER.map((groupKey) => {
+                    const items = missions.filter(m => m.group === groupKey);
+                    if (items.length === 0) return null;
+                    // Sort scheduled by soonest first
+                    if (groupKey === 'scheduled') {
+                      items.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
+                    }
+                    const section = SECTION_DISPLAY[groupKey];
+                    const isCompact = groupKey === 'completed';
+
                     return (
-                      <Link
-                        key={mission.id}
-                        href={`/app/missions/${mission.id}`}
-                        className="block card card-interactive p-4 hover:bg-surface-3/50 transition-colors"
-                      >
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-[15px] font-medium text-text-primary truncate">
-                              {mission.title}
-                            </span>
-                          </div>
-                          {pct > 0 && (
-                            <span className="text-[20px] font-semibold text-primary tabular-nums flex-shrink-0">
-                              {pct}%
-                            </span>
-                          )}
+                      <div key={groupKey} className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="section-label-missions" style={{ color: section.color }}>
+                            {section.label}
+                          </span>
+                          <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
                         </div>
-                        {mission.description && (
-                          <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
-                            {mission.description}
-                          </p>
-                        )}
-                        {mission.totalTasks > 0 && (
-                          <div className="mb-2">
-                            <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-primary rounded-full transition-all"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-3 text-[11px] text-text-muted">
-                          {mission.totalTasks > 0 && (
-                            <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
-                          )}
-                          {mission.activeWorkers > 0 && (
-                            <span className="text-primary font-medium">
-                              {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
-                            </span>
-                          )}
+                        <div className="space-y-2">
+                          {items.map((mission) => {
+                            const healthDisplay = HEALTH_DISPLAY[mission.health];
+                            const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
+                            const isHibernating = nextRun.urgency === 'far';
+
+                            if (isCompact) {
+                              return (
+                                <Link
+                                  key={mission.id}
+                                  href={`/app/missions/${mission.id}`}
+                                  className={`block card card-interactive mission-card mission-card-compact ${GROUP_ACCENT_CLASS[groupKey]} px-4 py-3 hover:bg-surface-3/50 transition-colors`}
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-[14px] font-medium text-text-secondary truncate">
+                                      {mission.title}
+                                    </span>
+                                    <span className={`health-pill ${healthDisplay.colorClass}`}>
+                                      {healthDisplay.label}
+                                    </span>
+                                  </div>
+                                  {mission.totalTasks > 0 && (
+                                    <div className="text-[11px] text-text-muted mt-1">
+                                      {mission.completedTasks}/{mission.totalTasks} tasks
+                                    </div>
+                                  )}
+                                </Link>
+                              );
+                            }
+
+                            return (
+                              <Link
+                                key={mission.id}
+                                href={`/app/missions/${mission.id}`}
+                                className={`block card card-interactive mission-card ${GROUP_ACCENT_CLASS[groupKey]} p-4 hover:bg-surface-3/50 transition-colors ${isHibernating ? 'mission-card-hibernating' : ''}`}
+                              >
+                                <div className="flex items-start justify-between gap-3 mb-1.5">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-[15px] font-medium text-text-primary truncate">
+                                      {mission.title}
+                                    </span>
+                                    <span className={`health-pill ${healthDisplay.colorClass}`}>
+                                      {healthDisplay.label}
+                                    </span>
+                                  </div>
+                                  {mission.progress > 0 && (
+                                    <span className="text-[20px] font-semibold text-status-success tabular-nums flex-shrink-0">
+                                      {mission.progress}%
+                                    </span>
+                                  )}
+                                </div>
+                                {mission.description && (
+                                  <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
+                                    {mission.description}
+                                  </p>
+                                )}
+                                {mission.totalTasks > 0 && (
+                                  <div className="mb-2">
+                                    <div className="h-[3px] bg-[rgba(255,245,230,0.06)] rounded-full overflow-hidden">
+                                      <div
+                                        className="h-full rounded-full transition-all duration-500"
+                                        style={{
+                                          width: `${mission.progress}%`,
+                                          background: 'linear-gradient(90deg, var(--status-success), #7ad4aa)',
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
+                                  {mission.totalTasks > 0 && (
+                                    <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
+                                  )}
+                                  {mission.activeWorkers > 0 && (
+                                    <>
+                                      <span className="mx-0.5">&middot;</span>
+                                      <span className="text-status-success font-medium">
+                                        {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
+                                      </span>
+                                    </>
+                                  )}
+                                  {nextRun.text && (
+                                    <>
+                                      <span className="mx-0.5">&middot;</span>
+                                      <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
+                                        {nextRun.text}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </Link>
+                            );
+                          })}
                         </div>
-                      </Link>
+                      </div>
                     );
                   })}
                   <div className="flex items-center justify-between pt-1">
