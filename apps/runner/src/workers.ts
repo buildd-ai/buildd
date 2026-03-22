@@ -286,6 +286,12 @@ export class WorkerManager {
       // Subscribe to workspace channels for task assignments if enabled
       if (this.acceptRemoteTasks) {
         this.subscribeToWorkspaceChannels();
+
+        // Claim any pending tasks on startup (covers tasks dispatched while runner was down).
+        // Runs after subscription so we don't miss events for tasks created between claim and subscribe.
+        this.claimPendingTasks().catch(err => {
+          console.error('Failed to claim tasks on startup:', err);
+        });
       }
     }
 
