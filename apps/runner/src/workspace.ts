@@ -260,6 +260,42 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
       }
     }
 
+    // Auto-clone: workspace has a repo URL but no local clone exists
+    if (workspace.repo && roots.length > 0) {
+      const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
+      if (repoName) {
+        const clonePath = join(roots[0], repoName);
+
+        // Normalize to full clone URL (handle owner/repo slugs)
+        let cloneUrl = workspace.repo;
+        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
+          cloneUrl = `https://github.com/${cloneUrl}.git`;
+        }
+
+        // Validate URL format to prevent command injection
+        if (!/^(https?:\/\/|git@)[\w.@:/-]+$/.test(cloneUrl)) {
+          attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
+          console.error(`Auto-clone skipped: invalid repo URL format "${cloneUrl}"`);
+          return { path: null, attempts };
+        }
+
+        try {
+          console.log(`Auto-cloning "${cloneUrl}" into "${clonePath}" for workspace "${workspace.name}"...`);
+          execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+
+          // Invalidate git cache so the new repo is discoverable
+          gitRemoteCache = null;
+
+          attempts.push({ path: clonePath, exists: true, method: 'auto-clone' });
+          console.log(`Auto-cloned workspace "${workspace.name}" to: ${clonePath}`);
+          return { path: clonePath, attempts };
+        } catch (err: any) {
+          attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
+          console.error(`Auto-clone failed for "${workspace.name}": ${err.message}`);
+        }
+      }
+    }
+
     return { path: null, attempts };
   };
 
