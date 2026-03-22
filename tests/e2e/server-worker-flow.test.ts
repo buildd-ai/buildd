@@ -85,7 +85,8 @@ beforeAll(async () => {
   const apiKey = readApiKey();
   console.log(`  API Key:  ${apiKey.slice(0, 10)}...${apiKey.slice(-4)}`);
 
-  server = new ServerClient(BUILDD_SERVER, apiKey);
+  const adminApiKey = process.env.BUILDD_ADMIN_API_KEY;
+  server = new ServerClient(BUILDD_SERVER, apiKey, adminApiKey);
   localUI = new LocalUIClient(LOCAL_UI_URL);
 
   // 2. Verify server reachable

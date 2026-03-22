@@ -45,15 +45,17 @@ export class ServerClient {
   constructor(
     private baseUrl: string,
     private apiKey: string,
+    private adminApiKey?: string,
   ) {}
 
-  async fetch<T = any>(path: string, init?: RequestInit): Promise<T> {
+  async fetch<T = any>(path: string, init?: RequestInit, useAdmin = false): Promise<T> {
     const url = `${this.baseUrl}${path}`;
+    const key = useAdmin && this.adminApiKey ? this.adminApiKey : this.apiKey;
     const res = await fetch(url, {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${key}`,
         ...(init?.headers || {}),
       },
     });
@@ -93,15 +95,15 @@ export class ServerClient {
     return this.fetch<any>('/api/missions', {
       method: 'POST',
       body: JSON.stringify(data),
-    });
+    }, true);
   }
 
   getMission(id: string) {
-    return this.fetch<any>(`/api/missions/${id}`);
+    return this.fetch<any>(`/api/missions/${id}`, undefined, true);
   }
 
   deleteMission(id: string) {
-    return this.fetch<any>(`/api/missions/${id}`, { method: 'DELETE' });
+    return this.fetch<any>(`/api/missions/${id}`, { method: 'DELETE' }, true);
   }
 
   listMyWorkers(status?: string) {
