@@ -577,28 +577,51 @@ export async function POST(req: NextRequest) {
   }
 
   // Attach inline decrypted secrets for server-managed credentials (API key and/or OAuth token)
+  // Secrets are scoped by the task's workspace team to prevent cross-team leakage.
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     try {
-      const accountSecrets = await db.query.secrets.findMany({
-        where: and(
-          eq(secrets.accountId, account.id),
-          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
-        ),
-        columns: { id: true, purpose: true, label: true },
-      });
+      const provider = getSecretsProvider();
 
-      if (accountSecrets.length > 0) {
-        const provider = getSecretsProvider();
-        const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
-        const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
-        const mcpSecrets = accountSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
+      for (const cw of claimedWorkers) {
+        const task = cw.task as any;
+        const workspaceTeamId = task?.workspace?.teamId;
 
-        // Decrypt once, attach to all claimed workers
+        if (!workspaceTeamId) continue;
+
+        const workerSecrets = await db.query.secrets.findMany({
+          where: and(
+            eq(secrets.teamId, workspaceTeamId),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+            or(
+              isNull(secrets.accountId),
+              eq(secrets.accountId, account.id),
+            ),
+            or(
+              isNull(secrets.workspaceId),
+              eq(secrets.workspaceId, task.workspaceId),
+            ),
+          ),
+          columns: { id: true, purpose: true, label: true },
+        });
+
+        if (workerSecrets.length === 0) continue;
+
+        const apiKeySecret = workerSecrets.find(s => s.purpose === 'anthropic_api_key');
+        const oauthSecret = workerSecrets.find(s => s.purpose === 'oauth_token');
+        const mcpSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
+
         const [decryptedApiKey, decryptedOauthToken, ...decryptedMcpValues] = await Promise.all([
           apiKeySecret ? provider.get(apiKeySecret.id) : null,
           oauthSecret ? provider.get(oauthSecret.id) : null,
           ...mcpSecrets.map(s => provider.get(s.id)),
         ]);
+
+        if (decryptedApiKey) {
+          (cw as any).serverApiKey = decryptedApiKey;
+        }
+        if (decryptedOauthToken) {
+          (cw as any).serverOauthToken = decryptedOauthToken;
+        }
 
         // Build MCP secrets map: label (env var name) → decrypted value
         const mcpSecretsMap: Record<string, string> = {};
@@ -609,16 +632,8 @@ export async function POST(req: NextRequest) {
           }
         });
 
-        for (const cw of claimedWorkers) {
-          if (decryptedApiKey) {
-            (cw as any).serverApiKey = decryptedApiKey;
-          }
-          if (decryptedOauthToken) {
-            (cw as any).serverOauthToken = decryptedOauthToken;
-          }
-          if (Object.keys(mcpSecretsMap).length > 0) {
-            (cw as any).mcpSecrets = mcpSecretsMap;
-          }
+        if (Object.keys(mcpSecretsMap).length > 0) {
+          (cw as any).mcpSecrets = mcpSecretsMap;
         }
       }
     } catch (err) {
