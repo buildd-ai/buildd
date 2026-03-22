@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import type { CycleContext } from '@/lib/mission-run';
+import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -21,9 +21,13 @@ export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceed
  *
  * This function is fire-and-forget from the caller — errors are logged, not thrown.
  */
+type RunMissionFn = (id: string, opts?: RunMissionOptions) => Promise<RunMissionResult>;
+
 export async function maybeRetriggerMission(
   missionId: string,
-  completedPlanningTaskId: string
+  completedPlanningTaskId: string,
+  /** Injected for testing — defaults to the real runMission */
+  _runMission?: RunMissionFn,
 ): Promise<{ action: LoopAction }> {
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
@@ -160,9 +164,8 @@ export async function maybeRetriggerMission(
     triggerSource: 'retrigger',
   };
 
-  // Dynamic import to avoid circular dependency and test mock pollution
-  const { runMission } = await import('@/lib/mission-run');
-  await runMission(missionId, { cycleContext: nextCycle });
+  const run = _runMission ?? (await import('@/lib/mission-run')).runMission;
+  await run(missionId, { cycleContext: nextCycle });
 
   await triggerEvent(
     channels.mission(missionId),

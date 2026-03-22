@@ -10,6 +10,7 @@ let selectCallCount = 0;
 let tasksFindManyResults: any[][] = [];
 let tasksFindManyCallCount = 0;
 
+// Injected directly — no mock.module needed for mission-run
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'new-task' } }));
 const mockTriggerEvent = mock(() => Promise.resolve());
 
@@ -61,11 +62,6 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
-// Mock the dynamic import of mission-run (used inside maybeRetriggerMission)
-mock.module('@/lib/mission-run', () => ({
-  runMission: mockRunMission,
-}));
-
 import { maybeRetriggerMission } from './mission-loop';
 
 function resetAll() {
@@ -83,19 +79,24 @@ function resetAll() {
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
 }
 
+/** Helper: call maybeRetriggerMission with injected mock */
+function retrigger(missionId: string, taskId: string) {
+  return maybeRetriggerMission(missionId, taskId, mockRunMission as any);
+}
+
 describe('mission-loop', () => {
   beforeEach(resetAll);
 
   it('skips when mission is not found', async () => {
     missionFindFirstResult = null;
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
   it('skips when mission status is not active', async () => {
     missionFindFirstResult = { id: 'm1', status: 'completed', scheduleId: null, updatedAt: new Date() };
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
@@ -105,7 +106,7 @@ describe('mission-loop', () => {
     scheduleFindFirstResult = {
       taskTemplate: { context: { heartbeat: true } },
     };
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
@@ -126,7 +127,7 @@ describe('mission-loop', () => {
       [{ id: 'child1' }],
     ];
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('retriggered');
     expect(mockRunMission).toHaveBeenCalledTimes(1);
   });
@@ -134,7 +135,7 @@ describe('mission-loop', () => {
   it('skips when debounce window has not passed (idempotency)', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date() };
     updateReturningResult = [];
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
@@ -147,7 +148,7 @@ describe('mission-loop', () => {
       result: { missionComplete: true },
     };
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('completed');
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockTriggerEvent).toHaveBeenCalled();
@@ -161,7 +162,7 @@ describe('mission-loop', () => {
       result: { structuredOutput: { missionComplete: true, summary: 'All done' } },
     };
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('completed');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
@@ -175,7 +176,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 5 }]];
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('depth_exceeded');
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockTriggerEvent).toHaveBeenCalled();
@@ -195,7 +196,7 @@ describe('mission-loop', () => {
       [],
     ];
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('stalled');
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockTriggerEvent).toHaveBeenCalled();
@@ -214,7 +215,7 @@ describe('mission-loop', () => {
       [{ id: 'child-1' }],
     ];
 
-    const result = await maybeRetriggerMission('m1', 'pt1');
+    const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('retriggered');
     expect(mockRunMission).toHaveBeenCalledTimes(1);
     const runCall = mockRunMission.mock.calls[0];
