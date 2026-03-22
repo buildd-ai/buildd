@@ -4,15 +4,33 @@
  * In standalone/ because unit/ test files mock.module('fs') which
  * poisons workspace.ts's real fs operations.
  *
+ * Uses a local bare repo (git init --bare) instead of cloning from GitHub,
+ * so tests work in CI without git credentials.
+ *
  * Run: bun test __tests__/standalone/workspace-autoclone.test.ts
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
 import { mkdtempSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { createWorkspaceResolver } from '../../src/workspace';
+
+// Create a local bare repo to clone from (no network needed)
+let bareRepoDir: string;
+let bareRepoUrl: string;
+
+beforeAll(() => {
+  bareRepoDir = mkdtempSync(join(tmpdir(), 'buildd-test-bare-'));
+  const repoPath = join(bareRepoDir, 'test-repo.git');
+  execSync(`git init --bare "${repoPath}"`, { encoding: 'utf-8' });
+  bareRepoUrl = repoPath; // local path works as a git clone URL
+});
+
+afterAll(() => {
+  execSync(`rm -rf "${bareRepoDir}"`);
+});
 
 function makeTmpRoot(label: string): string {
   return mkdtempSync(join(tmpdir(), `buildd-test-${label}-`));
@@ -31,13 +49,15 @@ describe('Auto-Clone on Resolution Failure', () => {
 
       const result = resolver.resolve({
         id: 'ws-new',
-        name: 'reddit-filter-safari',
-        repo: 'https://github.com/maxjacu/reddit-filter-safari.git',
+        name: 'test-repo',
+        repo: bareRepoUrl,
       });
 
       expect(result).not.toBeNull();
-      expect(result).toContain('reddit-filter-safari');
+      expect(result).toContain('test-repo');
       expect(existsSync(result!)).toBe(true);
+      // Should be a git repo
+      expect(existsSync(join(result!, '.git'))).toBe(true);
     } finally {
       cleanup(tmpRoot);
     }
@@ -51,16 +71,16 @@ describe('Auto-Clone on Resolution Failure', () => {
 
       const result1 = resolver.resolve({
         id: 'ws-cache-test',
-        name: 'reddit-filter-safari',
-        repo: 'https://github.com/maxjacu/reddit-filter-safari.git',
+        name: 'test-repo',
+        repo: bareRepoUrl,
       });
       expect(result1).not.toBeNull();
 
       // Second resolve should find it via name match (repo already on disk)
       const result2 = resolver.resolve({
         id: 'ws-cache-test',
-        name: 'reddit-filter-safari',
-        repo: 'https://github.com/maxjacu/reddit-filter-safari.git',
+        name: 'test-repo',
+        repo: bareRepoUrl,
       });
       expect(result2).toBe(result1);
     } finally {
@@ -94,14 +114,16 @@ describe('Auto-Clone on Resolution Failure', () => {
     try {
       const resolver = createWorkspaceResolver(tmpRoot);
 
+      // Workspace name differs from repo name — clone should use repo name
       const result = resolver.resolve({
         id: 'ws-dirname',
         name: 'Some Custom Name',
-        repo: 'https://github.com/maxjacu/reddit-filter-safari.git',
+        repo: bareRepoUrl,
       });
 
       expect(result).not.toBeNull();
-      expect(result!.endsWith('reddit-filter-safari')).toBe(true);
+      // Repo dir name is derived from the bare repo path (test-repo.git -> test-repo)
+      expect(result!.endsWith('test-repo')).toBe(true);
     } finally {
       cleanup(tmpRoot);
     }
@@ -115,8 +137,8 @@ describe('Auto-Clone on Resolution Failure', () => {
 
       const debug = resolver.debugResolve({
         id: 'ws-debug',
-        name: 'reddit-filter-safari',
-        repo: 'https://github.com/maxjacu/reddit-filter-safari.git',
+        name: 'test-repo',
+        repo: bareRepoUrl,
       });
 
       const cloneAttempt = debug.attemptedPaths.find(a => a.method === 'auto-clone');

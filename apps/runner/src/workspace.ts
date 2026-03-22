@@ -273,7 +273,8 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
         }
 
         // Validate URL format to prevent command injection
-        if (!/^(https?:\/\/|git@)[\w.@:/-]+$/.test(cloneUrl)) {
+        // Allows: https://, git@, and absolute local paths (/path/to/repo)
+        if (!/^(https?:\/\/|git@|\/[\w./-]+)[\w.@:/-]*$/.test(cloneUrl)) {
           attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
           console.error(`Auto-clone skipped: invalid repo URL format "${cloneUrl}"`);
           return { path: null, attempts };
