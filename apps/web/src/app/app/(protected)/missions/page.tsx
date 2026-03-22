@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, teams, workspaceSkills } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -28,6 +28,16 @@ export default async function MissionsPage() {
         </div>
       </div>
     );
+  }
+
+  // Build team name map for display (only when user has multiple teams)
+  const teamNameMap = new Map<string, string>();
+  if (teamIds.length > 1) {
+    const teamRows = await db.query.teams.findMany({
+      where: inArray(teams.id, teamIds),
+      columns: { id: true, name: true, slug: true },
+    });
+    teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
   }
 
   // Query roles for display
@@ -108,6 +118,7 @@ export default async function MissionsPage() {
       nextScanMins,
       nextRunAt: nextRunAt ? String(nextRunAt) : null,
       lastRunAt: lastRunAt ? String(lastRunAt) : null,
+      teamName: teamNameMap.get(obj.teamId) || null,
       role: null as { name: string; color: string } | null,
       latestFinding: latestFinding
         ? {

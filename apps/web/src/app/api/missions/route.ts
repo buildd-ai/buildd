@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
+    const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
 
     if (!title) {
@@ -107,24 +107,41 @@ export async function POST(req: NextRequest) {
     }
 
     let teamId: string;
+    let userTeamIds: string[] = [];
     if (apiAccount) {
       teamId = apiAccount.teamId;
     } else {
-      const teamIds = await getUserTeamIds(user!.id);
-      if (teamIds.length === 0) {
+      userTeamIds = await getUserTeamIds(user!.id);
+      if (userTeamIds.length === 0) {
         return NextResponse.json({ error: 'No team found' }, { status: 400 });
       }
-      teamId = teamIds[0];
+      // Use requested teamId if provided and user belongs to that team
+      if (requestedTeamId && userTeamIds.includes(requestedTeamId)) {
+        teamId = requestedTeamId;
+      } else {
+        teamId = userTeamIds[0];
+      }
     }
 
     if (workspaceId) {
+      // Look up workspace without team filter — then verify user has access
       const ws = await db.query.workspaces.findFirst({
-        where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId)),
-        columns: { id: true },
+        where: eq(workspaces.id, workspaceId),
+        columns: { id: true, teamId: true },
       });
       if (!ws) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
+      // For API key auth, workspace must belong to the account's team
+      // For session auth, workspace must belong to one of the user's teams
+      if (apiAccount && ws.teamId !== teamId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+      if (!apiAccount && !userTeamIds.includes(ws.teamId)) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+      // Workspace is the stronger signal — derive team from it
+      teamId = ws.teamId;
     }
 
     const [mission] = await db

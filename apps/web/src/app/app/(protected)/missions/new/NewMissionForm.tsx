@@ -165,6 +165,8 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
       const payload: Record<string, unknown> = {
         title: name.trim(),
         workspaceId: workspaceId || undefined,
+        // Send remembered team preference (server validates membership)
+        teamId: typeof window !== 'undefined' ? localStorage.getItem('buildd:lastTeamId') || undefined : undefined,
       };
 
       if (description.trim()) {
@@ -186,7 +188,11 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
         throw new Error(data.error || 'Failed to create mission');
       }
 
-      await res.json();
+      const created = await res.json();
+      // Remember the team for next mission creation
+      if (created.teamId) {
+        localStorage.setItem('buildd:lastTeamId', created.teamId);
+      }
       router.push('/app/missions');
       router.refresh();
     } catch (err: unknown) {
