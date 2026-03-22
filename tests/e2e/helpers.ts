@@ -89,6 +89,21 @@ export class ServerClient {
     return this.fetch<any>(`/api/tasks/${id}`, { method: 'DELETE' });
   }
 
+  createMission(data: { title: string; description?: string; workspaceId?: string }) {
+    return this.fetch<any>('/api/missions', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  getMission(id: string) {
+    return this.fetch<any>(`/api/missions/${id}`);
+  }
+
+  deleteMission(id: string) {
+    return this.fetch<any>(`/api/missions/${id}`, { method: 'DELETE' });
+  }
+
   listMyWorkers(status?: string) {
     const qs = status ? `?status=${status}` : '';
     return this.fetch<{ workers: any[] }>(`/api/workers/mine${qs}`);

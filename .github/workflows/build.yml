@@ -67,9 +67,47 @@ jobs:
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           AUTH_SECRET: "dummy-secret-for-build"
 
-  integration:
+  # Detect which areas changed to skip expensive integration/E2E when unnecessary
+  changes:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      runner: ${{ steps.filter.outputs.runner }}
+      needs_server: ${{ steps.filter.outputs.needs_server }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # API/server changes — triggers integration tests
+          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|packages/core/|packages/shared/)' && echo "true" || echo "false")
+
+          # Runner changes — triggers E2E tests
+          RUNNER=$(echo "$CHANGED" | grep -qE '^(apps/runner/)' && echo "true" || echo "false")
+
+          # Either requires the server infrastructure
+          NEEDS_SERVER=$( [[ "$API" == "true" || "$RUNNER" == "true" ]] && echo "true" || echo "false" )
+
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
+          echo "needs_server=$NEEDS_SERVER" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::api=$API runner=$RUNNER needs_server=$NEEDS_SERVER"
+
+  # Shared infrastructure: Neon branch + Tailscale + preview server + runner
+  # Only spins up when API or runner code changed
+  integration:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.needs_server == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -226,6 +264,7 @@ jobs:
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
 
       - name: Start preview runner
+        if: needs.changes.outputs.runner == 'true'
         run: |
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
@@ -245,6 +284,7 @@ jobs:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
 
       - name: Integration tests
+        if: needs.changes.outputs.api == 'true'
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
                apps/web/tests/integration/worker-state-machine.test.ts \
@@ -259,15 +299,21 @@ jobs:
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
 
-      - name: E2E dogfood tests
+      - name: E2E tests
         run: bun test tests/e2e/server-worker-flow.test.ts
         timeout-minutes: 10
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333
           BUILDD_RUNNER_SERVER: http://localhost:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
+          # Scope E2E tests based on what changed:
+          #   api only    → run API tests (fast, no runner needed)
+          #   runner only → run all (worker tests need API too)
+          #   both        → run all
+          E2E_SCOPE: ${{ needs.changes.outputs.runner == 'true' && 'all' || 'api' }}
 
       - name: Cleanup
         if: always()
