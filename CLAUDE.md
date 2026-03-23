@@ -77,7 +77,19 @@ Missions are high-level goals that organize and generate tasks. Tasks are concre
 
 - **DB table**: `missions` (with `tasks.missionId` FK)
 - **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
-- **Context builder**: `apps/web/src/lib/mission-context.ts`
+- **Context builder**: `apps/web/src/lib/mission-context.ts` — injects workspace roles + active workers into planning prompts
+- **Status**: Derived from task health via `deriveMissionHealth` in `packages/core/mission-helpers.ts` — NOT stored as a type
+
+## Roles & Teams
+
+Roles are skills with `isRole: true` on the `workspaceSkills` table. They define agent personas with model preferences, tool access, and delegation rules.
+
+- **Key fields**: `model`, `allowedTools`, `canDelegateTo`, `color`, `background`, `maxTurns`, `mcpServers`, `requiredEnvVars`
+- **Default roles**: **Builder** and **Researcher** — seeded on workspace creation (`apps/web/src/lib/default-roles.ts`)
+- **Task routing**: `tasks.roleSlug` → claim route filters by runner's `availableSkills`
+- **Config packaging**: `apps/web/src/lib/role-config.ts` bundles CLAUDE.md + .mcp.json + env mapping → R2
+- **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
+- **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
 
 ## When Modifying
 
