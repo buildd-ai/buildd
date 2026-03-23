@@ -74,7 +74,7 @@ export default async function WorkspaceArtifactsPage({
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const artifactItems = deliverableArtifacts.map(a => {
-    const taskId = workerTaskMap.get(a.workerId) || null;
+    const taskId = a.workerId ? workerTaskMap.get(a.workerId) || null : null;
     const task = taskId ? taskMap.get(taskId) : null;
     return {
       id: a.id,

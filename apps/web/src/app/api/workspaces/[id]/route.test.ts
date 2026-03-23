@@ -215,9 +215,10 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 
-  it('allows API key auth for PATCH', async () => {
+  it('allows API key auth for PATCH when workspace belongs to team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
 
     const req = createMockRequest({
       method: 'PATCH',
@@ -229,6 +230,36 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
+  });
+
+  it('returns 404 when API key team does not match workspace team', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-other' });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { name: 'Hijack' },
+      headers: { authorization: 'Bearer bld_testkey123' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when API key workspace not found', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { name: 'Ghost' },
+      headers: { authorization: 'Bearer bld_testkey123' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
   });
 });
 

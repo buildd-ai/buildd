@@ -137,8 +137,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: 'dev-workspace', name: 'Dev Workspace' });
   }
 
+  // Support both session auth and API key auth
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+  const apiAccount = await authenticateApiKey(apiKey);
   const user = await getCurrentUser();
-  if (!user) {
+
+  if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -189,19 +194,23 @@ export async function POST(req: NextRequest) {
       githubRepoDbId = upserted.id;
     }
 
-    // Use requested teamId if provided and user is a member, otherwise fall back to default
+    // Resolve team: API key uses its team, session user uses requested or default team
     let teamId: string | null = null;
-    if (requestedTeamId) {
-      const memberTeamIds = await getUserTeamIds(user!.id);
-      if (memberTeamIds.includes(requestedTeamId)) {
-        teamId = requestedTeamId;
+    if (apiAccount) {
+      teamId = apiAccount.teamId;
+    } else {
+      if (requestedTeamId) {
+        const memberTeamIds = await getUserTeamIds(user!.id);
+        if (memberTeamIds.includes(requestedTeamId)) {
+          teamId = requestedTeamId;
+        }
+      }
+      if (!teamId) {
+        teamId = await getUserDefaultTeamId(user!.id);
       }
     }
     if (!teamId) {
-      teamId = await getUserDefaultTeamId(user!.id);
-    }
-    if (!teamId) {
-      return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
+      return NextResponse.json({ error: 'No team found' }, { status: 500 });
     }
 
     const [workspace] = await db

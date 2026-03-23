@@ -438,7 +438,7 @@ export const workers = pgTable('workers', {
 
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   key: text('key'),
