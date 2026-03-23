@@ -133,7 +133,6 @@ interface MissionGroup {
   id: string | null;
   title: string;
   tasks: GridTask[];
-  missionType: string | null;
 }
 
 interface StatusGroup {
@@ -209,7 +208,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
         id,
         title: id ? (groupTasks[0].missionTitle || 'Untitled mission') : 'No mission',
         tasks: sortTasks(groupTasks),
-        missionType: null,
       });
     }
     // Sort: groups with active tasks first, then by recency
@@ -435,11 +433,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                     &#9662;
                   </span>
                   <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
-                  {group.missionType && (
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded bg-surface-3 text-text-secondary">
-                      {group.missionType}
-                    </span>
-                  )}
                   <span className="text-[12px] text-text-desc ml-auto">
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
