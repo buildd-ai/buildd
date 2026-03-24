@@ -930,7 +930,7 @@ describe('Error Handling', () => {
       }
 
       // Manually trigger eviction (normally runs on interval)
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       // Worker should be evicted
       expect(manager.getWorker('w-evict')).toBeUndefined();

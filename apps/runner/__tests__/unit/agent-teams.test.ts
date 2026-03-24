@@ -263,7 +263,7 @@ describe('Stale timeout', () => {
       phaseTools: [],
     } as LocalWorker);
 
-    (manager as any).checkStale();
+    (manager as any).workerSync.checkStale();
     expect(workers.get('w-not-stale')?.status).toBe('working');
   });
 
@@ -293,7 +293,7 @@ describe('Stale timeout', () => {
       phaseTools: [],
     } as LocalWorker);
 
-    (manager as any).checkStale();
+    (manager as any).workerSync.checkStale();
 
     // abort() is async — give it a tick to complete
     await new Promise((r) => setTimeout(r, 50));

@@ -351,7 +351,7 @@ describe('MCP call tracking in worker lifecycle', () => {
     workers.set('w-flush', worker);
 
     // Trigger sync
-    await (manager as any).syncWorkerToServer(worker);
+    await (manager as any).workerSync.syncWorkerToServer(worker);
 
     // Verify updateWorker was called with appendMcpCalls
     expect(mockUpdateWorker).toHaveBeenCalled();
@@ -404,7 +404,7 @@ describe('MCP call tracking in worker lifecycle', () => {
     workers.set('w-empty', worker);
 
     mockUpdateWorker.mockClear();
-    await (manager as any).syncWorkerToServer(worker);
+    await (manager as any).workerSync.syncWorkerToServer(worker);
 
     expect(mockUpdateWorker).toHaveBeenCalled();
     const lastCall = mockUpdateWorker.mock.calls[mockUpdateWorker.mock.calls.length - 1];

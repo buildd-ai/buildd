@@ -252,7 +252,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(false);
@@ -268,7 +268,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-err-1')).toBe(false);
@@ -283,7 +283,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(true);
@@ -298,7 +298,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(true);
@@ -346,7 +346,7 @@ describe('Eviction race conditions', () => {
       const sessions = (manager as any).sessions as Map<string, any>;
       expect(sessions.has('w-evict-1')).toBe(true);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(sessions.has('w-evict-1')).toBe(false);
     });
@@ -363,7 +363,7 @@ describe('Eviction race conditions', () => {
       const sessions = (manager as any).sessions as Map<string, any>;
       expect(sessions.has('w-evict-1')).toBe(true);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(sessions.has('w-evict-1')).toBe(true);
     });
@@ -384,7 +384,7 @@ describe('Eviction race conditions', () => {
       injectWorker(manager, worker);
 
       // Eviction should proceed (worktree cleanup is async and best-effort)
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(false);
@@ -400,7 +400,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(false);
@@ -418,7 +418,7 @@ describe('Eviction race conditions', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-1')).toBe(false);
