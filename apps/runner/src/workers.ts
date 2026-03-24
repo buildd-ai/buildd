@@ -172,6 +172,67 @@ export class WorkerManager {
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
+  // Circuit breaker: pause claims when quota exhausted or repeated rapid failures
+  private consecutiveQuickFailures = 0;
+  private claimsPaused = false;
+  private claimsPausedUntil = 0;
+
+  /**
+   * Classify an error as a systemic issue that should trip the circuit breaker.
+   * Returns pause config if the error affects all workers, null if worker-specific.
+   */
+  private classifyErrorForCircuitBreaker(err: string): { label: string; pauseMs: number } | null {
+    // Quota exhaustion: "out of extra usage · resets 5pm (UTC)"
+    const quotaMatch = err.match(/out of extra usage.*resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
+    if (quotaMatch) {
+      return { label: `Quota exhausted (resets ${quotaMatch[1]} ${quotaMatch[2]})`, pauseMs: this.parseResetDelay(quotaMatch[1]) };
+    }
+
+    // Usage limit / rate limit patterns from Claude API
+    if (err.includes('rate limit') || err.includes('rate_limit') || err.includes('too many requests')) {
+      return { label: 'Rate limited', pauseMs: 5 * 60 * 1000 };
+    }
+    if (err.includes('overloaded') || err.includes('529') || err.includes('service unavailable')) {
+      return { label: 'API overloaded', pauseMs: 2 * 60 * 1000 };
+    }
+
+    // Billing / credits
+    if (err.includes('billing') || err.includes('insufficient credits') || err.includes('payment') || err.includes('out_of_credits')) {
+      return { label: 'Billing error', pauseMs: 60 * 60 * 1000 };
+    }
+
+    // Auth failures (affect all workers using same key)
+    if (err.includes('invalid api key') || err.includes('authentication failed') || err.includes('401 unauthorized') || err.includes('api key is required')) {
+      return { label: 'Auth failure', pauseMs: 30 * 60 * 1000 };
+    }
+
+    // SDK budget limit (maxBudgetUsd) — worker-level, but if configured globally it hits everyone
+    if (err.includes('max budget') || err.includes('maxbudgetusd') || err.includes('budget exceeded')) {
+      return { label: 'Budget limit reached', pauseMs: 60 * 60 * 1000 };
+    }
+
+    return null; // Worker-specific error, no circuit breaker
+  }
+
+  /** Parse a reset time like "5pm" into ms delay from now (assumes UTC) */
+  private parseResetDelay(timeStr: string): number {
+    const hourMatch = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
+    if (!hourMatch) return 60 * 60 * 1000;
+
+    let hour = parseInt(hourMatch[1], 10);
+    const ampm = hourMatch[2]?.toLowerCase();
+    if (ampm === 'pm' && hour < 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+
+    const now = new Date();
+    const target = new Date(now);
+    target.setUTCHours(hour, 0, 0, 0);
+    if (target.getTime() <= now.getTime()) {
+      target.setUTCDate(target.getUTCDate() + 1);
+    }
+
+    return Math.max(5 * 60 * 1000, Math.min(target.getTime() - now.getTime(), 24 * 60 * 60 * 1000));
+  }
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
   private hookFactory: HookFactory;
@@ -518,6 +579,14 @@ export class WorkerManager {
   async claimPendingTasks(): Promise<LocalWorker[]> {
     if (!this.acceptRemoteTasks) return [];
     if (!this.hasCredentials && !this.config.serverless) return [];
+
+    // Circuit breaker: pause claims after repeated rapid failures (e.g., quota exhaustion)
+    if (this.claimsPaused) {
+      if (Date.now() < this.claimsPausedUntil) return [];
+      console.log('[WorkerManager] Circuit breaker reset — resuming claims');
+      this.claimsPaused = false;
+      this.consecutiveQuickFailures = 0;
+    }
 
     const activeWorkers = Array.from(this.workers.values()).filter(
       w => w.status === 'working' || w.status === 'stale'
@@ -1545,6 +1614,35 @@ If something is missing or incomplete, describe what and fix it now.`;
       if (worker.status === 'done' || worker.status === 'error') {
         try { archiveSession(worker); } catch {}
       }
+
+      // Circuit breaker: detect errors that affect all workers and pause claims
+      if (worker.status === 'error' && worker.error) {
+        const err = worker.error.toLowerCase();
+        const pauseReason = this.classifyErrorForCircuitBreaker(err);
+
+        if (pauseReason) {
+          const pauseMs = pauseReason.pauseMs;
+          this.claimsPaused = true;
+          this.claimsPausedUntil = Date.now() + pauseMs;
+          this.consecutiveQuickFailures = 0;
+          console.warn(`[WorkerManager] ${pauseReason.label} — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
+          sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+        } else {
+          // Generic rapid failure detection (non-classified errors)
+          const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : 0;
+          if (sessionDuration < 30_000) {
+            this.consecutiveQuickFailures++;
+            if (this.consecutiveQuickFailures >= 3 && !this.claimsPaused) {
+              this.claimsPaused = true;
+              this.claimsPausedUntil = Date.now() + 5 * 60 * 1000;
+              console.warn(`[WorkerManager] Circuit breaker: ${this.consecutiveQuickFailures} rapid failures. Pausing 5 min. Error: ${worker.error}`);
+              sessionLog(worker.id, 'warn', 'circuit_breaker', `${this.consecutiveQuickFailures} rapid failures: ${worker.error}`, worker.taskId);
+            }
+          }
+        }
+      } else if (worker.status === 'done') {
+        this.consecutiveQuickFailures = 0;
+      }
     }
   }
 
@@ -1569,16 +1667,38 @@ If something is missing or incomplete, describe what and fix it now.`;
     // Surface rate limit events from SDK (v0.2.45+)
     if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
       const event = msg as any;
+      const info = event.rate_limit_info;
       const retryMs = event.retry_after_ms;
-      const utilization = event.utilization;
-      const label = retryMs
-        ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
-        : utilization
-          ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
-          : 'Rate limited';
+      const utilization = info?.utilization ?? event.utilization;
+
+      const label = info?.status === 'rejected'
+        ? `Rate limit rejected (${info.rateLimitType || 'unknown'})`
+        : retryMs
+          ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
+          : utilization
+            ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
+            : 'Rate limited';
       worker.currentAction = label;
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
+
+      // Circuit breaker: if rejected, pause claims until reset
+      if (info?.status === 'rejected') {
+        const resetDelay = info.resetsAt ? info.resetsAt - Date.now() : undefined;
+        const pauseMs = resetDelay && resetDelay > 0
+          ? Math.min(resetDelay, 24 * 60 * 60 * 1000) // cap at 24h
+          : info.rateLimitType === 'five_hour' ? 60 * 60 * 1000 // 1h fallback
+          : 5 * 60 * 1000; // 5 min fallback
+
+        this.claimsPaused = true;
+        this.claimsPausedUntil = Date.now() + pauseMs;
+        const reason = info.overageDisabledReason
+          ? `${info.rateLimitType} (${info.overageDisabledReason})`
+          : info.rateLimitType || 'unknown';
+        console.warn(`[WorkerManager] Rate limit rejected (${reason}) — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
+        sessionLog(worker.id, 'warn', 'rate_limit_pause', `Pausing claims: ${reason}, ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+      }
+
       this.emit({ type: 'worker_update', worker });
       return;
     }
