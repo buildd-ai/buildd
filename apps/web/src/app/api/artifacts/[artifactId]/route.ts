@@ -30,7 +30,7 @@ export async function GET(
   }
 
   // Verify access: owner of the worker, or workspace member
-  const isOwner = artifact.worker.accountId === account.id;
+  const isOwner = artifact.worker?.accountId === account.id;
   if (!isOwner) {
     if (artifact.workspaceId) {
       const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
@@ -79,7 +79,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }
 
-  if (artifact.worker.accountId !== account.id) {
+  if (artifact.worker?.accountId !== account.id) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
