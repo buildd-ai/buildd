@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
-import Pusher from 'pusher-js';
+import { PusherManager } from './pusher-manager';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
@@ -182,12 +182,9 @@ export class WorkerManager {
   private commandHandlers: CommandHandler[] = [];
   private staleCheckInterval?: Timer;
   private syncInterval?: Timer;
-  private pusher?: Pusher;
-  private pusherChannels = new Map<string, any>();
+  private pusherManager: PusherManager;
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
-  private workspaceChannels = new Map<string, any>();
-  private channelPrefix: string;
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
@@ -213,15 +210,25 @@ export class WorkerManager {
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
   }>();
-  // Tasks whose workspace couldn't be resolved — skip on future Pusher retries
-  private unresolvableTaskIds = new Set<string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
     this.buildd = new BuilddClient(config);
     this.resolver = resolver || createWorkspaceResolver(config.projectRoots);
     this.acceptRemoteTasks = config.acceptRemoteTasks !== false;
-    this.channelPrefix = config.pusherChannelPrefix || '';
+    this.pusherManager = new PusherManager(config, this.buildd, {
+      getWorkers: () => this.workers,
+      emit: (event) => this.emit(event),
+      emitCommand: (workerId, command) => this.emitCommand(workerId, command),
+      abort: (workerId) => this.abort(workerId),
+      sendMessage: (workerId, text) => this.sendMessage(workerId, text),
+      rollback: (workerId, uuid) => this.rollback(workerId, uuid),
+      recover: (workerId, mode) => this.recover(workerId, mode),
+      sendHeartbeat: () => this.sendHeartbeat(),
+      claimPendingTasks: () => this.claimPendingTasks(),
+      claimAndStart: (task) => this.claimAndStart(task),
+      getProbedWorkers: () => this.probedWorkers,
+    });
     this.hookFactory = new HookFactory({
       config: { inputAsRetry: config.inputAsRetry },
       buildd: this.buildd,
@@ -282,37 +289,7 @@ export class WorkerManager {
     }
 
     // Initialize Pusher if configured
-    if (config.pusherKey && config.pusherCluster) {
-      this.pusher = new Pusher(config.pusherKey, {
-        cluster: config.pusherCluster,
-      });
-      console.log('Pusher connected for command relay');
-
-      // On reconnect, send immediate heartbeat and claim any tasks missed during disconnect
-      this.pusher.connection.bind('state_change', (states: { previous: string; current: string }) => {
-        if (states.current === 'connected' && states.previous !== 'initialized') {
-          console.log(`Pusher reconnected (was ${states.previous}), sending immediate heartbeat`);
-          this.sendHeartbeat();
-          // Claim any tasks that were created while Pusher was disconnected
-          if (this.acceptRemoteTasks) {
-            this.claimPendingTasks().catch(err => {
-              console.error('Failed to claim tasks on Pusher reconnect:', err);
-            });
-          }
-        }
-      });
-
-      // Subscribe to workspace channels for task assignments if enabled
-      if (this.acceptRemoteTasks) {
-        this.subscribeToWorkspaceChannels();
-
-        // Claim any pending tasks on startup (covers tasks dispatched while runner was down).
-        // Runs after subscription so we don't miss events for tasks created between claim and subscribe.
-        this.claimPendingTasks().catch(err => {
-          console.error('Failed to claim tasks on startup:', err);
-        });
-      }
-    }
+    this.pusherManager.initialize();
 
     // Check if credentials exist (don't validate, SDK handles auth)
     // Skip in serverless mode — SDK handles its own auth, no server to report to
@@ -329,11 +306,7 @@ export class WorkerManager {
   // Set whether to accept remote task assignments
   setAcceptRemoteTasks(enabled: boolean) {
     this.acceptRemoteTasks = enabled;
-    if (enabled && this.pusher) {
-      this.subscribeToWorkspaceChannels();
-    } else if (!enabled) {
-      this.unsubscribeFromWorkspaceChannels();
-    }
+    this.pusherManager.setAcceptRemoteTasks(enabled);
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
@@ -395,89 +368,6 @@ export class WorkerManager {
     }
   }
 
-  // Subscribe to workspace channels for task assignments
-  private async subscribeToWorkspaceChannels() {
-    if (!this.pusher) return;
-
-    try {
-      // Get workspaces to determine channel names
-      const workspaces = await this.buildd.listWorkspaces();
-      if (workspaces.length === 0) {
-        console.log('No workspaces found, skipping workspace channel subscription');
-        return;
-      }
-
-      // Subscribe to each workspace for task:assigned events
-      for (const ws of workspaces) {
-        const channelName = `${this.channelPrefix}workspace-${ws.id}`;
-        if (!this.workspaceChannels.has(channelName)) {
-          const channel = this.pusher.subscribe(channelName);
-          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
-            this.handleTaskAssignment(data);
-          });
-          this.workspaceChannels.set(channelName, channel);
-          console.log(`Subscribed to ${channelName} for task assignments`);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to subscribe to workspace channels:', err);
-    }
-  }
-
-  private unsubscribeFromWorkspaceChannels() {
-    // Unsubscribe from workspace channels
-    for (const [channelName, channel] of this.workspaceChannels) {
-      channel.unbind('task:assigned');
-      this.pusher?.unsubscribe(channelName);
-    }
-    this.workspaceChannels.clear();
-  }
-
-  // Handle incoming task assignment
-  private async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
-    if (!this.acceptRemoteTasks) {
-      console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
-      return;
-    }
-
-    const { task, targetLocalUiUrl } = data;
-
-    // Skip tasks we already know can't be resolved
-    if (this.unresolvableTaskIds.has(task.id)) {
-      return;
-    }
-
-    // Check if this assignment is targeted at this runner instance
-    // If targetLocalUiUrl is set, only accept if it matches our URL
-    // If targetLocalUiUrl is null/undefined, any runner can accept (broadcast)
-    if (targetLocalUiUrl && this.config.localUiUrl && targetLocalUiUrl !== this.config.localUiUrl) {
-      console.log(`Task ${task.id} assigned to different runner: ${targetLocalUiUrl}`);
-      return;
-    }
-
-    // Check if we have capacity
-    const activeWorkers = Array.from(this.workers.values()).filter(
-      w => w.status === 'working' || w.status === 'stale'
-    );
-    if (activeWorkers.length >= this.config.maxConcurrent) {
-      console.log(`Cannot accept task ${task.id}: at max capacity (${activeWorkers.length}/${this.config.maxConcurrent})`);
-      return;
-    }
-
-    console.log(`Received task assignment: ${task.title} (${task.id})`);
-    this.emit({ type: 'task_assigned', task });
-
-    // Auto-claim and start the task
-    try {
-      const worker = await this.claimAndStart(task);
-      if (worker) {
-        console.log(`Successfully started assigned task: ${task.title}`);
-      }
-    } catch (err) {
-      console.error(`Failed to start assigned task ${task.id}:`, err);
-    }
-  }
-
   // Check if credentials exist
   getAuthStatus(): { hasCredentials: boolean } {
     return { hasCredentials: this.hasCredentials };
@@ -498,101 +388,6 @@ export class WorkerManager {
   private emitCommand(workerId: string, command: WorkerCommand) {
     for (const handler of this.commandHandlers) {
       handler(workerId, command);
-    }
-  }
-
-  // Subscribe to Pusher channel for worker commands
-  private subscribeToWorker(workerId: string) {
-    if (!this.pusher || this.pusherChannels.has(workerId)) return;
-
-    const channel = this.pusher.subscribe(`${this.channelPrefix}worker-${workerId}`);
-    channel.bind('worker:command', (data: WorkerCommand) => {
-      console.log(`Command received for worker ${workerId}:`, data);
-      this.handleCommand(workerId, data);
-    });
-
-    // Resolution signals: server pushes completion/failure events so the runner
-    // can immediately reconcile local state without waiting for the next sync.
-    channel.bind('worker:completed', () => {
-      const worker = this.workers.get(workerId);
-      if (worker && worker.status !== 'done') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server confirmed completed`);
-        worker.status = 'done';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
-      }
-    });
-
-    channel.bind('worker:failed', (data: any) => {
-      const worker = this.workers.get(workerId);
-      // Only apply if worker hasn't already completed locally
-      if (worker && worker.status !== 'done' && worker.status !== 'error') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
-        worker.status = 'error';
-        worker.error = data?.error || 'Task failed on server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        this.abort(workerId).catch(() => {});
-      }
-    });
-
-    // Progress heartbeat: when the server confirms a progress update (from the agent's
-    // update_progress MCP call), reset lastActivity. This prevents the hard timeout from
-    // killing workers that are actively reporting progress even if the SDK stream is slow.
-    channel.bind('worker:progress', () => {
-      const worker = this.workers.get(workerId);
-      if (worker && (worker.status === 'working' || worker.status === 'stale')) {
-        worker.lastActivity = Date.now();
-        // If worker was stale but server got progress, recover it
-        if (worker.status === 'stale') {
-          worker.status = 'working';
-          this.probedWorkers.delete(workerId);
-          console.log(`[Worker ${workerId}] Recovered from stale via server progress`);
-        }
-      }
-    });
-
-    this.pusherChannels.set(workerId, channel);
-  }
-
-  private unsubscribeFromWorker(workerId: string) {
-    const channel = this.pusherChannels.get(workerId);
-    if (channel) {
-      this.pusher?.unsubscribe(`${this.channelPrefix}worker-${workerId}`);
-      this.pusherChannels.delete(workerId);
-    }
-  }
-
-  private async handleCommand(workerId: string, command: WorkerCommand) {
-    this.emitCommand(workerId, command);
-
-    switch (command.action) {
-      case 'pause':
-        // TODO: Implement pause (would need SDK support)
-        console.log(`Pause requested for worker ${workerId}`);
-        break;
-      case 'resume':
-        console.log(`Resume requested for worker ${workerId}`);
-        break;
-      case 'abort':
-        await this.abort(workerId);
-        break;
-      case 'message':
-        if (command.text) {
-          await this.sendMessage(workerId, command.text);
-        }
-        break;
-      case 'rollback':
-        if (command.checkpointUuid) {
-          await this.rollback(workerId, command.checkpointUuid);
-        }
-        break;
-      case 'recover':
-        if (command.recoveryMode) {
-          await this.recover(workerId, command.recoveryMode);
-        }
-        break;
     }
   }
 
@@ -1079,10 +874,8 @@ export class WorkerManager {
     });
 
     if (!workspacePath) {
-      if (!this.unresolvableTaskIds.has(task.id)) {
-        console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
-        this.unresolvableTaskIds.add(task.id);
-      }
+      console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
+      this.pusherManager.markUnresolvable(task.id);
       return null;
     }
 
@@ -1190,7 +983,7 @@ export class WorkerManager {
     storeSaveWorker(worker);
 
     // Subscribe to Pusher for commands
-    this.subscribeToWorker(worker.id);
+    this.pusherManager.subscribeToWorker(worker.id);
 
     // Register localUiUrl with server
     if (this.config.localUiUrl) {
@@ -2536,7 +2329,7 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
 
     // Unsubscribe from Pusher
-    this.unsubscribeFromWorker(workerId);
+    this.pusherManager.unsubscribeFromWorker(workerId);
 
     const worker = this.workers.get(workerId);
     if (worker) {
@@ -3196,13 +2989,8 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     if (this.reconcileInterval) {
       clearInterval(this.reconcileInterval);
     }
-    // Unsubscribe from all Pusher channels
-    for (const workerId of this.pusherChannels.keys()) {
-      this.unsubscribeFromWorker(workerId);
-    }
-    if (this.pusher) {
-      this.pusher.disconnect();
-    }
+    // Unsubscribe from all Pusher channels and disconnect
+    this.pusherManager.destroy();
     // Abort all active sessions and clean up worktrees
     for (const [workerId, session] of this.sessions.entries()) {
       session.abortController.abort();
