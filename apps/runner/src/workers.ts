@@ -28,21 +28,12 @@ import {
 } from './prompt-builder';
 import { HookFactory } from './hook-factory';
 import { RecoveryManager } from './recovery';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+// Re-export for backwards compatibility (tests import from './workers')
+export { isEphemeralTestBranch };
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
-
-// Extract a short label from reasoning text: first sentence, up to period/newline/120 chars
-function extractPhaseLabel(text: string): string {
-  // Take first line or sentence
-  const firstLine = text.split('\n')[0].trim();
-  // Find first sentence boundary
-  const periodIdx = firstLine.indexOf('. ');
-  const label = periodIdx > 0 && periodIdx < 120
-    ? firstLine.slice(0, periodIdx)
-    : firstLine.slice(0, 120);
-  return label + (firstLine.length > 120 && periodIdx < 0 ? '...' : '');
-}
 
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
@@ -160,19 +151,6 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
-/**
- * Check if a branch name indicates an ephemeral e2e test worktree.
- * These are created by e2e/integration tests and should be cleaned up
- * immediately (0 retention) to prevent worktree accumulation.
- *
- * E2E test tasks have titles like "[E2E-TEST] Echo ..." which get sanitized
- * to branch names containing "--e2e-test-".
- */
-export function isEphemeralTestBranch(branch: string | undefined): boolean {
-  if (!branch) return false;
-  return branch.includes('--e2e-test-');
-}
-
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -198,6 +176,7 @@ export class WorkerManager {
   private envScanInterval?: Timer;
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
+  private workerSync: WorkerSync;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -249,24 +228,41 @@ export class WorkerManager {
       unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
       startSession: (worker, cwd, task, resumeSessionId?) => this.startSession(worker, cwd, task, resumeSessionId),
     });
+    this.workerSync = new WorkerSync({
+      config,
+      buildd: this.buildd,
+      workers: this.workers,
+      sessions: this.sessions,
+      dirtyWorkers: this.dirtyWorkers,
+      dirtyForDisk: this.dirtyForDisk,
+      emit: (event) => this.emit(event),
+      abort: (workerId, reason) => this.abort(workerId, reason),
+      sendMessage: (workerId, message) => this.sendMessage(workerId, message),
+      getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
+      setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
+      recentCycleTimes: this.recentCycleTimes,
+      probedWorkers: this.probedWorkers,
+      addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
+      buildUserMessage: (content, opts) => buildUserMessage(content, opts),
+    });
 
     // Check for stale workers every 30s
-    this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
+    this.staleCheckInterval = setInterval(() => this.workerSync.checkStale(), 30_000);
 
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
-    this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
+    this.syncInterval = setInterval(() => this.workerSync.syncToServer(), 10_000);
 
     // Run cleanup every 30 minutes (includes session logs)
     this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
-    this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
+    this.evictionInterval = setInterval(() => this.workerSync.evictCompletedWorkers(), 5 * 60 * 1000);
 
     // Persist dirty worker state to disk every 5s
-    this.diskPersistInterval = setInterval(() => this.persistDirtyWorkers(), 5_000);
+    this.diskPersistInterval = setInterval(() => this.workerSync.persistDirtyWorkers(), 5_000);
 
     // Restore workers from disk on startup
-    this.restoreWorkersFromDisk();
+    this.workerSync.restoreWorkersFromDisk();
 
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
@@ -323,64 +319,6 @@ export class WorkerManager {
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
-  // Restore workers from disk on startup
-  private restoreWorkersFromDisk() {
-    try {
-      const restored = loadAllWorkers();
-      for (const worker of restored) {
-        // Workers with active status can't be resumed (no SDK session/inputStream).
-        // Exception: 'waiting' workers keep their status so the user can still answer —
-        // sendMessage() will detect waiting+no-session and restart via resumeSession().
-        if (worker.status === 'working' || worker.status === 'stale') {
-          worker.status = 'error';
-          worker.error = 'Process restarted';
-          worker.completedAt = worker.completedAt || Date.now();
-          worker.currentAction = 'Process restarted';
-
-          // Notify server so it doesn't stay "running" forever
-          this.buildd.updateWorker(worker.id, {
-            status: 'failed',
-            error: 'Process restarted',
-          }).catch(() => {});
-        }
-        // Ensure arrays exist (workers saved before these features were added)
-        if (!worker.checkpoints) worker.checkpoints = [];
-        if (!worker.subagentTasks) worker.subagentTasks = [];
-        // Ensure checkpointEvents set exists (reconstructed from milestones by worker-store)
-        if (!worker.checkpointEvents || !(worker.checkpointEvents instanceof Set)) {
-          worker.checkpointEvents = new Set<CheckpointEventType>(
-            worker.milestones
-              .filter((m): m is Extract<typeof m, { type: 'checkpoint' }> => m.type === 'checkpoint')
-              .map(m => m.event)
-          );
-        }
-        this.workers.set(worker.id, worker);
-      }
-      if (restored.length > 0) {
-        console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
-      }
-    } catch (err) {
-      console.error('[WorkerStore] Failed to restore workers from disk:', err);
-    }
-  }
-
-  // Persist workers that have been marked dirty since last interval
-  private persistDirtyWorkers() {
-    if (this.dirtyForDisk.size === 0) return;
-    const toSave = new Set(this.dirtyForDisk);
-    this.dirtyForDisk.clear();
-    for (const workerId of toSave) {
-      const worker = this.workers.get(workerId);
-      if (worker) {
-        try {
-          storeSaveWorker(worker);
-        } catch (err) {
-          console.error(`[WorkerStore] Failed to persist worker ${workerId}:`, err);
-        }
-      }
-    }
-  }
-
   // Check if credentials exist
   getAuthStatus(): { hasCredentials: boolean } {
     return { hasCredentials: this.hasCredentials };
@@ -401,116 +339,6 @@ export class WorkerManager {
   private emitCommand(workerId: string, command: WorkerCommand) {
     for (const handler of this.commandHandlers) {
       handler(workerId, command);
-    }
-  }
-
-  // Sync a single worker's state to server
-  private async syncWorkerToServer(worker: LocalWorker) {
-    try {
-      // Build milestones array, appending current in-progress phase as pending
-      const milestones: any[] = worker.milestones.map(m => ({ ...m }));
-      if (worker.phaseText && worker.phaseToolCount > 0) {
-        milestones.push({
-          type: 'phase' as const,
-          label: extractPhaseLabel(worker.phaseText),
-          toolCount: worker.phaseToolCount,
-          ts: worker.phaseStart || Date.now(),
-          pending: true,
-        });
-      }
-
-      // Collect active subagent progress for dashboard visibility
-      const activeProgress = worker.subagentTasks
-        .filter(t => t.status === 'running' && t.progress)
-        .map(t => ({
-          taskId: t.taskId,
-          agentName: t.progress!.agentName,
-          toolCount: t.progress!.toolCount,
-          durationMs: t.progress!.durationMs,
-          cumulativeUsage: t.progress!.cumulativeUsage,
-        }));
-
-      const update: Parameters<BuilddClient['updateWorker']>[1] = {
-        status: worker.status === 'waiting' ? 'waiting_input' : 'running',
-        currentAction: worker.currentAction,
-        milestones,
-        localUiUrl: this.config.localUiUrl,
-        ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
-        ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
-      };
-      if (worker.status === 'waiting' && worker.waitingFor) {
-        update.waitingFor = {
-          type: worker.waitingFor.type,
-          prompt: worker.waitingFor.prompt,
-          options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-        };
-      }
-      const response = await this.buildd.updateWorker(worker.id, update);
-
-      // Clear MCP call buffer after successful sync
-      if (worker.pendingMcpCalls?.length) {
-        worker.pendingMcpCalls = [];
-      }
-
-      // Server says worker was already terminated
-      if (response?.abort) {
-        // If the server says the worker already completed (or has deliverables),
-        // this is just a race with the agent's complete_task call — NOT a real abort.
-        // Accept the server's completion state and let the SDK session finish naturally.
-        if (response.actualStatus === 'completed' || response.hasDeliverables) {
-          console.log(`[Worker ${worker.id}] Server confirms completed (sync race) — skipping abort`);
-          worker.status = 'done';
-          worker.completedAt = worker.completedAt || Date.now();
-          this.emit({ type: 'worker_update', worker });
-          return;
-        }
-
-        // Genuinely terminated (reassigned, admin killed, stale cleanup, etc.)
-        console.log(`[Worker ${worker.id}] Server says worker terminated: ${response.reason}`);
-        worker.status = 'error';
-        worker.error = response.reason || 'Terminated by server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        await this.abort(worker.id);
-        return;
-      }
-
-      // Process any pending instructions from sync response
-      if (response?.instructions) {
-        await this.sendMessage(worker.id, response.instructions);
-      }
-    } catch (err) {
-      // Silently ignore sync errors
-    }
-  }
-
-  // Mark a worker as needing sync on next interval
-  private markDirty(workerId: string) {
-    this.dirtyWorkers.add(workerId);
-  }
-
-  // Sync only dirty worker states to server
-  private async syncToServer() {
-    // Always sync waiting workers so they can pick up pendingInstructions
-    // (answers to AskUserQuestion) even if Pusher delivery fails.
-    for (const [id, worker] of this.workers) {
-      if (worker.status === 'waiting') {
-        this.dirtyWorkers.add(id);
-      }
-    }
-
-    if (this.dirtyWorkers.size === 0) return;
-    const toSync = new Set(this.dirtyWorkers);
-    this.dirtyWorkers.clear();
-    try {
-      for (const workerId of toSync) {
-        const worker = this.workers.get(workerId);
-        if (worker && (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) {
-          await this.syncWorkerToServer(worker);
-        }
-      }
-    } catch {
-      // Silently ignore sync errors - server may be temporarily unreachable
     }
   }
 
@@ -557,127 +385,6 @@ export class WorkerManager {
       await this.buildd.runCleanup();
     } catch (err) {
       console.warn('[Cleanup] Failed to run server cleanup:', err instanceof Error ? err.message : err);
-    }
-  }
-
-  // Evict completed/failed workers from in-memory Map after 10 minutes
-  // to prevent unbounded memory growth during long-running sessions.
-  // Workers remain on disk (24h TTL) so getWorkers() can still serve them.
-  private evictCompletedWorkers() {
-    const RETENTION_MS = 10 * 60 * 1000;
-    const now = Date.now();
-    for (const [id, worker] of this.workers.entries()) {
-      // E2E test workers get 0 retention — clean up immediately to prevent worktree accumulation
-      const retention = isEphemeralTestBranch(worker.branch) ? 0 : RETENTION_MS;
-      if (
-        (worker.status === 'done' || worker.status === 'error') &&
-        now - worker.lastActivity >= retention
-      ) {
-        // Clean up worktree if it still exists (completed workers keep worktree for resume)
-        if (worker.worktreePath && existsSync(worker.worktreePath)) {
-          const worktreeMarker = join('.buildd-worktrees', '');
-          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
-          const repoPath = worktreeIdx > 0
-            ? worker.worktreePath.substring(0, worktreeIdx)
-            : worker.worktreePath;
-          cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
-            console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
-          });
-        }
-        sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
-        this.workers.delete(id);
-        this.sessions.delete(id);
-        // Note: NOT deleting from disk — workers persist for 24h for history
-      }
-    }
-  }
-
-  private checkStale() {
-    const now = Date.now();
-    const timeout = this.adaptiveStaleTimeout;
-    // Hard absolute timeout: no worker process should run longer than 30 minutes
-    // without producing activity. This catches zombie processes that ignore probes.
-    // The timer resets on ANY SDK message (tool calls, text, MCP calls like update_progress)
-    // because handleMessage() updates worker.lastActivity on every message.
-    // So an agent actively reporting progress via update_progress will never hit this.
-    const HARD_TIMEOUT_MS = 30 * 60 * 1000;
-
-    for (const worker of this.workers.values()) {
-      // Skip stale check for workers waiting on user input (plan approval, questions)
-      if (worker.status === 'waiting') continue;
-
-      // Hard timeout: kill any worker (working or stale) that has been idle too long
-      if ((worker.status === 'working' || worker.status === 'stale') &&
-          now - worker.lastActivity > HARD_TIMEOUT_MS) {
-        const idleSec = Math.round((now - worker.lastActivity) / 1000);
-        console.log(`[Worker ${worker.id}] Hard timeout — idle ${idleSec}s, aborting`);
-        sessionLog(worker.id, 'warn', 'hard_timeout', `Aborting after ${idleSec}s idle (hard timeout ${HARD_TIMEOUT_MS / 1000}s)`);
-        this.probedWorkers.delete(worker.id);
-        this.abort(worker.id, `Hard timeout: idle ${idleSec}s`).catch(() => {});
-        continue;
-      }
-
-      if (worker.status === 'working') {
-        if (now - worker.lastActivity > timeout) {
-          // Graduated recovery: if session is still alive, try a soft probe first
-          const session = this.sessions.get(worker.id);
-          if (session && !this.probedWorkers.has(worker.id)) {
-            this.probedWorkers.add(worker.id);
-            console.log(`[Worker ${worker.id}] Idle ${Math.round((now - worker.lastActivity) / 1000)}s — sending soft probe before marking stale`);
-            try {
-              session.inputStream.enqueue(buildUserMessage(
-                'You appear to have stalled. If you are still working, continue. If you are stuck, summarize what you have done and finish.',
-                { sessionId: worker.sessionId },
-              ));
-              worker.lastActivity = now;  // Give it another cycle to respond
-              worker.currentAction = 'Probed (idle recovery)';
-              this.addMilestone(worker, { type: 'status', label: 'Idle probe sent', ts: now });
-              this.emit({ type: 'worker_update', worker });
-            } catch {
-              // Session stream closed — abort the worker
-              console.log(`[Worker ${worker.id}] Probe failed (stream closed) — aborting`);
-              this.probedWorkers.delete(worker.id);
-              this.abort(worker.id, 'Stale: probe failed (stream closed)').catch(() => {});
-            }
-          } else {
-            // Already probed or no session — abort the worker (not just mark stale)
-            const idleSec = Math.round((now - worker.lastActivity) / 1000);
-            console.log(`[Worker ${worker.id}] Stale after probe — idle ${idleSec}s, aborting`);
-            sessionLog(worker.id, 'warn', 'stale_abort', `Aborting after probe failed — idle ${idleSec}s`);
-            this.probedWorkers.delete(worker.id);
-            this.abort(worker.id, `Stale: no response to probe after ${idleSec}s`).catch(() => {});
-          }
-        }
-      }
-    }
-  }
-
-  /** Record a completed worker's cycle time and recalculate adaptive stale timeout */
-  private recordCycleTime(worker: LocalWorker) {
-    const duration = (worker.completedAt || Date.now()) - worker.startedAt;
-    if (duration <= 0) return;
-
-    this.recentCycleTimes.push(duration);
-    // Keep last 20 cycle times
-    if (this.recentCycleTimes.length > 20) {
-      this.recentCycleTimes.shift();
-    }
-
-    // Need at least 3 samples before adapting
-    if (this.recentCycleTimes.length < 3) return;
-
-    // Median of recent cycle times
-    const sorted = [...this.recentCycleTimes].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-
-    // Timeout = 50% of median cycle time (workers that go silent for half their
-    // typical total runtime are likely stuck), bounded [2 min, 10 min]
-    const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
-
-    // Only adjust on >20% change to prevent thrashing
-    if (Math.abs(newTimeout - this.adaptiveStaleTimeout) / this.adaptiveStaleTimeout > 0.2) {
-      console.log(`[Adaptive timeout] ${Math.round(this.adaptiveStaleTimeout / 1000)}s → ${Math.round(newTimeout / 1000)}s (median cycle: ${Math.round(median / 1000)}s, samples: ${this.recentCycleTimes.length})`);
-      this.adaptiveStaleTimeout = newTimeout;
     }
   }
 
@@ -1687,7 +1394,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        this.recordCycleTime(worker);
+        this.workerSync.recordCycleTime(worker);
         this.probedWorkers.delete(worker.id);  // Clean up probe tracking
         // Generate follow-up prompt suggestions if Stop hook didn't already
         if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
@@ -2303,7 +2010,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
     // Sync this worker immediately so web dashboard sees milestones right away
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
-      this.syncWorkerToServer(worker).catch(() => {});
+      this.workerSync.syncWorkerToServer(worker).catch(() => {});
     }
   }
 
