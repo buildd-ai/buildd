@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Team badges on mission cards + remember last team (#528)
+
 ### Changed
 
 - Bump @anthropic-ai/claude-agent-sdk to 0.2.80 (fixes getSessionMessages dropping parallel tool results)
 
 ### Fixed
 
+- Scope secrets by workspace team to prevent cross-team leakage (#529)
+- Claim pending tasks on runner startup (#527)
 - Use task terminology on task creation page
 - Remove task CTA from no-agents state on home page
 - Add New Mission CTA to home page, simplify no-agents text
