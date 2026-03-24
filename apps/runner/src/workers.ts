@@ -1233,6 +1233,8 @@ export class WorkerManager {
       const ralphTaskDescription = worker.taskDescription || (task as any).description || '';
       const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 2;
       let reviewIteration = 0;
+      let outputReqNudgeCount = 0;
+      const maxOutputReqNudges = 2;
 
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
@@ -1253,6 +1255,41 @@ export class WorkerManager {
 
         // On result: run ralph self-review loop before completing
         if (msg.type === 'result') {
+          // Output requirement gate: before letting the session end, verify the agent
+          // created the required deliverable (PR or artifact). If not, nudge the agent
+          // while the session is still alive rather than failing post-loop.
+          let outputReqNudged = false;
+          const outputReq = task.outputRequirement || 'auto';
+          if ((outputReq === 'pr_required' || outputReq === 'artifact_required') && outputReqNudgeCount < maxOutputReqNudges) {
+            const hasPR = worker.commits.some((c: any) => c.prUrl || c.prNumber) ||
+              worker.toolCalls?.some((tc: any) => tc.name === 'create_pr' || (tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_pr'));
+            const hasArtifact = worker.toolCalls?.some((tc: any) =>
+              tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_artifact');
+
+            const unmet = outputReq === 'pr_required' ? !hasPR :
+              /* artifact_required */ !hasPR && !hasArtifact;
+
+            if (unmet) {
+              const session = this.sessions.get(worker.id);
+              if (session) {
+                const nudge = outputReq === 'pr_required'
+                  ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
+                  : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
+                console.log(`[Worker ${worker.id}] Output requirement not met (${outputReq}) — nudging agent`);
+                sessionLog(worker.id, 'info', 'output_requirement_nudge', outputReq, worker.taskId);
+                this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
+                worker.currentAction = `Creating ${outputReq === 'pr_required' ? 'PR' : 'deliverable'}...`;
+                this.emit({ type: 'worker_update', worker });
+                session.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
+                outputReqNudged = true;
+                outputReqNudgeCount++;
+              }
+            }
+          }
+          if (outputReqNudged) {
+            continue; // Keep session alive — agent needs to create the deliverable
+          }
+
           // Check if agent already passed review (said DONE)
           const lastMsg = worker.lastAssistantMessage || '';
           if (lastMsg.includes('<promise>DONE</promise>')) {
