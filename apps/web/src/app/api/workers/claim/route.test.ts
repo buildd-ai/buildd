@@ -21,6 +21,9 @@ const mockWorkersInsert = mock(() => ({
     returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', branch: 'buildd/test', status: 'idle' }]),
   })),
 }));
+const mockDbExecute = mock(() => Promise.resolve({
+  rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+}));
 const mockAccountsUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -55,6 +58,7 @@ mock.module('@buildd/core/db', () => ({
       return mockTasksUpdate();
     },
     insert: (table: any) => mockWorkersInsert(),
+    execute: mockDbExecute,
   },
 }));
 
@@ -332,16 +336,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const environment = {
       tools: [{ name: 'node', version: '22.1.0' }, { name: 'git', version: '2.43.0' }],
@@ -472,16 +469,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -525,16 +515,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -690,16 +673,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -752,16 +728,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     // Mock secrets: return mcp_credential secrets scoped to workspace team
     mockSecretsFindMany.mockResolvedValue([
@@ -830,16 +799,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     // No secrets at all
     mockSecretsFindMany.mockResolvedValue([]);
@@ -901,16 +863,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     // Return empty — simulating that the team-scoped query filters out secrets from other teams
     mockSecretsFindMany.mockResolvedValue([]);
@@ -977,16 +932,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },

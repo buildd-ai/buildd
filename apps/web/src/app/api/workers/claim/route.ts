@@ -249,20 +249,6 @@ export async function POST(req: NextRequest) {
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
   for (const task of filteredTasks) {
-    // Re-check concurrency limit before each claim to prevent race condition bypass
-    const currentActive = await db.query.workers.findMany({
-      where: and(
-        eq(workers.accountId, account.id),
-        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
-      ),
-      columns: { id: true },
-    });
-
-    if (currentActive.length >= account.maxConcurrentWorkers) {
-      // Limit reached during claim loop - stop claiming more tasks
-      break;
-    }
-
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -304,18 +290,30 @@ export async function POST(req: NextRequest) {
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
     }
 
-    const [worker] = await db
-      .insert(workers)
-      .values({
-        taskId: task.id,
-        workspaceId: task.workspaceId,
-        accountId: account.id,
-        name: `${account.name}-${task.id.substring(0, 8)}`,
-        runner,
-        branch,
-        status: 'idle',
-      })
-      .returning();
+    // Atomic conditional insert: only creates worker if under concurrency limit.
+    // This prevents the TOCTOU race where multiple requests pass the count check
+    // but then all insert, exceeding the limit.
+    const insertResult = await db.execute(sql`
+      INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
+      SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+      WHERE (
+        SELECT count(*) FROM ${workers}
+        WHERE account_id = ${account.id}
+        AND status IN ('idle', 'running', 'starting', 'waiting_input')
+      ) < ${account.maxConcurrentWorkers}
+      RETURNING *
+    `);
+
+    const worker = insertResult.rows?.[0] as any;
+
+    if (!worker) {
+      // Concurrency limit reached — roll back the task claim
+      await db
+        .update(tasks)
+        .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+        .where(eq(tasks.id, task.id));
+      break;
+    }
 
     claimedWorkers.push({
       id: worker.id,
