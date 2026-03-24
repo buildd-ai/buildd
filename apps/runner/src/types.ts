@@ -219,6 +219,8 @@ export interface BuilddTask {
   dependsOn?: string[];
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // Output requirement — what deliverables are enforced on completion
+  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown> | null;
   // Assignment tracking

@@ -268,6 +268,19 @@ export function buildPrompt(ctx: PromptContext): string {
   }
   promptParts.push(`## Task\n${taskDescription}`);
 
+  // Add output requirement context so agents know what deliverables are expected
+  const outputReq = task.outputRequirement || 'auto';
+  if (task.mode === 'planning') {
+    promptParts.push('## Output Requirement\nThis is a **planning task**. Produce a structured plan — do not make code changes.');
+  } else if (outputReq === 'pr_required') {
+    promptParts.push('## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.');
+  } else if (outputReq === 'artifact_required') {
+    promptParts.push('## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.');
+  } else if (outputReq === 'none') {
+    promptParts.push('## Output Requirement\nThis task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+  }
+  // 'auto' — no explicit section needed, default behavior is fine
+
   // Inject aggregation context: embed child task results directly so the agent
   // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)
   const taskCtx = task.context as { aggregation?: boolean; childTasks?: Array<{ title: string; status: string; taskId: string; result: any }> } | undefined;
