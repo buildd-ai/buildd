@@ -222,6 +222,15 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
+      - name: Raise concurrency limits for CI
+        run: |
+          psql "$DATABASE_URL" <<'SQL'
+            UPDATE accounts SET max_concurrent_workers = 50;
+            UPDATE runner_instances SET max_concurrent_workers = 50;
+          SQL
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
       - name: Start preview server
         run: |
           # Pipe env vars to a file on the remote — avoids all escaping issues
