@@ -404,7 +404,7 @@ describe('WorkerManager — lifecycle', () => {
       workers.set(worker.id, worker);
 
       // Trigger stale check — with no session, checkStale calls abort()
-      (manager as any).checkStale();
+      (manager as any).workerSync.checkStale();
 
       // abort() is async — give it a tick to complete
       await new Promise((r) => setTimeout(r, 50));
@@ -439,7 +439,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).checkStale();
+      (manager as any).workerSync.checkStale();
 
       expect(worker.status).toBe('working');
     });
@@ -471,7 +471,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).checkStale();
+      (manager as any).workerSync.checkStale();
 
       expect(worker.status).toBe('done'); // Unchanged
     });
@@ -505,7 +505,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(workers.has('w-evict-1')).toBe(false);
     });
@@ -537,7 +537,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(workers.has('w-keep-1')).toBe(true);
     });
@@ -569,7 +569,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(workers.has('w-working-old')).toBe(true);
     });
@@ -602,7 +602,7 @@ describe('WorkerManager — lifecycle', () => {
       };
       workers.set(worker.id, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       expect(workers.has('w-err-old')).toBe(false);
     });
@@ -638,7 +638,7 @@ describe('WorkerManager — lifecycle', () => {
 
       // Try to handle assignment — should be rejected due to capacity
       const claimCountBefore = mockClaimTask.mock.calls.length;
-      await (manager as any).handleTaskAssignment({
+      await (manager as any).pusherManager.handleTaskAssignment({
         task: makeTask({ id: 'task-overflow' }),
         targetLocalUiUrl: null,
       });

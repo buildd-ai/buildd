@@ -75,7 +75,16 @@ export async function PATCH(
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
     }
-    // For API key auth, verify workspace exists (API keys have broad access)
+    // For API key auth, verify workspace belongs to the API key's team
+    if (apiAccount) {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, id),
+        columns: { teamId: true },
+      });
+      if (!ws || ws.teamId !== apiAccount.teamId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+    }
 
     const body = await req.json();
     const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId } = body;

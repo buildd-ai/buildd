@@ -249,20 +249,6 @@ export async function POST(req: NextRequest) {
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
   for (const task of filteredTasks) {
-    // Re-check concurrency limit before each claim to prevent race condition bypass
-    const currentActive = await db.query.workers.findMany({
-      where: and(
-        eq(workers.accountId, account.id),
-        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
-      ),
-      columns: { id: true },
-    });
-
-    if (currentActive.length >= account.maxConcurrentWorkers) {
-      // Limit reached during claim loop - stop claiming more tasks
-      break;
-    }
-
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -304,18 +290,30 @@ export async function POST(req: NextRequest) {
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
     }
 
-    const [worker] = await db
-      .insert(workers)
-      .values({
-        taskId: task.id,
-        workspaceId: task.workspaceId,
-        accountId: account.id,
-        name: `${account.name}-${task.id.substring(0, 8)}`,
-        runner,
-        branch,
-        status: 'idle',
-      })
-      .returning();
+    // Atomic conditional insert: only creates worker if under concurrency limit.
+    // This prevents the TOCTOU race where multiple requests pass the count check
+    // but then all insert, exceeding the limit.
+    const insertResult = await db.execute(sql`
+      INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
+      SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+      WHERE (
+        SELECT count(*) FROM ${workers}
+        WHERE account_id = ${account.id}
+        AND status IN ('idle', 'running', 'starting', 'waiting_input')
+      ) < ${account.maxConcurrentWorkers}
+      RETURNING *
+    `);
+
+    const worker = insertResult.rows?.[0] as any;
+
+    if (!worker) {
+      // Concurrency limit reached — roll back the task claim
+      await db
+        .update(tasks)
+        .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+        .where(eq(tasks.id, task.id));
+      break;
+    }
 
     claimedWorkers.push({
       id: worker.id,
@@ -577,28 +575,51 @@ export async function POST(req: NextRequest) {
   }
 
   // Attach inline decrypted secrets for server-managed credentials (API key and/or OAuth token)
+  // Secrets are scoped by the task's workspace team to prevent cross-team leakage.
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     try {
-      const accountSecrets = await db.query.secrets.findMany({
-        where: and(
-          eq(secrets.accountId, account.id),
-          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
-        ),
-        columns: { id: true, purpose: true, label: true },
-      });
+      const provider = getSecretsProvider();
 
-      if (accountSecrets.length > 0) {
-        const provider = getSecretsProvider();
-        const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
-        const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
-        const mcpSecrets = accountSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
+      for (const cw of claimedWorkers) {
+        const task = cw.task as any;
+        const workspaceTeamId = task?.workspace?.teamId;
 
-        // Decrypt once, attach to all claimed workers
+        if (!workspaceTeamId) continue;
+
+        const workerSecrets = await db.query.secrets.findMany({
+          where: and(
+            eq(secrets.teamId, workspaceTeamId),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+            or(
+              isNull(secrets.accountId),
+              eq(secrets.accountId, account.id),
+            ),
+            or(
+              isNull(secrets.workspaceId),
+              eq(secrets.workspaceId, task.workspaceId),
+            ),
+          ),
+          columns: { id: true, purpose: true, label: true },
+        });
+
+        if (workerSecrets.length === 0) continue;
+
+        const apiKeySecret = workerSecrets.find(s => s.purpose === 'anthropic_api_key');
+        const oauthSecret = workerSecrets.find(s => s.purpose === 'oauth_token');
+        const mcpSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
+
         const [decryptedApiKey, decryptedOauthToken, ...decryptedMcpValues] = await Promise.all([
           apiKeySecret ? provider.get(apiKeySecret.id) : null,
           oauthSecret ? provider.get(oauthSecret.id) : null,
           ...mcpSecrets.map(s => provider.get(s.id)),
         ]);
+
+        if (decryptedApiKey) {
+          (cw as any).serverApiKey = decryptedApiKey;
+        }
+        if (decryptedOauthToken) {
+          (cw as any).serverOauthToken = decryptedOauthToken;
+        }
 
         // Build MCP secrets map: label (env var name) → decrypted value
         const mcpSecretsMap: Record<string, string> = {};
@@ -609,16 +630,8 @@ export async function POST(req: NextRequest) {
           }
         });
 
-        for (const cw of claimedWorkers) {
-          if (decryptedApiKey) {
-            (cw as any).serverApiKey = decryptedApiKey;
-          }
-          if (decryptedOauthToken) {
-            (cw as any).serverOauthToken = decryptedOauthToken;
-          }
-          if (Object.keys(mcpSecretsMap).length > 0) {
-            (cw as any).mcpSecrets = mcpSecretsMap;
-          }
+        if (Object.keys(mcpSecretsMap).length > 0) {
+          (cw as any).mcpSecrets = mcpSecretsMap;
         }
       }
     } catch (err) {

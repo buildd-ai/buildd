@@ -226,7 +226,7 @@ describe('E2E test worktree eviction', () => {
     });
     injectWorker(manager, worker);
 
-    (manager as any).evictCompletedWorkers();
+    (manager as any).workerSync.evictCompletedWorkers();
 
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-e2e-1')).toBe(false);
@@ -243,7 +243,7 @@ describe('E2E test worktree eviction', () => {
     });
     injectWorker(manager, worker);
 
-    (manager as any).evictCompletedWorkers();
+    (manager as any).workerSync.evictCompletedWorkers();
 
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-e2e-err')).toBe(false);
@@ -259,7 +259,7 @@ describe('E2E test worktree eviction', () => {
     });
     injectWorker(manager, worker);
 
-    (manager as any).evictCompletedWorkers();
+    (manager as any).workerSync.evictCompletedWorkers();
 
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-e2e-1')).toBe(true);
@@ -279,7 +279,7 @@ describe('E2E test worktree eviction', () => {
     });
     injectWorker(manager, worker);
 
-    (manager as any).evictCompletedWorkers();
+    (manager as any).workerSync.evictCompletedWorkers();
 
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-e2e-1')).toBe(false);

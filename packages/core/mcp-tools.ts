@@ -88,7 +88,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
-    create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
+    create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
@@ -104,7 +104,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) Create workspace in dashboard or API, 2) Agent claims task in that workspace, 3) Agent uses manage_workspaces action=create_repo to create GitHub repo (or action=update to link existing repo), 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -902,7 +902,6 @@ export async function handleBuilddAction(
     }
 
     case 'create_artifact': {
-      const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.type || !params.title) throw new Error('type and title are required');
 
       const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event', 'file'];
@@ -919,10 +918,20 @@ export async function handleBuilddAction(
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
 
-      const artifactData = await api(`/api/workers/${workerId}/artifacts`, {
-        method: 'POST',
-        body: JSON.stringify(artifactBody),
-      });
+      // Support mission-level artifacts (no worker required) or worker artifacts
+      let artifactData;
+      if (params.missionId) {
+        artifactData = await api(`/api/missions/${params.missionId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      } else {
+        const workerId = resolveWorkerId(params.workerId, ctx);
+        artifactData = await api(`/api/workers/${workerId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      }
 
       const art = artifactData.artifact;
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
@@ -1307,9 +1316,22 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsAction = params.action as string;
-      if (!wsAction) throw new Error('action is required (list, update, create_repo, init)');
+      if (!wsAction) throw new Error('action is required (list, create, update, create_repo, init)');
 
       switch (wsAction) {
+        case 'create': {
+          if (!params.name && !params.repoUrl) throw new Error('name or repoUrl is required');
+          const body: Record<string, unknown> = {};
+          if (params.name) body.name = params.name;
+          if (params.repoUrl) body.repoUrl = params.repoUrl;
+          if (params.defaultBranch) body.defaultBranch = params.defaultBranch;
+          if (params.accessMode) body.accessMode = params.accessMode;
+          const wsData = await api('/api/workspaces', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          return text(`Workspace created: "${wsData.name}" (ID: ${wsData.id})${wsData.repo ? `\nRepo: ${wsData.repo}` : ''}`);
+        }
         case 'list': {
           const data = await api('/api/workspaces');
           const wsList = data.workspaces || [];
@@ -1359,7 +1381,7 @@ export async function handleBuilddAction(
           return text(`Workspace ${wsId} directory will be auto-created by the runner when a task is claimed. No-repo workspaces are resolved to a persistent project directory on the runner (e.g. /home/coder/project/{workspace-name}/). To set up the project:\n1. The runner creates the directory automatically\n2. Run \`git init\` in the workspace directory\n3. Use manage_workspaces action=create_repo or action=update to link a remote repo`);
         }
         default:
-          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, update, create_repo, init`);
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, create, update, create_repo, init`);
       }
     }
 

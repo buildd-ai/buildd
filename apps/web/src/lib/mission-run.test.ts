@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// Mock functions
+// Mock functions for deps injected via DI (not mock.module — avoids polluting other test files)
+const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
+const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
+
+// Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
 const mockInsert = mock(() => ({ values: mockInsertValues }));
-const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
-const mockDispatchNewTask = mock(() => Promise.resolve());
-const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -30,19 +32,13 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id' },
 }));
 
-mock.module('@/lib/mission-context', () => ({
-  buildMissionContext: mockBuildMissionContext,
-}));
-
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
-}));
-
-mock.module('@/lib/orchestrator-workspace', () => ({
-  getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace,
-}));
-
 import { runMission } from './mission-run';
+
+const deps = {
+  buildMissionContext: mockBuildMissionContext as any,
+  dispatchNewTask: mockDispatchNewTask as any,
+  getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace as any,
+};
 
 describe('runMission', () => {
   beforeEach(() => {
@@ -62,7 +58,7 @@ describe('runMission', () => {
 
   it('throws when mission not found', async () => {
     mockMissionsFindFirst.mockResolvedValue(null);
-    await expect(runMission('nonexistent')).rejects.toThrow('Mission not found');
+    await expect(runMission('nonexistent', undefined, deps)).rejects.toThrow('Mission not found');
   });
 
   it('throws when mission is not active', async () => {
@@ -74,7 +70,7 @@ describe('runMission', () => {
       title: 'Test',
       schedule: null,
     });
-    await expect(runMission('obj-1')).rejects.toThrow('Cannot run mission with status: paused');
+    await expect(runMission('obj-1', undefined, deps)).rejects.toThrow('Cannot run mission with status: paused');
   });
 
   it('creates planning task with orchestrator creationSource', async () => {
@@ -104,7 +100,7 @@ describe('runMission', () => {
     mockInsertReturning.mockResolvedValue([createdTask]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
 
-    const result = await runMission('obj-1');
+    const result = await runMission('obj-1', undefined, deps);
 
     expect(result.task.id).toBe('task-1');
     expect(result.task.mode).toBe('planning');
@@ -138,7 +134,7 @@ describe('runMission', () => {
     mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
 
-    await runMission('obj-1', { manualRun: true });
+    await runMission('obj-1', { manualRun: true }, deps);
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect((insertCall.context as any).manualRun).toBe(true);
@@ -163,7 +159,7 @@ describe('runMission', () => {
     mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
 
-    await runMission('obj-1');
+    await runMission('obj-1', undefined, deps);
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect((insertCall.context as any).manualRun).toBeUndefined();
@@ -188,7 +184,7 @@ describe('runMission', () => {
     mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
 
-    await runMission('obj-1');
+    await runMission('obj-1', undefined, deps);
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     const ctx = insertCall.context as Record<string, unknown>;
@@ -218,7 +214,7 @@ describe('runMission', () => {
 
     await runMission('obj-1', {
       cycleContext: { cycleNumber: 3, triggerChainId: 'chain-abc', triggerSource: 'retrigger' },
-    });
+    }, deps);
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     const ctx = insertCall.context as Record<string, unknown>;
@@ -246,7 +242,7 @@ describe('runMission', () => {
     mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'orchestrator-ws' }]);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'orchestrator-ws', name: '__coordination' });
 
-    await runMission('obj-1');
+    await runMission('obj-1', undefined, deps);
 
     expect(mockGetOrCreateCoordinationWorkspace).toHaveBeenCalledWith('team-1');
 

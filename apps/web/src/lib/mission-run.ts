@@ -1,9 +1,9 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { buildMissionContext } from '@/lib/mission-context';
-import { dispatchNewTask } from '@/lib/task-dispatch';
-import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
+import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
+import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
+import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect;
@@ -20,6 +20,13 @@ export interface RunMissionOptions {
   cycleContext?: CycleContext;
 }
 
+/** Overridable deps for testing without mock.module pollution */
+export interface RunMissionDeps {
+  buildMissionContext?: typeof _buildMissionContext;
+  dispatchNewTask?: typeof _dispatchNewTask;
+  getOrCreateCoordinationWorkspace?: typeof _getOrCreateCoordinationWorkspace;
+}
+
 /**
  * Trigger an immediate planning task for a mission.
  * Builds rich mission context (task history, active tasks, failures, recipe)
@@ -29,8 +36,13 @@ export interface RunMissionOptions {
  */
 export async function runMission(
   missionId: string,
-  options?: RunMissionOptions
+  options?: RunMissionOptions,
+  deps?: RunMissionDeps,
 ): Promise<RunMissionResult> {
+  const buildMissionContext = deps?.buildMissionContext ?? _buildMissionContext;
+  const dispatchNewTask = deps?.dispatchNewTask ?? _dispatchNewTask;
+  const getOrCreateCoordinationWorkspace = deps?.getOrCreateCoordinationWorkspace ?? _getOrCreateCoordinationWorkspace;
+
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
     with: { schedule: true },

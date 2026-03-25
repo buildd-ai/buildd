@@ -1,36 +1,39 @@
-import { query, type SDKMessage, type SDKUserMessage, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, PermissionSuggestion } from './types';
+import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SkillBundle } from '@buildd/shared';
+import { type SkillBundle } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
-import { resolveWorktreeBase } from './worktree-utils';
-import Pusher from 'pusher-js';
+import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
+import { PusherManager } from './pusher-manager';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
 import type { WorkerEnvironment } from '@buildd/shared';
+import {
+  resolveBypassPermissions,
+  resolveMaxBudgetUsd,
+  resolveMaxTurns,
+  discoverModelCapabilities,
+  buildPrompt,
+  buildSessionSummary,
+  generatePromptSuggestions,
+  extractFilesFromToolCalls,
+} from './prompt-builder';
+import { HookFactory } from './hook-factory';
+import { RecoveryManager } from './recovery';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+// Re-export for backwards compatibility (tests import from './workers')
+export { isEphemeralTestBranch };
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
-
-// Extract a short label from reasoning text: first sentence, up to period/newline/120 chars
-function extractPhaseLabel(text: string): string {
-  // Take first line or sentence
-  const firstLine = text.split('\n')[0].trim();
-  // Find first sentence boundary
-  const periodIdx = firstLine.indexOf('. ');
-  const label = periodIdx > 0 && periodIdx < 120
-    ? firstLine.slice(0, periodIdx)
-    : firstLine.slice(0, 120);
-  return label + (firstLine.length > 120 && periodIdx < 0 ? '...' : '');
-}
 
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
@@ -148,19 +151,6 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
-/**
- * Check if a branch name indicates an ephemeral e2e test worktree.
- * These are created by e2e/integration tests and should be cleaned up
- * immediately (0 retention) to prevent worktree accumulation.
- *
- * E2E test tasks have titles like "[E2E-TEST] Echo ..." which get sanitized
- * to branch names containing "--e2e-test-".
- */
-export function isEphemeralTestBranch(branch: string | undefined): boolean {
-  if (!branch) return false;
-  return branch.includes('--e2e-test-');
-}
-
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -171,12 +161,9 @@ export class WorkerManager {
   private commandHandlers: CommandHandler[] = [];
   private staleCheckInterval?: Timer;
   private syncInterval?: Timer;
-  private pusher?: Pusher;
-  private pusherChannels = new Map<string, any>();
+  private pusherManager: PusherManager;
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
-  private workspaceChannels = new Map<string, any>();
-  private channelPrefix: string;
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
@@ -185,8 +172,72 @@ export class WorkerManager {
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
+  // Circuit breaker: pause claims when quota exhausted or repeated rapid failures
+  private consecutiveQuickFailures = 0;
+  private claimsPaused = false;
+  private claimsPausedUntil = 0;
+
+  /**
+   * Classify an error as a systemic issue that should trip the circuit breaker.
+   * Returns pause config if the error affects all workers, null if worker-specific.
+   */
+  private classifyErrorForCircuitBreaker(err: string): { label: string; pauseMs: number } | null {
+    // Quota exhaustion: "out of extra usage · resets 5pm (UTC)"
+    const quotaMatch = err.match(/out of extra usage.*resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
+    if (quotaMatch) {
+      return { label: `Quota exhausted (resets ${quotaMatch[1]} ${quotaMatch[2]})`, pauseMs: this.parseResetDelay(quotaMatch[1]) };
+    }
+
+    // Usage limit / rate limit patterns from Claude API
+    if (err.includes('rate limit') || err.includes('rate_limit') || err.includes('too many requests')) {
+      return { label: 'Rate limited', pauseMs: 5 * 60 * 1000 };
+    }
+    if (err.includes('overloaded') || err.includes('529') || err.includes('service unavailable')) {
+      return { label: 'API overloaded', pauseMs: 2 * 60 * 1000 };
+    }
+
+    // Billing / credits
+    if (err.includes('billing') || err.includes('insufficient credits') || err.includes('payment') || err.includes('out_of_credits')) {
+      return { label: 'Billing error', pauseMs: 60 * 60 * 1000 };
+    }
+
+    // Auth failures (affect all workers using same key)
+    if (err.includes('invalid api key') || err.includes('authentication failed') || err.includes('401 unauthorized') || err.includes('api key is required')) {
+      return { label: 'Auth failure', pauseMs: 30 * 60 * 1000 };
+    }
+
+    // SDK budget limit (maxBudgetUsd) — worker-level, but if configured globally it hits everyone
+    if (err.includes('max budget') || err.includes('maxbudgetusd') || err.includes('budget exceeded')) {
+      return { label: 'Budget limit reached', pauseMs: 60 * 60 * 1000 };
+    }
+
+    return null; // Worker-specific error, no circuit breaker
+  }
+
+  /** Parse a reset time like "5pm" into ms delay from now (assumes UTC) */
+  private parseResetDelay(timeStr: string): number {
+    const hourMatch = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
+    if (!hourMatch) return 60 * 60 * 1000;
+
+    let hour = parseInt(hourMatch[1], 10);
+    const ampm = hourMatch[2]?.toLowerCase();
+    if (ampm === 'pm' && hour < 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+
+    const now = new Date();
+    const target = new Date(now);
+    target.setUTCHours(hour, 0, 0, 0);
+    if (target.getTime() <= now.getTime()) {
+      target.setUTCDate(target.getUTCDate() + 1);
+    }
+
+    return Math.max(5 * 60 * 1000, Math.min(target.getTime() - now.getTime(), 24 * 60 * 60 * 1000));
+  }
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  private hookFactory: HookFactory;
+  private recoveryManager: RecoveryManager;
+  private workerSync: WorkerSync;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -201,33 +252,78 @@ export class WorkerManager {
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
   }>();
-  // Tasks whose workspace couldn't be resolved — skip on future Pusher retries
-  private unresolvableTaskIds = new Set<string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
     this.buildd = new BuilddClient(config);
     this.resolver = resolver || createWorkspaceResolver(config.projectRoots);
     this.acceptRemoteTasks = config.acceptRemoteTasks !== false;
-    this.channelPrefix = config.pusherChannelPrefix || '';
+    this.pusherManager = new PusherManager(config, this.buildd, {
+      getWorkers: () => this.workers,
+      emit: (event) => this.emit(event),
+      emitCommand: (workerId, command) => this.emitCommand(workerId, command),
+      abort: (workerId) => this.abort(workerId),
+      sendMessage: (workerId, text) => this.sendMessage(workerId, text),
+      rollback: (workerId, uuid) => this.rollback(workerId, uuid),
+      recover: (workerId, mode) => this.recover(workerId, mode),
+      sendHeartbeat: () => this.sendHeartbeat(),
+      claimPendingTasks: () => this.claimPendingTasks(),
+      claimAndStart: (task) => this.claimAndStart(task),
+      getProbedWorkers: () => this.probedWorkers,
+    });
+    this.hookFactory = new HookFactory({
+      config: { inputAsRetry: config.inputAsRetry },
+      buildd: this.buildd,
+      addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
+      emit: (event) => this.emit(event),
+      pendingPermissionRequests: this.pendingPermissionRequests,
+    });
+    this.recoveryManager = new RecoveryManager({
+      workers: this.workers,
+      sessions: this.sessions,
+      buildd: this.buildd,
+      resolver: this.resolver,
+      pendingPermissionRequests: this.pendingPermissionRequests,
+      emit: (event) => this.emit(event),
+      addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
+      unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
+      startSession: (worker, cwd, task, resumeSessionId?) => this.startSession(worker, cwd, task, resumeSessionId),
+    });
+    this.workerSync = new WorkerSync({
+      config,
+      buildd: this.buildd,
+      workers: this.workers,
+      sessions: this.sessions,
+      dirtyWorkers: this.dirtyWorkers,
+      dirtyForDisk: this.dirtyForDisk,
+      emit: (event) => this.emit(event),
+      abort: (workerId, reason) => this.abort(workerId, reason),
+      sendMessage: (workerId, message) => this.sendMessage(workerId, message),
+      getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
+      setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
+      recentCycleTimes: this.recentCycleTimes,
+      probedWorkers: this.probedWorkers,
+      addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
+      buildUserMessage: (content, opts) => buildUserMessage(content, opts),
+    });
 
     // Check for stale workers every 30s
-    this.staleCheckInterval = setInterval(() => this.checkStale(), 30_000);
+    this.staleCheckInterval = setInterval(() => this.workerSync.checkStale(), 30_000);
 
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
-    this.syncInterval = setInterval(() => this.syncToServer(), 10_000);
+    this.syncInterval = setInterval(() => this.workerSync.syncToServer(), 10_000);
 
     // Run cleanup every 30 minutes (includes session logs)
     this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
-    this.evictionInterval = setInterval(() => this.evictCompletedWorkers(), 5 * 60 * 1000);
+    this.evictionInterval = setInterval(() => this.workerSync.evictCompletedWorkers(), 5 * 60 * 1000);
 
     // Persist dirty worker state to disk every 5s
-    this.diskPersistInterval = setInterval(() => this.persistDirtyWorkers(), 5_000);
+    this.diskPersistInterval = setInterval(() => this.workerSync.persistDirtyWorkers(), 5_000);
 
     // Restore workers from disk on startup
-    this.restoreWorkersFromDisk();
+    this.workerSync.restoreWorkersFromDisk();
 
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
@@ -263,31 +359,7 @@ export class WorkerManager {
     }
 
     // Initialize Pusher if configured
-    if (config.pusherKey && config.pusherCluster) {
-      this.pusher = new Pusher(config.pusherKey, {
-        cluster: config.pusherCluster,
-      });
-      console.log('Pusher connected for command relay');
-
-      // On reconnect, send immediate heartbeat and claim any tasks missed during disconnect
-      this.pusher.connection.bind('state_change', (states: { previous: string; current: string }) => {
-        if (states.current === 'connected' && states.previous !== 'initialized') {
-          console.log(`Pusher reconnected (was ${states.previous}), sending immediate heartbeat`);
-          this.sendHeartbeat();
-          // Claim any tasks that were created while Pusher was disconnected
-          if (this.acceptRemoteTasks) {
-            this.claimPendingTasks().catch(err => {
-              console.error('Failed to claim tasks on Pusher reconnect:', err);
-            });
-          }
-        }
-      });
-
-      // Subscribe to workspace channels for task assignments if enabled
-      if (this.acceptRemoteTasks) {
-        this.subscribeToWorkspaceChannels();
-      }
-    }
+    this.pusherManager.initialize();
 
     // Check if credentials exist (don't validate, SDK handles auth)
     // Skip in serverless mode — SDK handles its own auth, no server to report to
@@ -304,153 +376,8 @@ export class WorkerManager {
   // Set whether to accept remote task assignments
   setAcceptRemoteTasks(enabled: boolean) {
     this.acceptRemoteTasks = enabled;
-    if (enabled && this.pusher) {
-      this.subscribeToWorkspaceChannels();
-    } else if (!enabled) {
-      this.unsubscribeFromWorkspaceChannels();
-    }
+    this.pusherManager.setAcceptRemoteTasks(enabled);
     console.log(`Accept remote tasks: ${enabled}`);
-  }
-
-  // Restore workers from disk on startup
-  private restoreWorkersFromDisk() {
-    try {
-      const restored = loadAllWorkers();
-      for (const worker of restored) {
-        // Workers with active status can't be resumed (no SDK session/inputStream).
-        // Exception: 'waiting' workers keep their status so the user can still answer —
-        // sendMessage() will detect waiting+no-session and restart via resumeSession().
-        if (worker.status === 'working' || worker.status === 'stale') {
-          worker.status = 'error';
-          worker.error = 'Process restarted';
-          worker.completedAt = worker.completedAt || Date.now();
-          worker.currentAction = 'Process restarted';
-
-          // Notify server so it doesn't stay "running" forever
-          this.buildd.updateWorker(worker.id, {
-            status: 'failed',
-            error: 'Process restarted',
-          }).catch(() => {});
-        }
-        // Ensure arrays exist (workers saved before these features were added)
-        if (!worker.checkpoints) worker.checkpoints = [];
-        if (!worker.subagentTasks) worker.subagentTasks = [];
-        // Ensure checkpointEvents set exists (reconstructed from milestones by worker-store)
-        if (!worker.checkpointEvents || !(worker.checkpointEvents instanceof Set)) {
-          worker.checkpointEvents = new Set<CheckpointEventType>(
-            worker.milestones
-              .filter((m): m is Extract<typeof m, { type: 'checkpoint' }> => m.type === 'checkpoint')
-              .map(m => m.event)
-          );
-        }
-        this.workers.set(worker.id, worker);
-      }
-      if (restored.length > 0) {
-        console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
-      }
-    } catch (err) {
-      console.error('[WorkerStore] Failed to restore workers from disk:', err);
-    }
-  }
-
-  // Persist workers that have been marked dirty since last interval
-  private persistDirtyWorkers() {
-    if (this.dirtyForDisk.size === 0) return;
-    const toSave = new Set(this.dirtyForDisk);
-    this.dirtyForDisk.clear();
-    for (const workerId of toSave) {
-      const worker = this.workers.get(workerId);
-      if (worker) {
-        try {
-          storeSaveWorker(worker);
-        } catch (err) {
-          console.error(`[WorkerStore] Failed to persist worker ${workerId}:`, err);
-        }
-      }
-    }
-  }
-
-  // Subscribe to workspace channels for task assignments
-  private async subscribeToWorkspaceChannels() {
-    if (!this.pusher) return;
-
-    try {
-      // Get workspaces to determine channel names
-      const workspaces = await this.buildd.listWorkspaces();
-      if (workspaces.length === 0) {
-        console.log('No workspaces found, skipping workspace channel subscription');
-        return;
-      }
-
-      // Subscribe to each workspace for task:assigned events
-      for (const ws of workspaces) {
-        const channelName = `${this.channelPrefix}workspace-${ws.id}`;
-        if (!this.workspaceChannels.has(channelName)) {
-          const channel = this.pusher.subscribe(channelName);
-          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
-            this.handleTaskAssignment(data);
-          });
-          this.workspaceChannels.set(channelName, channel);
-          console.log(`Subscribed to ${channelName} for task assignments`);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to subscribe to workspace channels:', err);
-    }
-  }
-
-  private unsubscribeFromWorkspaceChannels() {
-    // Unsubscribe from workspace channels
-    for (const [channelName, channel] of this.workspaceChannels) {
-      channel.unbind('task:assigned');
-      this.pusher?.unsubscribe(channelName);
-    }
-    this.workspaceChannels.clear();
-  }
-
-  // Handle incoming task assignment
-  private async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
-    if (!this.acceptRemoteTasks) {
-      console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
-      return;
-    }
-
-    const { task, targetLocalUiUrl } = data;
-
-    // Skip tasks we already know can't be resolved
-    if (this.unresolvableTaskIds.has(task.id)) {
-      return;
-    }
-
-    // Check if this assignment is targeted at this runner instance
-    // If targetLocalUiUrl is set, only accept if it matches our URL
-    // If targetLocalUiUrl is null/undefined, any runner can accept (broadcast)
-    if (targetLocalUiUrl && this.config.localUiUrl && targetLocalUiUrl !== this.config.localUiUrl) {
-      console.log(`Task ${task.id} assigned to different runner: ${targetLocalUiUrl}`);
-      return;
-    }
-
-    // Check if we have capacity
-    const activeWorkers = Array.from(this.workers.values()).filter(
-      w => w.status === 'working' || w.status === 'stale'
-    );
-    if (activeWorkers.length >= this.config.maxConcurrent) {
-      console.log(`Cannot accept task ${task.id}: at max capacity (${activeWorkers.length}/${this.config.maxConcurrent})`);
-      return;
-    }
-
-    console.log(`Received task assignment: ${task.title} (${task.id})`);
-    this.emit({ type: 'task_assigned', task });
-
-    // Auto-claim and start the task
-    try {
-      const worker = await this.claimAndStart(task);
-      if (worker) {
-        console.log(`Successfully started assigned task: ${task.title}`);
-      }
-    } catch (err) {
-      console.error(`Failed to start assigned task ${task.id}:`, err);
-    }
   }
 
   // Check if credentials exist
@@ -473,211 +400,6 @@ export class WorkerManager {
   private emitCommand(workerId: string, command: WorkerCommand) {
     for (const handler of this.commandHandlers) {
       handler(workerId, command);
-    }
-  }
-
-  // Subscribe to Pusher channel for worker commands
-  private subscribeToWorker(workerId: string) {
-    if (!this.pusher || this.pusherChannels.has(workerId)) return;
-
-    const channel = this.pusher.subscribe(`${this.channelPrefix}worker-${workerId}`);
-    channel.bind('worker:command', (data: WorkerCommand) => {
-      console.log(`Command received for worker ${workerId}:`, data);
-      this.handleCommand(workerId, data);
-    });
-
-    // Resolution signals: server pushes completion/failure events so the runner
-    // can immediately reconcile local state without waiting for the next sync.
-    channel.bind('worker:completed', () => {
-      const worker = this.workers.get(workerId);
-      if (worker && worker.status !== 'done') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server confirmed completed`);
-        worker.status = 'done';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
-      }
-    });
-
-    channel.bind('worker:failed', (data: any) => {
-      const worker = this.workers.get(workerId);
-      // Only apply if worker hasn't already completed locally
-      if (worker && worker.status !== 'done' && worker.status !== 'error') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
-        worker.status = 'error';
-        worker.error = data?.error || 'Task failed on server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        this.abort(workerId).catch(() => {});
-      }
-    });
-
-    // Progress heartbeat: when the server confirms a progress update (from the agent's
-    // update_progress MCP call), reset lastActivity. This prevents the hard timeout from
-    // killing workers that are actively reporting progress even if the SDK stream is slow.
-    channel.bind('worker:progress', () => {
-      const worker = this.workers.get(workerId);
-      if (worker && (worker.status === 'working' || worker.status === 'stale')) {
-        worker.lastActivity = Date.now();
-        // If worker was stale but server got progress, recover it
-        if (worker.status === 'stale') {
-          worker.status = 'working';
-          this.probedWorkers.delete(workerId);
-          console.log(`[Worker ${workerId}] Recovered from stale via server progress`);
-        }
-      }
-    });
-
-    this.pusherChannels.set(workerId, channel);
-  }
-
-  private unsubscribeFromWorker(workerId: string) {
-    const channel = this.pusherChannels.get(workerId);
-    if (channel) {
-      this.pusher?.unsubscribe(`${this.channelPrefix}worker-${workerId}`);
-      this.pusherChannels.delete(workerId);
-    }
-  }
-
-  private async handleCommand(workerId: string, command: WorkerCommand) {
-    this.emitCommand(workerId, command);
-
-    switch (command.action) {
-      case 'pause':
-        // TODO: Implement pause (would need SDK support)
-        console.log(`Pause requested for worker ${workerId}`);
-        break;
-      case 'resume':
-        console.log(`Resume requested for worker ${workerId}`);
-        break;
-      case 'abort':
-        await this.abort(workerId);
-        break;
-      case 'message':
-        if (command.text) {
-          await this.sendMessage(workerId, command.text);
-        }
-        break;
-      case 'rollback':
-        if (command.checkpointUuid) {
-          await this.rollback(workerId, command.checkpointUuid);
-        }
-        break;
-      case 'recover':
-        if (command.recoveryMode) {
-          await this.recover(workerId, command.recoveryMode);
-        }
-        break;
-    }
-  }
-
-  // Sync a single worker's state to server
-  private async syncWorkerToServer(worker: LocalWorker) {
-    try {
-      // Build milestones array, appending current in-progress phase as pending
-      const milestones: any[] = worker.milestones.map(m => ({ ...m }));
-      if (worker.phaseText && worker.phaseToolCount > 0) {
-        milestones.push({
-          type: 'phase' as const,
-          label: extractPhaseLabel(worker.phaseText),
-          toolCount: worker.phaseToolCount,
-          ts: worker.phaseStart || Date.now(),
-          pending: true,
-        });
-      }
-
-      // Collect active subagent progress for dashboard visibility
-      const activeProgress = worker.subagentTasks
-        .filter(t => t.status === 'running' && t.progress)
-        .map(t => ({
-          taskId: t.taskId,
-          agentName: t.progress!.agentName,
-          toolCount: t.progress!.toolCount,
-          durationMs: t.progress!.durationMs,
-          cumulativeUsage: t.progress!.cumulativeUsage,
-        }));
-
-      const update: Parameters<BuilddClient['updateWorker']>[1] = {
-        status: worker.status === 'waiting' ? 'waiting_input' : 'running',
-        currentAction: worker.currentAction,
-        milestones,
-        localUiUrl: this.config.localUiUrl,
-        ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
-        ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
-      };
-      if (worker.status === 'waiting' && worker.waitingFor) {
-        update.waitingFor = {
-          type: worker.waitingFor.type,
-          prompt: worker.waitingFor.prompt,
-          options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-        };
-      }
-      const response = await this.buildd.updateWorker(worker.id, update);
-
-      // Clear MCP call buffer after successful sync
-      if (worker.pendingMcpCalls?.length) {
-        worker.pendingMcpCalls = [];
-      }
-
-      // Server says worker was already terminated
-      if (response?.abort) {
-        // If the server says the worker already completed (or has deliverables),
-        // this is just a race with the agent's complete_task call — NOT a real abort.
-        // Accept the server's completion state and let the SDK session finish naturally.
-        if (response.actualStatus === 'completed' || response.hasDeliverables) {
-          console.log(`[Worker ${worker.id}] Server confirms completed (sync race) — skipping abort`);
-          worker.status = 'done';
-          worker.completedAt = worker.completedAt || Date.now();
-          this.emit({ type: 'worker_update', worker });
-          return;
-        }
-
-        // Genuinely terminated (reassigned, admin killed, stale cleanup, etc.)
-        console.log(`[Worker ${worker.id}] Server says worker terminated: ${response.reason}`);
-        worker.status = 'error';
-        worker.error = response.reason || 'Terminated by server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.emit({ type: 'worker_update', worker });
-        await this.abort(worker.id);
-        return;
-      }
-
-      // Process any pending instructions from sync response
-      if (response?.instructions) {
-        await this.sendMessage(worker.id, response.instructions);
-      }
-    } catch (err) {
-      // Silently ignore sync errors
-    }
-  }
-
-  // Mark a worker as needing sync on next interval
-  private markDirty(workerId: string) {
-    this.dirtyWorkers.add(workerId);
-  }
-
-  // Sync only dirty worker states to server
-  private async syncToServer() {
-    // Always sync waiting workers so they can pick up pendingInstructions
-    // (answers to AskUserQuestion) even if Pusher delivery fails.
-    for (const [id, worker] of this.workers) {
-      if (worker.status === 'waiting') {
-        this.dirtyWorkers.add(id);
-      }
-    }
-
-    if (this.dirtyWorkers.size === 0) return;
-    const toSync = new Set(this.dirtyWorkers);
-    this.dirtyWorkers.clear();
-    try {
-      for (const workerId of toSync) {
-        const worker = this.workers.get(workerId);
-        if (worker && (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) {
-          await this.syncWorkerToServer(worker);
-        }
-      }
-    } catch {
-      // Silently ignore sync errors - server may be temporarily unreachable
     }
   }
 
@@ -724,127 +446,6 @@ export class WorkerManager {
       await this.buildd.runCleanup();
     } catch (err) {
       console.warn('[Cleanup] Failed to run server cleanup:', err instanceof Error ? err.message : err);
-    }
-  }
-
-  // Evict completed/failed workers from in-memory Map after 10 minutes
-  // to prevent unbounded memory growth during long-running sessions.
-  // Workers remain on disk (24h TTL) so getWorkers() can still serve them.
-  private evictCompletedWorkers() {
-    const RETENTION_MS = 10 * 60 * 1000;
-    const now = Date.now();
-    for (const [id, worker] of this.workers.entries()) {
-      // E2E test workers get 0 retention — clean up immediately to prevent worktree accumulation
-      const retention = isEphemeralTestBranch(worker.branch) ? 0 : RETENTION_MS;
-      if (
-        (worker.status === 'done' || worker.status === 'error') &&
-        now - worker.lastActivity >= retention
-      ) {
-        // Clean up worktree if it still exists (completed workers keep worktree for resume)
-        if (worker.worktreePath && existsSync(worker.worktreePath)) {
-          const worktreeMarker = join('.buildd-worktrees', '');
-          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
-          const repoPath = worktreeIdx > 0
-            ? worker.worktreePath.substring(0, worktreeIdx)
-            : worker.worktreePath;
-          this.cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
-            console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
-          });
-        }
-        sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
-        this.workers.delete(id);
-        this.sessions.delete(id);
-        // Note: NOT deleting from disk — workers persist for 24h for history
-      }
-    }
-  }
-
-  private checkStale() {
-    const now = Date.now();
-    const timeout = this.adaptiveStaleTimeout;
-    // Hard absolute timeout: no worker process should run longer than 30 minutes
-    // without producing activity. This catches zombie processes that ignore probes.
-    // The timer resets on ANY SDK message (tool calls, text, MCP calls like update_progress)
-    // because handleMessage() updates worker.lastActivity on every message.
-    // So an agent actively reporting progress via update_progress will never hit this.
-    const HARD_TIMEOUT_MS = 30 * 60 * 1000;
-
-    for (const worker of this.workers.values()) {
-      // Skip stale check for workers waiting on user input (plan approval, questions)
-      if (worker.status === 'waiting') continue;
-
-      // Hard timeout: kill any worker (working or stale) that has been idle too long
-      if ((worker.status === 'working' || worker.status === 'stale') &&
-          now - worker.lastActivity > HARD_TIMEOUT_MS) {
-        const idleSec = Math.round((now - worker.lastActivity) / 1000);
-        console.log(`[Worker ${worker.id}] Hard timeout — idle ${idleSec}s, aborting`);
-        sessionLog(worker.id, 'warn', 'hard_timeout', `Aborting after ${idleSec}s idle (hard timeout ${HARD_TIMEOUT_MS / 1000}s)`);
-        this.probedWorkers.delete(worker.id);
-        this.abort(worker.id, `Hard timeout: idle ${idleSec}s`).catch(() => {});
-        continue;
-      }
-
-      if (worker.status === 'working') {
-        if (now - worker.lastActivity > timeout) {
-          // Graduated recovery: if session is still alive, try a soft probe first
-          const session = this.sessions.get(worker.id);
-          if (session && !this.probedWorkers.has(worker.id)) {
-            this.probedWorkers.add(worker.id);
-            console.log(`[Worker ${worker.id}] Idle ${Math.round((now - worker.lastActivity) / 1000)}s — sending soft probe before marking stale`);
-            try {
-              session.inputStream.enqueue(buildUserMessage(
-                'You appear to have stalled. If you are still working, continue. If you are stuck, summarize what you have done and finish.',
-                { sessionId: worker.sessionId },
-              ));
-              worker.lastActivity = now;  // Give it another cycle to respond
-              worker.currentAction = 'Probed (idle recovery)';
-              this.addMilestone(worker, { type: 'status', label: 'Idle probe sent', ts: now });
-              this.emit({ type: 'worker_update', worker });
-            } catch {
-              // Session stream closed — abort the worker
-              console.log(`[Worker ${worker.id}] Probe failed (stream closed) — aborting`);
-              this.probedWorkers.delete(worker.id);
-              this.abort(worker.id, 'Stale: probe failed (stream closed)').catch(() => {});
-            }
-          } else {
-            // Already probed or no session — abort the worker (not just mark stale)
-            const idleSec = Math.round((now - worker.lastActivity) / 1000);
-            console.log(`[Worker ${worker.id}] Stale after probe — idle ${idleSec}s, aborting`);
-            sessionLog(worker.id, 'warn', 'stale_abort', `Aborting after probe failed — idle ${idleSec}s`);
-            this.probedWorkers.delete(worker.id);
-            this.abort(worker.id, `Stale: no response to probe after ${idleSec}s`).catch(() => {});
-          }
-        }
-      }
-    }
-  }
-
-  /** Record a completed worker's cycle time and recalculate adaptive stale timeout */
-  private recordCycleTime(worker: LocalWorker) {
-    const duration = (worker.completedAt || Date.now()) - worker.startedAt;
-    if (duration <= 0) return;
-
-    this.recentCycleTimes.push(duration);
-    // Keep last 20 cycle times
-    if (this.recentCycleTimes.length > 20) {
-      this.recentCycleTimes.shift();
-    }
-
-    // Need at least 3 samples before adapting
-    if (this.recentCycleTimes.length < 3) return;
-
-    // Median of recent cycle times
-    const sorted = [...this.recentCycleTimes].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-
-    // Timeout = 50% of median cycle time (workers that go silent for half their
-    // typical total runtime are likely stuck), bounded [2 min, 10 min]
-    const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
-
-    // Only adjust on >20% change to prevent thrashing
-    if (Math.abs(newTimeout - this.adaptiveStaleTimeout) / this.adaptiveStaleTimeout > 0.2) {
-      console.log(`[Adaptive timeout] ${Math.round(this.adaptiveStaleTimeout / 1000)}s → ${Math.round(newTimeout / 1000)}s (median cycle: ${Math.round(median / 1000)}s, samples: ${this.recentCycleTimes.length})`);
-      this.adaptiveStaleTimeout = newTimeout;
     }
   }
 
@@ -979,6 +580,14 @@ export class WorkerManager {
     if (!this.acceptRemoteTasks) return [];
     if (!this.hasCredentials && !this.config.serverless) return [];
 
+    // Circuit breaker: pause claims after repeated rapid failures (e.g., quota exhaustion)
+    if (this.claimsPaused) {
+      if (Date.now() < this.claimsPausedUntil) return [];
+      console.log('[WorkerManager] Circuit breaker reset — resuming claims');
+      this.claimsPaused = false;
+      this.consecutiveQuickFailures = 0;
+    }
+
     const activeWorkers = Array.from(this.workers.values()).filter(
       w => w.status === 'working' || w.status === 'stale'
     );
@@ -1054,10 +663,8 @@ export class WorkerManager {
     });
 
     if (!workspacePath) {
-      if (!this.unresolvableTaskIds.has(task.id)) {
-        console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
-        this.unresolvableTaskIds.add(task.id);
-      }
+      console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
+      this.pusherManager.markUnresolvable(task.id);
       return null;
     }
 
@@ -1165,7 +772,7 @@ export class WorkerManager {
     storeSaveWorker(worker);
 
     // Subscribe to Pusher for commands
-    this.subscribeToWorker(worker.id);
+    this.pusherManager.subscribeToWorker(worker.id);
 
     // Register localUiUrl with server
     if (this.config.localUiUrl) {
@@ -1187,7 +794,7 @@ export class WorkerManager {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 
-      const worktreePath = await this.setupWorktree(
+      const worktreePath = await setupWorktree(
         workspacePath,
         claimedWorker.branch,
         defaultBranch,
@@ -1236,279 +843,11 @@ export class WorkerManager {
 
       // Clean up worktree on session start failure
       if (worker.worktreePath) {
-        this.cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+        cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
       }
     });
 
     return worker;
-  }
-
-  // Create a PreToolUse hook that blocks dangerous commands but explicitly allows safe ones.
-  // Under `acceptEdits` mode, Bash commands stall waiting for approval (no approval UI exists).
-  // This hook returns `allow` for non-dangerous Bash commands so agents don't silently stall.
-  private createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'PreToolUse') return {};
-
-      const toolName = (input as any).tool_name;
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
-
-      // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
-      // Prompt-level instruction alone is unreliable — enforce at hook level.
-      if (toolName === 'AskUserQuestion'
-          && (opts?.inputPolicy || 'autonomous') === 'autonomous'
-          && this.config.inputAsRetry === false) {
-        console.log(`[Worker ${worker.id}] Blocked AskUserQuestion (inputPolicy=autonomous)`);
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'deny' as const,
-            permissionDecisionReason: 'AskUserQuestion is not allowed in autonomous mode. Complete the task independently without asking the user questions. Make reasonable decisions and proceed.',
-          },
-        };
-      }
-
-      // Block dangerous bash commands
-      if (toolName === 'Bash') {
-        const command = (toolInput.command as string) || '';
-        for (const pattern of DANGEROUS_PATTERNS) {
-          if (pattern.test(command)) {
-            console.log(`[Worker ${worker.id}] Blocked dangerous command: ${command.slice(0, 80)}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: 'Dangerous command blocked by safety policy',
-              },
-            };
-          }
-        }
-
-        // Explicitly allow safe bash commands (prevents acceptEdits stall)
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'allow' as const,
-            permissionDecisionReason: 'Allowed by buildd permission hook',
-          },
-        };
-      }
-
-      // Block writes to sensitive paths
-      if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
-        const filePath = (toolInput.file_path as string) || (toolInput.filePath as string) || '';
-        for (const pattern of SENSITIVE_PATHS) {
-          if (pattern.test(filePath)) {
-            console.log(`[Worker ${worker.id}] Blocked sensitive path write: ${filePath}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: `Cannot write to sensitive path: ${filePath}`,
-              },
-            };
-          }
-        }
-      }
-
-      // Allow all other tools by default (prevents acceptEdits stall —
-      // no terminal exists for interactive approval)
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse' as const,
-          permissionDecision: 'allow' as const,
-          permissionDecisionReason: 'Allowed by buildd permission hook',
-        },
-      };
-    };
-  }
-
-  // Create a PostToolUse hook that captures team events (TeamCreate, SendMessage, Task).
-  // Purely observational — returns {} and never blocks or modifies tool execution.
-  private createTeamTrackingHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'PostToolUse') return {};
-
-      const toolName = (input as any).tool_name;
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
-
-      if (toolName === 'TeamCreate') {
-        const teamName = (toolInput.team_name as string) || 'unnamed';
-        worker.teamState = {
-          teamName,
-          members: [],
-          messages: [],
-          createdAt: Date.now(),
-        };
-        this.addMilestone(worker, { type: 'status', label: `Team created: ${teamName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Team created: ${teamName}`);
-      }
-
-      if (toolName === 'SendMessage' && worker.teamState) {
-        const msg = {
-          from: (toolInput.sender as string) || 'leader',
-          to: (toolInput.recipient as string) || (toolInput.type === 'broadcast' ? 'broadcast' : 'unknown'),
-          content: (toolInput.content as string) || '',
-          summary: (toolInput.summary as string) || undefined,
-          timestamp: Date.now(),
-        };
-        worker.teamState.messages.push(msg);
-        // Cap at 200 messages
-        if (worker.teamState.messages.length > 200) {
-          worker.teamState.messages.shift();
-        }
-        // Only emit milestone for broadcasts (avoid noise from DMs)
-        if (toolInput.type === 'broadcast') {
-          this.addMilestone(worker, { type: 'status', label: `Broadcast: ${msg.summary || msg.content.slice(0, 40)}`, ts: Date.now() });
-        }
-      }
-
-      if (toolName === 'Task' && worker.teamState) {
-        const agentName = (toolInput.name as string) || (toolInput.description as string) || 'subagent';
-        const agentType = (toolInput.subagent_type as string) || undefined;
-        worker.teamState.members.push({
-          name: agentName,
-          role: agentType,
-          status: 'active',
-          spawnedAt: Date.now(),
-        });
-        this.addMilestone(worker, { type: 'status', label: `Subagent: ${agentName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Subagent spawned: ${agentName}`);
-      }
-
-      return {};
-    };
-  }
-
-  // Create a PostToolUseFailure hook that marks MCP calls as failed.
-  // Purely observational — returns {} and never blocks or modifies tool execution.
-  private createMcpFailureHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
-
-      const toolName = (input as any).tool_name as string;
-
-      // Only care about MCP tool failures
-      if (toolName?.startsWith('mcp__') && worker.pendingMcpCalls?.length) {
-        // Find the last matching pending call and mark it as failed
-        for (let i = worker.pendingMcpCalls.length - 1; i >= 0; i--) {
-          const call = worker.pendingMcpCalls[i];
-          const expectedPrefix = `mcp__${call.server}__`;
-          if (toolName.startsWith(expectedPrefix) && call.ok) {
-            call.ok = false;
-            break;
-          }
-        }
-      }
-
-      return {};
-    };
-  }
-
-  // Create a TeammateIdle hook that updates team member status when a teammate goes idle.
-  // Purely observational — emits events for dashboard/Pusher visibility.
-  private createTeammateIdleHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'TeammateIdle') return {};
-
-      const teammateName = (input as any).teammate_name as string;
-      const teamName = (input as any).team_name as string;
-
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'idle';
-        }
-      }
-
-      this.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
-
-      return { async: true };
-    };
-  }
-
-  // Create a PermissionRequest hook that blocks until the user approves or denies.
-  // Displays tool_name, tool_input, and permission_suggestions in the worker detail UI.
-  // Returns a decision (allow/deny) based on user input via resolvePermission().
-  private createPermissionRequestHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'PermissionRequest') return {};
-
-      const toolName = (input as any).tool_name as string;
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
-      const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
-
-      console.log(`[Worker ${worker.id}] Permission requested: ${toolName}, suggestions=${permissionSuggestions?.length || 0}`);
-
-      // Build human-readable labels for each suggestion
-      const suggestions: PermissionSuggestion[] = (permissionSuggestions || []).map((s: any) => {
-        let label = '';
-        if (s.type === 'addRules' || s.type === 'replaceRules') {
-          const rules = (s.rules as Array<{ toolName: string; ruleContent?: string }>)?.map(
-            r => r.ruleContent ? `${r.toolName}: ${r.ruleContent}` : r.toolName
-          ) || [];
-          label = `Allow ${rules.join(', ')}`;
-        } else if (s.type === 'setMode') {
-          label = `Switch to ${s.mode} mode`;
-        } else if (s.type === 'addDirectories') {
-          label = `Allow access to ${(s.directories as string[])?.join(', ') || 'directories'}`;
-        } else {
-          label = `${s.type}`;
-        }
-        return { type: s.type, label, raw: s };
-      });
-
-      // Build a descriptive prompt
-      const cmdPreview = toolName === 'Bash'
-        ? (toolInput.command as string)?.slice(0, 120) || ''
-        : '';
-      const prompt = cmdPreview
-        ? `Permission required for ${toolName}: ${cmdPreview}`
-        : `Permission required for ${toolName}`;
-
-      // Set worker to waiting state
-      worker.status = 'waiting';
-      worker.waitingFor = {
-        type: 'permission',
-        prompt,
-        toolName,
-        toolInput,
-        permissionSuggestions: suggestions,
-        options: [
-          { label: 'Allow once', description: 'Allow this single tool call' },
-          ...(suggestions.length > 0 ? [{ label: 'Always allow', description: 'Apply suggested permission rules for the session' }] : []),
-          { label: 'Deny', description: 'Block this tool call' },
-        ],
-      };
-      worker.currentAction = `Permission: ${toolName}`;
-      worker.hasNewActivity = true;
-      worker.lastActivity = Date.now();
-      this.addMilestone(worker, { type: 'status', label: `Permission: ${toolName}`, ts: Date.now() });
-
-      // Sync to server and persist
-      this.buildd.updateWorker(worker.id, {
-        status: 'waiting_input',
-        currentAction: worker.currentAction,
-        waitingFor: {
-          type: 'permission',
-          prompt,
-          options: worker.waitingFor.options?.map(o => typeof o === 'string' ? o : o.label),
-        },
-      }).catch(() => {});
-      storeSaveWorker(worker);
-      this.emit({ type: 'worker_update', worker });
-
-      // Block the hook until the user resolves the permission decision
-      return new Promise<any>((resolve) => {
-        this.pendingPermissionRequests.set(worker.id, {
-          resolve,
-          toolInput,
-          suggestions: permissionSuggestions || [],
-        });
-      });
-    };
   }
 
   // Resolve a pending permission request for a worker.
@@ -1573,356 +912,6 @@ export class WorkerManager {
     return true;
   }
 
-  // Create a TaskCompleted hook that logs task completions within agent teams.
-  // Emits milestones and updates team state for dashboard visibility.
-  private createTaskCompletedHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'TaskCompleted') return {};
-
-      const taskId = (input as any).task_id as string;
-      const taskSubject = (input as any).task_subject as string;
-      const teammateName = (input as any).teammate_name as string | undefined;
-      const teamName = (input as any).team_name as string | undefined;
-
-      // Update team member status if completed by a known teammate
-      if (worker.teamState && teammateName) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'done';
-        }
-      }
-
-      const label = teammateName
-        ? `Task done (${teammateName}): ${taskSubject.slice(0, 50)}`
-        : `Task done: ${taskSubject.slice(0, 50)}`;
-      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Task completed: ${taskSubject} (teammate: ${teammateName || 'leader'}, team: ${teamName || 'none'})`);
-
-      return { async: true };
-    };
-  }
-
-  // Create a SubagentStart hook that tracks subagent spawning.
-  // Updates team state and emits milestones for dashboard visibility.
-  private createSubagentStartHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'SubagentStart') return {};
-
-      const agentId = (input as any).agent_id as string;
-      const agentType = (input as any).agent_type as string;
-
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === agentId);
-        if (member) {
-          member.status = 'active';
-        }
-      }
-
-      this.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
-
-      return { async: true };
-    };
-  }
-
-  // Create a SubagentStop hook that tracks subagent completion.
-  // Updates team state and emits milestones for dashboard visibility.
-  private createSubagentStopHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'SubagentStop') return {};
-
-      const stopHookActive = (input as any).stop_hook_active as boolean;
-      const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
-
-      const label = lastAssistantMessage
-        ? `Subagent: ${lastAssistantMessage.slice(0, 80)}${lastAssistantMessage.length > 80 ? '...' : ''}`
-        : 'Subagent stopped';
-      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Subagent stopped (stop_hook_active: ${stopHookActive}, has_message: ${!!lastAssistantMessage})`);
-
-      return { async: true };
-    };
-  }
-
-  // Create a Stop hook that captures the last assistant message (v0.2.47+).
-  // Used to generate prompt suggestions for follow-up actions after task completion.
-  private createStopHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'Stop') return {};
-
-      const lastMessage = (input as any).last_assistant_message as string | undefined;
-      if (lastMessage) {
-        worker.lastAssistantMessage = lastMessage;
-        // Generate prompt suggestions from the last message and task context
-        worker.promptSuggestions = this.extractPromptSuggestions(worker, lastMessage);
-        if (worker.promptSuggestions.length > 0) {
-          console.log(`[Worker ${worker.id}] Generated ${worker.promptSuggestions.length} prompt suggestion(s)`);
-        }
-      }
-
-      return { async: true };
-    };
-  }
-
-  // Extract prompt suggestions from the last assistant message and task context.
-  // Heuristic: look for actionable follow-up patterns in the final message.
-  private extractPromptSuggestions(worker: LocalWorker, lastMessage: string): string[] {
-    const suggestions: string[] = [];
-
-    // Check for common follow-up patterns in the last message
-    const hasCommits = worker.commits.length > 0;
-    const hasPR = lastMessage.toLowerCase().includes('pull request') || lastMessage.toLowerCase().includes('pr ');
-    const hasTests = lastMessage.toLowerCase().includes('test');
-    const hasBuild = lastMessage.toLowerCase().includes('build');
-
-    // If there are commits but no PR mentioned, suggest creating one
-    if (hasCommits && !hasPR) {
-      suggestions.push('Create a pull request for these changes');
-    }
-
-    // If code was changed, suggest running tests
-    if (hasCommits && !hasTests) {
-      suggestions.push('Run the test suite to verify changes');
-    }
-
-    // If tests were mentioned but not build, suggest build verification
-    if (hasTests && !hasBuild) {
-      suggestions.push('Run the build to check for errors');
-    }
-
-    // Look for explicit "next steps" or "you might want to" patterns
-    const nextStepPatterns = [
-      /(?:next steps?|you (?:can|could|might|may|should) (?:also |want to )?|consider |try |to follow up)[:\-]?\s*(.{10,80})/gi,
-      /(?:TODO|FIXME|NOTE)[:\s]+(.{10,80})/gi,
-    ];
-
-    for (const pattern of nextStepPatterns) {
-      let match;
-      while ((match = pattern.exec(lastMessage)) !== null) {
-        const suggestion = match[1].trim().replace(/[.!,;]+$/, '');
-        if (suggestion.length >= 10 && suggestion.length <= 80) {
-          suggestions.push(suggestion);
-        }
-        if (suggestions.length >= 5) break;
-      }
-      if (suggestions.length >= 5) break;
-    }
-
-    // Deduplicate and limit to 5 suggestions
-    return [...new Set(suggestions)].slice(0, 5);
-  }
-
-  // Create a ConfigChange hook that logs config file changes (SDK v0.2.49+).
-  // Emits milestones for audit trail and optionally blocks changes per workspace config.
-  private createConfigChangeHook(worker: LocalWorker, blockChanges: boolean): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'ConfigChange') return {};
-
-      const filePath = (input as any).file_path as string;
-      const changeType = (input as any).change_type as string;
-
-      const label = blockChanges
-        ? `Config change blocked: ${filePath}`
-        : `Config changed: ${filePath} (${changeType})`;
-      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] ConfigChange: ${filePath} (${changeType}, blocked=${blockChanges})`);
-
-      if (blockChanges) {
-        return { continue: false };
-      }
-
-      return { async: true };
-    };
-  }
-
-  // Create a Notification hook that captures agent status messages.
-  // Emits milestones for dashboard visibility and logs the notification.
-  private createNotificationHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'Notification') return {};
-
-      const message = (input as any).message as string;
-      const title = (input as any).title as string | undefined;
-
-      const label = title
-        ? `${title}: ${message.slice(0, 60)}`
-        : message.slice(0, 80);
-      this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Notification: ${title ? `[${title}] ` : ''}${message}`);
-
-      return { async: true };
-    };
-  }
-
-  // Create a PreCompact hook that archives the full transcript before context compaction.
-  // This preserves worker reasoning history that would otherwise be lost during compaction.
-  private createPreCompactHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'PreCompact') return {};
-
-      const transcriptPath = (input as any).transcript_path as string | undefined;
-      const trigger = (input as any).trigger as 'manual' | 'auto' | undefined;
-
-      if (!transcriptPath) return {};
-
-      try {
-        const transcript = readFileSync(transcriptPath, 'utf-8');
-        this.addMilestone(worker, { type: 'status', label: `Transcript archived (${trigger || 'auto'} compaction)`, ts: Date.now() });
-        this.emit({
-          type: 'transcript_archived',
-          worker,
-          data: {
-            trigger: trigger || 'auto',
-            transcriptPath,
-            transcript,
-          },
-        });
-        console.log(`[Worker ${worker.id}] Transcript archived before ${trigger || 'auto'} compaction (${transcript.length} chars)`);
-      } catch {
-        // Transcript file may not exist or be unreadable — non-fatal
-      }
-      return {};
-    };
-  }
-
-  // Resolve whether to use bypassPermissions mode.
-  // Priority: workspace gitConfig (if admin_confirmed) > local config > default (false)
-  private resolveBypassPermissions(workspaceConfig: { gitConfig?: any; configStatus?: string }): boolean {
-    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
-    const wsBypass = workspaceConfig.gitConfig?.bypassPermissions;
-
-    // Workspace-level setting takes priority if admin confirmed
-    if (isAdminConfirmed && typeof wsBypass === 'boolean') {
-      return wsBypass;
-    }
-
-    // Fall back to runner config
-    if (typeof this.config.bypassPermissions === 'boolean') {
-      return this.config.bypassPermissions;
-    }
-
-    // Default: false
-    return false;
-  }
-
-  // Resolve maxBudgetUsd for SDK cost control.
-  // Priority: workspace gitConfig (if admin_confirmed) > local config > undefined (no limit)
-  private resolveMaxBudgetUsd(workspaceConfig: { gitConfig?: any; configStatus?: string }): number | undefined {
-    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
-    const wsBudget = workspaceConfig.gitConfig?.maxBudgetUsd;
-
-    // Workspace-level setting takes priority if admin confirmed
-    if (isAdminConfirmed && typeof wsBudget === 'number' && wsBudget > 0) {
-      return wsBudget;
-    }
-
-    // Fall back to runner config
-    if (typeof this.config.maxBudgetUsd === 'number' && this.config.maxBudgetUsd > 0) {
-      return this.config.maxBudgetUsd;
-    }
-
-    return undefined;
-  }
-
-  // Resolve maxTurns for SDK-level turn limiting.
-  // Priority: workspace gitConfig (if admin_confirmed) > local config > undefined (no limit)
-  private resolveMaxTurns(workspaceConfig: { gitConfig?: any; configStatus?: string }): number | undefined {
-    const isAdminConfirmed = workspaceConfig.configStatus === 'admin_confirmed';
-    const wsTurns = workspaceConfig.gitConfig?.maxTurns;
-
-    // Workspace-level setting takes priority if admin confirmed
-    if (isAdminConfirmed && typeof wsTurns === 'number' && wsTurns > 0) {
-      return wsTurns;
-    }
-
-    // Fall back to runner config
-    if (typeof this.config.maxTurns === 'number' && this.config.maxTurns > 0) {
-      return this.config.maxTurns;
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Discover model capabilities via SDK v0.2.49+ supportedModels().
-   * Validates configured effort/thinking against actual model support and
-   * stores capability info on the worker for dashboard visibility.
-   * Runs in background (fire-and-forget) to avoid blocking the message loop.
-   */
-  private discoverModelCapabilities(
-    queryInstance: ReturnType<typeof query>,
-    worker: LocalWorker,
-    configured: {
-      effort?: string;
-      thinking?: { type: string; budgetTokens?: number };
-      extendedContext?: boolean;
-    },
-  ): void {
-    const modelId = this.config.model;
-
-    // Fire-and-forget — capability discovery should not block the worker
-    queryInstance.supportedModels().then((models: any[]) => {
-      const currentModel = models.find((m: any) => m.value === modelId);
-
-      if (!currentModel) {
-        console.warn(`[Worker ${worker.id}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
-        worker.modelCapabilities = { warnings: [`Model "${modelId}" not found in supported models list`] };
-        this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
-        return;
-      }
-
-      // Extract capability fields added in SDK v0.2.49
-      const supportsEffort = currentModel.supportsEffort ?? false;
-      const supportedEffortLevels: string[] = currentModel.supportedEffortLevels ?? [];
-      const supportsAdaptiveThinking = currentModel.supportsAdaptiveThinking ?? false;
-
-      const warnings: string[] = [];
-
-      // Validate effort configuration
-      if (configured.effort && !supportsEffort) {
-        warnings.push(`Effort "${configured.effort}" configured but model "${modelId}" does not support effort — option will be ignored by SDK`);
-      } else if (configured.effort && supportsEffort && supportedEffortLevels.length > 0) {
-        if (!supportedEffortLevels.includes(configured.effort)) {
-          warnings.push(`Effort "${configured.effort}" not in supported levels [${supportedEffortLevels.join(', ')}] for model "${modelId}"`);
-        }
-      }
-
-      // Validate thinking configuration
-      if (configured.thinking) {
-        if (configured.thinking.type === 'adaptive' && !supportsAdaptiveThinking) {
-          warnings.push(`Adaptive thinking configured but model "${modelId}" does not support it — option will be ignored by SDK`);
-        }
-        if (configured.thinking.type === 'enabled' && !supportsAdaptiveThinking) {
-          warnings.push(`Extended thinking configured but model "${modelId}" does not support thinking — option will be ignored by SDK`);
-        }
-      }
-
-      // Log warnings
-      for (const warning of warnings) {
-        console.warn(`[Worker ${worker.id}] ${warning}`);
-        sessionLog(worker.id, 'warn', 'model_capability', warning, worker.taskId);
-      }
-
-      // Store capabilities on worker for API/dashboard access
-      worker.modelCapabilities = {
-        model: modelId,
-        capabilities: {
-          supportsEffort,
-          supportedEffortLevels,
-          supportsAdaptiveThinking,
-        },
-        warnings,
-      };
-
-      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
-    }).catch((err: Error) => {
-      // Non-fatal — capability discovery failure should not block the worker
-      console.warn(`[Worker ${worker.id}] Model capability discovery failed: ${err.message}`);
-      worker.modelCapabilities = { warnings: [`Capability discovery failed: ${err.message}`] };
-      this.emit('event', { type: 'worker:model_capabilities', workerId: worker.id, data: worker.modelCapabilities });
-    });
-  }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
@@ -2001,89 +990,13 @@ export class WorkerManager {
         this.buildd.searchObservations(task.workspaceId, task.title, 5),
       ]);
 
-      // Build prompt with workspace context
-      const promptParts: string[] = [];
-
-      // Add admin-defined agent instructions (if configured)
-      if (isConfigured && gitConfig?.agentInstructions) {
-        promptParts.push(`## Workspace Instructions\n${gitConfig.agentInstructions}`);
-      }
-
-      // Add git workflow context (if configured and not 'none' strategy)
-      // 'none' strategy means defer entirely to CLAUDE.md / project conventions
-      if (isConfigured && gitConfig && gitConfig.branchingStrategy !== 'none') {
-        const gitContext: string[] = ['## Git Workflow'];
-        gitContext.push(`- Default branch: ${gitConfig.defaultBranch}`);
-
-        if (gitConfig.branchPrefix) {
-          gitContext.push(`- Branch naming: ${gitConfig.branchPrefix}<task-name>`);
-        } else if (gitConfig.useBuildBranch) {
-          gitContext.push(`- Branch naming: buildd/<task-id>-<task-name>`);
-        }
-
-        // Tell the worker their branch is already set up (worktree mode)
-        if (worker.worktreePath) {
-          gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${gitConfig.defaultBranch}\``);
-          gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
-        }
-
-        const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
-        if (gitConfig.requiresPR) {
-          gitContext.push(`- Changes require PR to \`${prTarget}\``);
-          if (gitConfig.autoCreatePR) {
-            gitContext.push(`- Create PR when done`);
-          }
-          // If buildd MCP is available, prefer create_pr action over gh pr create to avoid duplicates
-          if (this.config.apiKey) {
-            gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
-          } else {
-            gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
-          }
-        } else {
-          gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
-        }
-
-        if (gitConfig.commitStyle === 'conventional') {
-          gitContext.push(`- Use conventional commits (feat:, fix:, chore:, etc.)`);
-        }
-
-        promptParts.push(gitContext.join('\n'));
-      }
-
-      // Add rich workspace memory context
-      const MAX_MEMORY_BYTES = 4096;
-      if (compactResult.count > 0 || taskSearchResults.length > 0) {
-        const memoryContext: string[] = ['## Workspace Memory'];
-
-        // Inject compact workspace digest (capped to prevent prompt bloat)
-        if (compactResult.markdown) {
-          let digest = compactResult.markdown;
-          if (digest.length > MAX_MEMORY_BYTES) {
-            digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `buildd_search_memory` for more)*';
-          }
-          memoryContext.push(digest);
-        }
-
-        // Fetch full content for task-specific matches and add as subsection
-        if (taskSearchResults.length > 0) {
-          const fullObservations = await this.buildd.getBatchObservations(
+      // Fetch full content for task-specific memory matches
+      const fullObservations = taskSearchResults.length > 0
+        ? await this.buildd.getBatchObservations(
             task.workspaceId,
             taskSearchResults.map(r => r.id),
-          );
-          if (fullObservations.length > 0) {
-            memoryContext.push('### Relevant to This Task');
-            for (const obs of fullObservations) {
-              const truncContent = obs.content.length > 300
-                ? obs.content.slice(0, 300) + '...'
-                : obs.content;
-              memoryContext.push(`- **[${obs.type}] ${obs.title}**: ${truncContent}`);
-            }
-          }
-        }
-
-        memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
-        promptParts.push(memoryContext.join('\n'));
-      }
+          )
+        : [];
 
       // Sync skills to disk for native SDK discovery (no prompt injection)
       const skillBundles = (task.context as any)?.skillBundles as SkillBundle[] | undefined;
@@ -2104,53 +1017,20 @@ export class WorkerManager {
         }
       }
 
-      // Add task description
-      // Clean up description: strip anything after "---" separator which might be polluted context from previous runs
-      let taskDescription = task.description || task.title;
-      const separatorIndex = taskDescription.indexOf('\n---');
-      if (separatorIndex > 0) {
-        taskDescription = taskDescription.substring(0, separatorIndex).trim();
-      }
-      promptParts.push(`## Task\n${taskDescription}`);
-
-      // Inject aggregation context: embed child task results directly so the agent
-      // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)
-      const taskCtx = task.context as { aggregation?: boolean; childTasks?: Array<{ title: string; status: string; taskId: string; result: any }> } | undefined;
-      if (taskCtx?.aggregation && taskCtx.childTasks && taskCtx.childTasks.length > 0) {
-        const aggParts: string[] = ['## Aggregation Context', 'The following sub-task results are available for synthesis:'];
-        for (const child of taskCtx.childTasks) {
-          aggParts.push(`### ${child.title} (status: ${child.status})`);
-          if (child.result) {
-            const resultStr = typeof child.result === 'string' ? child.result : JSON.stringify(child.result, null, 2);
-            aggParts.push(resultStr);
-          } else {
-            aggParts.push('*(no result)*');
-          }
-        }
-        promptParts.push(aggParts.join('\n'));
-      }
-
-      // Communication instruction: configurable input policy
-      // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
+      // Build prompt with workspace context
       const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
-      if (inputPolicy === 'allow') {
-        promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
-      } else if (inputPolicy === 'important-only') {
-        promptParts.push(`## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`);
-      } else {
-        if (this.config.inputAsRetry !== false) {
-          // inputAsRetry (default): allow AskUserQuestion for genuine blockers — session aborts and user responds async
-          promptParts.push(`## Communication\nIf you hit a genuine blocker you cannot resolve autonomously, use AskUserQuestion. The session will end and the user will respond asynchronously. For everything else, make reasonable decisions autonomously and proceed.`);
-        } else {
-          // inputAsRetry explicitly disabled — hard block
-          promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
-        }
-      }
-
-      // Add task metadata
-      promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
-
-      const promptText = promptParts.join('\n\n');
+      const promptText = buildPrompt({
+        task,
+        worker,
+        gitConfig,
+        isConfigured,
+        compactResult,
+        taskSearchResults,
+        fullObservations,
+        inputPolicy,
+        hasApiKey: !!this.config.apiKey,
+        inputAsRetry: this.config.inputAsRetry,
+      });
 
       // Filter out potentially problematic env vars (expired OAuth tokens)
       const cleanEnv = Object.fromEntries(
@@ -2222,7 +1102,7 @@ export class WorkerManager {
       const useClaudeMd = !isConfigured || gitConfig?.useClaudeMd !== false;
 
       // Resolve permission mode
-      const bypassPermissions = this.resolveBypassPermissions(workspaceConfig);
+      const bypassPermissions = resolveBypassPermissions(workspaceConfig, this.config.bypassPermissions);
       const permissionMode: 'acceptEdits' | 'bypassPermissions' = bypassPermissions ? 'bypassPermissions' : 'acceptEdits';
 
       // Check if skills should be used as subagents
@@ -2294,7 +1174,7 @@ export class WorkerManager {
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Resolve max budget for SDK-level cost control
-      const maxBudgetUsd = this.resolveMaxBudgetUsd(workspaceConfig);
+      const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
 
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (task.context as any)?.fallbackModel as string | undefined;
@@ -2310,7 +1190,7 @@ export class WorkerManager {
         : undefined;
 
       // Resolve max turns for SDK-level turn limiting
-      const maxTurns = this.resolveMaxTurns(workspaceConfig);
+      const maxTurns = resolveMaxTurns(workspaceConfig, this.config.maxTurns);
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
@@ -2367,18 +1247,18 @@ export class WorkerManager {
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.createPermissionHook(worker, { inputPolicy })] }],
-        PostToolUse: [{ hooks: [this.createTeamTrackingHook(worker)] }],
-        PostToolUseFailure: [{ hooks: [this.createMcpFailureHook(worker)] }],
-        Notification: [{ hooks: [this.createNotificationHook(worker)] }],
-        PreCompact: [{ hooks: [this.createPreCompactHook(worker)] }],
-        PermissionRequest: [{ hooks: [this.createPermissionRequestHook(worker)] }],
-        TeammateIdle: [{ hooks: [this.createTeammateIdleHook(worker)] }],
-        TaskCompleted: [{ hooks: [this.createTaskCompletedHook(worker)] }],
-        SubagentStart: [{ hooks: [this.createSubagentStartHook(worker)] }],
-        SubagentStop: [{ hooks: [this.createSubagentStopHook(worker)] }],
-        Stop: [{ hooks: [this.createStopHook(worker)] }],
-        ConfigChange: [{ hooks: [this.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
+        PreToolUse: [{ hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] }],
+        PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
+        PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker)] }],
+        Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
+        PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
+        PermissionRequest: [{ hooks: [this.hookFactory.createPermissionRequestHook(worker)] }],
+        TeammateIdle: [{ hooks: [this.hookFactory.createTeammateIdleHook(worker)] }],
+        TaskCompleted: [{ hooks: [this.hookFactory.createTaskCompletedHook(worker)] }],
+        SubagentStart: [{ hooks: [this.hookFactory.createSubagentStartHook(worker)] }],
+        SubagentStop: [{ hooks: [this.hookFactory.createSubagentStopHook(worker)] }],
+        Stop: [{ hooks: [this.hookFactory.createStopHook(worker)] }],
+        ConfigChange: [{ hooks: [this.hookFactory.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
       };
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
@@ -2409,11 +1289,11 @@ export class WorkerManager {
 
       // Discover model capabilities via SDK v0.2.49+ supportedModels()
       // Validates configured effort/thinking against actual model support
-      this.discoverModelCapabilities(queryInstance, worker, {
+      discoverModelCapabilities(queryInstance, worker, {
         effort: configuredEffort,
         thinking: configuredThinking,
         extendedContext,
-      });
+      }, this.config.model, (e: any) => this.emit(e));
 
       // Stream responses with ralph loop (prompt-based self-review)
       let resultSubtype: string | undefined;
@@ -2422,6 +1302,8 @@ export class WorkerManager {
       const ralphTaskDescription = worker.taskDescription || (task as any).description || '';
       const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 2;
       let reviewIteration = 0;
+      let outputReqNudgeCount = 0;
+      const maxOutputReqNudges = 2;
 
       for await (const msg of queryInstance) {
         // Debug: log result/system messages and AskUserQuestion-related flow
@@ -2442,6 +1324,41 @@ export class WorkerManager {
 
         // On result: run ralph self-review loop before completing
         if (msg.type === 'result') {
+          // Output requirement gate: before letting the session end, verify the agent
+          // created the required deliverable (PR or artifact). If not, nudge the agent
+          // while the session is still alive rather than failing post-loop.
+          let outputReqNudged = false;
+          const outputReq = task.outputRequirement || 'auto';
+          if ((outputReq === 'pr_required' || outputReq === 'artifact_required') && outputReqNudgeCount < maxOutputReqNudges) {
+            const hasPR = worker.commits.some((c: any) => c.prUrl || c.prNumber) ||
+              worker.toolCalls?.some((tc: any) => tc.name === 'create_pr' || (tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_pr'));
+            const hasArtifact = worker.toolCalls?.some((tc: any) =>
+              tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_artifact');
+
+            const unmet = outputReq === 'pr_required' ? !hasPR :
+              /* artifact_required */ !hasPR && !hasArtifact;
+
+            if (unmet) {
+              const session = this.sessions.get(worker.id);
+              if (session) {
+                const nudge = outputReq === 'pr_required'
+                  ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
+                  : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
+                console.log(`[Worker ${worker.id}] Output requirement not met (${outputReq}) — nudging agent`);
+                sessionLog(worker.id, 'info', 'output_requirement_nudge', outputReq, worker.taskId);
+                this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
+                worker.currentAction = `Creating ${outputReq === 'pr_required' ? 'PR' : 'deliverable'}...`;
+                this.emit({ type: 'worker_update', worker });
+                session.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
+                outputReqNudged = true;
+                outputReqNudgeCount++;
+              }
+            }
+          }
+          if (outputReqNudged) {
+            continue; // Keep session alive — agent needs to create the deliverable
+          }
+
           // Check if agent already passed review (said DONE)
           const lastMsg = worker.lastAssistantMessage || '';
           if (lastMsg.includes('<promise>DONE</promise>')) {
@@ -2508,7 +1425,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         console.log(`[Worker ${worker.id}] inputAsRetry: marking as failed — ${worker.error}`);
         sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
         worker.status = 'error';
         worker.currentAction = 'Needs input';
         worker.hasNewActivity = true;
@@ -2558,7 +1475,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
         worker.currentAction = 'Budget exceeded';
@@ -2575,7 +1492,7 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else {
         // Actually completed
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
-        const gitStats = await this.collectGitStats(worker.id, worker.branch);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
@@ -2583,11 +1500,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        this.recordCycleTime(worker);
+        this.workerSync.recordCycleTime(worker);
         this.probedWorkers.delete(worker.id);  // Clean up probe tracking
         // Generate follow-up prompt suggestions if Stop hook didn't already
         if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
-          worker.promptSuggestions = this.generatePromptSuggestions(worker);
+          worker.promptSuggestions = generatePromptSuggestions(worker);
           if (worker.promptSuggestions.length > 0) {
             console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
           }
@@ -2623,8 +1540,8 @@ If something is missing or incomplete, describe what and fix it now.`;
 
         // Capture summary observation (non-fatal)
         try {
-          const summary = this.buildSessionSummary(worker);
-          const files = this.extractFilesFromToolCalls(worker.toolCalls);
+          const summary = buildSessionSummary(worker);
+          const files = extractFilesFromToolCalls(worker.toolCalls);
 
           // Extract concepts from task title + commit messages for better searchability
           const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it', 'be', 'as', 'by', 'with', 'from', 'this', 'that', 'not', 'are', 'was', 'has', 'have', 'do', 'does', 'did', 'will', 'would', 'can', 'could', 'should', 'task']);
@@ -2722,7 +1639,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Exception: e2e test worktrees are always cleaned up immediately (ephemeral).
         const isEphemeral = isEphemeralTestBranch(worker.branch);
         if (worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
-          await this.cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
+          await cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
         }
@@ -2733,6 +1650,35 @@ If something is missing or incomplete, describe what and fix it now.`;
       // Archive to SQLite history (non-fatal)
       if (worker.status === 'done' || worker.status === 'error') {
         try { archiveSession(worker); } catch {}
+      }
+
+      // Circuit breaker: detect errors that affect all workers and pause claims
+      if (worker.status === 'error' && worker.error) {
+        const err = worker.error.toLowerCase();
+        const pauseReason = this.classifyErrorForCircuitBreaker(err);
+
+        if (pauseReason) {
+          const pauseMs = pauseReason.pauseMs;
+          this.claimsPaused = true;
+          this.claimsPausedUntil = Date.now() + pauseMs;
+          this.consecutiveQuickFailures = 0;
+          console.warn(`[WorkerManager] ${pauseReason.label} — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
+          sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+        } else {
+          // Generic rapid failure detection (non-classified errors)
+          const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : 0;
+          if (sessionDuration < 30_000) {
+            this.consecutiveQuickFailures++;
+            if (this.consecutiveQuickFailures >= 3 && !this.claimsPaused) {
+              this.claimsPaused = true;
+              this.claimsPausedUntil = Date.now() + 5 * 60 * 1000;
+              console.warn(`[WorkerManager] Circuit breaker: ${this.consecutiveQuickFailures} rapid failures. Pausing 5 min. Error: ${worker.error}`);
+              sessionLog(worker.id, 'warn', 'circuit_breaker', `${this.consecutiveQuickFailures} rapid failures: ${worker.error}`, worker.taskId);
+            }
+          }
+        }
+      } else if (worker.status === 'done') {
+        this.consecutiveQuickFailures = 0;
       }
     }
   }
@@ -2758,16 +1704,38 @@ If something is missing or incomplete, describe what and fix it now.`;
     // Surface rate limit events from SDK (v0.2.45+)
     if (msg.type === 'system' && (msg as any).subtype === 'rate_limit') {
       const event = msg as any;
+      const info = event.rate_limit_info;
       const retryMs = event.retry_after_ms;
-      const utilization = event.utilization;
-      const label = retryMs
-        ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
-        : utilization
-          ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
-          : 'Rate limited';
+      const utilization = info?.utilization ?? event.utilization;
+
+      const label = info?.status === 'rejected'
+        ? `Rate limit rejected (${info.rateLimitType || 'unknown'})`
+        : retryMs
+          ? `Rate limited — retrying in ${Math.ceil(retryMs / 1000)}s`
+          : utilization
+            ? `Rate limit: ${Math.round(utilization * 100)}% utilized`
+            : 'Rate limited';
       worker.currentAction = label;
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
+
+      // Circuit breaker: if rejected, pause claims until reset
+      if (info?.status === 'rejected') {
+        const resetDelay = info.resetsAt ? info.resetsAt - Date.now() : undefined;
+        const pauseMs = resetDelay && resetDelay > 0
+          ? Math.min(resetDelay, 24 * 60 * 60 * 1000) // cap at 24h
+          : info.rateLimitType === 'five_hour' ? 60 * 60 * 1000 // 1h fallback
+          : 5 * 60 * 1000; // 5 min fallback
+
+        this.claimsPaused = true;
+        this.claimsPausedUntil = Date.now() + pauseMs;
+        const reason = info.overageDisabledReason
+          ? `${info.rateLimitType} (${info.overageDisabledReason})`
+          : info.rateLimitType || 'unknown';
+        console.warn(`[WorkerManager] Rate limit rejected (${reason}) — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
+        sessionLog(worker.id, 'warn', 'rate_limit_pause', `Pausing claims: ${reason}, ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+      }
+
       this.emit({ type: 'worker_update', worker });
       return;
     }
@@ -3199,7 +2167,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
     // Sync this worker immediately so web dashboard sees milestones right away
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
-      this.syncWorkerToServer(worker).catch(() => {});
+      this.workerSync.syncWorkerToServer(worker).catch(() => {});
     }
   }
 
@@ -3217,43 +2185,7 @@ If something is missing or incomplete, describe what and fix it now.`;
   }
 
   async abort(workerId: string, reason?: string) {
-    const session = this.sessions.get(workerId);
-    if (session) {
-      // Abort the query and end the input stream
-      session.abortController.abort();
-      session.inputStream.end();
-      this.sessions.delete(workerId);
-    }
-
-    // Clear any pending permission request (unblocks the hook with deny)
-    const pending = this.pendingPermissionRequests.get(workerId);
-    if (pending) {
-      pending.resolve({
-        hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
-          decision: { behavior: 'deny', message: 'Aborted by user' },
-        },
-      });
-      this.pendingPermissionRequests.delete(workerId);
-    }
-
-    // Unsubscribe from Pusher
-    this.unsubscribeFromWorker(workerId);
-
-    const worker = this.workers.get(workerId);
-    if (worker) {
-      worker.status = 'error';
-      // Preserve existing error (e.g., from infinite loop detection) or use provided reason
-      worker.error = worker.error || reason || 'Aborted by user';
-      worker.currentAction = 'Aborted';
-      // This may return 409 if already completed on server - that's ok
-      try {
-        await this.buildd.updateWorker(workerId, { status: 'failed', error: worker.error });
-      } catch {
-        // Ignore - worker may already be done on server
-      }
-      this.emit({ type: 'worker_update', worker });
-    }
+    return this.recoveryManager.abort(workerId, reason);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {
@@ -3261,298 +2193,15 @@ If something is missing or incomplete, describe what and fix it now.`;
   }
 
   async rollback(workerId: string, checkpointUuid: string, dryRun = false): Promise<{ success: boolean; error?: string; filesChanged?: number; insertions?: number; deletions?: number }> {
-    const worker = this.workers.get(workerId);
-    if (!worker) {
-      return { success: false, error: 'Worker not found' };
-    }
-
-    const session = this.sessions.get(workerId);
-    if (!session?.queryInstance) {
-      return { success: false, error: 'No active session — rollback requires a running or recently completed query' };
-    }
-
-    // Verify checkpoint exists
-    const checkpoint = worker.checkpoints.find(cp => cp.uuid === checkpointUuid);
-    if (!checkpoint) {
-      return { success: false, error: 'Checkpoint not found' };
-    }
-
-    try {
-      console.log(`[Worker ${workerId}] ${dryRun ? 'Dry-run' : 'Rolling back'} to checkpoint ${checkpointUuid.slice(0, 12)} (${checkpoint.files.length} files)`);
-      const result = await session.queryInstance.rewindFiles(checkpointUuid, { dryRun });
-
-      if (!result.canRewind) {
-        return { success: false, error: result.error || 'Cannot rewind to this checkpoint' };
-      }
-
-      if (!dryRun) {
-        this.addMilestone(worker, {
-          type: 'status',
-          label: `Rollback: ${result.filesChanged || 0} files reverted`,
-          ts: Date.now(),
-        });
-        // Remove checkpoints after the rolled-back one (they're now invalid)
-        const cpIndex = worker.checkpoints.findIndex(cp => cp.uuid === checkpointUuid);
-        if (cpIndex >= 0) {
-          worker.checkpoints = worker.checkpoints.slice(0, cpIndex + 1);
-        }
-        worker.hasNewActivity = true;
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
-      }
-
-      return {
-        success: true,
-        filesChanged: result.filesChanged,
-        insertions: result.insertions,
-        deletions: result.deletions,
-      };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Worker ${workerId}] Rollback failed:`, errMsg);
-      return { success: false, error: errMsg };
-    }
+    return this.recoveryManager.rollback(workerId, checkpointUuid, dryRun);
   }
 
   async retry(workerId: string) {
-    const worker = this.workers.get(workerId);
-    if (!worker) return;
-
-    // Abort current session if any
-    const session = this.sessions.get(workerId);
-    if (session) {
-      session.abortController.abort();
-      session.inputStream.end();
-      this.sessions.delete(workerId);
-    }
-
-    // Reset worker state
-    worker.status = 'working';
-    worker.error = undefined;
-    worker.currentAction = 'Retrying...';
-    worker.hasNewActivity = true;
-    worker.lastActivity = Date.now();
-    worker.completedAt = undefined;
-    worker.checkpoints = [];  // Clear checkpoints — new session generates fresh ones
-    this.addMilestone(worker, { type: 'status', label: 'Retry requested', ts: Date.now() });
-    this.emit({ type: 'worker_update', worker });
-    storeSaveWorker(worker);
-
-    await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
-
-    // Resolve workspace
-    const workspacePath = this.resolver.resolve({
-      id: worker.workspaceId,
-      name: worker.workspaceName,
-      repo: undefined,
-    });
-
-    if (!workspacePath) {
-      worker.status = 'error';
-      worker.error = 'Cannot resolve workspace path - check PROJECTS_ROOT or set a path override';
-      worker.currentAction = 'Workspace not found';
-      worker.hasNewActivity = true;
-      worker.completedAt = Date.now();
-      this.emit({ type: 'worker_update', worker });
-      await this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error });
-      return;
-    }
-
-    // Build context-preserving description (same as follow-up but with retry framing)
-    const contextParts: string[] = [];
-    if (worker.taskDescription) {
-      contextParts.push(`## Original Task\n${worker.taskDescription}`);
-    }
-
-    // Include what was done so far
-    if (worker.milestones.length > 0) {
-      const milestoneLabels = worker.milestones
-        .filter(m => !['Task completed', 'Retry requested'].includes(m.label))
-        .map(m => m.type === 'phase' ? `- ${m.label} (${m.toolCount} tools)` : `- ${m.label}`);
-      if (milestoneLabels.length > 0) {
-        contextParts.push(`## Work Done Before Retry\n${milestoneLabels.join('\n')}`);
-      }
-    }
-
-    contextParts.push('## Instructions\nThe previous session stalled. Please continue the task from where it left off.');
-
-    const task = {
-      id: worker.taskId,
-      title: worker.taskTitle,
-      description: contextParts.join('\n\n'),
-      workspaceId: worker.workspaceId,
-      workspace: { name: worker.workspaceName },
-      status: 'assigned',
-      priority: 1,
-    };
-
-    this.startSession(worker, workspacePath, task as any).catch(err => {
-      console.error(`[Worker ${worker.id}] Retry session error:`, err);
-      if (worker.status === 'working') {
-        worker.status = 'error';
-        worker.error = err instanceof Error ? err.message : 'Retry session failed';
-        worker.currentAction = 'Retry failed';
-        worker.hasNewActivity = true;
-        worker.completedAt = Date.now();
-        this.emit({ type: 'worker_update', worker });
-      }
-    });
+    return this.recoveryManager.retry(workerId);
   }
 
   async recover(workerId: string, mode: 'diagnose' | 'complete' | 'restart') {
-    // Try loading from memory first, then disk
-    let worker = this.workers.get(workerId);
-    if (!worker) {
-      const diskWorker = storeLoadWorker(workerId);
-      if (diskWorker) {
-        this.workers.set(workerId, diskWorker);
-        worker = diskWorker;
-        console.log(`[Worker ${workerId}] Restored from disk for recovery (status: ${diskWorker.status})`);
-      }
-    }
-
-    if (!worker) {
-      console.error(`[Worker ${workerId}] Cannot recover: worker not found in memory or on disk`);
-      return;
-    }
-
-    console.log(`[Worker ${workerId}] Recovery initiated: mode=${mode}`);
-    this.addMilestone(worker, { type: 'status', label: `Recovery: ${mode}`, ts: Date.now() });
-
-    switch (mode) {
-      case 'restart':
-        // Restart reuses the existing retry logic
-        await this.retry(workerId);
-        return;
-
-      case 'diagnose':
-      case 'complete':
-        await this.runDoctorAgent(worker, mode);
-        return;
-    }
-  }
-
-  private async runDoctorAgent(worker: LocalWorker, goal: 'diagnose' | 'complete') {
-    const workspacePath = this.resolver.resolve({
-      id: worker.workspaceId,
-      name: worker.workspaceName,
-      repo: undefined,
-    });
-
-    if (!workspacePath) {
-      console.error(`[Worker ${worker.id}] Cannot run doctor: workspace not found`);
-      await this.buildd.updateWorker(worker.id, {
-        status: 'failed',
-        error: 'Recovery failed: workspace not found',
-      });
-      return;
-    }
-
-    // Use worktree if available, otherwise workspace root
-    const cwd = worker.worktreePath && existsSync(worker.worktreePath)
-      ? worker.worktreePath
-      : workspacePath;
-
-    // Build doctor prompt based on goal
-    const contextParts: string[] = [];
-
-    contextParts.push(`## Recovery Mode: ${goal}`);
-    contextParts.push(`You are a recovery agent inspecting a worker that failed to complete properly.`);
-    contextParts.push(`Worker ID: ${worker.id}`);
-    contextParts.push(`Task: ${worker.taskTitle}`);
-    if (worker.taskDescription) {
-      contextParts.push(`Task Description: ${worker.taskDescription}`);
-    }
-    if (worker.branch) {
-      contextParts.push(`Branch: ${worker.branch}`);
-    }
-
-    // Include what was done
-    if (worker.milestones.length > 0) {
-      const milestoneLabels = worker.milestones
-        .filter(m => !['Recovery: diagnose', 'Recovery: complete'].includes(m.label))
-        .map(m => `- ${m.label}`);
-      if (milestoneLabels.length > 0) {
-        contextParts.push(`## Previous Progress\n${milestoneLabels.join('\n')}`);
-      }
-    }
-
-    // Last output from previous session
-    if (worker.output && worker.output.length > 0) {
-      const lastOutput = worker.output.slice(-3).join('\n');
-      contextParts.push(`## Last Output\n${lastOutput}`);
-    }
-
-    if (goal === 'diagnose') {
-      contextParts.push(`## Instructions
-Inspect the current state and report findings. Do NOT continue the original task.
-
-1. Run \`git status\` to check for uncommitted changes
-2. Run \`git log --oneline -5\` to see recent commits
-3. Check if the task work appears complete or partial
-4. Report your findings as a structured summary
-
-Your assessment should include:
-- **status**: complete | partial | not_started | unknown
-- **uncommitted_changes**: yes | no
-- **unpushed_commits**: yes | no
-- **recommendation**: complete | restart | fail
-- **reason**: Brief explanation
-
-Keep it brief. Budget: $0.50 max.`);
-    } else {
-      // 'complete' mode
-      contextParts.push(`## Instructions
-The previous agent completed the work but failed to report completion properly.
-Your job is to close out this task — do NOT start new work.
-
-1. Check \`git status\` — commit any uncommitted changes if they look intentional
-2. Check \`git log origin/${worker.branch || 'main'}..HEAD\` — push unpushed commits if any
-3. If a PR is needed and doesn't exist, create one using \`buildd\` action=create_pr
-4. Call \`buildd\` action=complete_task with worker ID ${worker.id} and a summary of what was done
-5. If the work is clearly incomplete or broken, call complete_task with an error instead
-
-Budget: $1.00 max. Do NOT start new work or refactor anything.`);
-    }
-
-    const doctorPrompt = contextParts.join('\n\n');
-
-    // Update worker status
-    worker.status = 'working';
-    worker.error = undefined;
-    worker.currentAction = `Recovery: ${goal}...`;
-    worker.hasNewActivity = true;
-    worker.lastActivity = Date.now();
-    this.emit({ type: 'worker_update', worker });
-    storeSaveWorker(worker);
-
-    await this.buildd.updateWorker(worker.id, {
-      status: 'running',
-      currentAction: `Recovery: ${goal}`,
-    });
-
-    // Build task-like object for startSession
-    const task = {
-      id: worker.taskId,
-      title: `[Recovery] ${worker.taskTitle}`,
-      description: doctorPrompt,
-      workspaceId: worker.workspaceId,
-      workspace: { name: worker.workspaceName },
-      status: 'assigned',
-      priority: 1,
-    };
-
-    // Start a new session with strict budget limits
-    this.startSession(worker, cwd, task as any).catch(err => {
-      console.error(`[Worker ${worker.id}] Doctor agent failed:`, err);
-      worker.status = 'error';
-      worker.error = `Recovery ${goal} failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
-      worker.currentAction = 'Recovery failed';
-      worker.hasNewActivity = true;
-      worker.completedAt = Date.now();
-      this.emit({ type: 'worker_update', worker });
-      this.buildd.updateWorker(worker.id, { status: 'failed', error: worker.error }).catch(() => {});
-    });
+    return this.recoveryManager.recover(workerId, mode);
   }
 
   async markDone(workerId: string) {
@@ -3639,7 +2288,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
         : workspacePath;
 
       // Resume session with automatic fallback: SDK resume → reconstructed context
-      this.resumeSession(worker, sessionCwd, message).catch(err => {
+      this.recoveryManager.resumeSession(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Resume failed:`, err);
         if (worker.status === 'working') {
           worker.status = 'error';
@@ -3708,403 +2357,6 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     }
   }
 
-  /**
-   * Resume a completed worker session with automatic fallback.
-   *
-   * Layer 1: SDK resume via sessionId (full context preserved on disk)
-   * Layer 2: Reconstructed context (text summary of previous session)
-   *
-   * Each layer is logged via sessionLog for production diagnostics.
-   */
-  private async resumeSession(worker: LocalWorker, sessionCwd: string, message: string) {
-    sessionLog(worker.id, 'info', 'resume_requested', `Follow-up on ${worker.status} worker`, worker.taskId);
-
-    // Layer 1: Try SDK resume with sessionId (preserves full conversation history)
-    if (worker.sessionId) {
-      sessionLog(worker.id, 'info', 'resume_layer1_attempt', `SDK resume with sessionId ${worker.sessionId}`, worker.taskId);
-      console.log(`[Worker ${worker.id}] Layer 1: Resuming session ${worker.sessionId} (cwd: ${sessionCwd})`);
-
-      const task = {
-        id: worker.taskId,
-        title: worker.taskTitle,
-        description: message,
-        workspaceId: worker.workspaceId,
-        workspace: { name: worker.workspaceName },
-        status: 'assigned',
-        priority: 1,
-      };
-
-      try {
-        await this.startSession(worker, sessionCwd, task as any, worker.sessionId);
-        return; // Layer 1 succeeded
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        sessionLog(worker.id, 'warn', 'resume_layer1_failed', errMsg, worker.taskId);
-        console.error(`[Worker ${worker.id}] Layer 1 failed, falling back to reconstruction:`, err);
-        // Reset worker state so Layer 2 can attempt a fresh session
-        // (startSession's catch block sets status='error' before re-throwing)
-        worker.status = 'working';
-        worker.error = undefined;
-        worker.completedAt = undefined;
-        // Fall through to Layer 2
-      }
-    } else {
-      sessionLog(worker.id, 'info', 'resume_layer1_skipped', 'No sessionId available', worker.taskId);
-      console.log(`[Worker ${worker.id}] No sessionId — skipping Layer 1`);
-    }
-
-    // Layer 2: Reconstructed context (text summary of previous session)
-    sessionLog(worker.id, 'info', 'resume_layer2_attempt', 'Reconstructed context fallback', worker.taskId);
-    console.log(`[Worker ${worker.id}] Layer 2: Reconstructed context`);
-
-    try {
-      await this.restartWithReconstructedContext(worker, sessionCwd, message);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      sessionLog(worker.id, 'error', 'resume_layer2_failed', errMsg, worker.taskId);
-      throw err; // Let the caller handle the final error
-    }
-  }
-
-  // Restart session with text-reconstructed context
-  // Used when SDK resume fails (corrupted session, disk cleanup) or no sessionId available
-  private async restartWithReconstructedContext(worker: LocalWorker, workspacePath: string, message: string) {
-    const contextParts: string[] = [];
-
-    // Preamble: instruct agent not to re-explore
-    contextParts.push(`## IMPORTANT: Continuing a previous conversation\nYou already analyzed this codebase in a previous session. Do NOT re-read files or re-explore the codebase unless the user asks about something new. Act directly on your previous analysis summarized below.`);
-
-    // Add original task description
-    if (worker.taskDescription) {
-      contextParts.push(`## Original Task\n${worker.taskDescription}`);
-    }
-
-    // Extract files explored/modified from tool calls
-    const filesExplored = new Set<string>();
-    const filesModified = new Set<string>();
-    for (const tc of worker.toolCalls) {
-      const filePath = tc.input?.file_path as string;
-      if (tc.name === 'Read' && filePath) {
-        filesExplored.add(filePath);
-      } else if ((tc.name === 'Edit' || tc.name === 'Write') && filePath) {
-        filesModified.add(filePath);
-      }
-    }
-
-    // Collapsed files context (grouped, not one-per-line)
-    if (filesExplored.size > 0 || filesModified.size > 0) {
-      const filesContext: string[] = ['## Files Context'];
-      if (filesExplored.size > 0) {
-        filesContext.push(`Files explored: ${Array.from(filesExplored).slice(-20).join(', ')}`);
-      }
-      if (filesModified.size > 0) {
-        filesContext.push(`Files modified: ${Array.from(filesModified).join(', ')}`);
-      }
-      contextParts.push(filesContext.join('\n'));
-    }
-
-    // Build conversation history with collapsed tool calls
-    const recentMessages = worker.messages.slice(-30);
-    if (recentMessages.length > 0) {
-      const historyLines: string[] = ['## Previous Conversation'];
-
-      // Extract the last agent text response separately
-      let lastAgentResponse: string | null = null;
-      for (let i = recentMessages.length - 1; i >= 0; i--) {
-        if (recentMessages[i].type === 'text') {
-          lastAgentResponse = recentMessages[i].content!;
-          break;
-        }
-      }
-
-      for (const msg of recentMessages) {
-        if (msg.type === 'text') {
-          // Skip the last response here — we add it separately below
-          if (msg.content === lastAgentResponse) continue;
-          historyLines.push(`**Agent:** ${msg.content}`);
-        } else if (msg.type === 'user') {
-          historyLines.push(`**User:** ${msg.content}`);
-        }
-        // Tool calls are omitted — file context above covers them
-      }
-      contextParts.push(historyLines.join('\n'));
-
-      // Add the last agent response as a distinct section (this is what the user is replying to)
-      if (lastAgentResponse) {
-        contextParts.push(`## Your Last Response\n${lastAgentResponse}`);
-      }
-    }
-
-    // Add milestones as work summary
-    if (worker.milestones.length > 0) {
-      const milestoneLabels = worker.milestones
-        .filter(m => m.label !== 'Task completed')
-        .map(m => m.type === 'phase' ? `- ${m.label} (${m.toolCount} tools)` : `- ${m.label}`);
-      if (milestoneLabels.length > 0) {
-        contextParts.push(`## Work Completed\n${milestoneLabels.join('\n')}`);
-      }
-    }
-
-    // Add follow-up message
-    contextParts.push(`## Follow-up Request\n${message}`);
-
-    const contextDescription = contextParts.join('\n\n');
-
-    const task = {
-      id: worker.taskId,
-      title: worker.taskTitle,
-      description: contextDescription,
-      workspaceId: worker.workspaceId,
-      workspace: { name: worker.workspaceName },
-      status: 'assigned',
-      priority: 1,
-    };
-
-    await this.startSession(worker, workspacePath, task as any);
-  }
-
-  private buildSessionSummary(worker: LocalWorker): string {
-    const parts: string[] = [];
-
-    // Prefer last_assistant_message from Stop hook (direct from SDK, no parsing)
-    if (worker.lastAssistantMessage) {
-      const msg = worker.lastAssistantMessage;
-      parts.push(`Outcome: ${msg.length > 400 ? msg.slice(0, 400) + '...' : msg}`);
-    }
-
-    // Commits (most useful for future workers)
-    if (worker.commits.length > 0) {
-      const commitMsgs = worker.commits.map(c => c.message).slice(-5);
-      parts.push(`Commits: ${commitMsgs.join('; ')}`);
-    }
-
-    // Files modified
-    const files = this.extractFilesFromToolCalls(worker.toolCalls);
-    if (files.length > 0) {
-      parts.push(`Files modified: ${files.slice(0, 10).join(', ')}`);
-    }
-
-    // Fallback: outcome from last output (only if no last_assistant_message)
-    if (!worker.lastAssistantMessage) {
-      const lastOutput = worker.output.slice(-3).join(' ').trim();
-      if (lastOutput) {
-        const truncated = lastOutput.length > 300 ? lastOutput.slice(0, 300) + '...' : lastOutput;
-        parts.push(`Outcome: ${truncated}`);
-      }
-    }
-
-    // Milestones (filtered: skip noise like "Reading..." entries)
-    const milestones = worker.milestones
-      .filter(m => m.label !== 'Task completed')
-      .map(m => m.type === 'phase' ? `${m.label} (${m.toolCount} tools)` : m.label);
-    if (milestones.length > 0) {
-      parts.push(`Milestones: ${milestones.slice(-10).join(', ')}`);
-    }
-
-    const summary = parts.join('\n');
-    return summary.length > 600 ? summary.slice(0, 600) + '...' : summary;
-  }
-
-  // Generate follow-up prompt suggestions based on what the worker accomplished.
-  // Uses heuristics from commits, tool calls, and task context — no extra LLM call needed.
-  private generatePromptSuggestions(worker: LocalWorker): string[] {
-    const suggestions: string[] = [];
-
-    // If there are commits, suggest reviewing changes and running tests
-    if (worker.commits.length > 0) {
-      suggestions.push('Run tests to verify the changes');
-
-      // If commits mention a specific feature/fix, suggest a follow-up
-      const lastCommit = worker.commits[worker.commits.length - 1];
-      if (lastCommit) {
-        const msg = lastCommit.message.toLowerCase();
-        if (msg.includes('fix') || msg.includes('bug')) {
-          suggestions.push('Add a regression test for the fix');
-        } else if (msg.includes('feat') || msg.includes('add')) {
-          suggestions.push('Add documentation for the new feature');
-        } else if (msg.includes('refactor')) {
-          suggestions.push('Review the refactored code for edge cases');
-        }
-      }
-    }
-
-    // If files were edited, suggest reviewing them
-    const editedFiles = this.extractFilesFromToolCalls(worker.toolCalls)
-      .filter((_, i) => i < 5);
-    if (editedFiles.length > 0) {
-      const hasTests = editedFiles.some(f => f.includes('test') || f.includes('spec'));
-      if (!hasTests) {
-        suggestions.push('Write tests for the modified files');
-      }
-    }
-
-    // Always offer a create-PR suggestion if there were commits
-    if (worker.commits.length > 0) {
-      suggestions.push('Create a pull request for these changes');
-    }
-
-    // Deduplicate and limit to 3
-    return [...new Set(suggestions)].slice(0, 3);
-  }
-
-  private extractFilesFromToolCalls(toolCalls: Array<{ name: string; input?: any }>): string[] {
-    const files = new Set<string>();
-    for (const tc of toolCalls) {
-      if ((tc.name === 'Read' || tc.name === 'Edit' || tc.name === 'Write') && tc.input?.file_path) {
-        files.add(tc.input.file_path);
-      }
-    }
-    return Array.from(files).slice(0, 20);
-  }
-
-  /**
-   * Set up an isolated git worktree for a worker.
-   * Fetches latest from remote, creates a worktree branched from the default branch.
-   * Returns the worktree path, or null if worktree setup fails (falls back to main repo).
-   */
-  private async setupWorktree(
-    repoPath: string,
-    branch: string,
-    defaultBranch: string,
-    workerId: string,
-    taskContext?: Record<string, unknown>,
-  ): Promise<string | null> {
-    const { execSync } = await import('child_process');
-    const fs = await import('fs');
-    const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
-
-    // Worktrees live in .buildd-worktrees/ inside the repo
-    const worktreeBase = join(repoPath, '.buildd-worktrees');
-    const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const worktreePath = join(worktreeBase, safeBranch);
-
-    try {
-      // Ensure worktree base directory exists
-      fs.mkdirSync(worktreeBase, { recursive: true });
-
-      // Add .buildd-worktrees to .git/info/exclude if not already there
-      const excludePath = join(repoPath, '.git', 'info', 'exclude');
-      if (existsSync(excludePath)) {
-        const excludeContent = readFileSync(excludePath, 'utf-8');
-        if (!excludeContent.includes('.buildd-worktrees')) {
-          fs.appendFileSync(excludePath, '\n.buildd-worktrees\n');
-        }
-      }
-
-      // Fetch latest from remote
-      console.log(`[Worker ${workerId}] Fetching latest from remote...`);
-      try {
-        execSync('git fetch origin', execOpts);
-      } catch (err) {
-        console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
-      }
-
-      // Clean up stale worktree at this path if it exists
-      if (existsSync(worktreePath)) {
-        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
-        try {
-          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-        } catch {
-          // Force-remove the directory if git worktree remove fails
-          fs.rmSync(worktreePath, { recursive: true, force: true });
-          try { execSync('git worktree prune', execOpts); } catch {}
-        }
-      }
-
-      // Delete the branch if it already exists locally (stale from previous run)
-      try {
-        execSync(`git branch -D "${branch}"`, execOpts);
-      } catch {
-        // Branch doesn't exist locally, that's fine
-      }
-
-      // Create worktree with new branch — from baseBranch (retry) or default branch (fresh)
-      const base = resolveWorktreeBase(defaultBranch, taskContext);
-      console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
-      execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
-
-      console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
-      return worktreePath;
-    } catch (err) {
-      console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
-      // Clean up partial worktree
-      try {
-        if (existsSync(worktreePath)) {
-          fs.rmSync(worktreePath, { recursive: true, force: true });
-        }
-        execSync('git worktree prune', { ...execOpts, timeout: 5000 });
-      } catch {}
-      return null;
-    }
-  }
-
-  /**
-   * Clean up a git worktree after worker completes.
-   * Removes the worktree directory and prunes git worktree metadata.
-   */
-  private async cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
-    const { execSync } = await import('child_process');
-    const fs = await import('fs');
-    const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
-
-    try {
-      console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
-      execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-    } catch (err) {
-      console.warn(`[Worker ${workerId}] git worktree remove failed, cleaning up manually:`, err instanceof Error ? err.message : err);
-      try {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
-        execSync('git worktree prune', execOpts);
-      } catch {}
-    }
-
-  }
-
-  /** Collect git stats by running git commands in the worker's cwd */
-  private async collectGitStats(workerId: string, branch: string): Promise<{
-    commitCount?: number;
-    filesChanged?: number;
-    linesAdded?: number;
-    linesRemoved?: number;
-    lastCommitSha?: string;
-  }> {
-    const session = this.sessions.get(workerId);
-    if (!session?.cwd) return {};
-
-    const { execSync } = await import('child_process');
-    const opts = { cwd: session.cwd, timeout: 5000, encoding: 'utf-8' as const };
-    const stats: Record<string, number | string | undefined> = {};
-
-    try {
-      stats.lastCommitSha = execSync('git rev-parse HEAD', opts).trim();
-    } catch {}
-    try {
-      // Count commits on this branch vs default branch
-      const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
-      const count = execSync(`git rev-list --count HEAD ^origin/${defaultBranch}`, opts).trim();
-      stats.commitCount = parseInt(count, 10) || 0;
-    } catch {
-      // Fallback: use locally tracked commits
-      const worker = this.workers.get(workerId);
-      if (worker) stats.commitCount = worker.commits.length;
-    }
-    try {
-      const numstat = execSync('git diff --numstat HEAD~1 2>/dev/null || true', opts).trim();
-      if (numstat) {
-        let added = 0, removed = 0, files = 0;
-        for (const line of numstat.split('\n')) {
-          const [a, r] = line.split('\t');
-          if (a !== '-') { added += parseInt(a, 10) || 0; removed += parseInt(r, 10) || 0; files++; }
-        }
-        stats.filesChanged = files;
-        stats.linesAdded = added;
-        stats.linesRemoved = removed;
-      }
-    } catch {}
-
-    return stats;
-  }
-
   destroy() {
     // Persist all current workers before shutdown (graceful save)
     for (const worker of this.workers.values()) {
@@ -4139,13 +2391,8 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     if (this.reconcileInterval) {
       clearInterval(this.reconcileInterval);
     }
-    // Unsubscribe from all Pusher channels
-    for (const workerId of this.pusherChannels.keys()) {
-      this.unsubscribeFromWorker(workerId);
-    }
-    if (this.pusher) {
-      this.pusher.disconnect();
-    }
+    // Unsubscribe from all Pusher channels and disconnect
+    this.pusherManager.destroy();
     // Abort all active sessions and clean up worktrees
     for (const [workerId, session] of this.sessions.entries()) {
       session.abortController.abort();
