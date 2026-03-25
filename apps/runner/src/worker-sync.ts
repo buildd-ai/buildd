@@ -264,8 +264,10 @@ export class WorkerSync {
     const RETENTION_MS = 10 * 60 * 1000;
     const now = Date.now();
     for (const [id, worker] of this.ctx.workers.entries()) {
-      // E2E test workers get 0 retention — clean up immediately to prevent worktree accumulation
-      const retention = isEphemeralTestBranch(worker.branch) ? 0 : RETENTION_MS;
+      // Fast eviction for: E2E test workers, and workers that failed within 30s (e.g., quota errors)
+      const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : Infinity;
+      const isQuickFailure = worker.status === 'error' && sessionDuration < 30_000;
+      const retention = isEphemeralTestBranch(worker.branch) || isQuickFailure ? 0 : RETENTION_MS;
       if (
         (worker.status === 'done' || worker.status === 'error') &&
         now - worker.lastActivity >= retention
