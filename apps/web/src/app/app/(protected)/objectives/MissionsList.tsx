@@ -172,9 +172,9 @@ export default function MissionsList({
   const [cronExpression, setCronExpression] = useState('');
 
   // Heartbeat fields
-  const [isHeartbeat, setIsHeartbeat] = useState(false);
-  const [heartbeatChecklist, setHeartbeatChecklist] = useState('');
-  const [activeHoursEnabled, setActiveHoursEnabled] = useState(false);
+  const [isHeartbeat, setIsHeartbeat] = useState(true);
+  const [heartbeatChecklist, setHeartbeatChecklist] = useState(DEFAULT_HEARTBEAT_CHECKLIST);
+  const [activeHoursEnabled, setActiveHoursEnabled] = useState(true);
   const [activeHoursStart, setActiveHoursStart] = useState(8);
   const [activeHoursEnd, setActiveHoursEnd] = useState(22);
   const [activeHoursTimezone, setActiveHoursTimezone] = useState('');
@@ -187,9 +187,9 @@ export default function MissionsList({
     setPriority(0);
     setWorkspaceId('');
     setCronExpression('');
-    setIsHeartbeat(false);
-    setHeartbeatChecklist('');
-    setActiveHoursEnabled(false);
+    setIsHeartbeat(true);
+    setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST);
+    setActiveHoursEnabled(true);
     setActiveHoursStart(8);
     setActiveHoursEnd(22);
     setActiveHoursTimezone('');
@@ -232,6 +232,9 @@ export default function MissionsList({
           payload.activeHoursEnd = activeHoursEnd;
           payload.activeHoursTimezone = effectiveTimezone;
         }
+      } else {
+        // Explicitly opt out — API defaults heartbeat on
+        payload.isHeartbeat = false;
       }
 
       const res = await fetch('/api/missions', {
