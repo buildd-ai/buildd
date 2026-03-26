@@ -74,6 +74,24 @@ export async function GET(
       }
     }
 
+    // Compute evaluation status from lastEvaluationTaskId
+    let evaluationStatus: string | null = null;
+    let lastEvaluationAt: string | null = null;
+    let evaluationRationale: string | null = null;
+    if (mission.lastEvaluationTaskId) {
+      const evalTask = mission.tasks?.find((t: any) => t.id === mission.lastEvaluationTaskId);
+      if (evalTask) {
+        if (['pending', 'assigned', 'in_progress'].includes(evalTask.status)) {
+          evaluationStatus = 'pending';
+        } else if (evalTask.status === 'completed') {
+          const evalResult = (evalTask as any).result?.structuredOutput;
+          evaluationStatus = evalResult?.verdict || 'unknown';
+          evaluationRationale = evalResult?.rationale || null;
+          lastEvaluationAt = evalTask.updatedAt?.toISOString?.() || (evalTask.updatedAt as any) || null;
+        }
+      }
+    }
+
     return NextResponse.json({
       ...mission,
       totalTasks,
@@ -85,6 +103,9 @@ export async function GET(
       model: templateContext?.model || null,
       lastHeartbeatStatus,
       lastHeartbeatAt,
+      evaluationStatus,
+      lastEvaluationAt,
+      evaluationRationale,
     });
   } catch (error) {
     console.error('Get mission error:', error);

@@ -10,7 +10,7 @@ const MAX_CYCLES_PER_CHAIN = 5;
 /** Debounce window (ms) to prevent concurrent re-triggers */
 const DEBOUNCE_MS = 10_000;
 
-export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped';
+export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested';
 
 /**
  * Evaluate whether a mission should start another planning cycle after
@@ -80,32 +80,26 @@ export async function maybeRetriggerMission(
   const triggerChainId = (taskContext.triggerChainId as string) || crypto.randomUUID();
   const currentCycle = (taskContext.cycleNumber as number) || 1;
 
-  // 4. Completion detection — check if orchestrator signaled mission complete
+  // 4. Completion detection — intercept missionComplete signal and spawn evaluation
   const structuredOutput = taskResult.structuredOutput as Record<string, unknown> | undefined;
   if (
     taskResult.missionComplete === true ||
     structuredOutput?.missionComplete === true
   ) {
-    await db
-      .update(missions)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(eq(missions.id, missionId));
+    const { spawnEvaluationTask } = await import('@/lib/mission-evaluation');
+    const evalTaskId = await spawnEvaluationTask(missionId, completedPlanningTaskId);
 
-    // Disable heartbeat schedule so it stops firing
-    if (mission.scheduleId) {
-      await db
-        .update(taskSchedules)
-        .set({ enabled: false, updatedAt: new Date() })
-        .where(eq(taskSchedules.id, mission.scheduleId));
+    if (evalTaskId) {
+      await triggerEvent(
+        channels.mission(missionId),
+        events.MISSION_CYCLE_STARTED,
+        { missionId, reason: 'evaluation_spawned', evaluationTaskId: evalTaskId }
+      );
+      return { action: 'evaluation_requested' };
     }
 
-    await triggerEvent(
-      channels.mission(missionId),
-      events.MISSION_LOOP_COMPLETED,
-      { missionId, totalCycles: currentCycle, reason: 'mission_complete' }
-    );
-
-    return { action: 'completed' };
+    // Evaluation already pending — skip (don't complete, don't retrigger)
+    return { action: 'skipped' };
   }
 
   // 5. Depth guard — max cycles per trigger chain

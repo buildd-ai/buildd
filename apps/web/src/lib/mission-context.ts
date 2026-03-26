@@ -116,6 +116,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       priority: true,
       workspaceId: true,
       scheduleId: true,
+      lastEvaluationTaskId: true,
     },
   });
   if (!mission) return null;
@@ -315,6 +316,29 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     if (isRecurringPattern) {
       descParts.push(`\n**Pattern detected**: The last ${dominantRole[1]} tasks used role \`${dominantRole[0]}\`. ` +
         `For recurring work of the same kind, reuse this role. Only pick a different role if the task requires different capabilities.`);
+    }
+  }
+
+  // Inject evaluation feedback from the last incomplete evaluation
+  if (mission.lastEvaluationTaskId) {
+    const evalTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, mission.lastEvaluationTaskId),
+      columns: { result: true, status: true },
+    });
+    if (evalTask?.status === 'completed') {
+      const evalResult = evalTask.result as Record<string, unknown> | null;
+      const evalOutput = evalResult?.structuredOutput as Record<string, unknown> | undefined;
+      if (evalOutput?.verdict && evalOutput.verdict !== 'complete') {
+        descParts.push('\n## Prior Evaluation Feedback');
+        descParts.push(`A completion evaluation returned **${evalOutput.verdict}** (confidence: ${evalOutput.confidence}).`);
+        if (evalOutput.rationale) descParts.push(`Reason: ${evalOutput.rationale}`);
+        const missing = evalOutput.missingWork as string[] | undefined;
+        if (missing?.length) {
+          descParts.push('Missing work:');
+          for (const item of missing) descParts.push(`- ${item}`);
+        }
+        descParts.push('**Address these gaps before signaling completion again.**');
+      }
     }
   }
 
