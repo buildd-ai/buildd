@@ -156,7 +156,7 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursTimezone).toBe('America/New_York');
   });
 
-  it('creates a simple mission without schedule', async () => {
+  it('auto-enables heartbeat with defaults when no heartbeat fields provided', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Ship auth module' }),
@@ -167,8 +167,53 @@ describe('POST /api/missions', () => {
 
     expect(insertedMissionValues).not.toBeNull();
     expect(insertedMissionValues.title).toBe('Ship auth module');
+    // Schedule auto-created with heartbeat defaults
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
+    const ctx = insertedScheduleValues.taskTemplate.context;
+    expect(ctx.heartbeat).toBe(true);
+    expect(ctx.heartbeatChecklist).toBeDefined();
+    expect(ctx.activeHoursStart).toBe(8);
+    expect(ctx.activeHoursEnd).toBe(22);
+    expect(ctx.activeHoursTimezone).toBe('America/New_York');
+  });
+
+  it('creates mission without heartbeat when explicitly opted out', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'No heartbeat', isHeartbeat: false }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedMissionValues).not.toBeNull();
     // No schedule created
     expect(insertedScheduleValues).toBeNull();
+  });
+
+  it('user overrides take precedence over heartbeat defaults', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Custom schedule',
+        workspaceId: 'ws-1',
+        cronExpression: '0 */6 * * *',
+        activeHoursStart: 10,
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.cronExpression).toBe('0 */6 * * *');
+    const ctx = insertedScheduleValues.taskTemplate.context;
+    expect(ctx.heartbeat).toBe(true);
+    expect(ctx.activeHoursStart).toBe(10);
+    // Other fields get defaults
+    expect(ctx.activeHoursEnd).toBe(22);
+    expect(ctx.activeHoursTimezone).toBe('America/New_York');
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {
