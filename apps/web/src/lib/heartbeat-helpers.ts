@@ -18,6 +18,7 @@ export const DEFAULT_ACTIVE_HOURS_TIMEZONE = 'America/New_York';
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Check all linked tasks — retry any in 'failed' status by creating replacement tasks with failureContext
 - [ ] Verify workers are actively progressing (not stale)
 - [ ] If tasks are blocked on dependencies, flag for review
+- [ ] If tasks created PRs, check merge status — create integration task if multiple unmerged PRs conflict
 - [ ] Do NOT declare missionComplete — only a human or independent evaluator can end a mission`;
 
 /**

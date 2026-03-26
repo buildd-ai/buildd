@@ -101,6 +101,7 @@ export async function runMission(
       priority: template?.priority || mission.priority || 0,
       status: 'pending',
       mode: template?.mode || 'planning',
+      roleSlug: 'organizer',
       runnerPreference: template?.runnerPreference || 'any',
       requiredCapabilities: template?.requiredCapabilities || [],
       context: taskContext,
