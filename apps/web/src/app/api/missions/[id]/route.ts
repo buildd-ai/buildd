@@ -286,6 +286,13 @@ export async function PATCH(
       }
     }
 
+    // Sync schedule workspace when only workspaceId changed (no schedule fields updated)
+    if (workspaceId !== undefined && !scheduleNeedsUpdate && existing.scheduleId) {
+      await db.update(taskSchedules)
+        .set({ workspaceId: workspaceId || null, updatedAt: new Date() })
+        .where(eq(taskSchedules.id, existing.scheduleId));
+    }
+
     const [updated] = await db
       .update(missions)
       .set(updateData)

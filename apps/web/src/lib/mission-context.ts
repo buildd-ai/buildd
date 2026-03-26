@@ -376,7 +376,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     '3. **Route**: For each task you create, assign the best role via `roleSlug`. Reuse proven roles for recurring work; only switch for tasks requiring different capabilities.\n' +
     '4. **Create tasks**: Use the `buildd` tool with `action: "create_task"` to spawn follow-up tasks.\n' +
     '5. **Don\'t duplicate**: Skip work that\'s already in progress or completed.\n' +
-    '6. **Report**: Summarize your assessment and what you decided in your completion summary.'
+    '6. **Workspace**: If you create a new workspace or repo via `manage_workspaces`, the mission auto-migrates to it. Future tasks and heartbeats will land in the correct workspace.\n' +
+    '7. **Report**: Summarize your assessment and what you decided in your completion summary.'
   );
 
   // Build context JSONB

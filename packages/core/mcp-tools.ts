@@ -226,6 +226,24 @@ async function resolveWorkspaceId(
   return null;
 }
 
+/**
+ * Resolve missionId from explicit param or by inheriting from the calling worker's task.
+ */
+async function resolveMissionId(
+  api: ApiFn,
+  param: unknown,
+  ctx: ActionContext,
+): Promise<string | null> {
+  if (param && typeof param === 'string') return param;
+  if (!ctx.workerId) return null;
+  try {
+    const workerData = await api(`/api/workers/${ctx.workerId}`);
+    return workerData?.task?.missionId || workerData?.task?.context?.missionId || null;
+  } catch {
+    return null;
+  }
+}
+
 // Actions that require at least worker level (trigger tokens cannot use these)
 const workerOnlyActions = new Set(
   (workerActions as readonly string[]).filter(a => !(triggerActions as readonly string[]).includes(a))
@@ -1330,7 +1348,20 @@ export async function handleBuilddAction(
             method: 'POST',
             body: JSON.stringify(body),
           });
-          return text(`Workspace created: "${wsData.name}" (ID: ${wsData.id})${wsData.repo ? `\nRepo: ${wsData.repo}` : ''}`);
+
+          // Auto-migrate calling mission to the new workspace
+          const createMissionId = await resolveMissionId(api, params.missionId, ctx);
+          let migrated = false;
+          if (createMissionId) {
+            try {
+              await api(`/api/missions/${createMissionId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ workspaceId: wsData.id }),
+              });
+              migrated = true;
+            } catch { /* non-fatal */ }
+          }
+          return text(`Workspace created: "${wsData.name}" (ID: ${wsData.id})${wsData.repo ? `\nRepo: ${wsData.repo}` : ''}${migrated ? `\nMission ${createMissionId} migrated to this workspace.` : ''}`);
         }
         case 'list': {
           const data = await api('/api/workspaces');
@@ -1372,7 +1403,20 @@ export async function handleBuilddAction(
           if (repoData.error) {
             return errorResult(`Failed to create repo: ${repoData.error}${repoData.hint ? `\nHint: ${repoData.hint}` : ''}`);
           }
-          return text(`Repository created: ${repoData.repoUrl}\nWorkspace updated with new repo URL.`);
+
+          // Auto-migrate calling mission to this workspace
+          const repoMissionId = await resolveMissionId(api, params.missionId, ctx);
+          let repoMigrated = false;
+          if (repoMissionId) {
+            try {
+              await api(`/api/missions/${repoMissionId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ workspaceId: wsId }),
+              });
+              repoMigrated = true;
+            } catch { /* non-fatal */ }
+          }
+          return text(`Repository created: ${repoData.repoUrl}\nWorkspace updated with new repo URL.${repoMigrated ? `\nMission ${repoMissionId} migrated to this workspace.` : ''}`);
         }
         case 'init': {
           // init is a runner-side action — return instructions for the agent
