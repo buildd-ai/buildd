@@ -108,10 +108,20 @@ export class MemoryClient {
     return this.request(`/api/memories/search${qs ? `?${qs}` : ''}`);
   }
 
-  /** Batch fetch full memory content by IDs */
+  /** Batch fetch full memory content by IDs (chunks into groups of 20) */
   async batch(ids: string[]): Promise<{ memories: Memory[] }> {
     if (ids.length === 0) return { memories: [] };
-    return this.request(`/api/memories/batch?ids=${ids.join(',')}`);
+    if (ids.length <= 20) {
+      return this.request(`/api/memories/batch?ids=${ids.join(',')}`);
+    }
+    // Chunk into groups of 20 to respect API limit
+    const all: Memory[] = [];
+    for (let i = 0; i < ids.length; i += 20) {
+      const chunk = ids.slice(i, i + 20);
+      const data = await this.request<{ memories: Memory[] }>(`/api/memories/batch?ids=${chunk.join(',')}`);
+      all.push(...(data.memories || []));
+    }
+    return { memories: all };
   }
 
   /** Get a single memory by ID */
