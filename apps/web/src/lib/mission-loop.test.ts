@@ -52,6 +52,12 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+const mockSpawnEvaluationTask = mock(() => Promise.resolve('eval-task-1'));
+
+mock.module('@/lib/mission-evaluation', () => ({
+  spawnEvaluationTask: mockSpawnEvaluationTask,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { mission: (id: string) => `mission-${id}` },
@@ -77,6 +83,8 @@ function resetAll() {
   mockRunMission.mockImplementation(() => Promise.resolve({ task: { id: 'new-task' } }));
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
+  mockSpawnEvaluationTask.mockReset();
+  mockSpawnEvaluationTask.mockImplementation(() => Promise.resolve('eval-task-1'));
 }
 
 /** Helper: call maybeRetriggerMission with injected mock */
@@ -140,7 +148,7 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
-  it('detects auto-completion from missionComplete in result', async () => {
+  it('spawns evaluation instead of completing when missionComplete in result', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
@@ -149,12 +157,13 @@ describe('mission-loop', () => {
     };
 
     const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
+    expect(result.action).toBe('evaluation_requested');
+    expect(mockSpawnEvaluationTask).toHaveBeenCalledWith('m1', 'pt1');
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockTriggerEvent).toHaveBeenCalled();
   });
 
-  it('detects auto-completion from structuredOutput.missionComplete', async () => {
+  it('spawns evaluation from structuredOutput.missionComplete', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
@@ -163,7 +172,22 @@ describe('mission-loop', () => {
     };
 
     const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
+    expect(result.action).toBe('evaluation_requested');
+    expect(mockSpawnEvaluationTask).toHaveBeenCalledWith('m1', 'pt1');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('skips when evaluation already pending (spawnEvaluationTask returns null)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
+      result: { missionComplete: true },
+    };
+    mockSpawnEvaluationTask.mockImplementation(() => Promise.resolve(null));
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 

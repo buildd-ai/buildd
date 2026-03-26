@@ -43,6 +43,24 @@ export async function resolveCompletedTask(
     }
   }
 
+  // Check if this is a completed evaluation task — handle verdict
+  if (completedTaskFull?.missionId) {
+    const missionRecord = await db.query.missions.findFirst({
+      where: and(
+        eq(missions.id, completedTaskFull.missionId),
+        eq(missions.lastEvaluationTaskId, completedTaskId),
+      ),
+      columns: { id: true },
+    });
+    if (missionRecord) {
+      import('@/lib/mission-evaluation').then(({ handleEvaluationResult }) =>
+        handleEvaluationResult(missionRecord.id, completedTaskId).catch((err) =>
+          console.error(`[evaluation] result handling failed for mission ${missionRecord.id}:`, err)
+        )
+      );
+    }
+  }
+
   // Check if any tasks have this task in their dependsOn list
   await checkDependsOnResolved(completedTaskId);
 }

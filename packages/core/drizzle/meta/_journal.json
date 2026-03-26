@@ -176,6 +176,20 @@
       "when": 1774396800000,
       "tag": "0024_artifact_worker_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1774483200000,
+      "tag": "0025_artifacts_mission_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1774569600000,
+      "tag": "0026_mission_evaluation_task",
+      "breakpoints": true
     }
   ]
 }
