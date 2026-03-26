@@ -74,6 +74,24 @@ export async function GET(
       }
     }
 
+    // Compute evaluation status from lastEvaluationTaskId
+    let evaluationStatus: string | null = null;
+    let lastEvaluationAt: string | null = null;
+    let evaluationRationale: string | null = null;
+    if (mission.lastEvaluationTaskId) {
+      const evalTask = mission.tasks?.find((t: any) => t.id === mission.lastEvaluationTaskId);
+      if (evalTask) {
+        if (['pending', 'assigned', 'in_progress'].includes(evalTask.status)) {
+          evaluationStatus = 'pending';
+        } else if (evalTask.status === 'completed') {
+          const evalResult = (evalTask as any).result?.structuredOutput;
+          evaluationStatus = evalResult?.verdict || 'unknown';
+          evaluationRationale = evalResult?.rationale || null;
+          lastEvaluationAt = evalTask.updatedAt?.toISOString?.() || (evalTask.updatedAt as any) || null;
+        }
+      }
+    }
+
     return NextResponse.json({
       ...mission,
       totalTasks,
@@ -85,6 +103,9 @@ export async function GET(
       model: templateContext?.model || null,
       lastHeartbeatStatus,
       lastHeartbeatAt,
+      evaluationStatus,
+      lastEvaluationAt,
+      evaluationRationale,
     });
   } catch (error) {
     console.error('Get mission error:', error);
@@ -146,6 +167,19 @@ export async function PATCH(
         return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
       }
       updateData.status = status;
+
+      // Auto-disable heartbeat schedule when mission leaves active state
+      if (status !== 'active' && existing.scheduleId) {
+        await db.update(taskSchedules)
+          .set({ enabled: false, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, existing.scheduleId));
+      }
+      // Re-enable schedule when mission is reactivated
+      if (status === 'active' && existing.scheduleId) {
+        await db.update(taskSchedules)
+          .set({ enabled: true, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, existing.scheduleId));
+      }
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
