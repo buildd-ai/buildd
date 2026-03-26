@@ -104,7 +104,12 @@ export default async function MissionDetailPage({
 
   const totalTasks = mission.tasks?.length || 0;
   const completedTasks = mission.tasks?.filter((t) => t.status === 'completed').length || 0;
-  const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  // Completed missions show 100% — the mission is done regardless of individual task outcomes
+  const progress = mission.status === 'completed'
+    ? 100
+    : totalTasks > 0
+      ? Math.round((completedTasks / totalTasks) * 100)
+      : 0;
 
   const activeAgents = mission.tasks
     ?.flatMap((t) => t.workers || [])
@@ -155,6 +160,22 @@ export default async function MissionDetailPage({
 
   // Show newest first
   cycles.reverse();
+
+  // Filter out empty cycles (planning tasks that spawned no work and have no summary)
+  const filteredCycles = cycles.filter(cycle => {
+    if (cycle.tasks.length > 0) return true;
+    if (cycle.evaluation) {
+      const result = cycle.evaluation.result as { summary?: string } | null;
+      const isRunning = cycle.evaluation.status !== 'completed' && cycle.evaluation.status !== 'failed';
+      return !!result?.summary || isRunning;
+    }
+    return false;
+  });
+
+  // For completed missions, show only the last 3 cycles
+  const displayCycles = mission.status === 'completed'
+    ? filteredCycles.slice(0, 3)
+    : filteredCycles;
 
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
@@ -217,20 +238,81 @@ export default async function MissionDetailPage({
               />
             </div>
             <div className="text-[11px] text-text-muted mt-1.5">
-              {completedTasks} of {totalTasks} tasks complete
+              {mission.status === 'completed'
+                ? `${totalTasks} tasks · ${completedTasks} completed`
+                : `${completedTasks} of ${totalTasks} tasks complete`}
             </div>
           </div>
         )}
 
-        {/* Workspace link */}
-        {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-          <div className="flex items-center gap-2 text-[12px] text-text-muted">
+        {/* Workspace + status row */}
+        <div className="flex items-center gap-2 text-[12px] text-text-muted">
+          {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
             <Link
               href={`/app/workspaces/${mission.workspace.id}`}
               className="text-accent-text hover:underline"
             >
               {displayWorkspaceName(mission.workspace.name)}
             </Link>
+          )}
+          {activeAgents > 0 && mission.status !== 'completed' && (
+            <>
+              {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
+                <span className="text-text-muted">&middot;</span>
+              )}
+              <span className="text-status-info">{activeAgents} agent{activeAgents !== 1 ? 's' : ''} active</span>
+            </>
+          )}
+          {mission.status === 'completed' && (
+            <>
+              {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
+                <span className="text-text-muted">&middot;</span>
+              )}
+              <span>Completed {new Date(mission.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+            </>
+          )}
+        </div>
+
+        {/* Completion Summary — only for completed missions */}
+        {mission.status === 'completed' && (() => {
+          const lastPlanningTask = allTasks
+            .filter(t => t.mode === 'planning' && t.status === 'completed')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+          const summary = (lastPlanningTask?.result as any)?.summary;
+          if (!summary) return null;
+          return (
+            <div className="card p-4 mt-4 border-l-2 border-status-success/40">
+              <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-2">
+                Completion Summary
+              </h3>
+              <p className="text-[13px] text-text-secondary leading-relaxed">{summary}</p>
+            </div>
+          );
+        })()}
+
+        {/* Stats row — only for completed missions */}
+        {mission.status === 'completed' && (
+          <div className="grid grid-cols-4 gap-3 mt-4">
+            {[
+              { label: 'Tasks', value: String(totalTasks) },
+              { label: 'Completed', value: String(completedTasks) },
+              { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
+              { label: 'Duration', value: (() => {
+                const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
+                const hours = Math.floor(ms / 3600000);
+                const minutes = Math.floor((ms % 3600000) / 60000);
+                if (hours > 24) {
+                  const days = Math.floor(hours / 24);
+                  return `${days}d ${hours % 24}h`;
+                }
+                return `${hours}h ${minutes}m`;
+              })() },
+            ].map(stat => (
+              <div key={stat.label} className="card p-3">
+                <div className="text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
+                <div className="font-display text-lg text-text-primary mt-1">{stat.value}</div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -252,12 +334,22 @@ export default async function MissionDetailPage({
       </div>
 
       {/* ── Orchestration Timeline ── */}
-      {cycles.length > 0 && (
+      {displayCycles.length > 0 && (
         <div className="mb-6">
-          <h2 className="section-label mb-3">Timeline</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="section-label">Timeline</h2>
+            {mission.status === 'completed' && totalTasks > 0 && (
+              <Link
+                href={`/app/tasks?mission=${id}`}
+                className="text-[12px] text-accent-text hover:underline"
+              >
+                View all {totalTasks} tasks &rarr;
+              </Link>
+            )}
+          </div>
           <div className="relative">
-            {cycles.map((cycle, ci) => {
-              const isLast = ci === cycles.length - 1;
+            {displayCycles.map((cycle, ci) => {
+              const isLast = ci === displayCycles.length - 1;
               const evalResult = cycle.evaluation?.result as { summary?: string } | null;
               const evalWorker = cycle.evaluation?.workers?.[0];
               const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
@@ -418,8 +510,8 @@ export default async function MissionDetailPage({
               );
             })}
 
-            {/* Next evaluation indicator */}
-            {scheduleCron && (mission.schedule as any)?.nextRunAt && (
+            {/* Next evaluation indicator — hidden for completed missions */}
+            {scheduleCron && (mission.schedule as any)?.nextRunAt && mission.status !== 'completed' && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
                   <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
@@ -433,8 +525,8 @@ export default async function MissionDetailPage({
         </div>
       )}
 
-      {/* View all tasks link */}
-      {totalTasks > 0 && (
+      {/* View all tasks link — hidden for completed missions (shown in timeline header instead) */}
+      {totalTasks > 0 && mission.status !== 'completed' && (
         <div className="mb-6">
           <Link
             href={`/app/tasks?mission=${id}`}
