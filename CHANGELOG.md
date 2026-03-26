@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix mission-context test failures and idempotent migration
+- Update mission-context tests to match refactored implementation
 - Scope secrets by workspace team to prevent cross-team leakage (#529)
 - Claim pending tasks on runner startup (#527)
 - Use task terminology on task creation page
