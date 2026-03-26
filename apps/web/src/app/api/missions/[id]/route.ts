@@ -258,6 +258,7 @@ export async function PATCH(
             .update(taskSchedules)
             .set({
               ...(cronExpression !== undefined ? { cronExpression, nextRunAt } : {}),
+              ...(workspaceId !== undefined ? { workspaceId: effectiveWorkspaceId } : {}),
               name: `Mission: ${title || existing.title}`,
               taskTemplate,
               updatedAt: new Date(),
