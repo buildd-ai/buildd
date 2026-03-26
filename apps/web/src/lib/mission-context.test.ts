@@ -175,9 +175,7 @@ describe('buildMissionContext', () => {
     mockSkillsFindMany.mockResolvedValueOnce([]);
 
     const result = await buildMissionContext('obj-2');
-    expect(result!.description).toContain('## Orchestrator Instructions');
-    expect(result!.description).toContain('orchestrator');
-    expect(result!.description).toContain('Evaluate');
+    expect(result!.description).toContain('## Situational Guidance');
     expect(result!.context.orchestrator).toBe(true);
   });
 
@@ -255,6 +253,7 @@ describe('buildMissionContext', () => {
       { id: 't1', title: 'Task 1', mode: 'execution', result: { summary: 'Done' }, createdAt: new Date(), roleSlug: 'builder' },
       { id: 't2', title: 'Task 2', mode: 'execution', result: { summary: 'Done' }, createdAt: new Date(), roleSlug: 'researcher' },
     ]);
+    mockFindMany.mockResolvedValueOnce([]); // tasksWithPRs (isBuild=true)
     mockFindMany.mockResolvedValueOnce([]); // active
     mockFindMany.mockResolvedValueOnce([]); // failed
     mockSkillsFindMany.mockResolvedValueOnce([]);
@@ -284,6 +283,7 @@ describe('buildMissionContext', () => {
         roleSlug: 'builder',
       },
     ]);
+    mockFindMany.mockResolvedValueOnce([]); // tasksWithPRs (isBuild=true)
     mockFindMany.mockResolvedValueOnce([]); // active
     mockFindMany.mockResolvedValueOnce([]); // failed
     mockSkillsFindMany.mockResolvedValueOnce([]);
