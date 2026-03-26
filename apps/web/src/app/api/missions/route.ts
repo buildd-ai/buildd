@@ -7,6 +7,13 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
+import {
+  DEFAULT_HEARTBEAT_CRON,
+  DEFAULT_ACTIVE_HOURS_START,
+  DEFAULT_ACTIVE_HOURS_END,
+  DEFAULT_ACTIVE_HOURS_TIMEZONE,
+  DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
+} from '@/lib/heartbeat-helpers';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -157,26 +164,37 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    // Auto-create schedule if cronExpression provided (workspaceId is optional — resolved at task fire time)
-    if (cronExpression) {
-      const nextRunAt = computeNextRunAt(cronExpression, 'UTC');
+    // Auto-create schedule: heartbeat is ON by default unless explicitly opted out.
+    // If caller provides cronExpression, use it. Otherwise, default to heartbeat cron.
+    const effectiveHeartbeat = isHeartbeat !== false;
+    const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
+
+    if (effectiveCron) {
+      const nextRunAt = computeNextRunAt(effectiveCron, 'UTC');
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
       if (recipeId) templateContext.recipeId = recipeId;
       if (outputSchema) templateContext.outputSchema = outputSchema;
       if (model) templateContext.model = model;
-      if (isHeartbeat) templateContext.heartbeat = true;
-      if (heartbeatChecklist) templateContext.heartbeatChecklist = heartbeatChecklist;
-      if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
-      if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
-      if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
+      if (effectiveHeartbeat) {
+        templateContext.heartbeat = true;
+        templateContext.heartbeatChecklist = heartbeatChecklist || DEFAULT_MISSION_HEARTBEAT_CHECKLIST;
+        templateContext.activeHoursStart = activeHoursStart ?? DEFAULT_ACTIVE_HOURS_START;
+        templateContext.activeHoursEnd = activeHoursEnd ?? DEFAULT_ACTIVE_HOURS_END;
+        templateContext.activeHoursTimezone = activeHoursTimezone || DEFAULT_ACTIVE_HOURS_TIMEZONE;
+      } else {
+        // Explicit cron without heartbeat — just pass through what was provided
+        if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
+        if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
+        if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
+      }
 
       const [schedule] = await db
         .insert(taskSchedules)
         .values({
           workspaceId: workspaceId || null,
           name: `Mission: ${title}`,
-          cronExpression,
+          cronExpression: effectiveCron,
           timezone: 'UTC',
           taskTemplate: {
             title: `Mission: ${title}`,

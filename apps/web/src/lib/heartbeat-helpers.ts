@@ -8,6 +8,18 @@ export const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat Checklist
 - Review calendar for events in next 2 hours
 - Check pending tasks for blockers`;
 
+/** Default heartbeat schedule config — applied automatically to new missions unless opted out. */
+export const DEFAULT_HEARTBEAT_CRON = '*/30 * * * *';
+export const DEFAULT_ACTIVE_HOURS_START = 8;
+export const DEFAULT_ACTIVE_HOURS_END = 22;
+export const DEFAULT_ACTIVE_HOURS_TIMEZONE = 'America/New_York';
+
+/** Default checklist for mission heartbeats (task-oriented, not personal). */
+export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Check all linked tasks — retry any in 'failed' status by creating replacement tasks with failureContext
+- [ ] Verify workers are actively progressing (not stale)
+- [ ] If all tasks complete, update mission status
+- [ ] If tasks are blocked on dependencies, flag for review`;
+
 /**
  * Format an hour (0-23) as a human-readable time string.
  * e.g. 0 → "12:00 AM", 8 → "8:00 AM", 12 → "12:00 PM", 13 → "1:00 PM"
