@@ -13,6 +13,17 @@ const HEARTBEAT_OUTPUT_SCHEMA = {
   required: ['status'],
 };
 
+/** Detect if this mission involves code/build work based on skills and role patterns */
+function isBuildMission(
+  templateContext: Record<string, unknown> | undefined,
+  completedTasks: Array<{ roleSlug?: string | null }>
+): boolean {
+  const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
+  if (skillSlugs.includes('builder')) return true;
+  const builderCount = completedTasks.filter(t => (t as any).roleSlug === 'builder').length;
+  return builderCount > 0 && builderCount >= completedTasks.length / 2;
+}
+
 function timeAgo(date: Date | string): string {
   const ms = Date.now() - new Date(date).getTime();
   const mins = Math.floor(ms / 60000);
@@ -124,15 +135,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Resolve heartbeat config from the schedule's taskTemplate.context
   let isHeartbeat = false;
   let heartbeatChecklist: string | null = null;
+  let scheduleContext: Record<string, unknown> | undefined;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
       where: eq(taskSchedules.id, mission.scheduleId),
       columns: { taskTemplate: true },
     });
-    const ctx = schedule?.taskTemplate?.context as Record<string, unknown> | undefined;
-    if (ctx?.heartbeat === true) {
+    scheduleContext = schedule?.taskTemplate?.context as Record<string, unknown> | undefined;
+    if (scheduleContext?.heartbeat === true) {
       isHeartbeat = true;
-      heartbeatChecklist = (ctx.heartbeatChecklist as string) || null;
+      heartbeatChecklist = (scheduleContext.heartbeatChecklist as string) || null;
     }
   }
   // Also check templateContext passed in (e.g. from cron handler)
@@ -145,11 +157,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // ── Heartbeat mode ──
   if (isHeartbeat) {
+    // Resolve skillSlugs from templateContext or schedule for role-gated sections
+    const skillSlugs = (templateContext?.skillSlugs as string[])
+      || (Array.isArray(scheduleContext?.skillSlugs) ? scheduleContext!.skillSlugs as string[] : []);
+
     return buildHeartbeatContext({
       id: mission.id,
       title: mission.title,
       description: mission.description,
       heartbeatChecklist,
+      skillSlugs,
     });
   }
 
@@ -164,6 +181,27 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     limit: 10,
     columns: { id: true, title: true, mode: true, result: true, createdAt: true, roleSlug: true },
   });
+
+  // Detect build mission for conditional PR context
+  const isBuild = isBuildMission(templateContext, completedTasks);
+
+  // Query tasks that created PRs (build missions only)
+  let taskPRs: Array<{ title: string; prUrl: string; prNumber: number }> = [];
+  if (isBuild) {
+    const tasksWithPRs = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.status, 'completed'),
+        sql`${tasks.result}->>'prUrl' IS NOT NULL`
+      ),
+      limit: 20,
+      columns: { id: true, title: true, result: true },
+    });
+    taskPRs = tasksWithPRs.map(t => {
+      const r = t.result as Record<string, unknown>;
+      return { title: t.title, prUrl: r.prUrl as string, prNumber: r.prNumber as number };
+    });
+  }
 
   // Active tasks
   const activeTasks = await db.query.tasks.findMany({
@@ -237,6 +275,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       }
       descParts.push(line);
     }
+  }
+
+  // PR awareness for build missions
+  if (isBuild && taskPRs.length > 0) {
+    descParts.push('\n## Open Pull Requests');
+    descParts.push('Tasks created these PRs (may still be open):');
+    for (const pr of taskPRs) {
+      descParts.push(`- [${pr.title}] — PR #${pr.prNumber}: ${pr.prUrl}`);
+    }
+    descParts.push('Check PR status before creating new work on the same repo.');
   }
 
   if (activeTasks.length > 0) {
@@ -342,15 +390,12 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
   }
 
-  // Dedup guidance: detect repetitive results and warn planner
-  descParts.push('\n## Orchestrator Instructions');
-  descParts.push(
-    'You are the **orchestrator** for this mission. Your job is to evaluate the current state and decide what work is needed next.'
-  );
+  // Dynamic orchestrator hints (static instructions are in the Organizer role content)
+  descParts.push('\n## Situational Guidance');
 
   if (isRecurringPattern) {
     descParts.push(
-      '\n**Efficiency mode**: This mission has an established pattern. Be fast:\n' +
+      '**Efficiency mode**: This mission has an established pattern. Be fast:\n' +
       '- If the work is routine (same type as prior tasks), create the task with the proven role — don\'t over-analyze.\n' +
       '- Only do a full evaluation if something has changed (failures, new requirements, blocked work).\n' +
       '- For recurring monitoring/check-ins, keep the same structure unless results indicate a problem.'
@@ -364,21 +409,19 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     const uniqueSummaries = new Set(summaries);
     if (uniqueSummaries.size <= 2) {
       descParts.push(
-        '\n⚠️ Recent tasks produced nearly identical results. Focus on what has CHANGED since the last run. ' +
+        '⚠️ Recent tasks produced nearly identical results. Focus on what has CHANGED since the last run. ' +
         'Do NOT repeat the same analysis — identify new developments, blockers removed, or status changes. ' +
         'If nothing meaningful has changed, create fewer or no sub-tasks.'
       );
     }
   }
-  descParts.push(
-    '\n1. **Evaluate**: Review prior results, active tasks, and failures above.\n' +
-    '2. **Decide**: What concrete work is needed next to advance the mission goal?\n' +
-    '3. **Route**: For each task you create, assign the best role via `roleSlug`. Reuse proven roles for recurring work; only switch for tasks requiring different capabilities.\n' +
-    '4. **Create tasks**: Use the `buildd` tool with `action: "create_task"` to spawn follow-up tasks.\n' +
-    '5. **Don\'t duplicate**: Skip work that\'s already in progress or completed.\n' +
-    '6. **Workspace**: If you create a new workspace or repo via `manage_workspaces`, the mission auto-migrates to it. Future tasks and heartbeats will land in the correct workspace.\n' +
-    '7. **Report**: Summarize your assessment and what you decided in your completion summary.'
-  );
+
+  if (isBuild && taskPRs.length > 0) {
+    descParts.push(
+      '**Sequencing**: Multiple PRs exist on this mission. When creating new tasks on the same repo, ' +
+      'chain them with `dependsOn` or create an integration task to avoid branch conflicts.'
+    );
+  }
 
   // Build context JSONB
   const contextData: Record<string, unknown> = {
@@ -395,6 +438,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
         summary: result?.summary || null,
         structuredOutput: result?.structuredOutput || null,
         nextSuggestion: result?.nextSuggestion || null,
+        prUrl: result?.prUrl || null,
+        prNumber: result?.prNumber || null,
         completedAt: t.createdAt,
       };
     }),
@@ -421,6 +466,7 @@ async function buildHeartbeatContext(mission: {
   title: string;
   description: string | null;
   heartbeatChecklist: string | null;
+  skillSlugs?: string[];
 }) {
   // Last 3 completed heartbeat results (compact)
   const priorHeartbeats = await db.query.tasks.findMany({
@@ -456,6 +502,29 @@ async function buildHeartbeatContext(mission: {
       const status = so?.status || 'unknown';
       const summary = so?.summary || result?.summary || 'no summary';
       descParts.push(`- ${timeAgo(t.createdAt)}: [${status}] ${summary}`);
+    }
+  }
+
+  // PR awareness for build missions
+  const hasBuilder = mission.skillSlugs?.includes('builder');
+  if (hasBuilder) {
+    const tasksWithPRs = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        eq(tasks.status, 'completed'),
+        sql`${tasks.result}->>'prUrl' IS NOT NULL`
+      ),
+      limit: 20,
+      columns: { title: true, result: true },
+    });
+    if (tasksWithPRs.length > 0) {
+      descParts.push('\n## Open PRs');
+      descParts.push('Tasks created these PRs (check if merged):');
+      for (const t of tasksWithPRs) {
+        const r = t.result as Record<string, unknown>;
+        descParts.push(`- [${t.title}] PR #${r.prNumber}: ${r.prUrl}`);
+      }
+      descParts.push('If multiple unmerged PRs exist on the same repo, create an integration task to merge them, resolve conflicts, and verify the build.');
     }
   }
 
