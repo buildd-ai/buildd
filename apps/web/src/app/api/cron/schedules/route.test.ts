@@ -164,7 +164,7 @@ describe('GET /api/cron/schedules', () => {
   it('should resolve workspace from mission when schedule.workspaceId is null', async () => {
     const schedule = makeSchedule({ workspaceId: null });
     mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-from-mission' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-from-mission', status: 'active' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-from-mission', name: 'Mission Workspace' });
 
     const res = await GET(makeRequest());
@@ -181,7 +181,7 @@ describe('GET /api/cron/schedules', () => {
   it('should auto-create orchestrator workspace when mission has teamId but no workspace', async () => {
     const schedule = makeSchedule({ workspaceId: null });
     mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: null, teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: null, teamId: 'team-1', status: 'active' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'orchestrator-ws', name: '__coordination' });
 
     const res = await GET(makeRequest());
