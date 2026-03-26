@@ -281,10 +281,21 @@ export async function GET(req: NextRequest) {
           where: eq(missions.scheduleId, schedule.id),
           columns: {
             id: true,
+            status: true,
             workspaceId: true,
             teamId: true,
           },
         });
+
+        // Skip if linked mission is no longer active
+        if (linkedMission && linkedMission.status !== 'active') {
+          // Auto-disable the schedule so it stops firing
+          await db.update(taskSchedules).set({
+            enabled: false,
+            updatedAt: now,
+          }).where(eq(taskSchedules.id, schedule.id));
+          continue;
+        }
 
         // Resolve workspace: schedule.workspaceId takes priority, fall back to mission.workspaceId
         let taskWorkspaceId = schedule.workspaceId;

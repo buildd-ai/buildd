@@ -146,6 +146,19 @@ export async function PATCH(
         return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
       }
       updateData.status = status;
+
+      // Auto-disable heartbeat schedule when mission leaves active state
+      if (status !== 'active' && existing.scheduleId) {
+        await db.update(taskSchedules)
+          .set({ enabled: false, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, existing.scheduleId));
+      }
+      // Re-enable schedule when mission is reactivated
+      if (status === 'active' && existing.scheduleId) {
+        await db.update(taskSchedules)
+          .set({ enabled: true, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, existing.scheduleId));
+      }
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;

@@ -17,7 +17,7 @@ export const DEFAULT_ACTIVE_HOURS_TIMEZONE = 'America/New_York';
 /** Default checklist for mission heartbeats (task-oriented, not personal). */
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Check all linked tasks — retry any in 'failed' status by creating replacement tasks with failureContext
 - [ ] Verify workers are actively progressing (not stale)
-- [ ] If all tasks complete, update mission status
+- [ ] Evaluate whether the mission GOAL is achieved — don't just count tasks. If the objective is met even with some tasks incomplete/skipped, set missionComplete=true in structuredOutput
 - [ ] If tasks are blocked on dependencies, flag for review`;
 
 /**

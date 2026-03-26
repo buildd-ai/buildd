@@ -91,6 +91,14 @@ export async function maybeRetriggerMission(
       .set({ status: 'completed', updatedAt: new Date() })
       .where(eq(missions.id, missionId));
 
+    // Disable heartbeat schedule so it stops firing
+    if (mission.scheduleId) {
+      await db
+        .update(taskSchedules)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(taskSchedules.id, mission.scheduleId));
+    }
+
     await triggerEvent(
       channels.mission(missionId),
       events.MISSION_LOOP_COMPLETED,
