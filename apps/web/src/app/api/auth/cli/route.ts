@@ -24,6 +24,7 @@ const CLIENT_DEFAULTS: Record<string, { name: string; level: 'admin' | 'worker' 
   'cli': { name: 'CLI', level: 'admin' },
   'mcp': { name: 'MCP Server', level: 'admin' },
   'agent': { name: 'Agent', level: 'admin' },
+  'ios': { name: 'iOS App', level: 'admin' },
 };
 
 function generateApiKey(): string {
@@ -43,8 +44,8 @@ export async function GET(req: NextRequest) {
   // Validate callback URL (must be localhost for security)
   try {
     const callbackUrl = new URL(callback);
-    if (!['localhost', '127.0.0.1'].includes(callbackUrl.hostname)) {
-      return NextResponse.json({ error: 'Callback must be localhost' }, { status: 400 });
+    if (callbackUrl.protocol !== 'buildd:' && !['localhost', '127.0.0.1'].includes(callbackUrl.hostname)) {
+      return NextResponse.json({ error: 'Callback must be localhost or use buildd: scheme' }, { status: 400 });
     }
   } catch {
     return NextResponse.json({ error: 'Invalid callback URL' }, { status: 400 });
