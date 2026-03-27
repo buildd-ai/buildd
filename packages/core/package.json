@@ -20,7 +20,7 @@
     "./memory-client": "./memory-client.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.83",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^0.9.0",
     "dotenv": "^16.4.5",
