@@ -30,7 +30,7 @@ function generateDeviceToken(): string {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const clientName = body.clientName || 'CLI';
+    const clientName = body.clientName || body.client_name || 'CLI';
     const level = body.level === 'worker' ? 'worker' : body.level === 'trigger' ? 'trigger' : 'admin';
 
     const userCode = generateUserCode();
