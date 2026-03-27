@@ -242,7 +242,7 @@ export async function PATCH(
         else delete templateContext.activeHoursTimezone;
       }
 
-      if (effectiveCron && effectiveWorkspaceId) {
+      if (existing.scheduleId || (effectiveCron && effectiveWorkspaceId)) {
         const taskTemplate = {
           title: `Mission: ${title || existing.title}`,
           mode: 'planning' as const,
