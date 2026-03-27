@@ -24,6 +24,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findMany: mockWorkersFindMany },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
+      missions: { findFirst: mock(() => null) },
       workerHeartbeats: { findFirst: mock(() => ({ id: 'hb-1' })) },
     },
     update: (table: any) => {
