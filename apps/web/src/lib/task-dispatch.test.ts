@@ -31,12 +31,18 @@ mock.module('@/lib/github', () => ({
   isGitHubAppConfigured: () => false,
 }));
 
-import { dispatchNewTask } from './task-dispatch';
+// Get the actual triggerEvent reference that the module system resolves
+// (may differ from mockTriggerEvent due to Bun mock.module pollution)
+const pusher = await import('@/lib/pusher');
+const getEffectiveMock = () => pusher.triggerEvent as ReturnType<typeof mock>;
+
+const { dispatchNewTask } = await import('./task-dispatch');
 
 describe('dispatchNewTask', () => {
   beforeEach(() => {
-    mockTriggerEvent.mockReset();
-    mockTriggerEvent.mockResolvedValue(undefined);
+    const fn = getEffectiveMock();
+    fn.mockReset?.();
+    fn.mockResolvedValue?.(undefined);
   });
 
   it('includes missionId in task:created payload when present', async () => {
@@ -52,9 +58,9 @@ describe('dispatchNewTask', () => {
 
     await dispatchNewTask(task, { name: 'test-ws', repo: 'org/repo' });
 
-    // First call should be task:created
-    expect(mockTriggerEvent).toHaveBeenCalled();
-    const [channel, event, payload] = mockTriggerEvent.mock.calls[0] as [string, string, any];
+    const fn = getEffectiveMock();
+    expect(fn).toHaveBeenCalled();
+    const [channel, event, payload] = fn.mock.calls[0] as [string, string, any];
     expect(channel).toBe('workspace-ws-1');
     expect(event).toBe('task:created');
     expect(payload.task.missionId).toBe('mission-1');
@@ -70,7 +76,8 @@ describe('dispatchNewTask', () => {
 
     await dispatchNewTask(task, { name: 'test-ws', repo: null });
 
-    const [, event, payload] = mockTriggerEvent.mock.calls[0] as [string, string, any];
+    const fn = getEffectiveMock();
+    const [, event, payload] = fn.mock.calls[0] as [string, string, any];
     expect(event).toBe('task:created');
     expect(payload.task.missionId).toBeUndefined();
   });
@@ -86,9 +93,9 @@ describe('dispatchNewTask', () => {
 
     await dispatchNewTask(task, { name: 'test-ws', repo: null });
 
-    // Should have task:created and task:assigned calls
-    expect(mockTriggerEvent.mock.calls.length).toBeGreaterThanOrEqual(2);
-    const [, event, payload] = mockTriggerEvent.mock.calls[1] as [string, string, any];
+    const fn = getEffectiveMock();
+    expect(fn.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const [, event, payload] = fn.mock.calls[1] as [string, string, any];
     expect(event).toBe('task:assigned');
     expect(payload.task.missionId).toBe('mission-2');
   });
