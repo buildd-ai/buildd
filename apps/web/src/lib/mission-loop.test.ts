@@ -54,10 +54,6 @@ mock.module('@buildd/core/db', () => ({
 
 const mockSpawnEvaluationTask = mock(() => Promise.resolve('eval-task-1'));
 
-mock.module('@/lib/mission-evaluation', () => ({
-  spawnEvaluationTask: mockSpawnEvaluationTask,
-}));
-
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { mission: (id: string) => `mission-${id}` },
@@ -87,9 +83,9 @@ function resetAll() {
   mockSpawnEvaluationTask.mockImplementation(() => Promise.resolve('eval-task-1'));
 }
 
-/** Helper: call maybeRetriggerMission with injected mock */
+/** Helper: call maybeRetriggerMission with injected mocks */
 function retrigger(missionId: string, taskId: string) {
-  return maybeRetriggerMission(missionId, taskId, mockRunMission as any);
+  return maybeRetriggerMission(missionId, taskId, mockRunMission as any, mockSpawnEvaluationTask as any);
 }
 
 describe('mission-loop', () => {

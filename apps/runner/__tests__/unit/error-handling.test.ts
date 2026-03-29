@@ -130,8 +130,6 @@ mock.module('../../src/skills.js', () => ({
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [] }),
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
-  extractVarReferences: () => [],
-  parseMcpJsonContent: () => [],
   parseMcpJson: () => [],
   scanMcpServersRich: () => [],
 }));

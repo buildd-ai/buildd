@@ -22,12 +22,15 @@ export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceed
  * This function is fire-and-forget from the caller — errors are logged, not thrown.
  */
 type RunMissionFn = (id: string, opts?: RunMissionOptions) => Promise<RunMissionResult>;
+type SpawnEvaluationFn = (missionId: string, completedTaskId: string) => Promise<string | null>;
 
 export async function maybeRetriggerMission(
   missionId: string,
   completedPlanningTaskId: string,
   /** Injected for testing — defaults to the real runMission */
   _runMission?: RunMissionFn,
+  /** Injected for testing — defaults to the real spawnEvaluationTask */
+  _spawnEvaluation?: SpawnEvaluationFn,
 ): Promise<{ action: LoopAction }> {
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
@@ -86,8 +89,8 @@ export async function maybeRetriggerMission(
     taskResult.missionComplete === true ||
     structuredOutput?.missionComplete === true
   ) {
-    const { spawnEvaluationTask } = await import('@/lib/mission-evaluation');
-    const evalTaskId = await spawnEvaluationTask(missionId, completedPlanningTaskId);
+    const spawnEval = _spawnEvaluation ?? (await import('@/lib/mission-evaluation')).spawnEvaluationTask;
+    const evalTaskId = await spawnEval(missionId, completedPlanningTaskId);
 
     if (evalTaskId) {
       await triggerEvent(
