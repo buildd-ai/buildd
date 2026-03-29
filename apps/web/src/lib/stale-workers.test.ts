@@ -252,6 +252,76 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(2);
   });
 
+  it('cleans up mission tasks after 4 hours (shorter timeout)', async () => {
+    // 5 hours ago — past the 4h mission threshold
+    const staleDate = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate,
+        waitingFor: { type: 'question', prompt: 'Which approach?' },
+        task: { missionId: 'mission-1' },
+      },
+    ]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Mission Task', description: 'Part of a mission',
+      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
+      missionId: 'mission-1', runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+    });
+
+    const result = await cleanupStuckWaitingInput();
+
+    // Mission task at 5h should be cleaned up (past 4h threshold)
+    expect(result.failedWorkers).toBe(1);
+    expect(result.retriedTasks).toBe(1);
+  });
+
+  it('does not clean up standalone tasks before 24 hours', async () => {
+    // 5 hours ago — past mission threshold but NOT past standalone threshold
+    const staleDate = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate,
+        waitingFor: { type: 'question', prompt: 'Which approach?' },
+        task: { missionId: null },  // standalone — no mission
+      },
+    ]);
+
+    const result = await cleanupStuckWaitingInput();
+
+    // Standalone task at 5h should NOT be cleaned up (needs 24h)
+    expect(result.failedWorkers).toBe(0);
+    expect(result.retriedTasks).toBe(0);
+  });
+
+  it('applies different timeouts for mixed mission and standalone tasks', async () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: fiveHoursAgo,
+        waitingFor: { type: 'question', prompt: 'Mission question' },
+        task: { missionId: 'mission-1' },  // mission — 4h timeout
+      },
+      {
+        id: 'w2', taskId: 'task-2', status: 'waiting_input', updatedAt: fiveHoursAgo,
+        waitingFor: { type: 'question', prompt: 'Standalone question' },
+        task: { missionId: null },  // standalone — 24h timeout
+      },
+    ]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Mission Task', description: 'Part of mission',
+      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
+      missionId: 'mission-1', runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+    });
+
+    const result = await cleanupStuckWaitingInput();
+
+    // Only the mission task (w1) should be cleaned up, not the standalone (w2)
+    expect(result.failedWorkers).toBe(1);
+    expect(result.retriedTasks).toBe(1);
+  });
+
   it('includes previous waiting_for context in retry task description', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([

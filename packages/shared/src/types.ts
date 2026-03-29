@@ -381,10 +381,26 @@ export interface Worker {
   artifacts?: Artifact[];
 }
 
+export interface WaitingForOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
 export interface WaitingFor {
   type: 'question' | 'permission' | 'confirmation';
   prompt: string;
-  options?: string[];
+  options?: (string | WaitingForOption)[];
+}
+
+/** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
+export function normalizeWaitingForOptions(
+  raw?: (string | WaitingForOption)[] | null
+): WaitingForOption[] | undefined {
+  if (!raw?.length) return undefined;
+  return raw.map((o) =>
+    typeof o === 'string' ? { label: o } : o
+  );
 }
 
 export interface Artifact {

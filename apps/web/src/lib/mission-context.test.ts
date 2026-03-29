@@ -60,6 +60,7 @@ const mockFindMany = mock(() => Promise.resolve([]));
 const mockScheduleFindFirst = mock(() => Promise.resolve(null));
 const mockSkillsFindMany = mock(() => Promise.resolve([]));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
+const mockWorkersFindMany = mock(() => Promise.resolve([]));
 
 // Mock for db.select().from().innerJoin().where().groupBy() chain (workers query)
 const mockSelectResult = mock(() => Promise.resolve([]));
@@ -78,6 +79,7 @@ mock.module('@buildd/core/db', () => ({
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaceSkills: { findMany: mockSkillsFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
+      workers: { findMany: mockWorkersFindMany },
     },
     select: mockSelect,
   },
@@ -112,6 +114,8 @@ describe('buildMissionContext', () => {
     mockSkillsFindMany.mockReset();
     mockArtifactsFindMany.mockReset();
     mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -599,6 +603,99 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Mission: Manual mission');
     expect(result!.description).not.toContain('## Heartbeat:');
     expect(result!.context.orchestrator).toBe(true);
+  });
+
+  it('includes blocked tasks section when workers are waiting for input', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-wait',
+      title: 'Ship dashboard',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+    // Workers in waiting_input with task relation
+    mockWorkersFindMany.mockResolvedValueOnce([
+      {
+        id: 'w-1',
+        waitingFor: { type: 'question', prompt: 'Should I include dark mode?' },
+        task: { id: 't-blocked', title: 'Build theme system', missionId: 'obj-wait' },
+      },
+    ]);
+
+    const result = await buildMissionContext('obj-wait');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Blocked Tasks (Waiting for User Input)');
+    expect(result!.description).toContain('Build theme system');
+    expect(result!.description).toContain('Should I include dark mode?');
+    expect(result!.description).toContain('working around these dependencies');
+  });
+
+  it('omits blocked tasks section when no workers are waiting', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-nowait',
+      title: 'Clean mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]); // no waiting workers
+
+    const result = await buildMissionContext('obj-nowait');
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('## Blocked Tasks');
+  });
+
+  it('filters waiting workers to only include those from the same mission', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-filter',
+      title: 'My mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+    // Return workers from different missions — only obj-filter should match
+    mockWorkersFindMany.mockResolvedValueOnce([
+      {
+        id: 'w-mine',
+        waitingFor: { type: 'question', prompt: 'Which color?' },
+        task: { id: 't-mine', title: 'Design colors', missionId: 'obj-filter' },
+      },
+      {
+        id: 'w-other',
+        waitingFor: { type: 'question', prompt: 'Which database?' },
+        task: { id: 't-other', title: 'Setup DB', missionId: 'obj-different' },
+      },
+    ]);
+
+    const result = await buildMissionContext('obj-filter');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Blocked Tasks');
+    expect(result!.description).toContain('Design colors');
+    expect(result!.description).toContain('Which color?');
+    // Should NOT include the other mission's worker
+    expect(result!.description).not.toContain('Setup DB');
+    expect(result!.description).not.toContain('Which database?');
   });
 });
 

@@ -293,10 +293,30 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     descParts.push('Check PR status before creating new work on the same repo.');
   }
 
+  // Tasks blocked on user input (worker in waiting_input state)
+  const waitingTasks = await db.query.workers.findMany({
+    where: and(
+      eq(workers.status, 'waiting_input'),
+    ),
+    with: { task: { columns: { id: true, title: true, missionId: true } } },
+    columns: { id: true, waitingFor: true },
+    limit: 5,
+  }).then(ws => ws.filter(w => (w.task as any)?.missionId === missionId));
+
   if (activeTasks.length > 0) {
     descParts.push('\n## Active Tasks');
     for (const t of activeTasks) {
       descParts.push(`- [${t.title}] status: ${t.status}`);
+    }
+  }
+
+  if (waitingTasks.length > 0) {
+    descParts.push('\n## Blocked Tasks (Waiting for User Input)');
+    descParts.push('These tasks are paused — a human must respond before they can continue. Consider working around these dependencies or spawning independent tasks.');
+    for (const w of waitingTasks) {
+      const task = w.task as { title: string } | null;
+      const wf = w.waitingFor as { prompt: string } | null;
+      descParts.push(`- [${task?.title || 'Unknown'}] Question: "${wf?.prompt || 'unknown'}"`);
     }
   }
 
