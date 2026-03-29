@@ -79,21 +79,18 @@ export class WorkerSync {
   restoreWorkersFromDisk() {
     try {
       const restored = loadAllWorkers();
+      const needsReconciliation: LocalWorker[] = [];
       for (const worker of restored) {
         // Workers with active status can't be resumed (no SDK session/inputStream).
         // Exception: 'waiting' workers keep their status so the user can still answer —
         // sendMessage() will detect waiting+no-session and restart via resumeSession().
         if (worker.status === 'working' || worker.status === 'stale') {
-          worker.status = 'error';
-          worker.error = 'Process restarted';
-          worker.completedAt = worker.completedAt || Date.now();
-          worker.currentAction = 'Process restarted';
-
-          // Notify server so it doesn't stay "running" forever
-          this.ctx.buildd.updateWorker(worker.id, {
-            status: 'failed',
-            error: 'Process restarted',
-          }).catch(() => {});
+          // Don't immediately fail — the task may have completed on the server
+          // (e.g. agent called complete_task but runner restarted before local state updated).
+          // Mark as stale so reconciliation can check the server before deciding.
+          worker.status = 'stale';
+          worker.currentAction = 'Checking server after restart...';
+          needsReconciliation.push(worker);
         }
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
@@ -111,9 +108,101 @@ export class WorkerSync {
       if (restored.length > 0) {
         console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
       }
+      // Reconcile interrupted workers against server state before failing them
+      if (needsReconciliation.length > 0) {
+        console.log(`[WorkerStore] ${needsReconciliation.length} interrupted worker(s) — checking server before marking failed`);
+        this.reconcileInterruptedWorkers(needsReconciliation);
+      }
     } catch (err) {
       console.error('[WorkerStore] Failed to restore workers from disk:', err);
     }
+  }
+
+  /**
+   * Check interrupted workers against the server to self-heal status.
+   * If the server says completed, adopt success. Otherwise, mark as failed.
+   * Runs async but with a timeout — we don't want to block startup forever.
+   */
+  private reconcileInterruptedWorkers(workers: LocalWorker[]) {
+    const TIMEOUT_MS = 10_000;
+
+    const check = async () => {
+      for (const worker of workers) {
+        try {
+          const remote = await this.ctx.buildd.getWorkerRemote(worker.id);
+
+          if (remote) {
+            const isCompleted = remote.status === 'completed' ||
+              remote.task?.status === 'completed';
+
+            if (isCompleted) {
+              console.log(`[WorkerStore] Worker ${worker.id} (${worker.taskTitle}) completed on server — self-healing to done`);
+              worker.status = 'done';
+              worker.completedAt = worker.completedAt || Date.now();
+              worker.currentAction = 'Completed (confirmed by server after restart)';
+              this.ctx.dirtyForDisk.add(worker.id);
+              this.ctx.emit({ type: 'worker_update', worker });
+              continue;
+            }
+          }
+
+          // Server says not completed (or unreachable) — mark as failed
+          console.log(`[WorkerStore] Worker ${worker.id} (${worker.taskTitle}) not completed on server — marking failed`);
+          worker.status = 'error';
+          worker.error = 'Process restarted';
+          worker.completedAt = worker.completedAt || Date.now();
+          worker.currentAction = 'Process restarted';
+          this.ctx.dirtyForDisk.add(worker.id);
+          this.ctx.emit({ type: 'worker_update', worker });
+
+          // Notify server so it doesn't stay "running" forever
+          this.ctx.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: 'Process restarted',
+          }).catch(() => {});
+        } catch {
+          // Network error — fail safe, mark as error
+          worker.status = 'error';
+          worker.error = 'Process restarted (server unreachable)';
+          worker.completedAt = worker.completedAt || Date.now();
+          worker.currentAction = 'Process restarted';
+          this.ctx.dirtyForDisk.add(worker.id);
+          this.ctx.emit({ type: 'worker_update', worker });
+
+          this.ctx.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: 'Process restarted',
+          }).catch(() => {});
+        }
+      }
+    };
+
+    // Race against timeout — if server is slow, fail workers rather than leaving them stale
+    Promise.race([
+      check(),
+      new Promise<void>(resolve => setTimeout(() => {
+        // Timeout: fail any workers still in 'stale' status
+        for (const worker of workers) {
+          if (worker.status === 'stale') {
+            console.log(`[WorkerStore] Timeout checking worker ${worker.id} — marking failed`);
+            worker.status = 'error';
+            worker.error = 'Process restarted (reconciliation timeout)';
+            worker.completedAt = worker.completedAt || Date.now();
+            worker.currentAction = 'Process restarted';
+            this.ctx.dirtyForDisk.add(worker.id);
+            this.ctx.emit({ type: 'worker_update', worker });
+
+            this.ctx.buildd.updateWorker(worker.id, {
+              status: 'failed',
+              error: 'Process restarted',
+            }).catch(() => {});
+          }
+        }
+        resolve();
+      }, TIMEOUT_MS)),
+    ]).catch(err => {
+      console.error('[WorkerStore] Interrupted worker reconciliation failed:', err);
+    });
   }
 
   /**
