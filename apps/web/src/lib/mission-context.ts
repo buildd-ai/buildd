@@ -216,7 +216,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
     limit: 5,
-    columns: { id: true, title: true, status: true },
+    columns: { id: true, title: true, status: true, description: true },
   });
 
   // Recent failed tasks
@@ -227,7 +227,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     ),
     orderBy: [desc(tasks.createdAt)],
     limit: 3,
-    columns: { id: true, title: true, result: true },
+    columns: { id: true, title: true, result: true, description: true },
   });
 
   // Prior artifacts linked to this mission
@@ -306,7 +306,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   if (activeTasks.length > 0) {
     descParts.push('\n## Active Tasks');
     for (const t of activeTasks) {
-      descParts.push(`- [${t.title}] status: ${t.status}`);
+      let line = `- [${t.title}] status: ${t.status}`;
+      if (t.description) line += `\n  ${t.description.slice(0, 200)}`;
+      descParts.push(line);
     }
   }
 
@@ -325,7 +327,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     for (const t of failedTasks) {
       const result = t.result as Record<string, unknown> | null;
       const errorSummary = result?.summary as string || 'unknown error';
-      descParts.push(`- [${t.title}] error: ${errorSummary}`);
+      let line = `- [${t.title}] error: ${errorSummary}`;
+      if (t.description) line += `\n  ${t.description.slice(0, 200)}`;
+      descParts.push(line);
     }
   }
 
