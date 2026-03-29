@@ -67,7 +67,7 @@ export async function runMission(
   const cycleCtx: CycleContext = options?.cycleContext || {
     cycleNumber: 1,
     triggerChainId: crypto.randomUUID(),
-    triggerSource: options?.manualRun ? 'manual' : 'cron',
+    triggerSource: 'manual',
   };
 
   // Build rich mission context (pass cycle info so context builder can surface it)

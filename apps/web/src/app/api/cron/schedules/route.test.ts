@@ -214,4 +214,34 @@ describe('GET /api/cron/schedules', () => {
     expect(updateCall).toBeDefined();
     expect(updateCall.set.consecutiveFailures).toBe(1);
   });
+
+  it('should pass triggerSource cron to buildMissionContext for mission-linked schedules', async () => {
+    const { buildMissionContext } = await import('@/lib/mission-context');
+    const mockBuildCtx = buildMissionContext as ReturnType<typeof mock>;
+    mockBuildCtx.mockResolvedValue({
+      description: 'Test mission context',
+      context: { missionId: 'mission-1', orchestrator: true },
+    });
+
+    const schedule = makeSchedule({
+      workspaceId: null,
+      taskTemplate: {
+        title: 'Mission: Test',
+        mode: 'planning',
+        priority: 0,
+        context: { heartbeat: true, heartbeatChecklist: '- check stuff' },
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace' });
+
+    await GET(makeRequest());
+
+    // buildMissionContext should receive triggerSource: 'cron' so heartbeat mode activates
+    expect(mockBuildCtx).toHaveBeenCalledWith('mission-1', expect.objectContaining({
+      triggerSource: 'cron',
+      heartbeat: true,
+    }));
+  });
 });
