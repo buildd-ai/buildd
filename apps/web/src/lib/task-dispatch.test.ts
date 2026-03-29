@@ -1,19 +1,12 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// Mock functions
+// Injected deps — bypass Bun mock.module pollution entirely
 const mockTriggerEvent = mock(() => Promise.resolve());
-
-// Mock pusher
-mock.module('@/lib/pusher', () => ({
-  triggerEvent: mockTriggerEvent,
-  channels: {
-    workspace: (id: string) => `workspace-${id}`,
-  },
-  events: {
-    TASK_CREATED: 'task:created',
-    TASK_ASSIGNED: 'task:assigned',
-  },
-}));
+const testDeps = {
+  triggerEvent: mockTriggerEvent as any,
+  channels: { workspace: (id: string) => `workspace-${id}` },
+  events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned' },
+};
 
 // Mock database (not used in basic dispatch)
 mock.module('@buildd/core/db', () => ({
@@ -22,27 +15,27 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: {},
   githubRepos: {},
+  WorkspaceWebhookConfig: {},
 }));
 mock.module('drizzle-orm', () => ({
   eq: () => ({}),
+}));
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+  channels: { workspace: (id: string) => `workspace-${id}` },
+  events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned' },
 }));
 mock.module('@/lib/github', () => ({
   dispatchToGitHubActions: mock(() => Promise.resolve(false)),
   isGitHubAppConfigured: () => false,
 }));
 
-// Get the actual triggerEvent reference that the module system resolves
-// (may differ from mockTriggerEvent due to Bun mock.module pollution)
-const pusher = await import('@/lib/pusher');
-const getEffectiveMock = () => pusher.triggerEvent as ReturnType<typeof mock>;
-
 const { dispatchNewTask } = await import('./task-dispatch');
 
 describe('dispatchNewTask', () => {
   beforeEach(() => {
-    const fn = getEffectiveMock();
-    fn.mockReset?.();
-    fn.mockResolvedValue?.(undefined);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
   });
 
   it('includes missionId in task:created payload when present', async () => {
@@ -56,11 +49,10 @@ describe('dispatchNewTask', () => {
       missionId: 'mission-1',
     };
 
-    await dispatchNewTask(task, { name: 'test-ws', repo: 'org/repo' });
+    await dispatchNewTask(task, { name: 'test-ws', repo: 'org/repo' }, undefined, testDeps);
 
-    const fn = getEffectiveMock();
-    expect(fn).toHaveBeenCalled();
-    const [channel, event, payload] = fn.mock.calls[0] as [string, string, any];
+    expect(mockTriggerEvent).toHaveBeenCalled();
+    const [channel, event, payload] = mockTriggerEvent.mock.calls[0] as [string, string, any];
     expect(channel).toBe('workspace-ws-1');
     expect(event).toBe('task:created');
     expect(payload.task.missionId).toBe('mission-1');
@@ -74,10 +66,9 @@ describe('dispatchNewTask', () => {
       workspaceId: 'ws-1',
     };
 
-    await dispatchNewTask(task, { name: 'test-ws', repo: null });
+    await dispatchNewTask(task, { name: 'test-ws', repo: null }, undefined, testDeps);
 
-    const fn = getEffectiveMock();
-    const [, event, payload] = fn.mock.calls[0] as [string, string, any];
+    const [, event, payload] = mockTriggerEvent.mock.calls[0] as [string, string, any];
     expect(event).toBe('task:created');
     expect(payload.task.missionId).toBeUndefined();
   });
@@ -91,11 +82,10 @@ describe('dispatchNewTask', () => {
       missionId: 'mission-2',
     };
 
-    await dispatchNewTask(task, { name: 'test-ws', repo: null });
+    await dispatchNewTask(task, { name: 'test-ws', repo: null }, undefined, testDeps);
 
-    const fn = getEffectiveMock();
-    expect(fn.mock.calls.length).toBeGreaterThanOrEqual(2);
-    const [, event, payload] = fn.mock.calls[1] as [string, string, any];
+    expect(mockTriggerEvent.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const [, event, payload] = mockTriggerEvent.mock.calls[1] as [string, string, any];
     expect(event).toBe('task:assigned');
     expect(payload.task.missionId).toBe('mission-2');
   });

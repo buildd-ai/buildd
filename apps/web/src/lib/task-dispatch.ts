@@ -73,8 +73,11 @@ export async function dispatchNewTask(
   options?: {
     assignToLocalUiUrl?: string;
     runnerPreference?: string;
-  }
+  },
+  /** Injected for testing — avoids Bun mock.module pollution */
+  _deps?: { triggerEvent: typeof triggerEvent; channels: typeof channels; events: typeof events },
 ): Promise<void> {
+  const { triggerEvent: trigger, channels: ch, events: ev } = _deps ?? { triggerEvent, channels, events };
   // Build minimal task payload for Pusher events (10KB limit).
   // Local-ui fetches the full task (with context/attachments) via the claim API.
   const taskPayload = {
@@ -91,17 +94,17 @@ export async function dispatchNewTask(
   };
 
   // Trigger realtime event
-  await triggerEvent(
-    channels.workspace(task.workspaceId),
-    events.TASK_CREATED,
+  await trigger(
+    ch.workspace(task.workspaceId),
+    ev.TASK_CREATED,
     { task: taskPayload }
   );
 
   // If assigning to a specific runner, trigger assignment event
   if (options?.assignToLocalUiUrl) {
-    await triggerEvent(
-      channels.workspace(task.workspaceId),
-      events.TASK_ASSIGNED,
+    await trigger(
+      ch.workspace(task.workspaceId),
+      ev.TASK_ASSIGNED,
       { task: taskPayload, targetLocalUiUrl: options.assignToLocalUiUrl }
     );
     return;
@@ -130,9 +133,9 @@ export async function dispatchNewTask(
   // Webhook dispatch is the only exclusive handler — GitHub Actions and
   // local runners can both pick up the same task (claim is atomic).
   if (!dispatched) {
-    await triggerEvent(
-      channels.workspace(task.workspaceId),
-      events.TASK_ASSIGNED,
+    await trigger(
+      ch.workspace(task.workspaceId),
+      ev.TASK_ASSIGNED,
       { task: taskPayload, targetLocalUiUrl: null }
     );
   }
