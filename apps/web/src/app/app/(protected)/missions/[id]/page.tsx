@@ -12,6 +12,7 @@ import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ExpandableText from './ExpandableText';
+import TaskPanelWrapper from './TaskPanelWrapper';
 
 export const dynamic = 'force-dynamic';
 
@@ -187,6 +188,7 @@ export default async function MissionDetailPage({
   const missionTaskIds = allTasks.map((t) => t.id);
 
   return (
+    <TaskPanelWrapper>
     <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Real-time updates via Pusher */}
       {mission.workspaceId && (
@@ -452,12 +454,13 @@ export default async function MissionDetailPage({
 
                           return (
                             <div key={task.id} className="animate-timeline-enter" style={{ animationDelay: `${ti * 60}ms` }}>
-                              <Link
-                                href={`/app/tasks/${task.id}`}
-                                className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group ${
+                              <button
+                                type="button"
+                                data-task-id={task.id}
+                                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group text-left ${
                                   isRunning
                                     ? 'bg-status-info/5 border border-status-info/20'
-                                    : 'hover:bg-card-hover'
+                                    : 'hover:bg-card-hover cursor-pointer'
                                 }`}
                               >
                                 {/* Branch line + role dot */}
@@ -514,7 +517,7 @@ export default async function MissionDetailPage({
                                     {timeAgo(task.createdAt)}
                                   </span>
                                 )}
-                              </Link>
+                              </button>
 
                               {waitingWorker && waitingFor && (
                                 <div className="pl-7 pb-1">
@@ -621,5 +624,6 @@ export default async function MissionDetailPage({
       )}
 
     </div>
+    </TaskPanelWrapper>
   );
 }
