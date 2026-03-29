@@ -156,7 +156,7 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursTimezone).toBe('America/New_York');
   });
 
-  it('auto-enables heartbeat with defaults when no heartbeat fields provided', async () => {
+  it('UI-created mission (session auth, no cron, no isHeartbeat) runs once — no schedule', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Ship auth module' }),
@@ -167,6 +167,23 @@ describe('POST /api/missions', () => {
 
     expect(insertedMissionValues).not.toBeNull();
     expect(insertedMissionValues.title).toBe('Ship auth module');
+    // No schedule created — UI missions run once by default
+    expect(insertedScheduleValues).toBeNull();
+  });
+
+  it('API-created mission auto-enables heartbeat with defaults (backward compat)', async () => {
+    mockGetCurrentUser.mockReturnValue(null as any);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'api-1', level: 'admin', teamId: 'team-1' } as any);
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_test' },
+      body: JSON.stringify({ title: 'API heartbeat mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
     // Schedule auto-created with heartbeat defaults
     expect(insertedScheduleValues).not.toBeNull();
     expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
@@ -176,6 +193,33 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursStart).toBe(8);
     expect(ctx.activeHoursEnd).toBe(22);
     expect(ctx.activeHoursTimezone).toBe('America/New_York');
+  });
+
+  it('UI-created mission with explicit cronExpression creates schedule', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Scheduled UI mission', cronExpression: '0 */6 * * *' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.cronExpression).toBe('0 */6 * * *');
+  });
+
+  it('UI-created mission with explicit isHeartbeat: true creates heartbeat schedule', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Heartbeat UI mission', isHeartbeat: true }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedScheduleValues).not.toBeNull();
+    const ctx = insertedScheduleValues.taskTemplate.context;
+    expect(ctx.heartbeat).toBe(true);
   });
 
   it('creates mission without heartbeat when explicitly opted out', async () => {

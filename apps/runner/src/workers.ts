@@ -2001,7 +2001,7 @@ If something is missing or incomplete, describe what and fix it now.`;
                 waitingFor: {
                   type: 'question',
                   prompt: questionText,
-                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                  options: firstQuestion?.options,
                 },
               }).catch(() => {});
               storeSaveWorker(worker);
@@ -2020,7 +2020,7 @@ If something is missing or incomplete, describe what and fix it now.`;
                 waitingFor: {
                   type: 'question',
                   prompt: questionText,
-                  options: firstQuestion?.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+                  options: firstQuestion?.options,
                 },
               }).catch(() => {});
               storeSaveWorker(worker);

@@ -367,6 +367,74 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(insertedValues.mode).toBe('execution');
   });
 
+  it('preserves missionId on retry task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.missionId).toBe('mission-1');
+  });
+
+  it('handles structured WaitingForOption objects in waitingFor', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+
+    const workerWithStructuredOptions = {
+      ...baseWorker,
+      waitingFor: {
+        type: 'question',
+        prompt: 'Which database should we use?',
+        options: [
+          { label: 'PostgreSQL', description: 'Best for relational data', recommended: true },
+          { label: 'MongoDB', description: 'Good for document storage' },
+        ],
+      },
+    };
+    mockWorkersFindFirst.mockResolvedValue(workerWithStructuredOptions);
+
+    const req = createMockRequest({ message: 'PostgreSQL' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    // The question should be preserved in the context
+    expect(insertedValues.context.previousAttempt.question).toBe('Which database should we use?');
+    // The description should contain the question
+    expect(insertedValues.description).toContain('Which database should we use?');
+    // The user's answer should be in the description
+    expect(insertedValues.description).toContain('PostgreSQL');
+  });
+
+  it('handles worker with null milestones gracefully', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+
+    const workerWithNullMilestones = {
+      ...baseWorker,
+      milestones: null,
+    };
+    mockWorkersFindFirst.mockResolvedValue(workerWithNullMilestones);
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.description).toContain('No milestones recorded');
+    expect(insertedValues.context.previousAttempt.milestones).toEqual([]);
+  });
+
   it('includes structured description with milestones and question', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
