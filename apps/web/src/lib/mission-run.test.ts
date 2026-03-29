@@ -190,7 +190,7 @@ describe('runMission', () => {
     const ctx = insertCall.context as Record<string, unknown>;
     expect(ctx.cycleNumber).toBe(1);
     expect(ctx.triggerChainId).toBeDefined();
-    expect(ctx.triggerSource).toBe('cron');
+    expect(ctx.triggerSource).toBe('manual');
   });
 
   it('propagates provided cycle context', async () => {

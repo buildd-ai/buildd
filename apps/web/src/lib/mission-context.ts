@@ -156,7 +156,13 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   // ── Heartbeat mode ──
-  if (isHeartbeat) {
+  // Only use heartbeat context for cron-triggered runs. Initial creation,
+  // manual runs, and retriggers should use full planning mode so the
+  // orchestrator actually creates execution subtasks instead of just reporting.
+  const triggerSource = templateContext?.triggerSource as string | undefined;
+  const useHeartbeatMode = isHeartbeat && triggerSource === 'cron';
+
+  if (useHeartbeatMode) {
     // Resolve skillSlugs from templateContext or schedule for role-gated sections
     const skillSlugs = (templateContext?.skillSlugs as string[])
       || (Array.isArray(scheduleContext?.skillSlugs) ? scheduleContext!.skillSlugs as string[] : []);

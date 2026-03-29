@@ -355,7 +355,10 @@ export async function GET(req: NextRequest) {
 
         // If linked to a mission, build rich planning context
         if (linkedMission) {
-          const missionContext = await buildMissionContext(linkedMission.id, template.context);
+          const missionContext = await buildMissionContext(linkedMission.id, {
+            ...template.context,
+            triggerSource: 'cron',
+          });
           if (missionContext) {
             taskDescription = missionContext.description;
             Object.assign(taskContext, missionContext.context);

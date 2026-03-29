@@ -59,7 +59,11 @@ export async function GET(req: NextRequest) {
       orderBy: [desc(missions.priority), desc(missions.createdAt)],
       with: {
         workspace: { columns: { id: true, name: true } },
-        tasks: { columns: { id: true, status: true } },
+        tasks: {
+          columns: { id: true, status: true },
+          with: { workers: { columns: { id: true, status: true } } },
+        },
+        schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true } },
       },
     });
 
@@ -67,11 +71,20 @@ export async function GET(req: NextRequest) {
       const totalTasks = mission.tasks?.length || 0;
       const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
       const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      const activeAgents = mission.tasks?.reduce((count, t) =>
+        count + (t.workers?.filter((w: any) => w.status === 'running').length || 0), 0) || 0;
+      const cronExpression = (mission as any).schedule?.cronExpression ?? null;
+      const lastRunAt = (mission as any).schedule?.lastRunAt ?? null;
+      const nextRunAt = (mission as any).schedule?.nextRunAt ?? null;
       return {
         ...mission,
         totalTasks,
         completedTasks,
         progress,
+        activeAgents,
+        cronExpression,
+        lastRunAt,
+        nextRunAt,
       };
     });
 
@@ -219,7 +232,7 @@ export async function POST(req: NextRequest) {
     // Fire-and-forget — mission creation succeeds even if the organizer fails to start.
     let organizerTask: { id: string } | null = null;
     try {
-      const result = await runMission(mission.id);
+      const result = await runMission(mission.id, { manualRun: true });
       organizerTask = { id: result.task.id };
     } catch (err) {
       console.error('Auto-start organizer failed (mission still created):', err);

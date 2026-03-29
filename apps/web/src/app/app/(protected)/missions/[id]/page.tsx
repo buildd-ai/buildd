@@ -353,6 +353,9 @@ export default async function MissionDetailPage({
               const evalResult = cycle.evaluation?.result as { summary?: string } | null;
               const evalWorker = cycle.evaluation?.workers?.[0];
               const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
+              const evalElapsed = evalWorker?.startedAt
+                ? Math.round((Date.now() - new Date(evalWorker.startedAt).getTime()) / 1000)
+                : null;
 
               return (
                 <div key={cycle.evaluation?.id || `cycle-${ci}`} className={`flex gap-0 ${ci === 0 ? 'animate-card-enter' : ''}`}>
@@ -376,16 +379,39 @@ export default async function MissionDetailPage({
                         <div className="flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
                             <span className={`text-[12px] font-semibold ${evalIsRunning ? 'text-status-info' : 'text-[#92400E]'}`}>
-                              {evalIsRunning ? 'Planning...' : 'Evaluate'}
+                              {evalIsRunning ? 'Orchestrating...' : 'Orchestrated'}
                             </span>
                             {evalIsRunning && (
                               <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
                             )}
                           </span>
-                          <span className="text-[11px] text-text-muted">
-                            {evalIsRunning ? 'In progress' : timeAgo(cycle.evaluation.createdAt)}
+                          <span className="text-[11px] text-text-muted tabular-nums">
+                            {evalIsRunning
+                              ? evalElapsed != null
+                                ? evalElapsed < 60
+                                  ? `${evalElapsed}s`
+                                  : `${Math.floor(evalElapsed / 60)}m ${evalElapsed % 60}s`
+                                : 'Starting...'
+                              : timeAgo(cycle.evaluation.createdAt)}
                           </span>
                         </div>
+
+                        {/* Live orchestrator activity */}
+                        {evalIsRunning && evalWorker && (
+                          <div className="mt-1.5 flex items-start gap-2">
+                            {evalWorker.currentAction && (
+                              <p className="text-[12px] text-text-secondary leading-relaxed flex-1">
+                                {evalWorker.currentAction}
+                              </p>
+                            )}
+                            {(evalWorker.turns ?? 0) > 0 && (
+                              <span className="text-[11px] text-text-muted tabular-nums shrink-0">
+                                {evalWorker.turns} turn{evalWorker.turns !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
                         {evalResult?.summary && (
                           <ExpandableText text={evalResult.summary} />
                         )}
@@ -455,9 +481,11 @@ export default async function MissionDetailPage({
                                 )}
 
                                 {isRunning && (
-                                  <span className="flex items-center gap-1 shrink-0">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
-                                    <span className="text-[11px] text-status-info font-medium">Running</span>
+                                  <span className="flex items-center gap-1 shrink-0 max-w-[45%]">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
+                                    <span className="text-[11px] text-status-info truncate">
+                                      {latestWorker?.currentAction || 'Running'}
+                                    </span>
                                   </span>
                                 )}
 

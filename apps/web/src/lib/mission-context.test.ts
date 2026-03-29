@@ -312,7 +312,7 @@ describe('buildMissionContext', () => {
     // priorHeartbeats query
     mockFindMany.mockResolvedValueOnce([]);
 
-    const result = await buildMissionContext('obj-hb');
+    const result = await buildMissionContext('obj-hb', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
     expect(result!.description).toContain('## Heartbeat: Daily health check');
     expect(result!.description).toContain('Check all services');
@@ -338,7 +338,7 @@ describe('buildMissionContext', () => {
     });
     mockFindMany.mockResolvedValueOnce([]);
 
-    const result = await buildMissionContext('obj-hb2');
+    const result = await buildMissionContext('obj-hb2', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
     expect(result!.context.heartbeat).toBe(true);
     expect(result!.context.outputSchema).toBeDefined();
@@ -364,7 +364,7 @@ describe('buildMissionContext', () => {
     });
     mockFindMany.mockResolvedValueOnce([]);
 
-    const result = await buildMissionContext('obj-hb3');
+    const result = await buildMissionContext('obj-hb3', { triggerSource: 'cron' });
     expect(result!.context.heartbeatChecklist).toBe('- check A\n- check B');
   });
 
@@ -398,7 +398,7 @@ describe('buildMissionContext', () => {
       },
     ]);
 
-    const result = await buildMissionContext('obj-hb4');
+    const result = await buildMissionContext('obj-hb4', { triggerSource: 'cron' });
     expect(result!.description).toContain('## Prior Heartbeats');
     expect(result!.description).toContain('[ok] All systems nominal');
     expect(result!.description).toContain('[action_taken] Cleared stale cache');
@@ -522,7 +522,7 @@ describe('buildMissionContext', () => {
     expect(result!.context.missionId).toBe('obj-mem');
   });
 
-  it('detects heartbeat from templateContext argument', async () => {
+  it('detects heartbeat from templateContext argument when triggerSource is cron', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-tc',
       title: 'TC Heartbeat',
@@ -537,10 +537,68 @@ describe('buildMissionContext', () => {
     const result = await buildMissionContext('obj-tc', {
       heartbeat: true,
       heartbeatChecklist: '- check via template',
+      triggerSource: 'cron',
     });
     expect(result).not.toBeNull();
     expect(result!.description).toContain('## Heartbeat: TC Heartbeat');
     expect(result!.context.heartbeat).toBe(true);
+  });
+
+  it('uses full planning context on initial run even when heartbeat is configured', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-init',
+      title: 'Fix the bug',
+      description: 'Fix the abort error',
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-init',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    // Standard context queries: completed, active, failed tasks, artifacts, roles
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]); // artifacts
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    // No triggerSource = initial run → should get standard planning context
+    const result = await buildMissionContext('obj-init');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Mission: Fix the bug');
+    expect(result!.description).not.toContain('## Heartbeat:');
+    expect(result!.context.orchestrator).toBe(true);
+    expect(result!.context.heartbeat).toBeUndefined();
+  });
+
+  it('uses full planning context when triggerSource is manual even with heartbeat flag', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-manual',
+      title: 'Manual mission',
+      description: 'Manually triggered',
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    // Standard context queries: completed, active, failed, artifacts, roles
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]); // artifacts
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-manual', {
+      heartbeat: true,
+      heartbeatChecklist: '- check stuff',
+      triggerSource: 'manual',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Mission: Manual mission');
+    expect(result!.description).not.toContain('## Heartbeat:');
+    expect(result!.context.orchestrator).toBe(true);
   });
 });
 
