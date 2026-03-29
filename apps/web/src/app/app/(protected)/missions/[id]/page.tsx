@@ -350,7 +350,8 @@ export default async function MissionDetailPage({
           <div className="relative">
             {displayCycles.map((cycle, ci) => {
               const isLast = ci === displayCycles.length - 1;
-              const evalResult = cycle.evaluation?.result as { summary?: string } | null;
+              const evalResult = cycle.evaluation?.result as { summary?: string; structuredOutput?: Record<string, unknown> } | null;
+              const triageOutcome = evalResult?.structuredOutput?.triageOutcome as string | undefined;
               const evalWorker = cycle.evaluation?.workers?.[0];
               const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
               const evalElapsed = evalWorker?.startedAt
@@ -384,6 +385,15 @@ export default async function MissionDetailPage({
                             {evalIsRunning && (
                               <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
                             )}
+                            {!evalIsRunning && triageOutcome && (() => {
+                              const badge = {
+                                single_task: { label: 'Routed', cls: 'bg-emerald-500/10 text-emerald-600' },
+                                multi_task: { label: 'Decomposed', cls: 'bg-blue-500/10 text-blue-600' },
+                                conflict: { label: 'Conflict', cls: 'bg-amber-500/10 text-amber-600' },
+                              }[triageOutcome];
+                              if (!badge) return null;
+                              return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>;
+                            })()}
                           </span>
                           <span className="text-[11px] text-text-muted tabular-nums">
                             {evalIsRunning
@@ -413,7 +423,9 @@ export default async function MissionDetailPage({
                         )}
 
                         {evalResult?.summary && (
-                          <ExpandableText text={evalResult.summary} />
+                          triageOutcome === 'conflict'
+                            ? <p className="text-[12px] text-text-secondary mt-1.5 leading-relaxed">{evalResult.summary}</p>
+                            : <ExpandableText text={evalResult.summary} />
                         )}
                       </div>
                     )}

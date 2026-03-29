@@ -186,9 +186,10 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    // Auto-create schedule: heartbeat is ON by default unless explicitly opted out.
-    // If caller provides cronExpression, use it. Otherwise, default to heartbeat cron.
-    const effectiveHeartbeat = isHeartbeat !== false;
+    // UI-created missions (session auth, no explicit cron/heartbeat) run once — no auto-heartbeat.
+    // API-created missions keep existing default (heartbeat ON) for backward compat.
+    const uiCreated = !apiAccount && !cronExpression && isHeartbeat === undefined;
+    const effectiveHeartbeat = uiCreated ? false : (isHeartbeat !== false);
     const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
 
     if (effectiveCron) {
