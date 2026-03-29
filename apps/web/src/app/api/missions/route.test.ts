@@ -309,7 +309,7 @@ describe('POST /api/missions', () => {
     expect(res.status).toBe(201);
 
     // runMission should have been called with the new mission ID
-    expect(mockRunMission).toHaveBeenCalledWith('obj-1');
+    expect(mockRunMission).toHaveBeenCalledWith('obj-1', { manualRun: true });
 
     // Response should include the organizerTask
     const body = await res.json();

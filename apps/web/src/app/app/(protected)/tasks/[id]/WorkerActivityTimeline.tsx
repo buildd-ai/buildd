@@ -171,7 +171,7 @@ function StatusRow({
   formatTime: (ts: number) => string;
 }) {
   const getIcon = (label: string) => {
-    const lower = label.toLowerCase();
+    const lower = (label ?? '').toLowerCase();
     if (lower.includes('commit')) return '>';
     if (lower.includes('error') || lower.includes('fail') || lower.startsWith('🛑')) return '!';
     if (lower.includes('complete') || lower.includes('done')) return '+';
