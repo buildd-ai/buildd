@@ -168,6 +168,7 @@ export async function PATCH(
     const existingMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
     const transition = {
       type: 'statusTransition',
+      label: `Status: ${worker.status} → ${status}`,
       from: worker.status,
       to: status,
       ts: Date.now(),
