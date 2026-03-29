@@ -226,6 +226,52 @@ describe('mission-loop', () => {
     expect(mockTriggerEvent).toHaveBeenCalled();
   });
 
+  it('requests evaluation when triageOutcome is single_task and missionComplete', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { triageOutcome: 'single_task', tasksCreated: 1, missionComplete: true, summary: 'Routed to builder' } },
+    };
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('evaluation_requested');
+    expect(mockSpawnEvaluationTask).toHaveBeenCalledWith('m1', 'pt1');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('requests evaluation when triageOutcome is conflict and missionComplete', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { triageOutcome: 'conflict', tasksCreated: 0, missionComplete: true, summary: 'Active task already covers this' } },
+    };
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('evaluation_requested');
+    expect(mockSpawnEvaluationTask).toHaveBeenCalledWith('m1', 'pt1');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('retriggers when triageOutcome is multi_task and missionComplete is false', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { triageOutcome: 'multi_task', tasksCreated: 3, missionComplete: false, summary: 'Created 3 subtasks' } },
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }, { id: 'child-2' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
   it('retriggers when all guards pass', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
     updateReturningResult = [{ id: 'm1' }];
