@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { formatHour } from './heartbeat-helpers';
+import { formatHour } from '@/lib/heartbeat-helpers';
 import { Select } from '@/components/ui/Select';
 
 interface ActiveHoursConfigProps {
@@ -33,6 +33,7 @@ export default function ActiveHoursConfig({
       await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(body),
       });
       startTransition(() => router.refresh());
@@ -68,18 +69,18 @@ export default function ActiveHoursConfig({
   const hours = Array.from({ length: 24 }, (_, i) => i);
 
   return (
-    <div className="mb-6 p-3 bg-surface-2 rounded-lg border border-border-default">
+    <div className="card p-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
           </svg>
-          <span className="text-sm font-medium text-text-primary">Active Hours</span>
+          <span className="text-[13px] font-medium text-text-primary">Active Hours</span>
         </div>
         <button
           onClick={handleToggle}
           disabled={disabled}
-          className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-primary' : 'bg-surface-3 border border-border-default'}`}
+          className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-status-success/60' : 'bg-surface-3 border border-card-border'}`}
         >
           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
         </button>
@@ -87,7 +88,7 @@ export default function ActiveHoursConfig({
 
       {enabled && (
         <div className="mt-3 space-y-2">
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-3 text-[12px]">
             <label className="text-text-secondary w-12 shrink-0">From</label>
             <Select
               value={String(start)}
@@ -105,7 +106,7 @@ export default function ActiveHoursConfig({
               size="sm"
             />
           </div>
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-3 text-[12px]">
             <label className="text-text-secondary w-12 shrink-0">Zone</label>
             <input
               type="text"
@@ -113,10 +114,10 @@ export default function ActiveHoursConfig({
               onChange={e => setTimezone(e.target.value)}
               onBlur={() => handleChange('timezone', timezone)}
               disabled={disabled}
-              className="flex-1 px-2 py-1 bg-surface-1 border border-border-default rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+              className="flex-1 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[11px] text-text-primary focus:outline-none focus:border-accent/40 font-mono transition-colors"
             />
           </div>
-          <p className="text-xs text-text-muted">
+          <p className="text-[11px] text-text-muted">
             Active from {formatHour(start)} to {formatHour(end)} ({timezone})
           </p>
         </div>

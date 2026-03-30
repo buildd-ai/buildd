@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { timeAgo } from '@/lib/mission-helpers';
 
 interface HeartbeatTimelineProps {
   tasks: Array<{
@@ -9,17 +9,6 @@ interface HeartbeatTimelineProps {
     status: string;
     result: any;
   }>;
-}
-
-function timeAgo(date: Date | string): string {
-  const ms = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 type HeartbeatStatus = 'ok' | 'action_taken' | 'error';
@@ -43,22 +32,11 @@ function getSummary(task: HeartbeatTimelineProps['tasks'][0]): string {
 export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
   const entries = tasks.slice(0, 20);
 
-  if (entries.length === 0) {
-    return (
-      <div className="mb-6">
-        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-          Heartbeat History
-        </h2>
-        <p className="text-sm text-text-muted">No heartbeat results yet.</p>
-      </div>
-    );
-  }
+  if (entries.length === 0) return null;
 
   return (
-    <div className="mb-6">
-      <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-        Heartbeat History ({entries.length})
-      </h2>
+    <div>
+      <h2 className="section-label mb-3">Heartbeat History ({entries.length})</h2>
       <div className="space-y-1">
         {entries.map(task => {
           const hbStatus = getTaskHeartbeatStatus(task);
@@ -74,7 +52,6 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
             );
-            textClass = 'text-text-muted';
           } else if (hbStatus === 'action_taken') {
             icon = (
               <svg className="w-4 h-4 text-status-warning shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -100,18 +77,18 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
           }
 
           return (
-            <Link
+            <button
               key={task.id}
-              href={`/app/tasks/${task.id}`}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg border border-border-default hover:border-primary/30 transition-colors text-sm ${rowClass}`}
+              data-task-id={task.id}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-card-border hover:border-accent/30 transition-colors text-[12px] text-left ${rowClass}`}
             >
               {icon}
-              <span className="text-xs text-text-muted shrink-0 w-16">{timeAgo(task.createdAt)}</span>
+              <span className="text-[11px] text-text-muted shrink-0 w-16">{timeAgo(task.createdAt)}</span>
               <span className={`flex-1 truncate ${textClass}`}>{summary}</span>
               <svg className="w-3.5 h-3.5 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
-            </Link>
+            </button>
           );
         })}
       </div>

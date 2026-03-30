@@ -1,11 +1,12 @@
 import { db } from '@buildd/core/db';
-import { missions, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import MissionSettings from './MissionSettings';
@@ -13,6 +14,13 @@ import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ExpandableText from './ExpandableText';
 import TaskPanelWrapper from './TaskPanelWrapper';
+import HeartbeatStatusBadge from './HeartbeatStatusBadge';
+import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
+import ActiveHoursConfig from './ActiveHoursConfig';
+import HeartbeatTimeline from './HeartbeatTimeline';
+import PrioritySelector from './PrioritySelector';
+import ScheduleWizard from './ScheduleWizard';
+import MissionConfig from './MissionConfig';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,18 +97,27 @@ export default async function MissionDetailPage({
     notFound();
   }
 
-  // Query roles for this user's workspaces
+  // Query roles and workspaces for this user
   const wsIds = await getUserWorkspaceIds(user.id);
   let roles: { slug: string; name: string; color: string }[] = [];
+  let teamWorkspaces: { id: string; name: string }[] = [];
   if (wsIds.length > 0) {
-    roles = await db.query.workspaceSkills.findMany({
-      where: and(
-        inArray(workspaceSkills.workspaceId, wsIds),
-        eq(workspaceSkills.enabled, true),
-      ),
-      columns: { slug: true, name: true, color: true },
-      orderBy: [desc(workspaceSkills.createdAt)],
-    });
+    const [rolesResult, workspacesResult] = await Promise.all([
+      db.query.workspaceSkills.findMany({
+        where: and(
+          inArray(workspaceSkills.workspaceId, wsIds),
+          eq(workspaceSkills.enabled, true),
+        ),
+        columns: { slug: true, name: true, color: true },
+        orderBy: [desc(workspaceSkills.createdAt)],
+      }),
+      db.query.workspaces.findMany({
+        where: inArray(workspaces.teamId, teamIds),
+        columns: { id: true, name: true },
+      }),
+    ]);
+    roles = rolesResult;
+    teamWorkspaces = workspacesResult;
   }
 
   const totalTasks = mission.tasks?.length || 0;
@@ -125,6 +142,36 @@ export default async function MissionDetailPage({
     nextRunAt: (mission.schedule as any)?.nextRunAt || null,
   });
   const healthDisplay = HEALTH_DISPLAY[health];
+
+  // Heartbeat data — derived from schedule's taskTemplate.context
+  const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
+  const isHeartbeat = (templateContext?.heartbeat === true) || false;
+  const heartbeatChecklist = (templateContext?.heartbeatChecklist as string) ?? null;
+  const activeHoursStart = (templateContext?.activeHoursStart as number) ?? null;
+  const activeHoursEnd = (templateContext?.activeHoursEnd as number) ?? null;
+  const activeHoursTimezone = (templateContext?.activeHoursTimezone as string) ?? null;
+
+  // Configuration from schedule template
+  const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
+  const recipeId = (templateContext?.recipeId as string) || null;
+  const configModel = (templateContext?.model as string) || null;
+  const outputSchema = (templateContext?.outputSchema as unknown) || null;
+
+  // Heartbeat status
+  const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
+    (mission.tasks || []).map(t => ({
+      id: t.id,
+      createdAt: t.createdAt,
+      status: t.status,
+      result: t.result,
+    }))
+  );
+  const heartbeatOverdue = isHeartbeat && mission.schedule?.nextRunAt && scheduleCron
+    ? checkOverdue(mission.schedule.nextRunAt, scheduleCron)
+    : false;
+  const heartbeatTasks = isHeartbeat
+    ? (mission.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
+    : [];
 
   // Build roles map for color lookup
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -215,11 +262,25 @@ export default async function MissionDetailPage({
           initialTitle={mission.title}
           initialDescription={mission.description}
           healthPill={
-            <span className={`health-pill ${healthDisplay.colorClass}`}>
-              {healthDisplay.label}
+            <span className="flex items-center gap-2 flex-wrap">
+              <span className={`health-pill ${healthDisplay.colorClass}`}>
+                {healthDisplay.label}
+              </span>
+              {isHeartbeat && (
+                <HeartbeatStatusBadge
+                  lastStatus={lastHeartbeatStatus}
+                  lastAt={lastHeartbeatAt}
+                  isOverdue={heartbeatOverdue}
+                />
+              )}
             </span>
           }
         />
+
+        {/* Priority */}
+        <div className="mb-3">
+          <PrioritySelector missionId={id} initialPriority={mission.priority} />
+        </div>
 
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
@@ -334,6 +395,48 @@ export default async function MissionDetailPage({
           hasSchedule={!!scheduleCron}
         />
       </div>
+
+      {/* ── Heartbeat Section (heartbeat missions only) ── */}
+      {isHeartbeat && (
+        <div className="mb-6 space-y-4">
+          <HeartbeatChecklistEditor
+            missionId={id}
+            checklist={heartbeatChecklist}
+          />
+          <ActiveHoursConfig
+            missionId={id}
+            activeHoursStart={activeHoursStart}
+            activeHoursEnd={activeHoursEnd}
+            activeHoursTimezone={activeHoursTimezone}
+          />
+        </div>
+      )}
+
+      {/* ── Schedule Wizard (missions without a schedule) ── */}
+      {!scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+        <div className="mb-6">
+          <ScheduleWizard
+            missionId={id}
+            hasWorkspace={!!mission.workspaceId}
+            workspaces={teamWorkspaces}
+          />
+        </div>
+      )}
+
+      {/* ── Configuration ── */}
+      {!['completed', 'archived'].includes(mission.status) && (
+        <div className="mb-6">
+          <MissionConfig
+            missionId={id}
+            workspaceId={mission.workspaceId}
+            skillSlugs={skillSlugs}
+            recipeId={recipeId}
+            model={configModel}
+            outputSchema={outputSchema}
+            workspaces={teamWorkspaces}
+          />
+        </div>
+      )}
 
       {/* ── Orchestration Timeline ── */}
       {displayCycles.length > 0 && (
@@ -565,6 +668,20 @@ export default async function MissionDetailPage({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Heartbeat Timeline (heartbeat missions only) ── */}
+      {isHeartbeat && heartbeatTasks.length > 0 && (
+        <div className="mb-6">
+          <HeartbeatTimeline
+            tasks={heartbeatTasks.map(t => ({
+              id: t.id,
+              createdAt: t.createdAt,
+              status: t.status,
+              result: t.result,
+            }))}
+          />
         </div>
       )}
 

@@ -47,14 +47,12 @@ export default function ScheduleWizard({
     }
     setLoading(true);
     try {
-      // Use any workspace ID for validation - the endpoint only validates the cron
       const wsId = hasWorkspace ? 'any' : selectedWorkspaceId || workspaces[0]?.id || 'any';
       const res = await fetch(
         `/api/workspaces/${wsId}/schedules/validate?cron=${encodeURIComponent(cron)}`
       );
       if (res.ok) {
-        const data = await res.json();
-        setPreview(data);
+        setPreview(await res.json());
       }
     } catch {
       setPreview(null);
@@ -87,6 +85,7 @@ export default function ScheduleWizard({
       await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(body),
       });
       startTransition(() => router.refresh());
@@ -99,12 +98,12 @@ export default function ScheduleWizard({
   const canEnable = cronExpression && preview?.valid && (hasWorkspace || selectedWorkspaceId);
 
   return (
-    <div className="p-4 bg-surface-2 border border-border-default rounded-lg">
+    <div className="card p-4">
       <div className="flex items-center gap-2 mb-3">
-        <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-4 h-4 text-accent-text" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <h3 className="text-sm font-semibold text-text-primary">How often should this run?</h3>
+        <h3 className="text-[13px] font-semibold text-text-primary">How often should this run?</h3>
       </div>
 
       {/* Preset buttons */}
@@ -113,10 +112,10 @@ export default function ScheduleWizard({
           <button
             key={preset.cron}
             onClick={() => selectPreset(preset.cron)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`px-3 py-1.5 text-[12px] font-medium rounded-lg transition-colors ${
               cronExpression === preset.cron
-                ? 'bg-primary text-white'
-                : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
+                ? 'bg-accent/20 text-accent-text'
+                : 'bg-surface-3 text-text-secondary hover:text-text-primary border border-card-border'
             }`}
           >
             {preset.label}
@@ -124,10 +123,10 @@ export default function ScheduleWizard({
         ))}
         <button
           onClick={() => { setCustomMode(true); setCronExpression(''); setPreview(null); }}
-          className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+          className={`px-3 py-1.5 text-[12px] font-medium rounded-lg transition-colors ${
             customMode && !PRESETS.some(p => p.cron === cronExpression)
-              ? 'bg-primary text-white'
-              : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
+              ? 'bg-accent/20 text-accent-text'
+              : 'bg-surface-3 text-text-secondary hover:text-text-primary border border-card-border'
           }`}
         >
           Custom...
@@ -142,7 +141,7 @@ export default function ScheduleWizard({
             value={cronExpression}
             onChange={e => setCronExpression(e.target.value)}
             placeholder="e.g. 0 */6 * * * (every 6 hours)"
-            className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+            className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono transition-colors"
             autoFocus
           />
         </div>
@@ -151,7 +150,7 @@ export default function ScheduleWizard({
       {/* Workspace picker */}
       {needsWorkspace && cronExpression && (
         <div className="mb-3">
-          <label className="block text-xs text-text-muted mb-1">Workspace (required for scheduling)</label>
+          <label className="block text-[11px] text-text-muted mb-1">Workspace (required for scheduling)</label>
           <Select
             value={selectedWorkspaceId}
             onChange={setSelectedWorkspaceId}
@@ -162,27 +161,27 @@ export default function ScheduleWizard({
 
       {/* No workspaces warning */}
       {!hasWorkspace && workspaces.length === 0 && cronExpression && (
-        <div className="mb-3 p-2 bg-status-warning/5 border border-status-warning/20 rounded text-xs text-status-warning">
+        <div className="mb-3 p-2 bg-status-warning/5 border border-status-warning/20 rounded-lg text-[12px] text-status-warning">
           No workspaces available. Create a workspace first to enable scheduling.
         </div>
       )}
 
       {/* Preview */}
       {cronExpression && preview && (
-        <div className="mb-3 p-3 bg-surface-1 rounded-md border border-border-default">
+        <div className="mb-3 p-3 bg-surface-3 rounded-lg border border-card-border">
           {preview.valid ? (
             <>
               <div className="flex items-center gap-2 mb-2">
                 <svg className="w-3.5 h-3.5 text-status-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
-                <span className="text-sm font-medium text-text-primary">{preview.description}</span>
+                <span className="text-[13px] font-medium text-text-primary">{preview.description}</span>
               </div>
               {preview.nextRuns && preview.nextRuns.length > 0 && (
                 <div className="space-y-1">
-                  <span className="text-xs text-text-muted">Next runs:</span>
+                  <span className="text-[11px] text-text-muted">Next runs:</span>
                   {preview.nextRuns.map((run: string, i: number) => (
-                    <div key={i} className="text-xs text-text-secondary pl-4">{run}</div>
+                    <div key={i} className="text-[11px] text-text-secondary pl-4">{run}</div>
                   ))}
                 </div>
               )}
@@ -192,14 +191,14 @@ export default function ScheduleWizard({
               <svg className="w-3.5 h-3.5 text-status-error" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
-              <span className="text-xs text-status-error">{preview.description}</span>
+              <span className="text-[12px] text-status-error">{preview.description}</span>
             </div>
           )}
         </div>
       )}
 
       {loading && (
-        <div className="mb-3 text-xs text-text-muted">Validating...</div>
+        <div className="mb-3 text-[11px] text-text-muted">Validating...</div>
       )}
 
       {/* Enable button */}
@@ -207,7 +206,7 @@ export default function ScheduleWizard({
         <button
           onClick={enableSchedule}
           disabled={!canEnable || saving}
-          className="px-4 py-2 text-sm font-medium bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="px-4 py-2 text-[13px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {saving ? 'Enabling...' : 'Enable Schedule'}
         </button>

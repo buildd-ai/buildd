@@ -29,6 +29,7 @@ export default function PrioritySelector({
       await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ priority: value }),
       });
       startTransition(() => router.refresh());
@@ -38,10 +39,10 @@ export default function PrioritySelector({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1">
       {PRIORITIES.map(p => {
         const isActive = priority === p.value;
-        const baseClasses = 'px-2.5 py-1 text-xs font-medium rounded-full transition-colors disabled:opacity-50 cursor-pointer';
+        const baseClasses = 'px-2 py-0.5 text-[11px] font-medium rounded-full transition-colors disabled:opacity-50 cursor-pointer';
         const colorClasses = isActive
           ? p.value === 10
             ? 'bg-status-error/15 text-status-error border border-status-error/30'
