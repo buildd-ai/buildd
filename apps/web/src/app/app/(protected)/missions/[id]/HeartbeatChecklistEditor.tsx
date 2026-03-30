@@ -22,6 +22,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
       await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ heartbeatChecklist: value.trim() || null }),
       });
       setEditing(false);
@@ -39,15 +40,13 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
   const disabled = saving || isPending;
 
   return (
-    <div className="mb-6">
+    <div>
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide">
-          Heartbeat Checklist
-        </h2>
+        <h2 className="section-label">Heartbeat Checklist</h2>
         {!editing && (
           <button
             onClick={() => setEditing(true)}
-            className="text-xs text-text-secondary hover:text-primary transition-colors"
+            className="text-[11px] text-text-secondary hover:text-accent-text transition-colors"
           >
             Edit
           </button>
@@ -61,7 +60,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
             onChange={e => setValue(e.target.value)}
             placeholder="Add a checklist for the heartbeat agent to follow...&#10;&#10;Example:&#10;- Check if CI is green&#10;- Verify no critical alerts&#10;- Review dependency updates"
             rows={8}
-            className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary resize-y font-mono"
+            className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 resize-y font-mono transition-colors"
             autoFocus
             disabled={disabled}
           />
@@ -69,27 +68,27 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
             <button
               onClick={handleSave}
               disabled={disabled}
-              className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              className="px-3 py-1.5 text-[12px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50 transition-colors"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
             <button
               onClick={handleCancel}
               disabled={disabled}
-              className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
+              className="px-3 py-1.5 text-[12px] text-text-secondary hover:text-text-primary transition-colors"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : checklist ? (
-        <div className="p-3 bg-surface-2 border border-border-default rounded-lg">
+        <div className="p-3 bg-card border border-card-border rounded-lg">
           <MarkdownContent content={checklist} />
         </div>
       ) : (
         <button
           onClick={() => setEditing(true)}
-          className="w-full p-3 border border-dashed border-border-default rounded-lg text-sm text-text-muted hover:border-primary/40 hover:text-primary transition-colors text-left"
+          className="w-full p-3 border border-dashed border-card-border rounded-lg text-[12px] text-text-muted hover:border-accent/40 hover:text-accent-text transition-colors text-left"
         >
           Add a checklist...
         </button>

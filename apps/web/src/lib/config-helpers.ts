@@ -1,5 +1,5 @@
 /**
- * Pure helper functions extracted from MissionConfig component.
+ * Pure helper functions for mission configuration UI.
  */
 
 export interface ModelOption {
@@ -21,9 +21,6 @@ export interface WorkspaceOption {
 
 /**
  * Normalize a raw skill input string into a valid slug.
- * Lowercases, replaces non-alphanumeric-dash chars with dashes,
- * and strips leading/trailing dashes.
- * Returns empty string if input is empty/whitespace.
  */
 export function normalizeSkillSlug(input: string): string {
   return input
@@ -35,7 +32,6 @@ export function normalizeSkillSlug(input: string): string {
 
 /**
  * Validate whether a skill slug can be added to the existing list.
- * Returns an error message or null if valid.
  */
 export function validateSkillSlug(
   input: string,
@@ -49,8 +45,6 @@ export function validateSkillSlug(
 
 /**
  * Validate a JSON string for use as an output schema.
- * Returns { valid: true, parsed, formatted } on success,
- * or { valid: false, error } on failure.
  */
 export function validateOutputSchema(jsonString: string):
   | { valid: true; parsed: unknown; formatted: string }
@@ -77,14 +71,4 @@ export function buildWorkspaceOptions(
     { value: '', label: 'No workspace' },
     ...workspaces.map((ws) => ({ value: ws.id, label: ws.name })),
   ];
-}
-
-/**
- * Check if the workspace selection has changed from the original.
- */
-export function hasWorkspaceChanged(
-  selectedId: string,
-  originalId: string | null
-): boolean {
-  return selectedId !== (originalId || '');
 }
