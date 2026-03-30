@@ -12,6 +12,7 @@ import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ExpandableText from './ExpandableText';
+import TaskPanelWrapper from './TaskPanelWrapper';
 
 export const dynamic = 'force-dynamic';
 
@@ -187,6 +188,7 @@ export default async function MissionDetailPage({
   const missionTaskIds = allTasks.map((t) => t.id);
 
   return (
+    <TaskPanelWrapper>
     <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Real-time updates via Pusher */}
       {mission.workspaceId && (
@@ -350,7 +352,8 @@ export default async function MissionDetailPage({
           <div className="relative">
             {displayCycles.map((cycle, ci) => {
               const isLast = ci === displayCycles.length - 1;
-              const evalResult = cycle.evaluation?.result as { summary?: string } | null;
+              const evalResult = cycle.evaluation?.result as { summary?: string; structuredOutput?: Record<string, unknown> } | null;
+              const triageOutcome = evalResult?.structuredOutput?.triageOutcome as string | undefined;
               const evalWorker = cycle.evaluation?.workers?.[0];
               const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
               const evalElapsed = evalWorker?.startedAt
@@ -384,6 +387,15 @@ export default async function MissionDetailPage({
                             {evalIsRunning && (
                               <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
                             )}
+                            {!evalIsRunning && triageOutcome && (() => {
+                              const badge = {
+                                single_task: { label: 'Routed', cls: 'bg-emerald-500/10 text-emerald-600' },
+                                multi_task: { label: 'Decomposed', cls: 'bg-blue-500/10 text-blue-600' },
+                                conflict: { label: 'Conflict', cls: 'bg-amber-500/10 text-amber-600' },
+                              }[triageOutcome];
+                              if (!badge) return null;
+                              return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>;
+                            })()}
                           </span>
                           <span className="text-[11px] text-text-muted tabular-nums">
                             {evalIsRunning
@@ -413,7 +425,9 @@ export default async function MissionDetailPage({
                         )}
 
                         {evalResult?.summary && (
-                          <ExpandableText text={evalResult.summary} />
+                          triageOutcome === 'conflict'
+                            ? <p className="text-[12px] text-text-secondary mt-1.5 leading-relaxed">{evalResult.summary}</p>
+                            : <ExpandableText text={evalResult.summary} />
                         )}
                       </div>
                     )}
@@ -440,12 +454,13 @@ export default async function MissionDetailPage({
 
                           return (
                             <div key={task.id} className="animate-timeline-enter" style={{ animationDelay: `${ti * 60}ms` }}>
-                              <Link
-                                href={`/app/tasks/${task.id}`}
-                                className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group ${
+                              <button
+                                type="button"
+                                data-task-id={task.id}
+                                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group text-left ${
                                   isRunning
                                     ? 'bg-status-info/5 border border-status-info/20'
-                                    : 'hover:bg-card-hover'
+                                    : 'hover:bg-card-hover cursor-pointer'
                                 }`}
                               >
                                 {/* Branch line + role dot */}
@@ -502,7 +517,7 @@ export default async function MissionDetailPage({
                                     {timeAgo(task.createdAt)}
                                   </span>
                                 )}
-                              </Link>
+                              </button>
 
                               {waitingWorker && waitingFor && (
                                 <div className="pl-7 pb-1">
@@ -609,5 +624,6 @@ export default async function MissionDetailPage({
       )}
 
     </div>
+    </TaskPanelWrapper>
   );
 }

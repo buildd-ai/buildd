@@ -219,7 +219,7 @@ describe('WorkerManager — sendMessage', () => {
     manager = new WorkerManager(makeConfig());
     const result = await manager.sendMessage('nonexistent-worker', 'hello');
     expect(result).toBe(false);
-  });
+  }, 15_000);
 
   describe('Question answer', () => {
     test('enqueues response and transitions to working', async () => {

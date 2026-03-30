@@ -7,8 +7,11 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
 
-/** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
+/** 24 hours — how long a standalone worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
+
+/** 4 hours — shorter timeout for mission tasks since missions are time-sensitive */
+const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
 
 /**
  * Decide what to do with a task whose worker just died:
@@ -311,14 +314,24 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
  * the original task stalled waiting for a response that never came.
  */
 export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: number; retriedTasks: number }> {
-  const cutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
+  // Fetch all waiting workers past the shorter (mission) threshold, then filter
+  const missionCutoff = new Date(Date.now() - WAITING_INPUT_MISSION_STALE_MS);
+  const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
-  const stuckWorkers = await db.query.workers.findMany({
+  const allWaitingWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.status, 'waiting_input'),
-      lt(workers.updatedAt, cutoff),
+      lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, waitingFor: true },
+    columns: { id: true, taskId: true, waitingFor: true, updatedAt: true },
+    with: { task: { columns: { missionId: true } } },
+  });
+
+  // Mission tasks use 4h timeout, standalone tasks use 24h timeout
+  const stuckWorkers = allWaitingWorkers.filter(w => {
+    const isMissionTask = !!(w as any).task?.missionId;
+    if (isMissionTask) return true; // Already past 4h cutoff
+    return w.updatedAt < standaloneCutoff;
   });
 
   if (stuckWorkers.length === 0) {
@@ -334,7 +347,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       .update(workers)
       .set({
         status: 'failed',
-        error: 'Worker timed out waiting for user input (24+ hours)',
+        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
         completedAt: new Date(),
         updatedAt: new Date(),
       })

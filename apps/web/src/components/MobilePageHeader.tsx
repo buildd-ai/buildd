@@ -4,15 +4,13 @@ import { usePathname } from 'next/navigation';
 
 const PAGE_TITLES: Record<string, string> = {
   '/app/dashboard': 'Dashboard',
+  '/app/tasks': 'Activity',
   '/app/artifacts': 'Artifacts',
   '/app/settings': 'Settings',
 };
 
 export default function MobilePageHeader() {
   const pathname = usePathname();
-
-  // Tasks pages have their own mobile header via MobileTasksLayout
-  if (pathname.startsWith('/app/tasks')) return null;
 
   // Derive title from pathname
   const title = PAGE_TITLES[pathname] || null;

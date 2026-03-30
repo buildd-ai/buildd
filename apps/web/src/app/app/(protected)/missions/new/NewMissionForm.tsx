@@ -117,6 +117,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
   const [customCron, setCustomCron] = useState(false);
   const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | null>(null);
   const [validatingCron, setValidatingCron] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const validateCron = useCallback(async (cron: string) => {
     if (!cron.trim()) {
@@ -193,7 +194,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
       if (created.teamId) {
         localStorage.setItem('buildd:lastTeamId', created.teamId);
       }
-      router.push('/app/missions');
+      router.push(`/app/missions/${created.id}`);
       router.refresh();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong';
@@ -244,7 +245,19 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
           />
         </div>
 
-        {/* Workspace picker — always show, optional */}
+        {/* Advanced options toggle */}
+        {!showAdvanced ? (
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(true)}
+            className="text-xs text-text-muted hover:text-text-secondary mb-4"
+          >
+            Advanced options (workspace, schedule) &rarr;
+          </button>
+        ) : (
+          <>
+
+        {/* Workspace picker */}
         {workspaces.length > 0 && (
           <WorkspaceDropdown
             workspaces={workspaces}
@@ -253,7 +266,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
           />
         )}
 
-        {/* Schedule section — always visible, optional */}
+        {/* Schedule section */}
         <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-lg" data-testid="schedule-section">
           <div className="flex items-center gap-2 mb-3">
             <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -348,6 +361,9 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             <div className="text-xs text-text-muted mt-2">Validating...</div>
           )}
         </div>
+
+          </>
+        )}
 
         {/* Error */}
         {error && (

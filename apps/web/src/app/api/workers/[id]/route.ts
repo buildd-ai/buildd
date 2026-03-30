@@ -343,6 +343,24 @@ export async function PATCH(
 
       // Post-completion side effects (non-fatal — must not block worker update)
       try {
+        // Log triage outcome for planning tasks (evaluation telemetry)
+        if (status === 'completed' && body.structuredOutput?.triageOutcome) {
+          const taskForTriage = await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { mode: true, missionId: true, context: true },
+          });
+          if (taskForTriage?.mode === 'planning' && taskForTriage.missionId) {
+            const ctx = (taskForTriage.context || {}) as Record<string, unknown>;
+            console.log('[triage]', JSON.stringify({
+              missionId: taskForTriage.missionId,
+              triageOutcome: body.structuredOutput.triageOutcome,
+              tasksCreated: body.structuredOutput.tasksCreated,
+              missionComplete: body.structuredOutput.missionComplete,
+              cycleNumber: ctx.cycleNumber,
+            }));
+          }
+        }
+
         // Resolve dependencies (check if parent's children all completed)
         await resolveCompletedTask(worker.taskId, worker.workspaceId);
 

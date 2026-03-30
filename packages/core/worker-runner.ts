@@ -122,11 +122,12 @@ export class WorkerRunner extends EventEmitter {
       const missionPlanningSchema = {
         type: 'object',
         properties: {
+          triageOutcome: { type: 'string', enum: ['single_task', 'multi_task', 'conflict'], description: 'Triage classification: single_task (one well-scoped task, mission done), multi_task (multiple tasks needed), conflict (active work already covers this)' },
           summary: { type: 'string', description: 'What was planned and why' },
           tasksCreated: { type: 'number', description: 'Number of execution tasks created' },
           missionComplete: { type: 'boolean', description: 'Whether the mission is fully complete' },
         },
-        required: ['summary', 'tasksCreated', 'missionComplete'],
+        required: ['triageOutcome', 'summary', 'tasksCreated', 'missionComplete'],
       };
       const defaultPlanSchema = {
         type: 'object',
@@ -375,9 +376,13 @@ export class WorkerRunner extends EventEmitter {
             await this.storeMessage('tool', null, block.name, block.input);
             if (block.name === 'AskUserQuestion') {
               await this.setStatus('waiting_input');
+              const input = block.input as Record<string, unknown>;
+              const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
+              const firstQuestion = questions?.[0];
               await this.setWaitingFor({
                 type: 'question',
-                prompt: block.input.question || block.input.message || 'Awaiting input',
+                prompt: firstQuestion?.question || (input.question as string) || (input.message as string) || 'Awaiting input',
+                options: firstQuestion?.options,
               });
             }
           }
@@ -972,16 +977,19 @@ You are the autonomous planner for: "${missionTitle || 'Untitled Mission'}"
 Mission ID: ${missionId}
 
 ### Your Process
-1. Review task history and prior artifacts in the description above
-2. **Check prior artifacts**: Look at "Prior Artifacts" section above. Use \`buildd\` action: get_artifact to fetch full content of relevant artifacts.
-3. Search team memories (\`buildd_memory\` action: search) for decisions from prior runs
-4. Assess: what's been accomplished, what's in progress, what remains
-5. Create 1-3 execution tasks using \`buildd\` action: create_task
+1. **Triage first.** Check "Active Tasks" section. Is this work already covered? If yes, set triageOutcome: "conflict", create 0 tasks, set missionComplete: true, explain the overlap.
+2. **Assess scope.** Is this a single well-scoped task or does it need decomposition?
+   - Single task → create 1 execution task with right role, set triageOutcome: "single_task", missionComplete: true
+   - Multiple tasks → create 1-3 tasks, set triageOutcome: "multi_task", missionComplete: false
+3. Review task history and prior artifacts in the description above
+4. **Check prior artifacts**: Look at "Prior Artifacts" section above. Use \`buildd\` action: get_artifact to fetch full content of relevant artifacts.
+5. Search team memories (\`buildd_memory\` action: search) for decisions from prior runs
+6. Create execution tasks using \`buildd\` action: create_task
    - Each task auto-links to this mission
    - Set appropriate outputRequirement (artifact_required for research, none for lightweight)
    - Set outputSchema on tasks when you need structured data back
    - Write self-contained descriptions (execution workers don't have your context)
-6. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+7. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
 
 ### Artifact Continuity
 - Use consistent keys: \`mission-${missionId}-research\`, \`mission-${missionId}-analysis\`

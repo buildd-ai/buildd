@@ -58,6 +58,7 @@ export interface RunHistoryItem {
   summary: string | undefined;
   tasksCreated: number | undefined;
   missionComplete: boolean;
+  triageOutcome: 'single_task' | 'multi_task' | 'conflict' | undefined;
 }
 
 export interface ActivityItem {
@@ -99,6 +100,7 @@ export function extractRunHistory(tasks: TaskData[]): RunHistoryItem[] {
         summary: result?.summary,
         tasksCreated: structured?.tasksCreated as number | undefined,
         missionComplete: !!structured?.missionComplete,
+        triageOutcome: structured?.triageOutcome as 'single_task' | 'multi_task' | 'conflict' | undefined,
       };
     });
 }

@@ -75,20 +75,7 @@ export async function dispatchNewTask(
     runnerPreference?: string;
   }
 ): Promise<void> {
-  // Build minimal task payload for Pusher events (10KB limit).
-  // Local-ui fetches the full task (with context/attachments) via the claim API.
-  const taskPayload = {
-    id: task.id,
-    title: task.title,
-    description: task.description,
-    workspaceId: task.workspaceId,
-    mode: task.mode,
-    priority: task.priority,
-    // Include missionId so dashboard can filter events per mission
-    ...(task.missionId && { missionId: task.missionId }),
-    // Include workspace info so runners can resolve workspace path before claiming
-    ...(workspace.name && { workspace: { name: workspace.name, repo: workspace.repo || null } }),
-  };
+  const taskPayload = buildTaskPayload(task, workspace);
 
   // Trigger realtime event
   await triggerEvent(
@@ -136,6 +123,25 @@ export async function dispatchNewTask(
       { task: taskPayload, targetLocalUiUrl: null }
     );
   }
+}
+
+/** Build minimal task payload for Pusher events (10KB limit) */
+export function buildTaskPayload(
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  workspace: { name?: string; repo?: string | null },
+) {
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    workspaceId: task.workspaceId,
+    mode: task.mode,
+    priority: task.priority,
+    // Include missionId so dashboard can filter events per mission
+    ...(task.missionId && { missionId: task.missionId }),
+    // Include workspace info so runners can resolve workspace path before claiming
+    ...(workspace.name && { workspace: { name: workspace.name, repo: workspace.repo || null } }),
+  };
 }
 
 /**

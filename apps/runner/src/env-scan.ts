@@ -91,8 +91,6 @@ function scanMcpServers(): string[] {
   return [...new Set(servers)];
 }
 
-// Re-export pure functions from mcp-json module
-export { extractVarReferences, parseMcpJsonContent } from './mcp-json';
 
 /** Parse a .mcp.json file and extract server names + required env vars */
 export function parseMcpJson(filePath: string): McpServerInfo[] {

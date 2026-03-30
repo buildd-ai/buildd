@@ -34,7 +34,7 @@ interface Worker {
   linesAdded: number | null;
   linesRemoved: number | null;
   lastCommitSha: string | null;
-  waitingFor: { type: string; prompt: string; options?: string[] } | null;
+  waitingFor: { type: string; prompt: string; options?: (string | { label: string; description?: string; recommended?: boolean })[] } | null;
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
   pendingInstructions: string | null;
   account?: { authType: string } | null;
@@ -112,14 +112,15 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     }
   }, [worker.id]);
 
-  // Send answer via server instruct endpoint with urgent priority
+  // Send answer via respond endpoint — creates a fresh task from the existing worktree.
+  // More stable than /instruct (which requires the session to be alive).
   async function handleAnswer(option: string) {
     setAnswerSending(option);
     try {
-      const res = await fetch(`/api/workers/${worker.id}/instruct`, {
+      const res = await fetch(`/api/workers/${worker.id}/respond`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: option, priority: 'urgent' }),
+        body: JSON.stringify({ message: option }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -310,19 +311,32 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
           </div>
           <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
           {answerSent ? (
-            <p className="mt-2 text-sm text-status-success">Answer sent</p>
+            <p className="mt-2 text-sm text-status-success">Answer sent — a new task has been created to continue</p>
           ) : worker.waitingFor.options && worker.waitingFor.options.length > 0 ? (
-            <div data-testid="worker-needs-input-options" className="flex flex-wrap gap-2 mt-3">
-              {worker.waitingFor.options.map((opt, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleAnswer(opt)}
-                  disabled={answerSending !== null}
-                  className="px-3 py-1.5 text-xs bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
-                >
-                  {answerSending === opt ? 'Sending...' : opt}
-                </button>
-              ))}
+            <div data-testid="worker-needs-input-options" className="flex flex-col gap-2 mt-3">
+              {worker.waitingFor.options.map((opt, i) => {
+                const label = typeof opt === 'string' ? opt : opt.label;
+                const description = typeof opt === 'string' ? undefined : opt.description;
+                const recommended = typeof opt === 'string' ? false : opt.recommended;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => handleAnswer(label)}
+                    disabled={answerSending !== null}
+                    className="text-left px-3 py-2 text-sm bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="font-medium">{answerSending === label ? 'Sending...' : label}</span>
+                      {recommended && (
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
+                      )}
+                    </span>
+                    {description && (
+                      <span className="block mt-0.5 text-xs text-text-muted">{description}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </div>

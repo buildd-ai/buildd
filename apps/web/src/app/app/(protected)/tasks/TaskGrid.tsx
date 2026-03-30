@@ -44,7 +44,7 @@ const STATUS_PRIORITY: Record<string, number> = {
 };
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
-type GroupBy = 'mission' | 'none' | 'status';
+type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
 
 function getStatusDot(status: string): { color: string; pulse: boolean } {
   switch (status) {
@@ -247,6 +247,34 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     return groups;
   }, [nonWaitingTasks, groupBy]);
 
+  const workspaceGroups = useMemo((): MissionGroup[] => {
+    if (groupBy !== 'workspace') return [];
+    const map = new Map<string, GridTask[]>();
+    for (const t of nonWaitingTasks) {
+      const key = t.workspaceName;
+      const existing = map.get(key) || [];
+      existing.push(t);
+      map.set(key, existing);
+    }
+    const groups: MissionGroup[] = [];
+    for (const [name, groupTasks] of map) {
+      groups.push({
+        id: name,
+        title: name,
+        tasks: sortTasks(groupTasks),
+      });
+    }
+    groups.sort((a, b) => {
+      const aHasActive = a.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
+      const bHasActive = b.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
+      if (aHasActive !== bHasActive) return aHasActive ? -1 : 1;
+      const aLatest = Math.max(...a.tasks.map(t => new Date(t.updatedAt).getTime()));
+      const bLatest = Math.max(...b.tasks.map(t => new Date(t.updatedAt).getTime()));
+      return bLatest - aLatest;
+    });
+    return groups;
+  }, [nonWaitingTasks, groupBy]);
+
   const flatSorted = useMemo(() => {
     if (groupBy !== 'none') return [];
     return sortTasks(nonWaitingTasks);
@@ -271,16 +299,16 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-text-primary mb-2">No tasks yet</h2>
-          <p className="text-text-secondary mb-4">Create your first task to get started.</p>
+          <h2 className="text-xl font-semibold text-text-primary mb-2">No activity yet</h2>
+          <p className="text-text-secondary mb-4">Tasks from your missions will appear here.</p>
           <Link
-            href="/app/tasks/new"
+            href="/app/missions/new"
             className="inline-flex items-center px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
           >
             <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            New Task
+            New Mission
           </Link>
         </div>
       </div>
@@ -319,15 +347,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
         {/* Header */}
         <div className="flex items-center justify-between px-4 mb-4">
           <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>
-            {missionFilter ? (missionTitle || 'Mission Tasks') : 'Tasks'}
+            {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
           </h1>
-          <Link
-            href="/app/tasks/new"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-primary text-white text-[14px] font-medium hover:bg-primary-hover transition-colors"
-          >
-            <span className="text-[14px] font-semibold">+</span>
-            New Task
-          </Link>
         </div>
 
         {/* Filter bar */}
@@ -371,6 +392,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
             onChange={(v) => setGroupBy(v as GroupBy)}
             options={[
               { value: 'mission', label: 'Group: Mission' },
+              { value: 'workspace', label: 'Group: Workspace' },
               { value: 'status', label: 'Group: Status' },
               { value: 'none', label: 'Group: None' },
             ]}
@@ -460,6 +482,32 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                     &#9662;
                   </span>
                   <span className="text-[13px] font-semibold text-text-primary">{group.label}</span>
+                  <span className="text-[12px] text-text-desc ml-auto">
+                    {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
+                  </span>
+                </button>
+                {!isCollapsed && group.tasks.map((task) => (
+                  <TaskRow key={task.id} task={task} />
+                ))}
+              </div>
+            );
+          })}
+
+          {/* Grouped by Workspace */}
+          {groupBy === 'workspace' && workspaceGroups.map((group) => {
+            const groupId = `ws_${group.id}`;
+            const isCollapsed = collapsedGroups.has(groupId);
+
+            return (
+              <div key={groupId}>
+                <button
+                  onClick={() => toggleGroup(groupId)}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
+                >
+                  <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
+                    &#9662;
+                  </span>
+                  <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
                   <span className="text-[12px] text-text-desc ml-auto">
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
