@@ -1,229 +1,179 @@
-# SDK Ecosystem Research — March 30, 2026
+# Claude Agent SDK Ecosystem Research
 
-## Executive Summary
-
-The Claude Agent SDK ecosystem continues rapid growth. SDK v0.2.87 is current (parity with CLI v2.1.87). Major platform shifts this week: **computer use in Claude Code/Cowork** (March 23), **Cowork Dispatch message delivery fix** (v2.1.87), and significant SDK API surface expansion with `getContextUsage()`, `taskBudget`, `reloadPlugins()`, and `enableChannel()`. Community ecosystem now indexes **9,600+ repositories** and **1,326+ agentic skills**. claude-mem hit 43.4K stars in days, signaling massive demand for session memory tooling.
+**Last updated**: 2026-04-06
+**Previous scan**: 2026-03-30
+**Current SDK version in Buildd**: `^0.2.91` (latest: `0.2.92`)
+**Claude Code CLI**: v2.1.88 through v2.1.92 released since last scan
 
 ---
 
-## 1. SDK Releases (v0.2.80–v0.2.87)
+## SDK Releases (v0.2.88 - v0.2.92)
 
-### v0.2.87 (Mar 29)
-- Parity with Claude Code v2.1.87
+### v0.2.92 (April 4, 2026)
+- Parity with Claude Code v2.1.92
+- No SDK-specific changes noted
+
+### v0.2.91 (April 2, 2026)
+- **`terminal_reason` field** on result messages — exposes why the query loop terminated (`completed`, `aborted_tools`, `max_turns`, `blocking_limit`, etc.)
+- **`'auto'` permission mode** added to public `PermissionMode` type
+- **Breaking**: `sandbox.failIfUnavailable` now defaults to `true` when `enabled: true` — query will error if sandbox deps missing instead of silently running unsandboxed
+
+### v0.2.90 (April 1, 2026)
+- Parity with Claude Code v2.1.90
+
+### v0.2.89 (April 1, 2026)
+- **`startup()` pre-warm** — pre-warms CLI subprocess before `query()`, making first query ~20x faster when startup cost can be paid upfront
+- **`includeSystemMessages`** option for `getSessionMessages()`
+- **`listSubagents()` / `getSubagentMessages()`** — retrieve subagent conversation history from sessions
+- **`includeHookEvents`** — enable hook lifecycle messages (`hook_started`, `hook_progress`, `hook_response`)
+- Fixed `ERR_STREAM_WRITE_AFTER_END` errors in single-turn queries with SDK MCP servers
+- Fixed Zod v4 `.describe()` metadata dropped from `createSdkMcpServer` tool schemas
+- Fixed MCP servers getting permanently stuck after connection race — now retry on next message
+- Fixed error result messages to correctly set `is_error: true`
+
+### v0.2.88
+- Skipped in changelog (likely minor/internal)
+
+---
+
+## Claude Code CLI Releases (v2.1.88 - v2.1.92)
+
+### v2.1.92 Highlights (April 4)
+- `forceRemoteSettingsRefresh` policy — fail-closed startup until managed settings fetched
+- Interactive **Bedrock setup wizard** from login screen
+- Per-model and cache-hit breakdown in `/cost`
+- `/release-notes` interactive version picker
+- Remote Control session names use hostname as default prefix
+- **Write tool 60% faster** on large files with tabs/`&`/`$`
+- Removed `/tag` and `/vim` commands
+
+### v2.1.91 Highlights (April 2)
+- **MCP tool result persistence** up to 500K chars via `_meta["anthropic/maxResultSizeChars"]`
+- `disableSkillShellExecution` setting
+- Plugins can ship **executables under `bin/`**
+- Edit tool uses shorter `old_string` anchors (fewer output tokens)
+- Faster `stripAnsi` on Bun
+
+### v2.1.90 Highlights (April 1)
+- **`/powerup`** — 18 interactive lessons with animated demos
+- `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE` for offline environments
+- `.husky` added to protected directories
+- Fixed `--resume` prompt-cache miss regression (since v2.1.69)
+- Fixed auto mode not respecting explicit user boundaries
+- **SSE transport linear-time** fix (was quadratic)
+- **SDK transcript writes** no longer slow down quadratically
+- Removed `Get-DnsClientCache` from auto-allow (DNS cache privacy)
+
+### v2.1.89 Highlights (April 1)
+- **`"defer"` permission decision** for PreToolUse hooks — headless sessions can pause and resume
+- `CLAUDE_CODE_NO_FLICKER=1` for flicker-free alt-screen rendering
+- `PermissionDenied` hook with `{retry: true}` support
+- Named subagents in `@` mention typeahead
+- `MCP_CONNECTION_NONBLOCKING=true` for `-p` mode (5s bounded connections)
+- Auto mode: denied commands now show in `/permissions` with retry
+- Fixed autocompact thrash loop detection
+- Fixed nested CLAUDE.md re-injected dozens of times in long sessions
+
+### v2.1.88 (April 1)
 - Fixed Cowork Dispatch message delivery
 
-### v0.2.86 (Mar 27)
-- **`getContextUsage()`** — track context window usage by category (tokens by tool, user, assistant)
-- `session_id` optional in `SDKUserMessage`
-- TypeScript type fixes
+---
 
-### v0.2.85 (Mar 26)
-- **`reloadPlugins()`** — hot-reload plugins and MCP servers without restarting session
-- Fixed PreToolUse hooks with `permissionDecision: "ask"`
+## Community & Ecosystem
 
-### v0.2.84 (Mar 26)
-- **`taskBudget`** — API-side token budget awareness per task
-- **`enableChannel()`** — programmatic MCP channel activation
-- Exported `EffortLevel` type
+### GitHub Stars & Adoption
+- Claude Code: **82K+ GitHub stars** (up from ~81.6K last scan)
+- **10,913 repos** indexed in plugin adoption metrics (up from 9,600+)
+- **2,300+ skills**, **770+ MCP servers**, **95+ curated plugin repos**
+- Plugin marketplace: "Anthropic Verified" badge for quality/safety review
 
-### v0.2.83 (Mar 25)
-- **`seed_read_state`** control subtype — inject file state into new sessions
-- `session_state_changed` events now opt-in (reduce noise)
+### GitHub Agent HQ (New)
+- GitHub launched **Agent HQ** — multi-agent orchestration platform in GitHub
+- Supports **Claude, Codex, and Copilot** side-by-side in PRs
+- Available to Copilot Pro+ and Enterprise subscribers
+- `@Claude` mention in PR comments for complex debugging and architectural review
+- Agent activity logged and reviewable in PR history
 
-### v0.2.81 (Mar 20)
-- Fixed `canUseTool` with `.claude/skills/` bypass-immune safety checks
+### Trending Community Projects
+- **everything-claude-code** (140K stars) — agent harness performance optimization with skills, instincts, memory, security for Claude Code, Codex, Opencode, Cursor
+- **claude-mem** (43.4K+ stars) — auto-capture session memory across sessions
+- **agent-orchestrator** (ComposioHQ) — parallel coding agent spawning with CI fixes, merge conflicts, code reviews
+- **ruflo** — multi-agent swarm platform with enterprise architecture, RAG integration, native Claude Code/Codex support
+- **awesome-claude-plugins** — automated adoption metrics via n8n workflows
+- **awesome-claude-code** — curated skills, hooks, slash commands, orchestrators directory
 
-### v0.2.80 (Mar 19)
-- Fixed `getSessionMessages()` dropping parallel tool results
-
-### v0.2.79 (Mar 18)
-- Added `'resume'` to `ExitReason` type
-
-### v0.2.77 (Mar 17)
-- `api_retry` system messages for transient API errors
+### Notable Plugin Ecosystem Trends
+- Top MCP servers: Figma, Playwright, Vercel, PostgreSQL, GitHub
+- Plugin `bin/` executables — new in v2.1.91, expanding toolchain capabilities
+- MCP result persistence (500K chars) enables richer tool responses (DB schemas, large indexes)
+- `disableSkillShellExecution` for enterprise security hardening
 
 ---
 
-## 2. Claude Code CLI Changes (v2.1.80–v2.1.87)
+## Key Patterns & Developments
 
-### Major Features
-| Feature | Version | Impact |
-|---------|---------|--------|
-| **Computer Use** | v2.1.85+ | Claude can interact with screen — open files, click, navigate. No setup required. Pro/Max only |
-| **`--bare` flag** | v2.1.81 | 14% faster scripted calls — skips hooks/LSP/plugins. Ideal for CI/automation |
-| **`--channels`** | v2.1.81 | MCP servers push messages into sessions; permission relay to phone |
-| **PowerShell tool** | v2.1.84 | Windows opt-in preview |
-| **Conditional hooks** | v2.1.85 | `if` field using permission rule syntax (e.g., `Bash(git *)`) |
-| **Transcript search** | v2.1.83 | Press `/` in transcript mode, `n`/`N` to navigate |
-| **`CwdChanged`/`FileChanged` hooks** | v2.1.83 | Reactive environment management |
-| **`TaskCreated` hook** | v2.1.84 | Trigger on task creation |
-| **`X-Claude-Code-Session-Id` header** | v2.1.86 | Proxies can aggregate requests by session |
-| **MCP OAuth RFC 9728** | v2.1.85 | Protected Resource Metadata discovery |
-| **Plugin allowlists** | v2.1.84 | `allowedChannelPlugins` managed setting |
-| **`initialPrompt` in agent frontmatter** | v2.1.83 | Auto-submit prompts for agents |
-| **Managed settings drop-in** | v2.1.83 | `managed-settings.d/` policy fragments |
-| **Env scrubbing** | v2.1.83 | `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from subprocesses |
+### 1. Subagent Observability
+The SDK now provides deep subagent introspection:
+- `listSubagents()` / `getSubagentMessages()` for conversation history
+- `agentProgressSummaries` for periodic AI-generated progress on running subagents
+- `supportedAgents()` to query available subagents
+- `terminal_reason` to understand why agents stopped
 
-### Performance & Stability
-- ~30ms startup improvement via parallel `setup()` (v2.1.84)
-- ~80MB memory reduction on large repos (v2.1.80)
-- Improved prompt cache hit rate for Bedrock/Vertex/Foundry (v2.1.86)
-- Compact line-number format in Read tool reduces token usage (v2.1.86)
-- `@` file autocomplete responsive in large git repos (v2.1.80)
-- Fixed `--resume` dropping parallel tool results (v2.1.80)
-- Fixed background subagents becoming invisible after compaction (v2.1.83)
+### 2. Session Lifecycle Control
+- `startup()` pre-warm for **~20x faster** first query
+- `"defer"` hook permission for pause/resume workflows
+- `MCP_CONNECTION_NONBLOCKING=true` for faster headless startup
+- Autocompact thrash loop detection prevents runaway sessions
 
-### Breaking Changes
-- `Ctrl+F` → `Ctrl+X Ctrl+K` for "stop all background agents" (v2.1.83)
-- `tool_parameters` in OpenTelemetry hidden by default — requires `OTEL_LOG_TOOL_DETAILS=1` (v2.1.85)
+### 3. Enterprise Hardening
+- `forceRemoteSettingsRefresh` — fail-closed managed settings
+- `sandbox.failIfUnavailable` defaults to `true` (breaking change)
+- `disableSkillShellExecution` for controlled environments
+- DNS cache privacy (removed auto-allow for cache inspection)
+- Plugin `bin/` executables with proper sandboxing
+
+### 4. Multi-Agent Orchestration Maturation
+- GitHub Agent HQ: official multi-model agent coordination
+- ComposioHQ agent-orchestrator: task planning → parallel agent spawning → CI fix
+- Named subagents with `@` mention typeahead for better discoverability
+- Auto mode boundary enforcement improvements
 
 ---
 
-## 3. Community Projects & Ecosystem
-
-### Explosive Growth
-- **9,600+ repositories** indexed in Claude Code plugin ecosystem (Mar 29)
-- **1,326+ agentic skills** in installable library
-- **150+ skills** on claudemarketplace.com
-- **46+ official plugins** on Anthropic marketplace
-- Claude Code itself: **82K+ GitHub stars**, 6.8K forks
-
-### Trending Projects (New/Notable)
-
-| Project | Stars | Description |
-|---------|-------|-------------|
-| **claude-mem** | 43.4K | Auto-captures session activity, compresses with AI, injects relevant context into future sessions. Fastest-growing Claude plugin in GitHub history |
-| **agentic-flow** | 587 | Switch between affordable AI models in Claude Code/Agent SDK with cloud deploy |
-| **claude-agent-server** | 554 | Sandboxed Claude agent environments with WebSocket control |
-| **meridian** | 479 | Proxy bridging Anthropic SDK to enable Claude Max in third-party tools |
-| **metabot** | 472 | Infrastructure for supervised, self-improving agent orgs with memory sharing and task scheduling |
-| **oh-my-claudecode** | — | Multi-agent orchestration: Swarm Mode, Pipeline Mode, Ecomode (30-50% token savings) |
-| **agent-orchestrator** (ComposioHQ) | — | Agent-agnostic orchestrator for Claude Code, Codex, Aider. Runtime-agnostic (tmux, Docker) |
-| **ruflo** | — | Multi-agent swarm platform with RAG integration and native Claude Code support |
-| **dorabot** | 213 | macOS 24/7 AI agents with memory, scheduled tasks, messaging integration |
-| **ArcReel** | 90 | AI Agent-driven video generation workspace |
-
-### Curated Collections
-- **awesome-claude-code** (hesreallyhim) — skills, hooks, slash-commands, orchestrators, plugins
-- **awesome-claude-code-toolkit** (rohitg00) — 135 agents, 35 skills, 42 commands, 150+ plugins, 19 hooks
-- **awesome-agent-skills** (VoltAgent) — 1,000+ skills compatible with Claude Code, Codex, Cursor, Gemini CLI
-- **awesome-claude-plugins** (quemsah) — Adoption metrics via n8n workflows
-
----
-
-## 4. Emerging Patterns & Architecture
-
-### Computer Use + Dispatch Pattern
-- Claude Code can now interact with screen (point, click, navigate) — no setup
-- Combined with Dispatch: agents perform complex GUI tasks while user is away
-- Opens new automation surface: browser workflows, desktop app testing, visual verification
-
-### `--bare` for High-Throughput Orchestration
-- 14% faster cold start by skipping hooks/LSP/plugins
-- Ideal for Buildd's worker model — each task run is ephemeral
-- Requires `ANTHROPIC_API_KEY` (no OAuth), disables auto-memory
-
-### Context Budget Management
-- `getContextUsage()` enables monitoring context consumption in real-time
-- `taskBudget` sets API-side token limits per task
-- Pattern: check context → compact early → avoid expensive overflows
-
-### Session State Injection
-- `seed_read_state` lets you inject file contents at session start without tool calls
-- Reduces turn count and token overhead for known-context tasks
-- Pattern: pre-load workspace context → fewer early Read calls
-
-### Plugin Hot-Reload
-- `reloadPlugins()` refreshes MCP servers mid-session
-- Enables dynamic skill loading: start lean → load specialized tools as needed
-- Pattern: progressive skill activation based on task type
-
-### Conditional Hooks
-- `if` field on hooks enables selective execution (e.g., `Bash(git *)`)
-- Reduces hook overhead: only fire for relevant tool calls
-- Pattern: security hooks on destructive commands, logging hooks on file writes
-
-### Multi-Agent Orchestration Maturation
-- Agent Teams now experimental (3-5 teammates recommended)
-- Key patterns: research/review, parallel module development, competing debugging hypotheses
-- oh-my-claudecode adds Ecomode (30-50% token savings) and Pipeline/Swarm modes
-- ComposioHQ agent-orchestrator is runtime-agnostic (tmux, Docker)
-
-### Session Memory (claude-mem phenomenon)
-- 43.4K stars signals massive unmet demand for cross-session memory
-- Auto-capture → compress → inject pattern becoming standard
-- Buildd already has workspace memory — validates our approach
-
----
-
-## 5. Recommendations for Buildd
+## Recommendations for Buildd
 
 ### High Priority
 
-1. **Bump SDK to ≥0.2.87** ✅ Already done
-   - Ensure runner uses `getContextUsage()` to monitor worker context health
-   - Surface context usage in worker activity timeline
+1. **Bump SDK to `^0.2.92`** — picks up `terminal_reason` field (useful for worker failure diagnosis) and sandbox hardening
 
-2. **Adopt `taskBudget` (v0.2.84)**
-   - Set token budgets per task based on priority/complexity
-   - Integrate with existing cost-limit logic for API key auth
-   - Prevents runaway token consumption on complex tasks
+2. **Adopt `startup()` pre-warm** — workers can pre-warm the CLI subprocess, making the first query ~20x faster. This is a significant latency improvement for task execution.
 
-3. **Use `--bare` for worker execution**
-   - 14% faster cold start per task claim
-   - Workers don't need hooks/LSP/plugin sync
-   - Already using `ANTHROPIC_API_KEY` — compatible
+3. **Use `terminal_reason` for worker status** — surface why a worker's session ended (`max_turns`, `max_budget_usd`, `aborted_tools`, etc.) in the dashboard. Better diagnostics than generic "completed" or "failed".
 
-4. **Implement `seed_read_state` for workspace context**
-   - Inject CLAUDE.md, schema, and key files at session start
-   - Reduces early Read tool calls and token waste
-   - Especially valuable for retry tasks with known context
+4. **Adopt MCP result persistence (500K chars)** — our MCP server can return larger results (full task context, workspace schemas) without truncation using `_meta["anthropic/maxResultSizeChars"]`.
 
 ### Medium Priority
 
-5. **Surface `getContextUsage()` in dashboard**
-   - Show workers' context consumption in real-time
-   - Alert when workers approach context limits
-   - Enable smarter auto-compaction decisions
+5. **Implement `"defer"` hook pattern** — for tasks needing human approval mid-execution, workers could pause at a tool call and resume when approved. Maps well to "waiting_input" state.
 
-6. **Leverage conditional hooks**
-   - Add `if` filters to runner hooks for selective execution
-   - Example: only fire security checks on `Bash(rm *)`, `Bash(git push *)`
-   - Reduces overhead per tool call
+6. **Surface subagent observability** — use `listSubagents()` and `agentProgressSummaries` to show sub-task progress in the dashboard when workers spawn subagents.
 
-7. **Explore `reloadPlugins()` for dynamic skill loading**
-   - Start workers with minimal skill set
-   - Hot-load specialized skills when task type is determined
-   - Reduces initial context overhead
+7. **Leverage `MCP_CONNECTION_NONBLOCKING=true`** — for worker startup in `-p` mode, bound MCP connection wait to 5s. Prevents hangs when MCP servers are slow.
 
-8. **Monitor `--channels` for async worker communication**
-   - MCP servers pushing messages into sessions
-   - Could enable real-time instruction delivery without polling
-   - Currently research preview — watch for stability
+8. **Add `/powerup`-style onboarding** — the interactive lesson system is a validated UX pattern. Consider something similar for new Buildd users.
 
-### Low Priority / Watch
+### Lower Priority
 
-9. **Computer Use integration** — when GA, could enable visual testing/verification tasks
-10. **Agent Teams** — watch for stability; could enhance mission execution with parallel teammates
-11. **Ecomode patterns** (from oh-my-claudecode) — token savings techniques for long-running workers
-12. **claude-mem pattern** — cross-session memory injection; Buildd's workspace memory already covers this, but the auto-capture approach could inform improvements
+9. **GitHub Agent HQ integration** — as Agent HQ matures, Buildd could position as the orchestration layer that coordinates tasks across Claude, Codex, and Copilot agents via `@` mentions.
+
+10. **Plugin bin/ executables** — explore shipping custom CLI tools as part of role configs, now that plugins support executables under `bin/`.
 
 ---
 
-## 6. Ecosystem Health Metrics
+## Version History
 
-| Metric | Value | Trend |
-|--------|-------|-------|
-| SDK version | v0.2.87 | +11 versions since last scan (v0.2.76) |
-| CLI version | v2.1.87 | +11 versions since last scan |
-| GitHub repos indexed | 9,600+ | Up from ~5,000 last scan |
-| Agentic skills | 1,326+ | Growing rapidly |
-| Claude Code stars | 82K+ | +4K since last scan |
-| Plugin marketplaces | 46+ official | Stable |
-| Community marketplaces | 150+ on claudemarketplace.com | New metric |
-
----
-
-*Research conducted: March 30, 2026*
-*Buildd SDK version: v0.2.87 (current)*
-*Next scan: ~April 6, 2026*
+| Date | SDK Versions | CLI Versions | Key Changes |
+|------|-------------|-------------|-------------|
+| 2026-04-06 | 0.2.88-0.2.92 | 2.1.88-2.1.92 | startup() pre-warm, terminal_reason, MCP 500K persistence, /powerup, Agent HQ |
+| 2026-03-30 | 0.2.80-0.2.87 | 2.1.80-2.1.87 | getContextUsage(), taskBudget, --bare, seed_read_state, conditional hooks |
+| 2026-03-24 | Pre-0.2.80 | Pre-2.1.80 | Agent Teams, Plugin system, V2 TS interface, Worktree support |
