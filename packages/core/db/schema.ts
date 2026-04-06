@@ -247,6 +247,7 @@ export interface ModelUsage {
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
+  terminalReason?: string | null;
   durationMs: number;
   durationApiMs: number;
   numTurns: number;

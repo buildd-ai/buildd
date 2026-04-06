@@ -728,7 +728,10 @@ export default async function TaskDetailPage({
                         {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
                           <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
                         )}
-                        {(worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
+                        {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
+                          <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
+                        )}
+                        {!(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
                           <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
                         )}
                       </div>

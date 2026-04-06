@@ -40,6 +40,7 @@ interface Worker {
   account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
+    terminalReason?: string | null;
     durationMs: number;
     durationApiMs: number;
     numTurns: number;
@@ -466,7 +467,10 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
                   <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[10px] text-text-muted">
                     {(worker.resultMeta?.durationMs || 0) > 0 && <span>Total: {((worker.resultMeta?.durationMs || 0) / 1000).toFixed(0)}s</span>}
                     {(worker.resultMeta?.durationApiMs || 0) > 0 && <span>API: {((worker.resultMeta?.durationApiMs || 0) / 1000).toFixed(0)}s</span>}
-                    {worker.resultMeta?.stopReason && worker.resultMeta.stopReason !== 'end_turn' && (
+                    {worker.resultMeta?.terminalReason && worker.resultMeta.terminalReason !== 'completed' && (
+                      <span className="text-status-warning">Stop: {worker.resultMeta.terminalReason.replace(/_/g, ' ')}</span>
+                    )}
+                    {!worker.resultMeta?.terminalReason && worker.resultMeta?.stopReason && worker.resultMeta.stopReason !== 'end_turn' && (
                       <span className="text-status-warning">Stop: {worker.resultMeta.stopReason}</span>
                     )}
                   </div>
