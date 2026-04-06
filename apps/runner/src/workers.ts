@@ -2047,6 +2047,7 @@ If something is missing or incomplete, describe what and fix it now.`;
       // Capture SDK result metadata for server sync
       worker.resultMeta = {
         stopReason: result.stop_reason ?? null,
+        terminalReason: result.terminal_reason ?? null,
         durationMs: result.duration_ms ?? 0,
         durationApiMs: result.duration_api_ms ?? 0,
         numTurns: result.num_turns ?? 0,
