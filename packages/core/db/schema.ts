@@ -316,6 +316,7 @@ export const missions = pgTable('missions', {
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
+  contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
