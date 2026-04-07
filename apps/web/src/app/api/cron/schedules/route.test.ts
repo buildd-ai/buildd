@@ -244,4 +244,46 @@ describe('GET /api/cron/schedules', () => {
       heartbeat: true,
     }));
   });
+
+  it('should promote outputSchema from mission context to top-level task column', async () => {
+    const heartbeatSchema = {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['ok', 'action_taken', 'error'] },
+        summary: { type: 'string' },
+      },
+      required: ['status'],
+    };
+
+    const { buildMissionContext } = await import('@/lib/mission-context');
+    const mockBuildCtx = buildMissionContext as ReturnType<typeof mock>;
+    mockBuildCtx.mockResolvedValue({
+      description: 'Heartbeat check context',
+      context: {
+        missionId: 'mission-1',
+        heartbeat: true,
+        outputSchema: heartbeatSchema,
+      },
+    });
+
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      taskTemplate: {
+        title: 'Heartbeat: Finance check',
+        mode: 'execution',
+        priority: 0,
+        context: { heartbeat: true },
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace' });
+
+    await GET(makeRequest());
+
+    // outputSchema must be set as a top-level column on the task insert,
+    // not just buried inside context — the runner reads task.outputSchema
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.outputSchema).toEqual(heartbeatSchema);
+  });
 });

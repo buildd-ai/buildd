@@ -365,6 +365,9 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Promote outputSchema from context to top-level column so the runner can read it
+        const outputSchema = taskContext.outputSchema as Record<string, unknown> | undefined;
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -381,6 +384,7 @@ export async function GET(req: NextRequest) {
             creationSource: linkedMission ? 'orchestrator' : 'schedule',
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
+            ...(outputSchema ? { outputSchema } : {}),
           })
           .returning();
 
