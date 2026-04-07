@@ -28,7 +28,6 @@ async function main() {
     } catch (err: any) {
       const msg: string = err?.message || String(err);
       const isTransient =
-        msg.includes('password authentication failed') ||
         msg.includes('endpoint is disabled') ||
         msg.includes('connect ECONNREFUSED') ||
         msg.includes('ENOTFOUND');
