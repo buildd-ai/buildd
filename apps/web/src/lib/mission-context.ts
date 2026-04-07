@@ -128,6 +128,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       workspaceId: true,
       scheduleId: true,
       lastEvaluationTaskId: true,
+      contextArtifactIds: true,
     },
   });
   if (!mission) return null;
@@ -238,6 +239,22 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
+  // Referenced artifacts from contextArtifactIds (cross-mission context)
+  let referencedArtifacts: typeof priorArtifacts = [];
+  if (mission.contextArtifactIds?.length) {
+    referencedArtifacts = await db.query.artifacts.findMany({
+      where: inArray(artifacts.id, mission.contextArtifactIds),
+      limit: 10,
+      columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
+    });
+  }
+
+  const allArtifacts = [...priorArtifacts];
+  const seen = new Set(allArtifacts.map(a => a.id));
+  for (const a of referencedArtifacts) {
+    if (!seen.has(a.id)) allArtifacts.push(a);
+  }
+
   // Recipe playbook (if configured)
   const recipeId = templateContext?.recipeId as string | undefined;
   let recipeSteps: unknown[] | null = null;
@@ -340,9 +357,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
   }
 
-  if (priorArtifacts.length > 0) {
+  if (allArtifacts.length > 0) {
     descParts.push('\n## Prior Artifacts');
-    for (const a of priorArtifacts) {
+    for (const a of allArtifacts) {
       const preview = a.content?.slice(0, 150) || '';
       const keyLabel = a.key ? ` (key: ${a.key})` : '';
       descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 150 ? '...' : ''}\n  ID: ${a.id}`);
@@ -479,7 +496,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       status: t.status,
     })),
     ...(recipeSteps ? { recipeSteps } : {}),
-    priorArtifacts: priorArtifacts.map(a => ({
+    priorArtifacts: allArtifacts.map(a => ({
       artifactId: a.id, key: a.key, type: a.type, title: a.title, updatedAt: a.updatedAt,
     })),
   };

@@ -7,6 +7,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'task-new' } } as any));
 const mockMissionsFindFirst = mock(() => null as any);
+const mockTeamMembersFindFirst = mock(() => null as any);
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -35,6 +36,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
   },
 }));
@@ -47,6 +49,7 @@ mock.module('drizzle-orm', () => ({
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', teamId: 'teamId' },
+  teamMembers: { teamId: 'teamId', role: 'role', userId: 'userId' },
   tasks: { id: 'id' },
   workspaces: { id: 'id' },
 }));
@@ -72,6 +75,7 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetUserTeamIds.mockReset();
     mockRunMission.mockReset();
     mockMissionsFindFirst.mockReset();
+    mockTeamMembersFindFirst.mockReset();
 
     // Default auth
     mockAuthenticateApiKey.mockResolvedValue(null);
