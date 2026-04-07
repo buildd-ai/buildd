@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, workspaces, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -8,7 +8,17 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 
 async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
-  if (apiAccount) return [apiAccount.teamId];
+  if (apiAccount) {
+    // Resolve all teams the account owner belongs to (not just the API key's team)
+    const ownerMembership = await db.query.teamMembers.findFirst({
+      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+      columns: { userId: true },
+    });
+    if (ownerMembership?.userId) {
+      return getUserTeamIds(ownerMembership.userId);
+    }
+    return [apiAccount.teamId];
+  }
   if (user) return getUserTeamIds(user.id);
   return [];
 }

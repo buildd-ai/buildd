@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, artifacts } from '@buildd/core/db/schema';
+import { missions, artifacts, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -41,7 +41,16 @@ export async function POST(
   // Verify mission exists and belongs to user's team
   let teamIds: string[] = [];
   if (apiAccount) {
-    teamIds = [apiAccount.teamId];
+    // Resolve all teams the account owner belongs to (not just the API key's team)
+    const ownerMembership = await db.query.teamMembers.findFirst({
+      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+      columns: { userId: true },
+    });
+    if (ownerMembership?.userId) {
+      teamIds = await getUserTeamIds(ownerMembership.userId);
+    } else {
+      teamIds = [apiAccount.teamId];
+    }
   } else {
     teamIds = await getUserTeamIds(user!.id);
   }
@@ -152,7 +161,15 @@ export async function GET(
 
   let teamIds: string[] = [];
   if (apiAccount) {
-    teamIds = [apiAccount.teamId];
+    const ownerMembership = await db.query.teamMembers.findFirst({
+      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+      columns: { userId: true },
+    });
+    if (ownerMembership?.userId) {
+      teamIds = await getUserTeamIds(ownerMembership.userId);
+    } else {
+      teamIds = [apiAccount.teamId];
+    }
   } else {
     teamIds = await getUserTeamIds(user!.id);
   }
