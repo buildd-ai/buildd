@@ -5,6 +5,7 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockMissionsFindFirst = mock(() => null as any);
+const mockTeamMembersFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsFindMany = mock(() => [] as any[]);
 
@@ -49,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
       artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
     insert: () => mockArtifactsInsert(),
@@ -63,6 +65,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', teamId: 'teamId' },
+  teamMembers: { teamId: 'teamId', role: 'role', userId: 'userId' },
   artifacts: {
     id: 'id',
     workspaceId: 'workspaceId',
@@ -107,6 +110,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
     mockMissionsFindFirst.mockReset();
+    mockTeamMembersFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
     insertedArtifactValues = null;
@@ -239,6 +243,7 @@ describe('GET /api/missions/[id]/artifacts', () => {
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
     mockMissionsFindFirst.mockReset();
+    mockTeamMembersFindFirst.mockReset();
     mockArtifactsFindMany.mockReset();
 
     mockAuthenticateApiKey.mockResolvedValue(null);
