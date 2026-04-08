@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@buildd/core/db';
+import { workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -19,8 +22,16 @@ export async function GET(req: NextRequest) {
   try {
     let wsIds: string[];
     if (apiAccount) {
-      const perms = await getAccountWorkspacePermissions(apiAccount.id);
-      wsIds = perms.map(p => p.workspaceId);
+      const [perms, openWs] = await Promise.all([
+        getAccountWorkspacePermissions(apiAccount.id),
+        db.query.workspaces.findMany({
+          where: eq(workspaces.accessMode, 'open'),
+          columns: { id: true },
+        }),
+      ]);
+      const linkedIds = perms.map(p => p.workspaceId);
+      const openIds = openWs.map(w => w.id);
+      wsIds = [...new Set([...linkedIds, ...openIds])];
     } else {
       wsIds = await getUserWorkspaceIds(user!.id);
     }
