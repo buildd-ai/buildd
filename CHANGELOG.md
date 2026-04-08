@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to 0.2.80 (fixes getSessionMessages dropping parallel tool results)
+- Bump @anthropic-ai/claude-agent-sdk to 0.2.94 (adds connectRemoteControl API, MCP permission display metadata, SDKSettingsParseError, mantle API provider)
 
 ### Fixed
 

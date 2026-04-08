@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { inArray, desc, eq, and } from 'drizzle-orm';
@@ -48,5 +49,9 @@ export default async function NewMissionPage() {
     });
   }
 
-  return <NewMissionForm workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} roles={roles} />;
+  return (
+    <Suspense>
+      <NewMissionForm workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} roles={roles} />
+    </Suspense>
+  );
 }
