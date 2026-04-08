@@ -970,26 +970,46 @@ export class WorkerRunner extends EventEmitter {
 
       if (missionId) {
         // Mission-aware planning mode
+        const wsState = taskContext?.workspaceState as { name?: string; repo?: string | null; isCoordination?: boolean; hasGitHubApp?: boolean } | undefined;
+        const wsLabel = wsState?.isCoordination
+          ? '__coordination (no repo — meta-workspace)'
+          : wsState?.name
+            ? `"${wsState.name}"${wsState.repo ? ` (repo: ${wsState.repo})` : ' (no repo)'}`
+            : 'unknown';
+
         parts.push(`
 ## Mission Planning
 
 You are the autonomous planner for: "${missionTitle || 'Untitled Mission'}"
 Mission ID: ${missionId}
+Workspace: ${wsLabel}
 
 ### Your Process
 1. **Triage first.** Check "Active Tasks" section. Is this work already covered? If yes, set triageOutcome: "conflict", create 0 tasks, set missionComplete: true, explain the overlap.
-2. **Assess scope.** Is this a single well-scoped task or does it need decomposition?
+2. **Bootstrap workspace (code missions only).** Check "Workspace State" in your context.
+   - If workspace is \`__coordination\` or has no repo, and this mission needs builder tasks:
+     a. Check "Team Workspaces" for a reusable workspace
+     b. If none fits: \`buildd\` action=manage_workspaces, params: { action: "create", name: "<project-name>" }
+     c. Then: \`buildd\` action=manage_workspaces, params: { action: "create_repo", name: "<repo-name>" }
+     d. The mission auto-migrates to the new workspace
+   - If workspace has a repo, or this is a non-code mission: skip this step
+3. **Assess scope.** Is this a single well-scoped task or does it need decomposition?
    - Single task → create 1 execution task with right role, set triageOutcome: "single_task", missionComplete: true
    - Multiple tasks → create 1-3 tasks, set triageOutcome: "multi_task", missionComplete: false
-3. Review task history and prior artifacts in the description above
-4. **Check prior artifacts**: Look at "Prior Artifacts" section above. Use \`buildd\` action: get_artifact to fetch full content of relevant artifacts.
-5. Search team memories (\`buildd_memory\` action: search) for decisions from prior runs
-6. Create execution tasks using \`buildd\` action: create_task
+4. Review task history and prior artifacts in the description above
+5. **Check prior artifacts**: Look at "Prior Artifacts" section above. Use \`buildd\` action: get_artifact to fetch full content of relevant artifacts.
+6. Search team memories (\`buildd_memory\` action: search) for decisions from prior runs
+7. Create execution tasks using \`buildd\` action: create_task
    - Each task auto-links to this mission
-   - Set appropriate outputRequirement (artifact_required for research, none for lightweight)
+   - Set appropriate outputRequirement (pr_required for code, artifact_required for research, none for lightweight)
    - Set outputSchema on tasks when you need structured data back
    - Write self-contained descriptions (execution workers don't have your context)
-7. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+8. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+
+### Critical Rules
+- **Tasks are your deliverable.** Every planning cycle must either create tasks OR set missionComplete: true.
+- If you complete with tasksCreated: 0 and missionComplete: false, the system will retrigger you with feedback.
+- Artifacts supplement tasks but do not replace them.
 
 ### Artifact Continuity
 - Use consistent keys: \`mission-${missionId}-research\`, \`mission-${missionId}-analysis\`
