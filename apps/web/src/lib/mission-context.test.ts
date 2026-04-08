@@ -64,12 +64,14 @@ const mockWorkersFindMany = mock(() => Promise.resolve([]));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
 
-// Mock for db.select().from().innerJoin().where().groupBy() chain (workers query)
+// Mock for db.select() chain — supports both:
+//   db.select().from().innerJoin().where().groupBy()  (active workers)
+//   db.select().from().where().groupBy()              (completed counts)
 const mockSelectResult = mock(() => Promise.resolve([]));
 const mockGroupBy = mock(() => mockSelectResult());
 const mockWhere = mock(() => ({ groupBy: mockGroupBy }));
 const mockInnerJoin = mock(() => ({ where: mockWhere }));
-const mockFrom = mock(() => ({ innerJoin: mockInnerJoin }));
+const mockFrom = mock(() => ({ innerJoin: mockInnerJoin, where: mockWhere }));
 const mockSelect = mock(() => ({ from: mockFrom }));
 
 mock.module('@buildd/core/db', () => ({
@@ -141,7 +143,7 @@ describe('buildMissionContext', () => {
     mockInnerJoin.mockReset();
     mockInnerJoin.mockReturnValue({ where: mockWhere });
     mockFrom.mockReset();
-    mockFrom.mockReturnValue({ innerJoin: mockInnerJoin });
+    mockFrom.mockReturnValue({ innerJoin: mockInnerJoin, where: mockWhere });
     mockSelect.mockReset();
     mockSelect.mockReturnValue({ from: mockFrom });
   });
@@ -216,7 +218,8 @@ describe('buildMissionContext', () => {
       { slug: 'builder', name: 'Builder', model: 'opus', color: '#3B82F6', description: 'Writes code' },
       { slug: 'researcher', name: 'Researcher', model: 'sonnet', color: '#D97706', description: 'Finds info' },
     ]);
-    mockSelectResult.mockResolvedValueOnce([]);
+    mockSelectResult.mockResolvedValueOnce([]); // active workers
+    mockSelectResult.mockResolvedValueOnce([]); // completed counts
 
     const result = await buildMissionContext('obj-3');
     expect(result!.description).toContain('## Available Roles');
@@ -250,7 +253,8 @@ describe('buildMissionContext', () => {
     mockSkillsFindMany.mockResolvedValueOnce([
       { slug: 'researcher', name: 'Researcher', model: 'sonnet', color: '#D97706', description: null },
     ]);
-    mockSelectResult.mockResolvedValueOnce([]);
+    mockSelectResult.mockResolvedValueOnce([]); // active workers
+    mockSelectResult.mockResolvedValueOnce([]); // completed counts
 
     const result = await buildMissionContext('obj-4');
     expect(result!.description).toContain('Pattern detected');
@@ -799,7 +803,8 @@ describe('buildMissionContext', () => {
     mockFindMany.mockResolvedValueOnce([]); // completed
     mockFindMany.mockResolvedValueOnce([]); // active
     mockFindMany.mockResolvedValueOnce([]); // failed
-    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles for ws-coord
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles for ws-ios
 
     const result = await buildMissionContext('obj-ws1');
     expect(result).not.toBeNull();
@@ -910,7 +915,7 @@ describe('getWorkspaceRoles', () => {
     mockInnerJoin.mockReset();
     mockInnerJoin.mockReturnValue({ where: mockWhere });
     mockFrom.mockReset();
-    mockFrom.mockReturnValue({ innerJoin: mockInnerJoin });
+    mockFrom.mockReturnValue({ innerJoin: mockInnerJoin, where: mockWhere });
     mockSelect.mockReset();
     mockSelect.mockReturnValue({ from: mockFrom });
   });
@@ -921,18 +926,22 @@ describe('getWorkspaceRoles', () => {
     expect(roles).toHaveLength(0);
   });
 
-  it('returns roles with current load', async () => {
+  it('returns roles with current load and completed stats', async () => {
     mockSkillsFindMany.mockResolvedValueOnce([
       { slug: 'builder', name: 'Builder', model: 'opus', color: '#3B82F6', description: 'Writes code' },
     ]);
     mockSelectResult.mockResolvedValueOnce([
       { roleSlug: 'builder', count: 2 },
     ]);
+    mockSelectResult.mockResolvedValueOnce([
+      { roleSlug: 'builder', count: 5 },
+    ]);
 
     const roles = await getWorkspaceRoles('ws-1');
     expect(roles).toHaveLength(1);
     expect(roles[0].slug).toBe('builder');
     expect(roles[0].currentLoad).toBe(2);
+    expect(roles[0].completedTasks30d).toBe(5);
   });
 
   it('deduplicates roles by slug', async () => {
@@ -941,7 +950,8 @@ describe('getWorkspaceRoles', () => {
       { slug: 'builder', name: 'Builder v2', model: 'opus', color: '#3B82F6', description: null },
       { slug: 'researcher', name: 'Researcher', model: 'sonnet', color: '#D97706', description: null },
     ]);
-    mockSelectResult.mockResolvedValueOnce([]);
+    mockSelectResult.mockResolvedValueOnce([]); // active workers
+    mockSelectResult.mockResolvedValueOnce([]); // completed counts
 
     const roles = await getWorkspaceRoles('ws-dup');
     expect(roles).toHaveLength(2);
