@@ -435,6 +435,15 @@ export class WorkerManager {
       if (latestCommit) {
         this.emit({ type: 'version_info', latestCommit });
       }
+      // Refresh workspace subscriptions so new workspaces (e.g., created by planning tasks)
+      // get picked up without requiring a runner restart. If new workspaces are found,
+      // claim pending tasks to pick up any that were dispatched before we subscribed.
+      if (this.acceptRemoteTasks) {
+        const foundNew = await this.pusherManager.subscribeToWorkspaceChannels();
+        if (foundNew) {
+          this.claimPendingTasks().catch(() => {});
+        }
+      }
     } catch {
       // Non-fatal - heartbeat is best-effort
     }
@@ -1650,6 +1659,16 @@ If something is missing or incomplete, describe what and fix it now.`;
       // Archive to SQLite history (non-fatal)
       if (worker.status === 'done' || worker.status === 'error') {
         try { archiveSession(worker); } catch {}
+      }
+
+      // After any worker completes, refresh workspace subscriptions and claim.
+      // This handles the common case where a planning task on THIS runner created
+      // a new workspace + tasks — we pick them up immediately instead of waiting
+      // for the next heartbeat (5 min).
+      if (this.acceptRemoteTasks && (worker.status === 'done' || worker.status === 'error')) {
+        this.pusherManager.subscribeToWorkspaceChannels().then(foundNew => {
+          if (foundNew) this.claimPendingTasks().catch(() => {});
+        }).catch(() => {});
       }
 
       // Circuit breaker: detect errors that affect all workers and pause claims

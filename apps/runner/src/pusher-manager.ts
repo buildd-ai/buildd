@@ -99,17 +99,20 @@ export class PusherManager {
     }
   }
 
-  // Subscribe to workspace channels for task assignments
-  async subscribeToWorkspaceChannels() {
-    if (!this.pusher) return;
+  // Subscribe to workspace channels for task assignments.
+  // Returns true if new workspaces were discovered (caller should claim pending tasks).
+  async subscribeToWorkspaceChannels(): Promise<boolean> {
+    if (!this.pusher) return false;
 
     try {
       // Get workspaces to determine channel names
       const workspaces = await this.buildd.listWorkspaces();
       if (workspaces.length === 0) {
         console.log('No workspaces found, skipping workspace channel subscription');
-        return;
+        return false;
       }
+
+      let newWorkspacesFound = false;
 
       // Subscribe to each workspace for task:assigned events
       for (const ws of workspaces) {
@@ -121,10 +124,14 @@ export class PusherManager {
           });
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
+          newWorkspacesFound = true;
         }
       }
+
+      return newWorkspacesFound;
     } catch (err) {
       console.error('Failed to subscribe to workspace channels:', err);
+      return false;
     }
   }
 
