@@ -105,7 +105,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -115,6 +115,7 @@ export async function PATCH(
     if (description !== undefined) updateData.description = description;
     if (priority !== undefined) updateData.priority = priority;
     if (project !== undefined) updateData.project = project;
+    if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
     if (missionId !== undefined) updateData.missionId = missionId || null;
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
