@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { accounts, workspaces, workerHeartbeats, teamMembers, users } from '@buildd/core/db/schema';
-import { eq, inArray, desc } from 'drizzle-orm';
+import { accounts, workspaces, workerHeartbeats, teamMembers, users, tasks, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds, type UserTeam } from '@/lib/team-access';
@@ -33,7 +33,7 @@ export default async function YouPage() {
   const teamIds = userTeams.map(t => t.id);
 
   // Parallel data fetches
-  const [teamMembersList, allAccounts, heartbeats, userWorkspaces] = await Promise.all([
+  const [teamMembersList, allAccounts, heartbeats, userWorkspaces, usageStats] = await Promise.all([
     // Team members for first team
     teamIds.length > 0
       ? db.query.teamMembers.findMany({
@@ -76,6 +76,70 @@ export default async function YouPage() {
           columns: { id: true, name: true, repo: true, githubInstallationId: true },
         }).catch(() => [])
       : Promise.resolve([]),
+
+    // Usage stats (last 30 days)
+    wsIds.length > 0
+      ? (async () => {
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+          const recentTasks = await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.workspaceId, wsIds),
+              sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+            ),
+            columns: { roleSlug: true, status: true },
+          });
+
+          const byRole: Record<string, { completed: number; failed: number; total: number }> = {};
+          let totalCompleted = 0;
+          let totalFailed = 0;
+          let unassigned = 0;
+
+          for (const t of recentTasks) {
+            if (t.status === 'completed') totalCompleted++;
+            if (t.status === 'failed') totalFailed++;
+            if (t.roleSlug) {
+              if (!byRole[t.roleSlug]) byRole[t.roleSlug] = { completed: 0, failed: 0, total: 0 };
+              byRole[t.roleSlug].total++;
+              if (t.status === 'completed') byRole[t.roleSlug].completed++;
+              if (t.status === 'failed') byRole[t.roleSlug].failed++;
+            } else {
+              unassigned++;
+            }
+          }
+
+          // Get role names/colors for display
+          const roleSlugs = Object.keys(byRole);
+          let roleInfo: Record<string, { name: string; color: string }> = {};
+          if (roleSlugs.length > 0) {
+            const skills = await db.query.workspaceSkills.findMany({
+              where: and(
+                inArray(workspaceSkills.workspaceId, wsIds),
+                eq(workspaceSkills.isRole, true),
+                inArray(workspaceSkills.slug, roleSlugs),
+              ),
+              columns: { slug: true, name: true, color: true },
+            });
+            for (const s of skills) {
+              roleInfo[s.slug] = { name: s.name, color: s.color };
+            }
+          }
+
+          return {
+            total: recentTasks.length,
+            completed: totalCompleted,
+            failed: totalFailed,
+            unassigned,
+            byRole: Object.entries(byRole)
+              .sort((a, b) => b[1].total - a[1].total)
+              .map(([slug, stats]) => ({
+                slug,
+                name: roleInfo[slug]?.name || slug,
+                color: roleInfo[slug]?.color || '#888',
+                ...stats,
+              })),
+          };
+        })().catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   const roleColors: Record<string, string> = {
@@ -200,6 +264,46 @@ export default async function YouPage() {
             )}
           </div>
         </section>
+
+        {/* Usage Section */}
+        {usageStats && usageStats.total > 0 && (
+          <section>
+            <h2 className="section-label mb-4">Usage (30d)</h2>
+            <div className="card p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-text-secondary">{usageStats.total} tasks</span>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-status-success">{usageStats.completed} done</span>
+                  {usageStats.failed > 0 && <span className="text-status-error">{usageStats.failed} failed</span>}
+                </div>
+              </div>
+
+              {usageStats.byRole.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {usageStats.byRole.map((r) => (
+                    <div key={r.slug} className="flex items-center gap-2">
+                      <div
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: r.color }}
+                      />
+                      <span className="text-xs text-text-primary flex-1 truncate">{r.name}</span>
+                      <span className="text-xs text-text-muted tabular-nums">
+                        {r.completed} done{r.failed > 0 ? ` / ${r.failed} failed` : ''}
+                      </span>
+                    </div>
+                  ))}
+                  {usageStats.unassigned > 0 && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full shrink-0 bg-text-muted" />
+                      <span className="text-xs text-text-muted flex-1">No role</span>
+                      <span className="text-xs text-text-muted tabular-nums">{usageStats.unassigned}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Connections Section */}
         <section>
