@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts, workspaces } from '@buildd/core/db/schema';
+import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 
@@ -114,7 +114,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
 
 /**
  * Build rich context for a mission planning task.
- * Queries task history, active tasks, failures, available roles, and optional recipe playbook.
+ * Queries task history, active tasks, failures, and available roles.
  * Detects heartbeat mode from the schedule's taskTemplate context and produces specialised instructions.
  */
 export async function buildMissionContext(missionId: string, templateContext?: Record<string, unknown>) {
@@ -291,19 +291,6 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     if (!seen.has(a.id)) allArtifacts.push(a);
   }
 
-  // Recipe playbook (if configured)
-  const recipeId = templateContext?.recipeId as string | undefined;
-  let recipeSteps: unknown[] | null = null;
-  if (recipeId) {
-    const recipe = await db.query.taskRecipes.findFirst({
-      where: eq(taskRecipes.id, recipeId),
-      columns: { name: true, steps: true },
-    });
-    if (recipe) {
-      recipeSteps = recipe.steps as unknown[];
-    }
-  }
-
   // Build rich description
   const descParts: string[] = [];
   descParts.push(`## Mission: ${mission.title}`);
@@ -418,13 +405,6 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       let line = `- [${t.title}] error: ${errorSummary}`;
       if (t.description) line += `\n  ${t.description.slice(0, 200)}`;
       descParts.push(line);
-    }
-  }
-
-  if (recipeSteps) {
-    descParts.push('\n## Playbook');
-    for (const step of recipeSteps as Array<{ ref?: string; title?: string; description?: string }>) {
-      descParts.push(`- [ ] ${step.title || step.ref}${step.description ? `: ${step.description}` : ''}`);
     }
   }
 
@@ -568,7 +548,6 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       title: t.title,
       status: t.status,
     })),
-    ...(recipeSteps ? { recipeSteps } : {}),
     priorArtifacts: allArtifacts.map(a => ({
       artifactId: a.id, key: a.key, type: a.type, title: a.title, updatedAt: a.updatedAt,
     })),

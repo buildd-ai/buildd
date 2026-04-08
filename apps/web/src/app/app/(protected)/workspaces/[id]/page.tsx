@@ -166,12 +166,6 @@ export default async function WorkspaceDetailPage({
             Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
           </Link>
           <Link
-            href={`/app/workspaces/${workspace.id}/recipes`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Recipes
-          </Link>
-          <Link
             href={`/app/workspaces/${workspace.id}/skills`}
             className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >

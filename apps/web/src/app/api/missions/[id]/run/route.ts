@@ -27,7 +27,7 @@ async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
  * POST /api/missions/[id]/run
  *
  * Manually trigger an immediate planning task for a mission.
- * Builds rich mission context (task history, active tasks, failures, recipe)
+ * Builds rich mission context (task history, active tasks, failures)
  * and creates + dispatches a planning task.
  */
 export async function POST(

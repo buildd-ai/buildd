@@ -108,8 +108,6 @@ export async function GET(
       completedTasks,
       progress,
       skillSlugs: templateContext?.skillSlugs || [],
-      recipeId: templateContext?.recipeId || null,
-      outputSchema: templateContext?.outputSchema || null,
       model: templateContext?.model || null,
       lastHeartbeatStatus,
       lastHeartbeatAt,
@@ -155,7 +153,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model,
+    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -195,7 +193,7 @@ export async function PATCH(
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
 
     // Handle schedule updates
-    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || recipeId !== undefined || outputSchema !== undefined || isHeartbeat !== undefined
+    const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || isHeartbeat !== undefined
       || heartbeatChecklist !== undefined || activeHoursStart !== undefined || activeHoursEnd !== undefined || activeHoursTimezone !== undefined;
     if (scheduleNeedsUpdate) {
       const effectiveWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
@@ -218,14 +216,6 @@ export async function PATCH(
       if (skillSlugs !== undefined) {
         if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
         else delete templateContext.skillSlugs;
-      }
-      if (recipeId !== undefined) {
-        if (recipeId) templateContext.recipeId = recipeId;
-        else delete templateContext.recipeId;
-      }
-      if (outputSchema !== undefined) {
-        if (outputSchema) templateContext.outputSchema = outputSchema;
-        else delete templateContext.outputSchema;
       }
       if (model !== undefined) {
         if (model) templateContext.model = model;

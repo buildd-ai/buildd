@@ -77,7 +77,6 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: mockFindFirst },
       tasks: { findMany: mockFindMany },
-      taskRecipes: { findFirst: mock(() => Promise.resolve(null)) },
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaceSkills: { findMany: mockSkillsFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
@@ -99,7 +98,6 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workspaceId: 'workspaceId', scheduleId: 'scheduleId' },
   tasks: { id: 'id', missionId: 'missionId', status: 'status', roleSlug: 'roleSlug' },
-  taskRecipes: { id: 'id' },
   taskSchedules: { id: 'id' },
   workspaceSkills: { workspaceId: 'workspaceId', isRole: 'isRole', enabled: 'enabled' },
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },

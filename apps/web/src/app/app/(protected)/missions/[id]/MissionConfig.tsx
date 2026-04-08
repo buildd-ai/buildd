@@ -14,9 +14,7 @@ interface MissionConfigProps {
   missionId: string;
   workspaceId: string | null;
   skillSlugs: string[];
-  recipeId: string | null;
   model: string | null;
-  outputSchema: unknown | null;
   workspaces: WorkspaceOption[];
 }
 
@@ -24,9 +22,7 @@ export default function MissionConfig({
   missionId,
   workspaceId,
   skillSlugs: initialSkillSlugs,
-  recipeId: initialRecipeId,
   model: initialModel,
-  outputSchema: initialOutputSchema,
   workspaces,
 }: MissionConfigProps) {
   const router = useRouter();
@@ -39,20 +35,8 @@ export default function MissionConfig({
   const [newSkill, setNewSkill] = useState('');
   const [showSkillInput, setShowSkillInput] = useState(false);
 
-  // Recipe state
-  const [recipeId, setRecipeId] = useState(initialRecipeId || '');
-  const [editingRecipe, setEditingRecipe] = useState(false);
-
   // Model state
   const [model, setModel] = useState(initialModel || '');
-
-  // Output schema state
-  const [outputSchemaStr, setOutputSchemaStr] = useState(
-    initialOutputSchema ? JSON.stringify(initialOutputSchema, null, 2) : ''
-  );
-  const [editingSchema, setEditingSchema] = useState(false);
-  const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [schemaExpanded, setSchemaExpanded] = useState(false);
 
   // Workspace state
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(workspaceId || '');
@@ -95,34 +79,9 @@ export default function MissionConfig({
     patchMission({ skillSlugs: updated }, 'skills');
   }
 
-  function handleSaveRecipe() {
-    const trimmed = recipeId.trim();
-    patchMission({ recipeId: trimmed || null }, 'recipe');
-    setEditingRecipe(false);
-  }
-
   function handleModelChange(value: string) {
     setModel(value);
     patchMission({ model: value || null }, 'model');
-  }
-
-  function handleSaveSchema() {
-    const trimmed = outputSchemaStr.trim();
-    if (!trimmed) {
-      setSchemaError(null);
-      patchMission({ outputSchema: null }, 'schema');
-      setEditingSchema(false);
-      return;
-    }
-    try {
-      const parsed = JSON.parse(trimmed);
-      setSchemaError(null);
-      setOutputSchemaStr(JSON.stringify(parsed, null, 2));
-      patchMission({ outputSchema: parsed }, 'schema');
-      setEditingSchema(false);
-    } catch {
-      setSchemaError('Invalid JSON');
-    }
   }
 
   function handleWorkspaceChange(value: string) {
@@ -139,8 +98,6 @@ export default function MissionConfig({
   const configSummary = [
     model && MODEL_OPTIONS.find(m => m.value === model)?.label,
     skillSlugs.length > 0 && `${skillSlugs.length} skill${skillSlugs.length > 1 ? 's' : ''}`,
-    initialRecipeId && 'Recipe',
-    initialOutputSchema && 'Schema',
   ].filter(Boolean);
 
   return (
@@ -262,96 +219,6 @@ export default function MissionConfig({
             </div>
             {skillSlugs.length === 0 && !showSkillInput && (
               <p className="text-[11px] text-text-muted mt-1">No skills configured.</p>
-            )}
-          </div>
-
-          {/* Recipe */}
-          <div>
-            <label className="block text-[11px] text-text-muted mb-1.5">Recipe</label>
-            {editingRecipe ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  value={recipeId}
-                  onChange={e => setRecipeId(e.target.value)}
-                  placeholder="Recipe ID"
-                  className="flex-1 max-w-xs px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[11px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono"
-                  autoFocus
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') handleSaveRecipe();
-                    if (e.key === 'Escape') { setRecipeId(initialRecipeId || ''); setEditingRecipe(false); }
-                  }}
-                />
-                <button type="button" onClick={handleSaveRecipe} disabled={disabled} className="px-2 py-1 text-[11px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">
-                  Save
-                </button>
-                <button type="button" onClick={() => { setRecipeId(initialRecipeId || ''); setEditingRecipe(false); }} className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary">
-                  Cancel
-                </button>
-                {initialRecipeId && (
-                  <button type="button" onClick={() => { setRecipeId(''); handleSaveRecipe(); }} disabled={disabled} className="px-2 py-1 text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50">
-                    Remove
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {initialRecipeId ? (
-                  <span className="text-[11px] text-text-primary font-mono">{initialRecipeId}</span>
-                ) : (
-                  <span className="text-[11px] text-text-muted">None</span>
-                )}
-                <button type="button" onClick={() => setEditingRecipe(true)} disabled={disabled} className="text-[11px] text-accent-text hover:text-accent-text/80 disabled:opacity-50">
-                  {initialRecipeId ? 'Edit' : 'Set recipe'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Output Schema */}
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <label className="text-[11px] text-text-muted">Output Schema</label>
-              {outputSchemaStr && !editingSchema && (
-                <button type="button" onClick={() => setSchemaExpanded(!schemaExpanded)} className="text-[11px] text-text-secondary hover:text-text-primary">
-                  {schemaExpanded ? 'Collapse' : 'Expand'}
-                </button>
-              )}
-            </div>
-            {editingSchema ? (
-              <div className="space-y-2">
-                <textarea
-                  value={outputSchemaStr}
-                  onChange={e => { setOutputSchemaStr(e.target.value); setSchemaError(null); }}
-                  placeholder='{"type": "object", "properties": { ... }}'
-                  rows={8}
-                  className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[11px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono resize-y"
-                />
-                {schemaError && <p className="text-[11px] text-status-error">{schemaError}</p>}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" onClick={handleSaveSchema} disabled={disabled} className="px-2 py-1 text-[11px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">Save</button>
-                  <button type="button" onClick={() => { setOutputSchemaStr(initialOutputSchema ? JSON.stringify(initialOutputSchema, null, 2) : ''); setSchemaError(null); setEditingSchema(false); }} className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary">Cancel</button>
-                  {initialOutputSchema != null && (
-                    <button type="button" onClick={() => { setOutputSchemaStr(''); setSchemaError(null); patchMission({ outputSchema: null }, 'schema'); setEditingSchema(false); }} disabled={disabled} className="px-2 py-1 text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50">Remove</button>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div>
-                {outputSchemaStr ? (
-                  <>
-                    <pre className={`text-[11px] text-text-secondary bg-surface-3 p-2 rounded-lg overflow-x-auto font-mono ${schemaExpanded ? '' : 'max-h-20'} overflow-hidden`}>
-                      {outputSchemaStr}
-                    </pre>
-                    <button type="button" onClick={() => setEditingSchema(true)} disabled={disabled} className="text-[11px] text-accent-text hover:text-accent-text/80 disabled:opacity-50 mt-1">Edit</button>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-text-muted">None</span>
-                    <button type="button" onClick={() => setEditingSchema(true)} disabled={disabled} className="text-[11px] text-accent-text hover:text-accent-text/80 disabled:opacity-50">Add schema</button>
-                  </div>
-                )}
-              </div>
             )}
           </div>
 

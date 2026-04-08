@@ -332,12 +332,6 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         description: "Available skills",
         mimeType: "text/plain",
       },
-      {
-        uri: "buildd://workspace/workflows",
-        name: "Workflow Recipes",
-        description: "Reusable workflow patterns (fan-out, sequential, release) — use create_recipe + run_recipe to orchestrate",
-        mimeType: "text/plain",
-      },
     ],
   }));
 
@@ -388,66 +382,6 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             uri,
             mimeType: "text/plain",
             text: "Provide workspaceId in tool params to access workspace-scoped resources.",
-          }],
-        };
-
-      case "buildd://workspace/workflows":
-        return {
-          contents: [{
-            uri,
-            mimeType: "text/plain",
-            text: [
-              "# Workflow Recipes",
-              "",
-              "Use `create_recipe` to save these patterns, then `run_recipe` to instantiate them as tasks.",
-              "",
-              "## Fan-Out & Merge",
-              "Break work into parallel sub-tasks, then merge results.",
-              "```json",
-              JSON.stringify({
-                name: "Fan-Out & Merge",
-                category: "ops",
-                steps: [
-                  { ref: "task", title: "{{title}}", description: "{{description}}" },
-                  { ref: "sub-1", title: "Sub-task 1", dependsOn: ["task"] },
-                  { ref: "sub-2", title: "Sub-task 2", dependsOn: ["task"] },
-                  { ref: "sub-n", title: "Sub-task N", dependsOn: ["task"] },
-                  { ref: "merge", title: "Merge results", dependsOn: ["sub-1", "sub-2", "sub-n"] },
-                ],
-                variables: { title: { type: "string" }, description: { type: "string" } },
-              }, null, 2),
-              "```",
-              "",
-              "## Sequential",
-              "Chain tasks where each waits for the previous.",
-              "```json",
-              JSON.stringify({
-                name: "Sequential",
-                category: "ops",
-                steps: [
-                  { ref: "step-1", title: "Step 1: {{step1}}" },
-                  { ref: "step-2", title: "Step 2: {{step2}}", dependsOn: ["step-1"] },
-                  { ref: "step-3", title: "Step 3: {{step3}}", dependsOn: ["step-2"] },
-                ],
-                variables: { step1: { type: "string" }, step2: { type: "string" }, step3: { type: "string" } },
-              }, null, 2),
-              "```",
-              "",
-              "## Release",
-              "Parallel validation followed by guarded release.",
-              "```json",
-              JSON.stringify({
-                name: "Release",
-                category: "ops",
-                steps: [
-                  { ref: "test", title: "Run tests" },
-                  { ref: "lint", title: "Run linter" },
-                  { ref: "typecheck", title: "Type check" },
-                  { ref: "release", title: "Release", dependsOn: ["test", "lint", "typecheck"] },
-                ],
-              }, null, 2),
-              "```",
-            ].join("\n"),
           }],
         };
 

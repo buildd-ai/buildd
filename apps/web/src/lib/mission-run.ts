@@ -31,7 +31,7 @@ export interface RunMissionDeps {
 
 /**
  * Trigger an immediate planning task for a mission.
- * Builds rich mission context (task history, active tasks, failures, recipe)
+ * Builds rich mission context (task history, active tasks, failures)
  * and creates + dispatches a planning task.
  *
  * Used by manual run endpoint, auto-start after mission creation, and closed-loop re-triggers.

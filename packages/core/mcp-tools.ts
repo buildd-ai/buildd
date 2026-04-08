@@ -63,7 +63,6 @@ export const adminActions = [
   'approve_plan', 'reject_plan',
   'manage_missions',
   'manage_workspaces',
-  'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -103,11 +102,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
-    list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
-    create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
-    run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
@@ -1250,7 +1246,6 @@ export async function handleBuilddAction(
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
-          if (params.recipeId) body.recipeId = params.recipeId;
           if (params.model) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist) body.heartbeatChecklist = params.heartbeatChecklist;
@@ -1287,7 +1282,6 @@ export async function handleBuilddAction(
             body.workspaceId = wsId;
           }
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
-          if (params.recipeId !== undefined) body.recipeId = params.recipeId;
           if (params.model !== undefined) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist !== undefined) body.heartbeatChecklist = params.heartbeatChecklist;
@@ -1427,93 +1421,6 @@ export async function handleBuilddAction(
         default:
           throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, create, update, create_repo, init`);
       }
-    }
-
-    // ── Recipes ───────────────────────────────────────────────────────────
-
-    case 'list_recipes': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-
-      if (wsId) {
-        const data = await api(`/api/workspaces/${wsId}/recipes`);
-        const recipes = data.recipes || [];
-
-        if (recipes.length === 0) return text('No recipes configured for this workspace.');
-
-        const summary = recipes.map((r: any) =>
-          `- **${r.name}**${r.category ? ` [${r.category}]` : ''}\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
-        ).join('\n\n');
-
-        return text(`${recipes.length} recipe(s):\n\n${summary}`);
-      }
-
-      // No workspace — aggregate across all
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
-
-      const allRecipes: { workspace: string; recipe: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/recipes`);
-        for (const r of (data.recipes || [])) {
-          allRecipes.push({ workspace: ws.name, recipe: r });
-        }
-      }
-
-      if (allRecipes.length === 0) return text('No recipes configured across any workspace.');
-
-      const summary = allRecipes.map(({ workspace, recipe: r }) =>
-        `- **${r.name}**${r.category ? ` [${r.category}]` : ''} [${workspace}]\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
-      ).join('\n\n');
-
-      return text(`${allRecipes.length} recipe(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
-    }
-
-    case 'create_recipe': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.name || !params.steps) throw new Error('name and steps are required');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const data = await api(`/api/workspaces/${wsId}/recipes`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: params.name,
-          steps: params.steps,
-          description: params.description || undefined,
-          category: params.category || undefined,
-          variables: params.variables || undefined,
-          isPublic: params.isPublic || false,
-        }),
-      });
-
-      const recipe = data.recipe;
-      return text(`Recipe created: "${recipe.name}" (ID: ${recipe.id})\nSteps: ${recipe.steps?.length || 0}\nCategory: ${recipe.category || 'none'}`);
-    }
-
-    case 'run_recipe': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.recipeId) throw new Error('recipeId is required');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const data = await api(`/api/workspaces/${wsId}/recipes/${params.recipeId}/run`, {
-        method: 'POST',
-        body: JSON.stringify({
-          variables: params.variables || {},
-          parentTaskId: params.parentTaskId || undefined,
-        }),
-      });
-
-      const taskIds = data.tasks || [];
-      return text(`Recipe instantiated! Created ${taskIds.length} task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
     }
 
     default:

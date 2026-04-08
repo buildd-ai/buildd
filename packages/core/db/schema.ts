@@ -482,18 +482,6 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   heartbeatIdx: index('worker_heartbeats_heartbeat_idx').on(t.lastHeartbeatAt),
 }));
 
-// Recipe step definition (used by taskRecipes)
-export type RecipeStep = {
-  ref: string;
-  title: string;
-  description?: string;
-  mode?: 'execution' | 'planning';
-  dependsOn?: string[];
-  requiredCapabilities?: string[];
-  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
-  priority?: number;
-};
-
 // Task schedules - cron-based automated task creation
 export const taskSchedules = pgTable('task_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -529,24 +517,6 @@ export const taskSchedules = pgTable('task_schedules', {
 }, (t) => ({
   workspaceIdx: index('task_schedules_workspace_idx').on(t.workspaceId),
   enabledNextRunIdx: index('task_schedules_enabled_next_run_idx').on(t.enabled, t.nextRunAt),
-}));
-
-// Task recipes - reusable multi-step workflow templates
-export const taskRecipes = pgTable('task_recipes', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  name: text('name').notNull(),
-  description: text('description'),
-  category: text('category').$type<'content' | 'research' | 'code' | 'ops' | 'custom'>(),
-  steps: jsonb('steps').notNull().$type<RecipeStep[]>(),
-  variables: jsonb('variables').default({}).$type<Record<string, { type: string; description?: string; default?: string }>>(),
-  isPublic: boolean('is_public').default(false).notNull(),
-  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  workspaceIdx: index('task_recipes_workspace_idx').on(t.workspaceId),
-  categoryIdx: index('task_recipes_category_idx').on(t.category),
 }));
 
 // GitHub App Integration
@@ -734,7 +704,6 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
 
   artifacts: many(artifacts),
   taskSchedules: many(taskSchedules),
-  taskRecipes: many(taskRecipes),
   workspaceSkills: many(workspaceSkills),
   missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
@@ -777,10 +746,6 @@ export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) =
 export const taskSchedulesRelations = relations(taskSchedules, ({ one }) => ({
   workspace: one(workspaces, { fields: [taskSchedules.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [taskSchedules.createdByUserId], references: [users.id] }),
-}));
-
-export const taskRecipesRelations = relations(taskRecipes, ({ one }) => ({
-  workspace: one(workspaces, { fields: [taskRecipes.workspaceId], references: [workspaces.id] }),
 }));
 
 export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({
