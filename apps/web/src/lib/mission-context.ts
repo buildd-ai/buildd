@@ -102,6 +102,29 @@ export async function getWorkspaceRoles(workspaceId: string) {
     if (row.roleSlug) loadMap[row.roleSlug] = row.count;
   }
 
+  // Count completed tasks per role (last 30 days) for usage signal
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const completedCounts = await db
+    .select({
+      roleSlug: tasks.roleSlug,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.workspaceId, workspaceId),
+        eq(tasks.status, 'completed'),
+        sql`${tasks.roleSlug} IS NOT NULL`,
+        sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+      )
+    )
+    .groupBy(tasks.roleSlug);
+
+  const completedMap: Record<string, number> = {};
+  for (const row of completedCounts) {
+    if (row.roleSlug) completedMap[row.roleSlug] = row.count;
+  }
+
   return uniqueRoles.map(r => ({
     slug: r.slug,
     name: r.name,
@@ -109,6 +132,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
     color: r.color,
     description: r.description,
     currentLoad: loadMap[r.slug] || 0,
+    completedTasks30d: completedMap[r.slug] || 0,
   }));
 }
 
@@ -454,10 +478,26 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   //   }
   // } catch { /* non-fatal */ }
 
-  // Fetch available roles for orchestrator context
+  // Fetch available roles for orchestrator context — query ALL team workspaces,
+  // not just the mission's workspace. Missions often start in __coordination which
+  // has no roles, so querying only that workspace would give the orchestrator an empty list.
+  const roleWorkspaceIds = teamWorkspacesList.map(tw => tw.id);
+  if (mission.workspaceId && !roleWorkspaceIds.includes(mission.workspaceId)) {
+    roleWorkspaceIds.push(mission.workspaceId);
+  }
   let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
-  if (mission.workspaceId) {
-    roles = await getWorkspaceRoles(mission.workspaceId);
+  if (roleWorkspaceIds.length > 0) {
+    const allRoleLists = await Promise.all(roleWorkspaceIds.map(id => getWorkspaceRoles(id)));
+    // Deduplicate by slug — same role may exist in multiple workspaces
+    const seenSlugs = new Set<string>();
+    for (const list of allRoleLists) {
+      for (const r of list) {
+        if (!seenSlugs.has(r.slug)) {
+          seenSlugs.add(r.slug);
+          roles.push(r);
+        }
+      }
+    }
   }
 
   // Detect role patterns from completed tasks — if tasks consistently use the same role,
@@ -474,9 +514,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   if (roles.length > 0) {
     descParts.push('\n## Available Roles');
+    descParts.push('**Set `roleSlug` on every task you create.** This routes the task to the right agent with the right tools and model.');
     for (const r of roles) {
       const load = r.currentLoad > 0 ? ` (${r.currentLoad} active)` : ' (idle)';
-      descParts.push(`- **${r.name}** (\`${r.slug}\`) — ${r.model}${load}${r.description ? `: ${r.description}` : ''}`);
+      const usage = r.completedTasks30d > 0 ? ` | ${r.completedTasks30d} completed (30d)` : '';
+      descParts.push(`- **${r.name}** (\`${r.slug}\`) — ${r.model}${load}${usage}${r.description ? `: ${r.description}` : ''}`);
     }
 
     if (isRecurringPattern) {
