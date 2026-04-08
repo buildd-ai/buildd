@@ -422,8 +422,28 @@ export default async function HomePage() {
                   </div>
                 </div>
               ) : activeItems.length === 0 ? (
-                <div className="text-[14px] text-text-secondary">
-                  No agents running.
+                <div>
+                  <div className="text-[14px] text-text-secondary mb-3">No agents running.</div>
+                  {teamRoles.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {teamRoles.map((role) => (
+                        <Link
+                          key={role.id}
+                          href="/app/team"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-2 border border-border-default"
+                        >
+                          <div
+                            className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                            style={{ backgroundColor: role.color }}
+                          >
+                            <span className="text-white text-[8px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                          </div>
+                          <span className="text-[11px] text-text-muted">{role.name}</span>
+                          <span className="text-[10px] text-text-muted/60">idle</span>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">
