@@ -874,6 +874,71 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('You created 0 tasks');
   });
 
+  it('shows "Source Plan" section with execution guidance when contextArtifactIds reference a plan', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-plan',
+      title: 'Build: iOS App',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      contextArtifactIds: ['art-plan-1'],
+    });
+    // Prior artifacts (by missionId) — none yet
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    // Referenced artifacts (by contextArtifactIds) — the plan
+    mockArtifactsFindMany.mockResolvedValueOnce([
+      { id: 'art-plan-1', key: 'ios-plan', type: 'report', title: 'iOS App Feature Plan', content: 'Screen-by-screen spec...', updatedAt: new Date() },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-plan');
+    expect(result).not.toBeNull();
+    // Should show "Source Plan" section with execution instructions
+    expect(result!.description).toContain('Source Plan');
+    expect(result!.description).toContain('EXECUTE it, not re-plan');
+    expect(result!.description).toContain('iOS App Feature Plan');
+    expect(result!.description).toContain('Read these artifacts first');
+    // Should NOT show generic "Prior Artifacts" for the referenced ones
+    expect(result!.description).not.toContain('## Prior Artifacts');
+  });
+
+  it('shows generic Prior Artifacts when artifacts exist but no contextArtifactIds', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-generic',
+      title: 'Fix bug',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    // Prior artifacts (by missionId) — some summaries
+    mockArtifactsFindMany.mockResolvedValueOnce([
+      { id: 'art-sum-1', key: null, type: 'summary', title: 'Task Summary', content: 'Did some work...', updatedAt: new Date() },
+    ]);
+    // No contextArtifactIds → second query won't run
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-generic');
+    expect(result).not.toBeNull();
+    // Should show generic "Prior Artifacts" section
+    expect(result!.description).toContain('## Prior Artifacts');
+    expect(result!.description).toContain('Task Summary');
+    // Should NOT show "Source Plan" section
+    expect(result!.description).not.toContain('Source Plan');
+    expect(result!.description).not.toContain('EXECUTE it');
+  });
+
   it('does not show system feedback when stuckPlanningFeedback is absent', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-nofb',

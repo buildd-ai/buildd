@@ -429,13 +429,38 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   if (allArtifacts.length > 0) {
-    descParts.push('\n## Prior Artifacts');
-    for (const a of allArtifacts) {
-      const preview = a.content?.slice(0, 150) || '';
-      const keyLabel = a.key ? ` (key: ${a.key})` : '';
-      descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 150 ? '...' : ''}\n  ID: ${a.id}`);
+    // Distinguish referenced artifacts (from contextArtifactIds — plan already exists) vs mission-produced artifacts
+    const hasReferencedPlan = referencedArtifacts.length > 0 &&
+      referencedArtifacts.some(a => ['report', 'content'].includes(a.type));
+
+    if (hasReferencedPlan) {
+      descParts.push('\n## Source Plan (from prior mission)');
+      descParts.push(
+        '**A plan artifact already exists for this mission.** Your job is to EXECUTE it, not re-plan.\n' +
+        '1. Read the plan artifact(s) below using `buildd` action=get_artifact\n' +
+        '2. Decompose the plan into concrete execution tasks using create_task\n' +
+        '3. If the plan requires a workspace/repo, set that up first (see Workspace State above)\n' +
+        '4. Do NOT create new plan artifacts — the plan is already done'
+      );
+      for (const a of referencedArtifacts) {
+        const preview = a.content?.slice(0, 200) || '';
+        const keyLabel = a.key ? ` (key: ${a.key})` : '';
+        descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 200 ? '...' : ''}\n  ID: ${a.id}`);
+      }
+      descParts.push('\n**Read these artifacts first, then create tasks.**');
     }
-    descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
+
+    // Show any additional artifacts (produced by this mission itself)
+    const ownArtifacts = allArtifacts.filter(a => !referencedArtifacts.some(r => r.id === a.id));
+    if (ownArtifacts.length > 0) {
+      descParts.push('\n## Prior Artifacts');
+      for (const a of ownArtifacts) {
+        const preview = a.content?.slice(0, 150) || '';
+        const keyLabel = a.key ? ` (key: ${a.key})` : '';
+        descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${keyLabel}\n  Preview: ${preview}${preview.length >= 150 ? '...' : ''}\n  ID: ${a.id}`);
+      }
+      descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
+    }
   }
 
   // TODO: Memory bridge — inject relevant memories when memory-client module is available.
