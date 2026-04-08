@@ -484,6 +484,77 @@ export async function GET(req: NextRequest) {
       console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
     }
 
+    // Auto-heal: retry failed tasks in active missions that are stuck
+    // (all tasks failed, no active workers, mission is still active)
+    let autoRetried = 0;
+    try {
+      const activeMissions = await db.query.missions.findMany({
+        where: eq(missions.status, 'active'),
+        columns: { id: true },
+        with: {
+          tasks: {
+            columns: { id: true, status: true, workspaceId: true, title: true, description: true, mode: true, priority: true, updatedAt: true },
+          },
+        },
+      });
+
+      const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+      for (const mission of activeMissions) {
+        const missionTasks = mission.tasks || [];
+        if (missionTasks.length === 0) continue;
+
+        const allFailed = missionTasks.every(t => t.status === 'failed');
+        if (!allFailed) continue;
+
+        // Only auto-retry if the most recent task update was >5 min ago
+        // This prevents infinite retry loops for genuinely broken tasks
+        const mostRecentUpdate = missionTasks.reduce((latest, t) => {
+          const updated = new Date(t.updatedAt || 0);
+          return updated > latest ? updated : latest;
+        }, new Date(0));
+        if (mostRecentUpdate > fiveMinutesAgo) continue;
+
+        // All tasks in this mission are failed — reset them to pending
+        const failedIds = missionTasks.map(t => t.id);
+        await db.update(tasks)
+          .set({
+            status: 'pending',
+            claimedBy: null,
+            claimedAt: null,
+            expiresAt: null,
+            result: null,
+            updatedAt: now,
+          })
+          .where(inArray(tasks.id, failedIds));
+
+        // Broadcast for worker pickup
+        for (const task of missionTasks) {
+          await triggerEvent(
+            channels.workspace(task.workspaceId),
+            events.TASK_ASSIGNED,
+            {
+              task: {
+                id: task.id,
+                title: task.title,
+                description: task.description,
+                workspaceId: task.workspaceId,
+                status: 'pending' as const,
+                mode: task.mode,
+                priority: task.priority,
+              },
+              targetLocalUiUrl: null,
+            }
+          );
+        }
+
+        autoRetried += failedIds.length;
+        console.log(`[Cron] Auto-retried ${failedIds.length} failed tasks in mission ${mission.id}`);
+      }
+    } catch (autoRetryErr) {
+      console.warn('[Cron] Auto-retry failed tasks error:', autoRetryErr instanceof Error ? autoRetryErr.message : autoRetryErr);
+    }
+
     return NextResponse.json({
       processed,
       created,
@@ -491,6 +562,7 @@ export async function GET(req: NextRequest) {
       errors,
       triggerChecks,
       heartbeatOrphans,
+      autoRetried,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

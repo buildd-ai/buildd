@@ -122,6 +122,7 @@ export default async function MissionDetailPage({
 
   const totalTasks = mission.tasks?.length || 0;
   const completedTasks = mission.tasks?.filter((t) => t.status === 'completed').length || 0;
+  const failedTaskCount = mission.tasks?.filter((t) => t.status === 'failed').length || 0;
   // Completed missions show 100% — the mission is done regardless of individual task outcomes
   const progress = mission.status === 'completed'
     ? 100
@@ -393,6 +394,7 @@ export default async function MissionDetailPage({
             lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
           } : null}
           hasSchedule={!!scheduleCron}
+          failedTaskCount={failedTaskCount}
         />
       </div>
 
