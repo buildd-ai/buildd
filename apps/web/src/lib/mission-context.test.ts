@@ -128,6 +128,10 @@ describe('buildMissionContext', () => {
     mockArtifactsFindMany.mockResolvedValue([]);
     mockWorkersFindMany.mockReset();
     mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -770,6 +774,125 @@ describe('buildMissionContext', () => {
     // Should NOT include the other mission's worker
     expect(result!.description).not.toContain('Setup DB');
     expect(result!.description).not.toContain('Which database?');
+  });
+
+  // ── Workspace state injection ──
+
+  it('shows coordination workspace warning when workspace is __coordination', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-ws1',
+      title: 'Build iOS App',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-coord',
+      scheduleId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValueOnce({
+      id: 'ws-coord', name: '__coordination', repo: null, githubInstallationId: null,
+    });
+    mockWorkspacesFindMany.mockResolvedValueOnce([
+      { id: 'ws-coord', name: '__coordination', repo: null },
+      { id: 'ws-ios', name: 'buildd-ios', repo: 'https://github.com/buildd-ai/buildd-ios' },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-ws1');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('meta-workspace');
+    expect(result!.description).toContain('MUST create a dedicated workspace');
+    expect(result!.description).toContain('## Team Workspaces');
+    expect(result!.description).toContain('buildd-ios');
+    // __coordination should be filtered out of team workspaces list
+    expect(result!.description).not.toMatch(/- \*\*__coordination\*\*/);
+    // contextData should have workspace state
+    expect(result!.context.workspaceState).toEqual({
+      name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false,
+    });
+    expect(result!.context.teamWorkspaces).toEqual([
+      { id: 'ws-ios', name: 'buildd-ios', repo: 'https://github.com/buildd-ai/buildd-ios' },
+    ]);
+  });
+
+  it('shows repo URL when workspace has a repo', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-ws2',
+      title: 'Fix bug',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-repo',
+      scheduleId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValueOnce({
+      id: 'ws-repo', name: 'my-project', repo: 'https://github.com/org/my-project', githubInstallationId: 'inst-1',
+    });
+    mockWorkspacesFindMany.mockResolvedValueOnce([
+      { id: 'ws-repo', name: 'my-project', repo: 'https://github.com/org/my-project' },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-ws2');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('my-project');
+    expect(result!.description).toContain('https://github.com/org/my-project');
+    expect(result!.description).not.toContain('meta-workspace');
+    expect(result!.context.workspaceState).toEqual({
+      name: 'my-project', repo: 'https://github.com/org/my-project', isCoordination: false, hasGitHubApp: true,
+    });
+  });
+
+  it('surfaces stuckPlanningFeedback from templateContext', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-stuck',
+      title: 'Build thing',
+      description: 'A mission',
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-stuck', {
+      stuckPlanningFeedback: 'You created 0 tasks. Create workspace and tasks.',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('**System Feedback**');
+    expect(result!.description).toContain('You created 0 tasks');
+  });
+
+  it('does not show system feedback when stuckPlanningFeedback is absent', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-nofb',
+      title: 'Normal mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-nofb');
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('System Feedback');
   });
 });
 
