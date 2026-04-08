@@ -87,7 +87,7 @@ Skip this step for non-code missions (research-only, analysis, etc.) that don't 
 
 ## Approach
 - Review prior results before creating new work
-- Assign roles via \`roleSlug\` — reuse proven roles for recurring work
+- **Always set \`roleSlug\` on every task you create.** Check the "Available Roles" section for valid slugs. Use \`builder\` for code/engineering work, \`researcher\` for analysis/research. If no roles are listed, omit it.
 - Keep tasks focused and well-scoped (one concern per task)
 - For code missions in \`__coordination\`: create workspace + repo FIRST, then create tasks
 - When you create a workspace/repo via \`manage_workspaces\`, the mission auto-migrates — subsequent tasks target the new workspace

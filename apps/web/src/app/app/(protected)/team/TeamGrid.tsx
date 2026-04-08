@@ -92,6 +92,14 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
           </div>
         </div>
       )}
+
+      {role.stats && role.stats.total > 0 && (
+        <div className="flex items-center gap-3 mt-3 text-[11px] text-text-muted">
+          <span>{role.stats.total} tasks (30d)</span>
+          <span className="text-status-success">{role.stats.completed} done</span>
+          {role.stats.failed > 0 && <span className="text-status-error">{role.stats.failed} failed</span>}
+        </div>
+      )}
     </Link>
   );
 }
@@ -111,7 +119,11 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
           {role.model}
         </span>
       )}
-      <span className="text-[11px] text-text-muted font-mono">{role.slug}</span>
+      {role.stats && role.stats.total > 0 ? (
+        <span className="text-[11px] text-text-muted">{role.stats.total} tasks</span>
+      ) : (
+        <span className="text-[11px] text-text-muted font-mono">{role.slug}</span>
+      )}
     </Link>
   );
 }
