@@ -15,10 +15,12 @@ export const DEFAULT_ACTIVE_HOURS_START = 8;
 export const DEFAULT_ACTIVE_HOURS_END = 22;
 export const DEFAULT_ACTIVE_HOURS_TIMEZONE = 'America/New_York';
 
-export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Check all linked tasks — retry any in 'failed' status by creating replacement tasks with failureContext
-- [ ] Verify workers are actively progressing (not stale)
-- [ ] If tasks are blocked on dependencies, flag for review
-- [ ] If tasks created PRs, check merge status — create integration task if multiple unmerged PRs conflict
+export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: are we planning, building, reviewing, or stalled?
+- [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
+- [ ] If no workspace/repo exists: create one with manage_workspaces, then create coding tasks
+- [ ] Retry any failed tasks with failureContext
+- [ ] Check PR merge status — create integration task if conflicts exist
+- [ ] Do NOT report OK if the mission has not made forward progress since last heartbeat
 - [ ] Do NOT declare missionComplete — only a human or independent evaluator can end a mission`;
 
 // ── Hour formatting ──
@@ -169,4 +171,147 @@ export function getHeartbeatStatus(tasks: Array<{
   }
 
   return { lastStatus: null, lastAt: null };
+}
+
+// ── Mission phase detection ──
+
+export interface MissionPhaseData {
+  completedTasks: Array<{ roleSlug?: string | null; result?: Record<string, unknown> | null }>;
+  activeTasks: Array<{ status: string; roleSlug?: string | null }>;
+  failedTasks: Array<{ title: string }>;
+  artifacts: Array<{ type: string; key?: string | null }>;
+  hasWorkspace: boolean;
+  prCount: number;
+  priorHeartbeatStatuses: string[];
+}
+
+export type MissionPhase = 'planning' | 'needs_workspace' | 'building' | 'reviewing' | 'stalled' | 'idle';
+
+export interface PhaseAssessment {
+  phase: MissionPhase;
+  reason: string;
+  actions: string[];
+}
+
+/**
+ * Detect the current phase of a mission based on task, artifact, and heartbeat data.
+ * Pure function — no DB access. Used by the heartbeat context builder to generate
+ * phase-aware guidance instead of passive status reporting.
+ */
+export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
+  const { completedTasks, activeTasks, failedTasks, artifacts, hasWorkspace, prCount, priorHeartbeatStatuses } = data;
+
+  const builderCompleted = completedTasks.filter(t => t.roleSlug === 'builder');
+  const activeBuilders = activeTasks.filter(t => t.roleSlug === 'builder');
+  const hasBuilderWork = builderCompleted.length > 0 || activeBuilders.length > 0;
+
+  // Plan artifacts: reports or content with plan/feature/spec/design in the key
+  const hasPlanArtifacts = artifacts.some(a =>
+    a.type === 'report' ||
+    (a.key != null && /plan|feature|spec|design/i.test(a.key))
+  );
+
+  // 3+ consecutive "ok" heartbeats = potential stall
+  const isStalled = priorHeartbeatStatuses.length >= 3 &&
+    priorHeartbeatStatuses.every(s => s === 'ok');
+
+  // Active builders → building
+  if (activeBuilders.length > 0) {
+    return {
+      phase: 'building',
+      reason: `${activeBuilders.length} builder task(s) in progress`,
+      actions: [
+        'Monitor builder progress',
+        ...(failedTasks.length > 0 ? [`Retry ${failedTasks.length} failed task(s) with failureContext`] : []),
+      ],
+    };
+  }
+
+  // PRs exist → reviewing
+  if (prCount > 0) {
+    return {
+      phase: 'reviewing',
+      reason: `${prCount} PR(s) created by tasks`,
+      actions: [
+        'Check PR merge status',
+        'Create integration task if merge conflicts exist',
+        'If all PRs merged, create next batch of tasks from the plan or summarize completion',
+      ],
+    };
+  }
+
+  // Plan exists, no builder work → transition to building (or needs workspace first)
+  if (hasPlanArtifacts && !hasBuilderWork) {
+    if (!hasWorkspace) {
+      return {
+        phase: 'needs_workspace',
+        reason: 'Plan artifact(s) delivered but mission has no workspace/repo — cannot create coding tasks.',
+        actions: [
+          'Create a workspace: buildd action=manage_workspaces, action=create (name + optional repoUrl)',
+          'Create a GitHub repo: buildd action=manage_workspaces, action=create_repo',
+          'Then create coding tasks from the plan with outputRequirement=pr_required, roleSlug=builder',
+        ],
+      };
+    }
+
+    return {
+      phase: 'planning',
+      reason: 'Plan artifact(s) delivered but no coding tasks created yet.',
+      actions: [
+        'Read the plan artifact(s) using buildd action=get_artifact',
+        'Create concrete coding tasks: each needs outputRequirement=pr_required, roleSlug=builder, correct workspaceId',
+        'Break large phases into individual tasks with clear descriptions',
+        'Set task dependencies where phases must be sequential',
+      ],
+    };
+  }
+
+  // Builder work completed, no active builders → check next steps
+  if (builderCompleted.length > 0 && activeBuilders.length === 0) {
+    return {
+      phase: 'reviewing',
+      reason: `${builderCompleted.length} builder task(s) completed. Assess if more phases remain.`,
+      actions: [
+        'Review completed task results and PR statuses',
+        'If more phases remain in the plan, create next batch of coding tasks',
+        'If all planned work is done, create a summary artifact for human review',
+      ],
+    };
+  }
+
+  // Stalled: heartbeat keeps saying OK but nothing moves
+  if (isStalled && completedTasks.length > 0) {
+    return {
+      phase: 'stalled',
+      reason: 'Last 3+ heartbeats reported OK with no forward progress.',
+      actions: [
+        'Identify the specific blocker preventing progress',
+        'If tasks only produced plans, create coding tasks (see planning phase)',
+        'If waiting on a human decision, escalate clearly',
+        'Do NOT report OK again without taking concrete action',
+      ],
+    };
+  }
+
+  // Nothing happened yet
+  if (completedTasks.length === 0 && activeTasks.length === 0) {
+    return {
+      phase: 'idle',
+      reason: 'No tasks completed or in progress yet.',
+      actions: [
+        'The initial planning task should be in flight or pending',
+        'If no tasks exist at all, the mission may need manual intervention',
+      ],
+    };
+  }
+
+  // Default: work is happening
+  return {
+    phase: 'building',
+    reason: 'Active work in progress.',
+    actions: [
+      'Monitor task progress',
+      ...(failedTasks.length > 0 ? [`Retry ${failedTasks.length} failed task(s)`] : []),
+    ],
+  };
 }

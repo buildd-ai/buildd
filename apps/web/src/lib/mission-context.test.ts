@@ -61,6 +61,8 @@ const mockScheduleFindFirst = mock(() => Promise.resolve(null));
 const mockSkillsFindMany = mock(() => Promise.resolve([]));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 const mockWorkersFindMany = mock(() => Promise.resolve([]));
+const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
+const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
 
 // Mock for db.select().from().innerJoin().where().groupBy() chain (workers query)
 const mockSelectResult = mock(() => Promise.resolve([]));
@@ -80,6 +82,7 @@ mock.module('@buildd/core/db', () => ({
       workspaceSkills: { findMany: mockSkillsFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
       workers: { findMany: mockWorkersFindMany },
+      workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
     },
     select: mockSelect,
   },
@@ -101,6 +104,15 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: { workspaceId: 'workspaceId', isRole: 'isRole', enabled: 'enabled' },
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },
   artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
+  workspaces: { id: 'id', teamId: 'teamId', name: 'name', repo: 'repo', githubInstallationId: 'githubInstallationId' },
+}));
+
+mock.module('./heartbeat-helpers', () => ({
+  detectMissionPhase: () => ({
+    phase: 'idle',
+    reason: 'No tasks yet.',
+    actions: ['Wait for initial planning task'],
+  }),
 }));
 
 // Dynamic import so mocks are wired up
@@ -116,6 +128,10 @@ describe('buildMissionContext', () => {
     mockArtifactsFindMany.mockResolvedValue([]);
     mockWorkersFindMany.mockReset();
     mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -299,6 +315,23 @@ describe('buildMissionContext', () => {
     expect(completions[0].nextSuggestion).toBe('Tests pass, ready for review');
   });
 
+  // Helper: mock the 6 parallel findMany queries that buildHeartbeatContext issues
+  function mockHeartbeatQueries(overrides?: {
+    priorHeartbeats?: any[];
+    completedTasks?: any[];
+    activeTasks?: any[];
+    failedTasks?: any[];
+    artifacts?: any[];
+    tasksWithPRs?: any[];
+  }) {
+    mockFindMany.mockResolvedValueOnce(overrides?.priorHeartbeats ?? []); // prior heartbeats
+    mockFindMany.mockResolvedValueOnce(overrides?.completedTasks ?? []); // completed tasks
+    mockFindMany.mockResolvedValueOnce(overrides?.activeTasks ?? []);    // active tasks
+    mockFindMany.mockResolvedValueOnce(overrides?.failedTasks ?? []);    // failed tasks
+    mockArtifactsFindMany.mockResolvedValueOnce(overrides?.artifacts ?? []); // artifacts
+    mockFindMany.mockResolvedValueOnce(overrides?.tasksWithPRs ?? []);   // tasks with PRs
+  }
+
   it('returns heartbeat context with checklist and protocol', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-hb',
@@ -309,12 +342,10 @@ describe('buildMissionContext', () => {
       workspaceId: null,
       scheduleId: 'sched-1',
     });
-    // Schedule lookup returns heartbeat config
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check API latency\n- [ ] Check error rate' } },
     });
-    // priorHeartbeats query
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
@@ -323,8 +354,53 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Checklist');
     expect(result!.description).toContain('Check API latency');
     expect(result!.description).toContain('## Protocol');
-    expect(result!.description).toContain('periodic heartbeat check');
-    expect(result!.description).toContain('report status "ok"');
+    expect(result!.description).toContain('drive the mission forward');
+  });
+
+  it('includes phase assessment in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-phase',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: 'sched-phase',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-phase', { triggerSource: 'cron' });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Mission Phase:');
+    expect(result!.context.phase).toBeDefined();
+  });
+
+  it('includes mission state summary in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-state',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-state',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries({
+      completedTasks: [
+        { id: 't1', title: 'Plan', roleSlug: 'organizer', result: { summary: 'Done' }, createdAt: new Date() },
+      ],
+    });
+
+    const result = await buildMissionContext('obj-hb-state', { triggerSource: 'cron' });
+    expect(result!.description).toContain('## Mission State');
+    expect(result!.description).toContain('Completed: 1 task(s)');
+    expect(result!.description).toContain('ws-1');
   });
 
   it('includes outputSchema in heartbeat context', async () => {
@@ -340,7 +416,7 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb2', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
@@ -366,7 +442,7 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check A\n- check B' } },
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb3', { triggerSource: 'cron' });
     expect(result!.context.heartbeatChecklist).toBe('- check A\n- check B');
@@ -385,22 +461,24 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
     });
-    mockFindMany.mockResolvedValueOnce([
-      {
-        result: {
-          summary: 'All good',
-          structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+    mockHeartbeatQueries({
+      priorHeartbeats: [
+        {
+          result: {
+            summary: 'All good',
+            structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+          },
+          createdAt: new Date(Date.now() - 3600000),
         },
-        createdAt: new Date(Date.now() - 3600000), // 1 hour ago
-      },
-      {
-        result: {
-          summary: 'Fixed cache',
-          structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+        {
+          result: {
+            summary: 'Fixed cache',
+            structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+          },
+          createdAt: new Date(Date.now() - 7200000),
         },
-        createdAt: new Date(Date.now() - 7200000), // 2 hours ago
-      },
-    ]);
+      ],
+    });
 
     const result = await buildMissionContext('obj-hb4', { triggerSource: 'cron' });
     expect(result!.description).toContain('## Prior Heartbeats');
@@ -536,7 +614,7 @@ describe('buildMissionContext', () => {
       workspaceId: null,
       scheduleId: null,
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-tc', {
       heartbeat: true,
@@ -696,6 +774,125 @@ describe('buildMissionContext', () => {
     // Should NOT include the other mission's worker
     expect(result!.description).not.toContain('Setup DB');
     expect(result!.description).not.toContain('Which database?');
+  });
+
+  // ── Workspace state injection ──
+
+  it('shows coordination workspace warning when workspace is __coordination', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-ws1',
+      title: 'Build iOS App',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-coord',
+      scheduleId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValueOnce({
+      id: 'ws-coord', name: '__coordination', repo: null, githubInstallationId: null,
+    });
+    mockWorkspacesFindMany.mockResolvedValueOnce([
+      { id: 'ws-coord', name: '__coordination', repo: null },
+      { id: 'ws-ios', name: 'buildd-ios', repo: 'https://github.com/buildd-ai/buildd-ios' },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-ws1');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('meta-workspace');
+    expect(result!.description).toContain('MUST create a dedicated workspace');
+    expect(result!.description).toContain('## Team Workspaces');
+    expect(result!.description).toContain('buildd-ios');
+    // __coordination should be filtered out of team workspaces list
+    expect(result!.description).not.toMatch(/- \*\*__coordination\*\*/);
+    // contextData should have workspace state
+    expect(result!.context.workspaceState).toEqual({
+      name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false,
+    });
+    expect(result!.context.teamWorkspaces).toEqual([
+      { id: 'ws-ios', name: 'buildd-ios', repo: 'https://github.com/buildd-ai/buildd-ios' },
+    ]);
+  });
+
+  it('shows repo URL when workspace has a repo', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-ws2',
+      title: 'Fix bug',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-repo',
+      scheduleId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValueOnce({
+      id: 'ws-repo', name: 'my-project', repo: 'https://github.com/org/my-project', githubInstallationId: 'inst-1',
+    });
+    mockWorkspacesFindMany.mockResolvedValueOnce([
+      { id: 'ws-repo', name: 'my-project', repo: 'https://github.com/org/my-project' },
+    ]);
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-ws2');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('my-project');
+    expect(result!.description).toContain('https://github.com/org/my-project');
+    expect(result!.description).not.toContain('meta-workspace');
+    expect(result!.context.workspaceState).toEqual({
+      name: 'my-project', repo: 'https://github.com/org/my-project', isCoordination: false, hasGitHubApp: true,
+    });
+  });
+
+  it('surfaces stuckPlanningFeedback from templateContext', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-stuck',
+      title: 'Build thing',
+      description: 'A mission',
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-stuck', {
+      stuckPlanningFeedback: 'You created 0 tasks. Create workspace and tasks.',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('**System Feedback**');
+    expect(result!.description).toContain('You created 0 tasks');
+  });
+
+  it('does not show system feedback when stuckPlanningFeedback is absent', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-nofb',
+      title: 'Normal mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]); // roles
+
+    const result = await buildMissionContext('obj-nofb');
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('System Feedback');
   });
 });
 

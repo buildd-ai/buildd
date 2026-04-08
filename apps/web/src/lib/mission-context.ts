@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts } from '@buildd/core/db/schema';
+import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
+import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -125,6 +126,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       description: true,
       status: true,
       priority: true,
+      teamId: true,
       workspaceId: true,
       scheduleId: true,
       lastEvaluationTaskId: true,
@@ -174,6 +176,40 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       description: mission.description,
       heartbeatChecklist,
       skillSlugs,
+      workspaceId: mission.workspaceId,
+    });
+  }
+
+  // ── Workspace state for organizer context ──
+  let workspaceState: {
+    name: string;
+    repo: string | null;
+    isCoordination: boolean;
+    hasGitHubApp: boolean;
+  } | null = null;
+
+  let teamWorkspacesList: Array<{ id: string; name: string; repo: string | null }> = [];
+
+  if (mission.workspaceId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, mission.workspaceId),
+      columns: { id: true, name: true, repo: true, githubInstallationId: true },
+    });
+    if (ws) {
+      workspaceState = {
+        name: ws.name,
+        repo: ws.repo,
+        isCoordination: ws.name === '__coordination',
+        hasGitHubApp: !!ws.githubInstallationId,
+      };
+    }
+  }
+
+  if (mission.teamId) {
+    teamWorkspacesList = await db.query.workspaces.findMany({
+      where: eq(workspaces.teamId, mission.teamId),
+      columns: { id: true, name: true, repo: true },
+      limit: 20,
     });
   }
 
@@ -279,6 +315,41 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     descParts.push(`\n**Planning cycle ${cycleNumber}** — Review what changed since the last cycle.`);
     if (cycleNumber >= 4) {
       descParts.push('This mission has been through many cycles. Strongly consider whether objectives are met and the mission can be marked complete.');
+    }
+  }
+
+  // Surface stuck-planning feedback from retrigger loop
+  const stuckFeedback = templateContext?.stuckPlanningFeedback as string | undefined;
+  if (stuckFeedback) {
+    descParts.push(`\n> **System Feedback**: ${stuckFeedback}`);
+  }
+
+  // Workspace state for organizer
+  if (workspaceState) {
+    descParts.push('\n## Workspace State');
+    if (workspaceState.isCoordination) {
+      descParts.push(
+        '**Current workspace: `__coordination` (meta-workspace)**\n' +
+        'This workspace has no repo and is NOT a project workspace.\n' +
+        'For code missions (builder tasks), you MUST create a dedicated workspace with a repo before creating tasks.'
+      );
+    } else {
+      descParts.push(`**Current workspace: "${workspaceState.name}"**`);
+      if (workspaceState.repo) {
+        descParts.push(`Repo: ${workspaceState.repo}`);
+      } else {
+        descParts.push('Repo: none — use `manage_workspaces action=create_repo` to create one, or `action=update repoUrl=<url>` to link an existing repo.');
+      }
+    }
+    descParts.push(`GitHub App: ${workspaceState.hasGitHubApp ? 'configured (create_repo available)' : 'not configured (use gh CLI to create repos, then update workspace with repoUrl)'}`);
+  }
+
+  const projectWorkspaces = teamWorkspacesList.filter(tw => tw.name !== '__coordination');
+  if (projectWorkspaces.length > 0) {
+    descParts.push('\n## Team Workspaces');
+    descParts.push('Existing workspaces (reuse if applicable instead of creating new):');
+    for (const tw of projectWorkspaces) {
+      descParts.push(`- **${tw.name}**${tw.repo ? ` (${tw.repo})` : ' (no repo)'} — ID: ${tw.id}`);
     }
   }
 
@@ -475,6 +546,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     missionId: mission.id,
     missionTitle: mission.title,
     orchestrator: true,
+    workspaceState: workspaceState || { name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false },
+    teamWorkspaces: projectWorkspaces.map(tw => ({ id: tw.id, name: tw.name, repo: tw.repo })),
     availableRoles: roles,
     recentCompletions: completedTasks.map(t => {
       const result = t.result as Record<string, unknown> | null;
@@ -506,7 +579,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
 /**
  * Build context specifically for heartbeat missions.
- * Produces a checklist-focused description with compact prior results.
+ * Queries full mission state (tasks, artifacts, PRs) and uses phase detection
+ * to generate actionable guidance instead of passive status reporting.
  */
 async function buildHeartbeatContext(mission: {
   id: string;
@@ -514,33 +588,135 @@ async function buildHeartbeatContext(mission: {
   description: string | null;
   heartbeatChecklist: string | null;
   skillSlugs?: string[];
+  workspaceId?: string | null;
 }) {
-  // Last 3 completed heartbeat results (compact)
-  const priorHeartbeats = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.missionId, mission.id),
-      eq(tasks.status, 'completed')
-    ),
-    orderBy: [desc(tasks.createdAt)],
-    limit: 3,
-    columns: { result: true, createdAt: true },
+  // Query mission state in parallel
+  const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
+    // Last 3 heartbeat results
+    db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        eq(tasks.status, 'completed')
+      ),
+      orderBy: [desc(tasks.createdAt)],
+      limit: 3,
+      columns: { result: true, createdAt: true },
+    }),
+    // All completed tasks (with role info)
+    db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        eq(tasks.status, 'completed')
+      ),
+      orderBy: [desc(tasks.createdAt)],
+      limit: 20,
+      columns: { id: true, title: true, roleSlug: true, result: true, createdAt: true },
+    }),
+    // Active/pending tasks
+    db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
+      ),
+      limit: 10,
+      columns: { id: true, title: true, status: true, roleSlug: true },
+    }),
+    // Failed tasks
+    db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        eq(tasks.status, 'failed')
+      ),
+      orderBy: [desc(tasks.createdAt)],
+      limit: 5,
+      columns: { id: true, title: true, result: true },
+    }),
+    // Mission artifacts (non-heartbeat)
+    db.query.artifacts.findMany({
+      where: eq(artifacts.missionId, mission.id),
+      orderBy: [desc(artifacts.updatedAt)],
+      limit: 10,
+      columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
+    }),
+    // Tasks that created PRs
+    db.query.tasks.findMany({
+      where: and(
+        eq(tasks.missionId, mission.id),
+        eq(tasks.status, 'completed'),
+        sql`${tasks.result}->>'prUrl' IS NOT NULL`
+      ),
+      limit: 20,
+      columns: { title: true, result: true },
+    }),
+  ]);
+
+  // Extract prior heartbeat statuses for stall detection
+  const priorStatuses = priorHeartbeats.map(t => {
+    const result = t.result as Record<string, unknown> | null;
+    const so = result?.structuredOutput as Record<string, unknown> | undefined;
+    return (so?.status as string) || 'unknown';
   });
 
+  // Non-auto-generated artifacts (actual deliverables, not heartbeat/mission summaries)
+  const deliverableArtifacts = missionArtifacts.filter(a =>
+    !a.key?.startsWith('heartbeat-') && !a.key?.startsWith('mission-')
+  );
+
+  // Detect mission phase
+  const phaseData: MissionPhaseData = {
+    completedTasks: completedTasks.map(t => ({
+      roleSlug: t.roleSlug,
+      result: t.result as Record<string, unknown> | null,
+    })),
+    activeTasks: activeTasks.map(t => ({ status: t.status, roleSlug: t.roleSlug })),
+    failedTasks: failedTasks.map(t => ({ title: t.title })),
+    artifacts: deliverableArtifacts.map(a => ({ type: a.type, key: a.key })),
+    hasWorkspace: !!mission.workspaceId,
+    prCount: tasksWithPRs.length,
+    priorHeartbeatStatuses: priorStatuses,
+  };
+  const phase = detectMissionPhase(phaseData);
+
+  // Build description
   const descParts: string[] = [];
   descParts.push(`## Heartbeat: ${mission.title}`);
   if (mission.description) descParts.push(mission.description);
 
+  // Phase assessment — the most important section
+  descParts.push(`\n## Mission Phase: ${phase.phase.toUpperCase()}`);
+  descParts.push(phase.reason);
+  if (phase.actions.length > 0) {
+    descParts.push('\n**Required actions:**');
+    for (const action of phase.actions) {
+      descParts.push(`- ${action}`);
+    }
+  }
+
+  // Mission state summary
+  const builderCount = completedTasks.filter(t => t.roleSlug === 'builder').length;
+  const organizerCount = completedTasks.filter(t => t.roleSlug === 'organizer' || !t.roleSlug).length;
+  descParts.push(`\n## Mission State`);
+  descParts.push(`- Workspace: ${mission.workspaceId || '**NONE** (must create before coding tasks can run)'}`);
+  descParts.push(`- Completed: ${completedTasks.length} task(s) (${builderCount} builder, ${organizerCount} organizer/other)`);
+  descParts.push(`- Active: ${activeTasks.length} task(s)`);
+  descParts.push(`- Failed: ${failedTasks.length} task(s)`);
+  descParts.push(`- Artifacts: ${deliverableArtifacts.length} deliverable(s)`);
+  descParts.push(`- PRs: ${tasksWithPRs.length}`);
+
+  // Checklist (user-configured or default)
   descParts.push('\n## Checklist');
   descParts.push(mission.heartbeatChecklist || '(no checklist configured)');
 
+  // Protocol — action-oriented, not passive
   descParts.push('\n## Protocol');
-  descParts.push(`You are running a periodic heartbeat check. Follow the checklist above.
-- Perform each check item and note the result.
-- If ALL checks pass with no action needed, report status "ok" with a one-line summary.
-- If you took action on any check, report status "action_taken" and describe what you did.
-- Do NOT repeat the same analysis as prior runs unless something has changed.
-- Batch all checks into a single pass. Only create sub-tasks if a check explicitly requires external work.`);
+  descParts.push(`You are running a mission heartbeat. Your job is to **drive the mission forward**, not just report status.
+- Assess the phase above and execute the required actions.
+- If you created tasks, retried failures, or made changes, report status "action_taken" with what you did.
+- Only report "ok" if the mission is actively progressing and no action is needed RIGHT NOW.
+- If the mission is stalled (same state as prior heartbeats), you MUST take action or escalate — never report "ok" for a stalled mission.
+- If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.`);
 
+  // Prior heartbeats
   if (priorHeartbeats.length > 0) {
     descParts.push('\n## Prior Heartbeats');
     for (const t of priorHeartbeats) {
@@ -552,26 +728,52 @@ async function buildHeartbeatContext(mission: {
     }
   }
 
-  // PR awareness for build missions
-  const hasBuilder = mission.skillSlugs?.includes('builder');
-  if (hasBuilder) {
-    const tasksWithPRs = await db.query.tasks.findMany({
-      where: and(
-        eq(tasks.missionId, mission.id),
-        eq(tasks.status, 'completed'),
-        sql`${tasks.result}->>'prUrl' IS NOT NULL`
-      ),
-      limit: 20,
-      columns: { title: true, result: true },
-    });
-    if (tasksWithPRs.length > 0) {
-      descParts.push('\n## Open PRs');
-      descParts.push('Tasks created these PRs (check if merged):');
-      for (const t of tasksWithPRs) {
-        const r = t.result as Record<string, unknown>;
-        descParts.push(`- [${t.title}] PR #${r.prNumber}: ${r.prUrl}`);
-      }
-      descParts.push('If multiple unmerged PRs exist on the same repo, create an integration task to merge them, resolve conflicts, and verify the build.');
+  // Completed task results (compact)
+  if (completedTasks.length > 0) {
+    descParts.push('\n## Completed Tasks');
+    for (const t of completedTasks) {
+      const result = t.result as Record<string, unknown> | null;
+      const summary = result?.summary as string || 'no summary';
+      const role = t.roleSlug || 'none';
+      descParts.push(`- [${role}] ${t.title}: ${summary.slice(0, 200)}`);
+    }
+  }
+
+  // Active tasks
+  if (activeTasks.length > 0) {
+    descParts.push('\n## Active Tasks');
+    for (const t of activeTasks) {
+      descParts.push(`- [${t.roleSlug || 'none'}] ${t.title} — ${t.status}`);
+    }
+  }
+
+  // Failed tasks
+  if (failedTasks.length > 0) {
+    descParts.push('\n## Failed Tasks');
+    for (const t of failedTasks) {
+      const result = t.result as Record<string, unknown> | null;
+      const error = result?.summary as string || 'unknown error';
+      descParts.push(`- ${t.title}: ${error.slice(0, 200)}`);
+    }
+  }
+
+  // Deliverable artifacts
+  if (deliverableArtifacts.length > 0) {
+    descParts.push('\n## Artifacts');
+    for (const a of deliverableArtifacts) {
+      const preview = a.content?.slice(0, 120) || '';
+      descParts.push(`- **${a.title || 'Untitled'}** [${a.type}] (ID: ${a.id})`);
+      if (preview) descParts.push(`  ${preview}${preview.length >= 120 ? '...' : ''}`);
+    }
+    descParts.push('\nUse `buildd` action=get_artifact to read full content.');
+  }
+
+  // PRs
+  if (tasksWithPRs.length > 0) {
+    descParts.push('\n## Pull Requests');
+    for (const t of tasksWithPRs) {
+      const r = t.result as Record<string, unknown>;
+      descParts.push(`- [${t.title}] PR #${r.prNumber}: ${r.prUrl}`);
     }
   }
 
@@ -581,6 +783,18 @@ async function buildHeartbeatContext(mission: {
     heartbeat: true,
     heartbeatChecklist: mission.heartbeatChecklist,
     outputSchema: HEARTBEAT_OUTPUT_SCHEMA,
+    phase: phase.phase,
+    phaseActions: phase.actions,
+    hasWorkspace: !!mission.workspaceId,
+    workspaceId: mission.workspaceId || null,
+    completedTaskCount: completedTasks.length,
+    activeTaskCount: activeTasks.length,
+    failedTaskCount: failedTasks.length,
+    artifactCount: deliverableArtifacts.length,
+    prCount: tasksWithPRs.length,
+    priorArtifacts: deliverableArtifacts.map(a => ({
+      artifactId: a.id, key: a.key, type: a.type, title: a.title,
+    })),
   };
 
   return { description: descParts.join('\n'), context: contextData };

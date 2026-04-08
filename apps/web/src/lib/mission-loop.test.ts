@@ -268,6 +268,90 @@ describe('mission-loop', () => {
     expect(mockRunMission).toHaveBeenCalledTimes(1);
   });
 
+  it('passes stuck-planning feedback when tasksCreated is 0 in coordination workspace', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: {
+        cycleNumber: 1,
+        triggerChainId: 'chain-1',
+        workspaceState: { name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false },
+      },
+      result: { structuredOutput: { triageOutcome: 'multi_task', tasksCreated: 0, missionComplete: false, summary: 'Created plan artifact' } },
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }], // has children so stall detection passes
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+    const runCall = mockRunMission.mock.calls[0];
+    expect((runCall[1] as any).stuckPlanningFeedback).toContain('meta-workspace');
+    expect((runCall[1] as any).stuckPlanningFeedback).toContain('manage_workspaces');
+  });
+
+  it('passes generic stuck-planning feedback when tasksCreated is 0 with repo', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: {
+        cycleNumber: 1,
+        triggerChainId: 'chain-1',
+        workspaceState: { name: 'my-project', repo: 'https://github.com/org/repo', isCoordination: false, hasGitHubApp: true },
+      },
+      result: { structuredOutput: { triageOutcome: 'multi_task', tasksCreated: 0, missionComplete: false, summary: 'Analyzed' } },
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    const runCall = mockRunMission.mock.calls[0];
+    expect((runCall[1] as any).stuckPlanningFeedback).toContain('create concrete execution tasks');
+  });
+
+  it('does not pass stuck-planning feedback for conflict triage', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: {
+        cycleNumber: 1,
+        triggerChainId: 'chain-1',
+        workspaceState: { name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false },
+      },
+      result: { structuredOutput: { triageOutcome: 'conflict', tasksCreated: 0, missionComplete: true, summary: 'Active task covers this' } },
+    };
+
+    const result = await retrigger('m1', 'pt1');
+    // missionComplete: true → goes to evaluation, not retrigger
+    expect(result.action).toBe('evaluation_requested');
+  });
+
+  it('does not pass stuck-planning feedback when tasks were created', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { triageOutcome: 'multi_task', tasksCreated: 2, missionComplete: false, summary: 'Created 2 tasks' } },
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    const runCall = mockRunMission.mock.calls[0];
+    expect((runCall[1] as any).stuckPlanningFeedback).toBeUndefined();
+  });
+
   it('retriggers when all guards pass', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
     updateReturningResult = [{ id: 'm1' }];
