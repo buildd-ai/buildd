@@ -103,6 +103,14 @@ mock.module('@buildd/core/db/schema', () => ({
   artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
 }));
 
+mock.module('./heartbeat-helpers', () => ({
+  detectMissionPhase: () => ({
+    phase: 'idle',
+    reason: 'No tasks yet.',
+    actions: ['Wait for initial planning task'],
+  }),
+}));
+
 // Dynamic import so mocks are wired up
 const { buildMissionContext, getWorkspaceRoles } = await import('./mission-context');
 
@@ -299,6 +307,23 @@ describe('buildMissionContext', () => {
     expect(completions[0].nextSuggestion).toBe('Tests pass, ready for review');
   });
 
+  // Helper: mock the 6 parallel findMany queries that buildHeartbeatContext issues
+  function mockHeartbeatQueries(overrides?: {
+    priorHeartbeats?: any[];
+    completedTasks?: any[];
+    activeTasks?: any[];
+    failedTasks?: any[];
+    artifacts?: any[];
+    tasksWithPRs?: any[];
+  }) {
+    mockFindMany.mockResolvedValueOnce(overrides?.priorHeartbeats ?? []); // prior heartbeats
+    mockFindMany.mockResolvedValueOnce(overrides?.completedTasks ?? []); // completed tasks
+    mockFindMany.mockResolvedValueOnce(overrides?.activeTasks ?? []);    // active tasks
+    mockFindMany.mockResolvedValueOnce(overrides?.failedTasks ?? []);    // failed tasks
+    mockArtifactsFindMany.mockResolvedValueOnce(overrides?.artifacts ?? []); // artifacts
+    mockFindMany.mockResolvedValueOnce(overrides?.tasksWithPRs ?? []);   // tasks with PRs
+  }
+
   it('returns heartbeat context with checklist and protocol', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-hb',
@@ -309,12 +334,10 @@ describe('buildMissionContext', () => {
       workspaceId: null,
       scheduleId: 'sched-1',
     });
-    // Schedule lookup returns heartbeat config
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check API latency\n- [ ] Check error rate' } },
     });
-    // priorHeartbeats query
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
@@ -323,8 +346,53 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Checklist');
     expect(result!.description).toContain('Check API latency');
     expect(result!.description).toContain('## Protocol');
-    expect(result!.description).toContain('periodic heartbeat check');
-    expect(result!.description).toContain('report status "ok"');
+    expect(result!.description).toContain('drive the mission forward');
+  });
+
+  it('includes phase assessment in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-phase',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: 'sched-phase',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-phase', { triggerSource: 'cron' });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('## Mission Phase:');
+    expect(result!.context.phase).toBeDefined();
+  });
+
+  it('includes mission state summary in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-state',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-state',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries({
+      completedTasks: [
+        { id: 't1', title: 'Plan', roleSlug: 'organizer', result: { summary: 'Done' }, createdAt: new Date() },
+      ],
+    });
+
+    const result = await buildMissionContext('obj-hb-state', { triggerSource: 'cron' });
+    expect(result!.description).toContain('## Mission State');
+    expect(result!.description).toContain('Completed: 1 task(s)');
+    expect(result!.description).toContain('ws-1');
   });
 
   it('includes outputSchema in heartbeat context', async () => {
@@ -340,7 +408,7 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb2', { triggerSource: 'cron' });
     expect(result).not.toBeNull();
@@ -366,7 +434,7 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check A\n- check B' } },
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-hb3', { triggerSource: 'cron' });
     expect(result!.context.heartbeatChecklist).toBe('- check A\n- check B');
@@ -385,22 +453,24 @@ describe('buildMissionContext', () => {
     mockScheduleFindFirst.mockResolvedValueOnce({
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
     });
-    mockFindMany.mockResolvedValueOnce([
-      {
-        result: {
-          summary: 'All good',
-          structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+    mockHeartbeatQueries({
+      priorHeartbeats: [
+        {
+          result: {
+            summary: 'All good',
+            structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+          },
+          createdAt: new Date(Date.now() - 3600000),
         },
-        createdAt: new Date(Date.now() - 3600000), // 1 hour ago
-      },
-      {
-        result: {
-          summary: 'Fixed cache',
-          structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+        {
+          result: {
+            summary: 'Fixed cache',
+            structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+          },
+          createdAt: new Date(Date.now() - 7200000),
         },
-        createdAt: new Date(Date.now() - 7200000), // 2 hours ago
-      },
-    ]);
+      ],
+    });
 
     const result = await buildMissionContext('obj-hb4', { triggerSource: 'cron' });
     expect(result!.description).toContain('## Prior Heartbeats');
@@ -536,7 +606,7 @@ describe('buildMissionContext', () => {
       workspaceId: null,
       scheduleId: null,
     });
-    mockFindMany.mockResolvedValueOnce([]);
+    mockHeartbeatQueries();
 
     const result = await buildMissionContext('obj-tc', {
       heartbeat: true,

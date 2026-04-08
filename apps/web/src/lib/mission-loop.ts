@@ -126,6 +126,33 @@ export async function maybeRetriggerMission(
     return { action: 'depth_exceeded' };
   }
 
+  // 5.5. Stuck-planning detection — zero tasks with no completion signal
+  // If the organizer reported tasksCreated: 0 and triageOutcome !== 'conflict',
+  // inject corrective feedback into the next cycle
+  let stuckPlanningFeedback: string | null = null;
+  const tasksCreated = (structuredOutput as any)?.tasksCreated;
+  const triageOutcome = (structuredOutput as any)?.triageOutcome;
+
+  if (
+    typeof tasksCreated === 'number' &&
+    tasksCreated === 0 &&
+    triageOutcome !== 'conflict'
+  ) {
+    const wsState = taskContext.workspaceState as { isCoordination?: boolean; repo?: string | null } | undefined;
+    if (wsState?.isCoordination || (wsState && !wsState.repo)) {
+      stuckPlanningFeedback =
+        'Previous planning cycle created 0 tasks. ' +
+        'You are in a meta-workspace (__coordination) or a workspace with no repo. ' +
+        'For code missions: create a workspace and repo using manage_workspaces FIRST, then create execution tasks. ' +
+        'Artifacts alone do not advance the mission.';
+    } else {
+      stuckPlanningFeedback =
+        'Previous planning cycle created 0 tasks and did not complete the mission. ' +
+        'Review your plan and create concrete execution tasks using create_task. ' +
+        'Every planning cycle must either create tasks or mark the mission complete.';
+    }
+  }
+
   // 6. Stall detection — 2 consecutive cycles with zero non-aggregation children
   const recentPlanningTasks = await db.query.tasks.findMany({
     where: and(
@@ -170,7 +197,10 @@ export async function maybeRetriggerMission(
   };
 
   const run = _runMission ?? (await import('@/lib/mission-run')).runMission;
-  await run(missionId, { cycleContext: nextCycle });
+  await run(missionId, {
+    cycleContext: nextCycle,
+    ...(stuckPlanningFeedback ? { stuckPlanningFeedback } : {}),
+  });
 
   await triggerEvent(
     channels.mission(missionId),

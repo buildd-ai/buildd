@@ -4,7 +4,10 @@ import {
   getHourOptions,
   validateActiveHours,
   DEFAULT_HEARTBEAT_CHECKLIST,
+  DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
   HEARTBEAT_CRON_PRESETS,
+  detectMissionPhase,
+  type MissionPhaseData,
 } from './heartbeat-helpers';
 
 describe('formatHour', () => {
@@ -74,6 +77,21 @@ describe('DEFAULT_HEARTBEAT_CHECKLIST', () => {
   });
 });
 
+describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
+  it('includes phase assessment as first item', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('Assess mission phase');
+  });
+
+  it('includes guidance for creating coding tasks from plans', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('outputRequirement=pr_required');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('roleSlug=builder');
+  });
+
+  it('warns against false OK reporting', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('Do NOT report OK if the mission has not made forward progress');
+  });
+});
+
 describe('HEARTBEAT_CRON_PRESETS', () => {
   it('has 3 heartbeat-appropriate presets', () => {
     expect(HEARTBEAT_CRON_PRESETS).toHaveLength(3);
@@ -82,5 +100,149 @@ describe('HEARTBEAT_CRON_PRESETS', () => {
       'Every hour',
       'Every 4 hours',
     ]);
+  });
+});
+
+// ── detectMissionPhase ──
+
+function makePhaseData(overrides: Partial<MissionPhaseData> = {}): MissionPhaseData {
+  return {
+    completedTasks: [],
+    activeTasks: [],
+    failedTasks: [],
+    artifacts: [],
+    hasWorkspace: true,
+    prCount: 0,
+    priorHeartbeatStatuses: [],
+    ...overrides,
+  };
+}
+
+describe('detectMissionPhase', () => {
+  it('returns idle when no tasks exist', () => {
+    const result = detectMissionPhase(makePhaseData());
+    expect(result.phase).toBe('idle');
+  });
+
+  it('detects planning phase: plan artifacts but no builder tasks', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'organizer', result: { summary: 'Created plan' } },
+      ],
+      artifacts: [
+        { type: 'report', key: 'dispatch-ios-execution-plan' },
+      ],
+    }));
+    expect(result.phase).toBe('planning');
+    expect(result.actions.some(a => a.includes('pr_required'))).toBe(true);
+  });
+
+  it('detects needs_workspace when plan exists but no workspace', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'organizer', result: { summary: 'Created plan' } },
+      ],
+      artifacts: [
+        { type: 'report', key: 'feature-plan' },
+      ],
+      hasWorkspace: false,
+    }));
+    expect(result.phase).toBe('needs_workspace');
+    expect(result.actions.some(a => a.includes('manage_workspaces'))).toBe(true);
+  });
+
+  it('detects building phase when builder tasks are active', () => {
+    const result = detectMissionPhase(makePhaseData({
+      activeTasks: [
+        { status: 'in_progress', roleSlug: 'builder' },
+      ],
+    }));
+    expect(result.phase).toBe('building');
+  });
+
+  it('detects reviewing phase when PRs exist', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'builder', result: { prUrl: 'https://github.com/...' } },
+      ],
+      prCount: 2,
+    }));
+    expect(result.phase).toBe('reviewing');
+  });
+
+  it('detects reviewing phase when builder tasks completed without PRs', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'builder', result: { summary: 'Done' } },
+      ],
+    }));
+    expect(result.phase).toBe('reviewing');
+    expect(result.reason).toContain('builder task(s) completed');
+  });
+
+  it('detects stalled when 3+ consecutive ok heartbeats', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'organizer', result: { summary: 'Plan done' } },
+      ],
+      priorHeartbeatStatuses: ['ok', 'ok', 'ok'],
+    }));
+    expect(result.phase).toBe('stalled');
+    expect(result.actions.some(a => a.includes('Do NOT report OK'))).toBe(true);
+  });
+
+  it('does not detect stalled with fewer than 3 ok heartbeats', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'organizer', result: { summary: 'Plan done' } },
+      ],
+      artifacts: [{ type: 'report', key: 'plan' }],
+      priorHeartbeatStatuses: ['ok', 'ok'],
+    }));
+    // Should be planning, not stalled
+    expect(result.phase).toBe('planning');
+  });
+
+  it('does not detect stalled when action_taken is mixed in', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [
+        { roleSlug: 'organizer', result: { summary: 'Plan done' } },
+      ],
+      artifacts: [{ type: 'report', key: 'plan' }],
+      priorHeartbeatStatuses: ['ok', 'action_taken', 'ok'],
+    }));
+    expect(result.phase).not.toBe('stalled');
+  });
+
+  it('includes failed task retry in building phase actions', () => {
+    const result = detectMissionPhase(makePhaseData({
+      activeTasks: [
+        { status: 'in_progress', roleSlug: 'builder' },
+      ],
+      failedTasks: [
+        { title: 'Scaffold project' },
+      ],
+    }));
+    expect(result.phase).toBe('building');
+    expect(result.actions.some(a => a.includes('Retry'))).toBe(true);
+  });
+
+  it('prioritizes active builders over PRs', () => {
+    const result = detectMissionPhase(makePhaseData({
+      activeTasks: [
+        { status: 'in_progress', roleSlug: 'builder' },
+      ],
+      prCount: 1,
+    }));
+    // Active builder takes precedence
+    expect(result.phase).toBe('building');
+  });
+
+  it('detects plan artifacts by key pattern', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [{ roleSlug: null, result: {} }],
+      artifacts: [{ type: 'content', key: 'ios-feature-spec' }],
+    }));
+    expect(result.phase).toBe('planning');
   });
 });

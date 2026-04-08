@@ -18,6 +18,8 @@ export interface CycleContext {
 export interface RunMissionOptions {
   manualRun?: boolean;
   cycleContext?: CycleContext;
+  /** Corrective feedback from the retrigger loop when a planning cycle created 0 tasks */
+  stuckPlanningFeedback?: string;
 }
 
 /** Overridable deps for testing without mock.module pollution */
@@ -79,10 +81,14 @@ export async function runMission(
   });
 
   const taskTitle = `Mission: ${mission.title}`;
-  const taskDescription = missionContext?.description || mission.description || null;
+  let taskDescription = missionContext?.description || mission.description || null;
+  if (options?.stuckPlanningFeedback && taskDescription) {
+    taskDescription = `> **System Feedback**: ${options.stuckPlanningFeedback}\n\n${taskDescription}`;
+  }
   const taskContext: Record<string, unknown> = {
     ...(missionContext?.context || {}),
     ...(options?.manualRun ? { manualRun: true } : {}),
+    ...(options?.stuckPlanningFeedback ? { stuckPlanningFeedback: options.stuckPlanningFeedback } : {}),
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
