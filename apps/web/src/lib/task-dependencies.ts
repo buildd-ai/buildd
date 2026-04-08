@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { maybeRetriggerMission } from '@/lib/mission-loop';
+import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -24,22 +24,30 @@ export async function resolveCompletedTask(
     await checkChildrenCompleted(completedTask.parentTaskId);
   }
 
-  // Check if completed task is a planning task with no children (orchestrator decided nothing to do)
+  // Check if task is a planning task that needs mission-level handling
   const completedTaskFull = await db.query.tasks.findFirst({
     where: eq(tasks.id, completedTaskId),
-    columns: { mode: true, missionId: true },
+    columns: { mode: true, missionId: true, status: true },
   });
 
   if (completedTaskFull?.mode === 'planning' && completedTaskFull.missionId) {
-    const children = await db.query.tasks.findMany({
-      where: eq(tasks.parentTaskId, completedTaskId),
-      columns: { id: true },
-      limit: 1,
-    });
-    if (children.length === 0) {
-      maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
-        console.error(`[mission-loop] zero-child retrigger failed:`, err)
+    if (completedTaskFull.status === 'failed') {
+      // Failed planning task — auto-retry the mission (infrastructure failure, not stall)
+      retriggerMissionOnFailure(completedTaskFull.missionId, completedTaskId).catch((err) =>
+        console.error(`[mission-loop] failure auto-retry failed:`, err)
       );
+    } else {
+      // Completed planning task with no children — orchestrator decided nothing to do
+      const children = await db.query.tasks.findMany({
+        where: eq(tasks.parentTaskId, completedTaskId),
+        columns: { id: true },
+        limit: 1,
+      });
+      if (children.length === 0) {
+        maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
+          console.error(`[mission-loop] zero-child retrigger failed:`, err)
+        );
+      }
     }
   }
 
