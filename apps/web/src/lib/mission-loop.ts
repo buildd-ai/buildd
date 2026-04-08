@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, gt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
@@ -10,7 +10,7 @@ const MAX_CYCLES_PER_CHAIN = 5;
 /** Debounce window (ms) to prevent concurrent re-triggers */
 const DEBOUNCE_MS = 10_000;
 
-export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested';
+export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit';
 
 /**
  * Evaluate whether a mission should start another planning cycle after
@@ -153,11 +153,13 @@ export async function maybeRetriggerMission(
     }
   }
 
-  // 6. Stall detection — 2 consecutive cycles with zero non-aggregation children
+  // 6. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
+  //    (Failed tasks are infrastructure issues, not planning stalls — handled separately)
   const recentPlanningTasks = await db.query.tasks.findMany({
     where: and(
       eq(tasks.missionId, missionId),
       eq(tasks.mode, 'planning'),
+      eq(tasks.status, 'completed'),
     ),
     orderBy: [desc(tasks.createdAt)],
     limit: 2,
@@ -209,4 +211,93 @@ export async function maybeRetriggerMission(
   );
 
   return { action: 'retriggered' };
+}
+
+/** Max failed planning tasks within the retry window before giving up */
+const MAX_PLANNING_FAILURE_RETRIES = 3;
+
+/** Only count failures within this window (1 hour) — older failures don't block retries */
+const FAILURE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Auto-retrigger a mission when one of its planning tasks fails (e.g. worker crash,
+ * infrastructure issue). Separate from maybeRetriggerMission which handles completed
+ * planning cycles — this handles unexpected failures that should be retried.
+ *
+ * Guards: mission active, debounce, failure count within 1h window.
+ */
+export async function retriggerMissionOnFailure(
+  missionId: string,
+  failedTaskId: string,
+): Promise<{ action: LoopAction }> {
+  // 1. Mission status check
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { id: true, status: true, updatedAt: true },
+  });
+
+  if (!mission || mission.status !== 'active') {
+    return { action: 'skipped' };
+  }
+
+  // 2. Debounce — prevent concurrent retriggers
+  const debounceThreshold = new Date(Date.now() - DEBOUNCE_MS);
+  const [claimed] = await db
+    .update(missions)
+    .set({ updatedAt: new Date() })
+    .where(
+      and(
+        eq(missions.id, missionId),
+        eq(missions.status, 'active'),
+        sql`${missions.updatedAt} < ${debounceThreshold}`
+      )
+    )
+    .returning({ id: missions.id });
+
+  if (!claimed) {
+    return { action: 'skipped' };
+  }
+
+  // 3. Count recent failures — guard against infinite retry loops
+  const failureWindowStart = new Date(Date.now() - FAILURE_WINDOW_MS);
+  const recentFailures = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.mode, 'planning'),
+        eq(tasks.status, 'failed'),
+        gt(tasks.createdAt, failureWindowStart),
+      )
+    );
+
+  if ((recentFailures[0]?.count || 0) >= MAX_PLANNING_FAILURE_RETRIES) {
+    console.warn(`[mission-loop] Mission ${missionId}: ${recentFailures[0]?.count} planning failures in last hour, stopping auto-retry`);
+    await triggerEvent(
+      channels.mission(missionId),
+      events.MISSION_LOOP_STALLED,
+      { missionId, reason: 'failure_limit', recentFailures: recentFailures[0]?.count }
+    );
+    return { action: 'failure_limit' };
+  }
+
+  // 4. Retrigger — new chain since the failed task's chain is dead
+  console.log(`[mission-loop] Auto-retrying mission ${missionId} after planning task ${failedTaskId} failed`);
+  const run = await import('@/lib/mission-run').then(m => m.runMission);
+  await run(missionId, {
+    cycleContext: {
+      cycleNumber: 1,
+      triggerChainId: crypto.randomUUID(),
+      triggerSource: 'auto_retry',
+    },
+  });
+
+  await triggerEvent(
+    channels.mission(missionId),
+    events.MISSION_CYCLE_STARTED,
+    { missionId, reason: 'failure_auto_retry', failedTaskId }
+  );
+
+  return { action: 'failure_retried' };
 }
