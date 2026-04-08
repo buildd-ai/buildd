@@ -1,4 +1,4 @@
-import { Pusher } from 'pusher-js';
+import Pusher from 'pusher-js';
 import type { BuilddTask, WorkerCommand, LocalUIConfig, LocalWorker } from './types';
 import type { BuilddClient } from './buildd';
 import { saveWorker as storeSaveWorker } from './worker-store';

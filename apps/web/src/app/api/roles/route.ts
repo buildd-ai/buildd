@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getWorkspaceRoles } from '@/lib/mission-context';
 
 // GET /api/roles — list roles with current load
@@ -18,7 +19,8 @@ export async function GET(req: NextRequest) {
   try {
     let wsIds: string[];
     if (apiAccount) {
-      wsIds = await getUserWorkspaceIds(apiAccount.id);
+      const perms = await getAccountWorkspacePermissions(apiAccount.id);
+      wsIds = perms.map(p => p.workspaceId);
     } else {
       wsIds = await getUserWorkspaceIds(user!.id);
     }

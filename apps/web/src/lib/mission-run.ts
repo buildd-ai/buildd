@@ -12,7 +12,7 @@ export interface RunMissionResult {
 export interface CycleContext {
   cycleNumber: number;
   triggerChainId: string;
-  triggerSource: 'cron' | 'manual' | 'retrigger';
+  triggerSource: 'cron' | 'manual' | 'retrigger' | 'auto_retry';
 }
 
 export interface RunMissionOptions {
