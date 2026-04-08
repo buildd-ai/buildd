@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
 interface WorkspaceOption {
@@ -106,8 +106,21 @@ function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: Worksp
 
 export default function NewMissionForm({ workspaces, roles = [] }: { workspaces: WorkspaceOption[]; roles?: RoleOption[] }) {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
+  const searchParams = useSearchParams();
+
+  // Artifact reference from URL params (e.g. linked from mission detail page)
+  const artifactId = searchParams.get('artifactId');
+  const artifactTitle = searchParams.get('artifactTitle');
+  const sourceMission = searchParams.get('sourceMission');
+
+  const [name, setName] = useState(
+    artifactTitle ? `Build: ${artifactTitle}` : ''
+  );
+  const [description, setDescription] = useState(
+    artifactTitle && sourceMission
+      ? `Execute the plan from ${sourceMission}: ${artifactTitle}`
+      : ''
+  );
   const [workspaceId, setWorkspaceId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -178,6 +191,10 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
         payload.cronExpression = cronExpression;
       }
 
+      if (artifactId) {
+        payload.contextArtifactIds = [artifactId];
+      }
+
       const res = await fetch('/api/missions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -212,6 +229,18 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
         </Link>
 
         <p className="text-lg font-medium text-text-primary mb-6">New Mission</p>
+
+        {/* Artifact reference badge */}
+        {artifactTitle && (
+          <div className="flex items-center gap-2 px-3 py-2.5 mb-4 rounded-md bg-primary/8 border border-primary/15">
+            <svg className="w-3.5 h-3.5 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-1.242-7.244l-4.5-4.5a4.5 4.5 0 00-6.364 6.364L4.34 8.798" />
+            </svg>
+            <span className="text-[13px] text-text-secondary truncate">
+              Referencing: <span className="text-text-primary font-medium">{artifactTitle}</span>
+            </span>
+          </div>
+        )}
 
         {/* Mission name */}
         <div className="mb-4">
