@@ -61,6 +61,8 @@ const mockScheduleFindFirst = mock(() => Promise.resolve(null));
 const mockSkillsFindMany = mock(() => Promise.resolve([]));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 const mockWorkersFindMany = mock(() => Promise.resolve([]));
+const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
+const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
 
 // Mock for db.select().from().innerJoin().where().groupBy() chain (workers query)
 const mockSelectResult = mock(() => Promise.resolve([]));
@@ -80,6 +82,7 @@ mock.module('@buildd/core/db', () => ({
       workspaceSkills: { findMany: mockSkillsFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
       workers: { findMany: mockWorkersFindMany },
+      workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
     },
     select: mockSelect,
   },
@@ -101,6 +104,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: { workspaceId: 'workspaceId', isRole: 'isRole', enabled: 'enabled' },
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },
   artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
+  workspaces: { id: 'id', teamId: 'teamId', name: 'name', repo: 'repo', githubInstallationId: 'githubInstallationId' },
 }));
 
 mock.module('./heartbeat-helpers', () => ({
