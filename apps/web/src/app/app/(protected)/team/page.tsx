@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workers, tasks, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, or, inArray, desc } from 'drizzle-orm';
+import { eq, and, or, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -34,6 +34,8 @@ export interface RoleWithActivity {
   canDelegateTo: string[];
   enabled: boolean;
   isRole: boolean;
+  // Usage stats (last 30 days)
+  stats: { completed: number; failed: number; total: number } | null;
   // Current activity
   currentTask: {
     id: string;
@@ -87,6 +89,25 @@ export default async function TeamPage() {
     seenSlugs.add(s.slug);
     return true;
   });
+
+  // Get historical task counts per role (last 30 days)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const recentTasks = await db.query.tasks.findMany({
+    where: and(
+      inArray(tasks.workspaceId, wsIds),
+      sql`${tasks.roleSlug} IS NOT NULL`,
+      sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+    ),
+    columns: { roleSlug: true, status: true },
+  });
+  const roleStats: Record<string, { completed: number; failed: number; total: number }> = {};
+  for (const t of recentTasks) {
+    const slug = t.roleSlug!;
+    if (!roleStats[slug]) roleStats[slug] = { completed: 0, failed: 0, total: 0 };
+    roleStats[slug].total++;
+    if (t.status === 'completed') roleStats[slug].completed++;
+    if (t.status === 'failed') roleStats[slug].failed++;
+  }
 
   // Get active workers with their tasks
   const activeWorkers = await db.query.workers.findMany({
@@ -152,6 +173,7 @@ export default async function TeamPage() {
     canDelegateTo: skill.canDelegateTo as string[],
     enabled: skill.enabled,
     isRole: skill.isRole,
+    stats: roleStats[skill.slug] || null,
     currentTask: roleActivity[skill.slug] || null,
   }));
 
