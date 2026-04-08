@@ -30,7 +30,8 @@ async function main() {
       const isTransient =
         msg.includes('endpoint is disabled') ||
         msg.includes('connect ECONNREFUSED') ||
-        msg.includes('ENOTFOUND');
+        msg.includes('ENOTFOUND') ||
+        msg.includes('password authentication failed');
 
       if (isTransient && attempt < maxAttempts) {
         console.log(`Attempt ${attempt}/${maxAttempts} failed (${msg}), retrying in ${retryDelayMs / 1000}s...`);
