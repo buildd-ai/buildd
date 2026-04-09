@@ -282,6 +282,17 @@ export class PusherManager {
     this.unresolvableTaskIds.add(taskId);
   }
 
+  /** Expose internal state for the debug dashboard */
+  getDebugState() {
+    return {
+      connected: !!this.pusher && this.pusher.connection.state === 'connected',
+      connectionState: this.pusher?.connection.state || 'uninitialized',
+      workerChannels: [...this.pusherChannels.keys()],
+      workspaceChannels: [...this.workspaceChannels.keys()],
+      unresolvableTaskIds: [...this.unresolvableTaskIds],
+    };
+  }
+
   /** Disconnect Pusher and unsubscribe from all channels */
   destroy() {
     for (const workerId of this.pusherChannels.keys()) {

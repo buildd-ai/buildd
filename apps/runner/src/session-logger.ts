@@ -75,6 +75,18 @@ export function claimLog(entry: Omit<ClaimLogEntry, 'ts'>): void {
   }
 }
 
+/** Read recent claim log entries (last N lines) */
+export function readClaimLogs(maxLines = 50): ClaimLogEntry[] {
+  if (!existsSync(CLAIMS_LOG)) return [];
+  try {
+    const content = readFileSync(CLAIMS_LOG, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    return lines.slice(-maxLines).map(line => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
 /** Clean up log files older than 48 hours */
 export function cleanupOldLogs(): void {
   if (!existsSync(LOGS_DIR)) return;
