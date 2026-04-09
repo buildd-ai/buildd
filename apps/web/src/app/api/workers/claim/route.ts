@@ -249,7 +249,13 @@ export async function POST(req: NextRequest) {
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
   for (const task of filteredTasks) {
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
+    const taskContext = task.context as Record<string, unknown> | null;
+    const timeoutMinutes = Math.min(
+      typeof taskContext?.timeoutMinutes === 'number' ? taskContext.timeoutMinutes : 15,
+      240,
+    );
+    const expiresAt = new Date(Date.now() + timeoutMinutes * 60 * 1000);
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     const updated = await db
