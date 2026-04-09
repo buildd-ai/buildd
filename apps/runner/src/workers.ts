@@ -389,6 +389,36 @@ export class WorkerManager {
     return this.viewerToken;
   }
 
+  /** Expose internal state for the debug dashboard */
+  getInternalState() {
+    const cycleTimes = this.recentCycleTimes;
+    const sorted = [...cycleTimes].sort((a, b) => a - b);
+    const medianCycleMs = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : null;
+
+    return {
+      circuitBreaker: {
+        paused: this.claimsPaused,
+        pausedUntil: this.claimsPaused ? this.claimsPausedUntil : null,
+        consecutiveQuickFailures: this.consecutiveQuickFailures,
+      },
+      adaptiveTimeout: {
+        currentMs: this.adaptiveStaleTimeout,
+        recentCycleTimes: cycleTimes,
+        medianCycleMs,
+      },
+      pusher: this.pusherManager.getDebugState(),
+      environment: this.environment || null,
+      memory: {
+        workersInMemory: this.workers.size,
+        sessionsInMemory: this.sessions.size,
+        dirtyWorkers: this.dirtyWorkers.size,
+        dirtyForDisk: this.dirtyForDisk.size,
+        probedWorkers: [...this.probedWorkers],
+      },
+      uptime: Math.floor(process.uptime() * 1000),
+    };
+  }
+
   // Subscribe to commands from server
   onCommand(handler: CommandHandler) {
     this.commandHandlers.push(handler);
@@ -586,6 +616,7 @@ export class WorkerManager {
       console.log('[WorkerManager] Circuit breaker reset — resuming claims');
       this.claimsPaused = false;
       this.consecutiveQuickFailures = 0;
+      this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
     const activeWorkers = Array.from(this.workers.values()).filter(
@@ -1664,6 +1695,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           this.consecutiveQuickFailures = 0;
           console.warn(`[WorkerManager] ${pauseReason.label} — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
           sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+          this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: pauseReason.label });
         } else {
           // Generic rapid failure detection (non-classified errors)
           const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : 0;
@@ -1674,6 +1706,7 @@ If something is missing or incomplete, describe what and fix it now.`;
               this.claimsPausedUntil = Date.now() + 5 * 60 * 1000;
               console.warn(`[WorkerManager] Circuit breaker: ${this.consecutiveQuickFailures} rapid failures. Pausing 5 min. Error: ${worker.error}`);
               sessionLog(worker.id, 'warn', 'circuit_breaker', `${this.consecutiveQuickFailures} rapid failures: ${worker.error}`, worker.taskId);
+              this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: `${this.consecutiveQuickFailures} rapid failures` });
             }
           }
         }
@@ -1734,6 +1767,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           : info.rateLimitType || 'unknown';
         console.warn(`[WorkerManager] Rate limit rejected (${reason}) — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
         sessionLog(worker.id, 'warn', 'rate_limit_pause', `Pausing claims: ${reason}, ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+        this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason });
       }
 
       this.emit({ type: 'worker_update', worker });
