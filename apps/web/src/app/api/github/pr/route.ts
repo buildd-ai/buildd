@@ -116,6 +116,8 @@ export async function POST(req: NextRequest) {
           body: prBody || `Created by buildd worker ${worker.name}`,
           head,
           base: base
+            // Stacked plan phases store predecessor branch in context.baseBranch
+            || (worker.task?.context as Record<string, unknown> | null)?.baseBranch as string
             || (worker.task?.context as Record<string, unknown> | null)?.targetBranch as string
             || workspace.gitConfig?.targetBranch
             || repo.defaultBranch

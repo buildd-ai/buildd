@@ -921,7 +921,14 @@ export class WorkerRunner extends EventEmitter {
     if (gitConfig && gitConfig.branchingStrategy !== 'none') {
       const gitContext: string[] = ['\n## Git Workflow'];
       gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
-      const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      // For stacked plan phases: target the predecessor's branch so the PR diff
+      // shows only this phase's changes (Graphite-style stacked PRs).
+      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
+      const baseBranch = taskContext?.baseBranch as string | undefined;
+      const prTarget = baseBranch || gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      if (baseBranch) {
+        gitContext.push(`- This task is part of a sequential plan chain. Your PR MUST target \`${baseBranch}\` (the previous phase's branch), NOT the default branch. This keeps the diff clean and allows phases to be merged in order.`);
+      }
       if (gitConfig.requiresPR) {
         gitContext.push(`- Changes require PR to \`${prTarget}\``);
         // If buildd MCP is available, prefer create_pr action to avoid double PR creation
