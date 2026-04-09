@@ -48,7 +48,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 12px 20px;
+      padding: 10px 20px;
       border-bottom: 1px solid var(--border);
       background: var(--bg-elevated);
       flex-shrink: 0;
@@ -74,13 +74,19 @@
       text-transform: uppercase;
     }
 
-    header .status {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-muted);
+    header .header-right {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 16px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    header .status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
     header .status .dot {
@@ -96,13 +102,216 @@
       box-shadow: 0 0 6px rgba(94, 196, 149, 0.4);
     }
 
-    .main {
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 500;
+      font-family: var(--font-mono);
+    }
+
+    .pill.ok { background: rgba(94, 196, 149, 0.12); color: var(--success); }
+    .pill.warn { background: rgba(224, 179, 90, 0.12); color: var(--warning); }
+    .pill.error { background: rgba(212, 115, 106, 0.12); color: var(--error); }
+
+    /* ── Top Navigation ── */
+    .nav-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+      padding: 0 20px;
+    }
+
+    .nav-tab {
+      padding: 10px 18px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border: none;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      background: none;
+      font-family: var(--font-body);
+    }
+
+    .nav-tab:hover { color: var(--text-secondary); }
+    .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Content Sections ── */
+    .section {
+      flex: 1;
+      overflow: hidden;
+      display: none;
+    }
+
+    .section.active { display: flex; flex-direction: column; }
+
+    /* ── Cards Grid ── */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 16px;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .cards-grid::-webkit-scrollbar { width: 6px; }
+    .cards-grid::-webkit-scrollbar-track { background: transparent; }
+    .cards-grid::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .card h3 {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 12px;
+    }
+
+    /* ── Stat Cards ── */
+    .stat-row {
+      display: flex;
+      gap: 16px;
+    }
+
+    .stat {
+      flex: 1;
+      text-align: center;
+    }
+
+    .stat .number {
+      font-size: 28px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+
+    .stat .label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-top: 2px;
+    }
+
+    /* ── Key-Value Grid ── */
+    .kv-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 12px;
+      font-size: 12px;
+    }
+
+    .kv-grid .k {
+      color: var(--text-muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .kv-grid .v {
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      word-break: break-all;
+    }
+
+    /* ── Data Table ── */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .data-table th {
+      text-align: left;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .data-table td {
+      padding: 6px 8px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .data-table tr:last-child td { border-bottom: none; }
+
+    /* ── Claim Timeline ── */
+    .claim-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+
+    .claim-entry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+
+    .claim-entry .c-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .claim-entry .c-time {
+      color: var(--text-muted);
+      font-size: 10px;
+      flex-shrink: 0;
+      width: 55px;
+    }
+
+    /* ── Channel List ── */
+    .channel-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .channel-chip {
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      background: var(--card);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+
+    /* ── Workers Section (sidebar + detail) ── */
+    .workers-layout {
       display: flex;
       flex: 1;
       overflow: hidden;
     }
 
-    /* ── Sidebar: Worker List ── */
     .sidebar {
       width: 320px;
       border-right: 1px solid var(--border);
@@ -162,6 +371,7 @@
     .worker-item .status-dot.done { background: var(--text-muted); }
     .worker-item .status-dot.error { background: var(--error); }
     .worker-item .status-dot.idle { background: var(--text-muted); }
+    .worker-item .status-dot.stale { background: var(--warning); }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(94, 196, 149, 0.4); }
@@ -318,7 +528,7 @@
       border-color: rgba(212, 115, 106, 0.5);
     }
 
-    /* ── Tabs ── */
+    /* ── Worker Detail Tabs ── */
     .tabs {
       display: flex;
       gap: 0;
@@ -413,29 +623,6 @@
       opacity: 0.7;
     }
 
-    /* ── Verification Output ── */
-    .verification-panel {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px 20px;
-    }
-
-    .verification-panel pre {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      line-height: 1.6;
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .verification-panel .empty {
-      color: var(--text-muted);
-      font-size: 13px;
-      padding: 40px 0;
-      text-align: center;
-    }
-
     /* ── Info Panel ── */
     .info-panel {
       flex: 1;
@@ -461,10 +648,6 @@
       word-break: break-all;
     }
 
-    .info-grid .value.path {
-      font-size: 11px;
-    }
-
     /* ── Input Bar ── */
     .input-bar {
       display: flex;
@@ -488,13 +671,8 @@
       transition: border-color 0.15s;
     }
 
-    .input-bar input:focus {
-      border-color: var(--accent);
-    }
-
-    .input-bar input::placeholder {
-      color: var(--text-muted);
-    }
+    .input-bar input:focus { border-color: var(--accent); }
+    .input-bar input::placeholder { color: var(--text-muted); }
 
     .input-bar button {
       padding: 8px 16px;
@@ -512,7 +690,7 @@
     .input-bar button:hover { opacity: 0.85; }
     .input-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* ── Milestones in info tab ── */
+    /* ── Milestones ── */
     .milestone-list {
       display: flex;
       flex-direction: column;
@@ -543,38 +721,41 @@
       flex-shrink: 0;
     }
 
-    /* ── Responsive ── */
-    @media (max-width: 768px) {
-      .sidebar { width: 100%; }
-      .main { flex-direction: column; }
-      .detail { display: none; }
-      .detail.visible { display: flex; }
-      .sidebar.hidden { display: none; }
-
-      .mobile-back {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        padding: 4px 8px;
-        border: none;
-        background: none;
-        color: var(--accent);
-        font-size: 12px;
-        font-family: var(--font-body);
-        cursor: pointer;
-      }
+    /* ── Diagnostics ── */
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
     }
 
-    @media (min-width: 769px) {
-      .mobile-back { display: none; }
+    .check-row:last-child { border-bottom: none; }
+
+    .check-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
     }
 
-    /* ── Scrollbar for detail ── */
-    .detail::-webkit-scrollbar { width: 6px; }
-    .detail::-webkit-scrollbar-track { background: transparent; }
-    .detail::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+    .check-dot.ok { background: var(--success); }
+    .check-dot.warn { background: var(--warning); }
+    .check-dot.error { background: var(--error); }
 
-    /* ── Toast notifications ── */
+    /* ── Scrollable section ── */
+    .scroll-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .scroll-content::-webkit-scrollbar { width: 6px; }
+    .scroll-content::-webkit-scrollbar-track { background: transparent; }
+    .scroll-content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    /* ── Toast ── */
     .toast {
       position: fixed;
       bottom: 20px;
@@ -593,14 +774,17 @@
       pointer-events: none;
     }
 
-    .toast.visible {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    .toast.visible { opacity: 1; transform: translateY(0); }
+    .toast.error { border-color: rgba(212, 115, 106, 0.4); color: var(--error); }
 
-    .toast.error {
-      border-color: rgba(212, 115, 106, 0.4);
-      color: var(--error);
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; }
+      .workers-layout { flex-direction: column; }
+      .detail { display: none; }
+      .detail.visible { display: flex; }
+      .sidebar.hidden { display: none; }
+      .cards-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -612,91 +796,110 @@
         buildd
         <span class="tag">debug</span>
       </div>
-      <div class="status">
-        <span class="dot" id="connDot"></span>
-        <span id="connLabel">connecting...</span>
+      <div class="header-right">
+        <span id="versionBadge" style="color: var(--text-muted);"></span>
+        <span id="uptimeBadge" style="color: var(--text-muted);"></span>
+        <span id="cbPill"></span>
+        <div class="status">
+          <span class="dot" id="connDot"></span>
+          <span id="connLabel">connecting...</span>
+        </div>
       </div>
     </header>
 
-    <!-- Main layout -->
-    <div class="main">
-      <!-- Sidebar: worker list -->
-      <div class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-          Active Workers
-          <span id="workerCount"></span>
-        </div>
-        <div class="worker-list" id="workerList">
-          <div class="empty-state" id="emptyWorkers">
-            <div class="icon">&#9671;</div>
-            No active workers
-            <div style="font-size: 11px; color: var(--text-muted);">Workers will appear here when tasks are running</div>
-          </div>
-        </div>
+    <!-- Navigation -->
+    <div class="nav-bar">
+      <button class="nav-tab active" data-section="overview" onclick="switchSection('overview')">Overview</button>
+      <button class="nav-tab" data-section="workers" onclick="switchSection('workers')">Workers</button>
+      <button class="nav-tab" data-section="history" onclick="switchSection('history')">History</button>
+      <button class="nav-tab" data-section="diagnostics" onclick="switchSection('diagnostics')">Diagnostics</button>
+      <button class="nav-tab" data-section="config" onclick="switchSection('config')">Config</button>
+    </div>
+
+    <!-- Section: Overview -->
+    <div class="section active" id="sec-overview">
+      <div class="cards-grid" id="overviewGrid">
+        <div style="color: var(--text-muted); font-size: 13px; padding: 40px; text-align: center;">Loading...</div>
       </div>
+    </div>
 
-      <!-- Detail panel -->
-      <div class="detail" id="detail">
-        <div class="detail-empty" id="detailEmpty">
-          <div style="font-size: 24px; opacity: 0.4;">&#9656;</div>
-          Select a worker to view details
+    <!-- Section: Workers -->
+    <div class="section" id="sec-workers">
+      <div class="workers-layout">
+        <div class="sidebar" id="sidebar">
+          <div class="sidebar-header">
+            Active Workers
+            <span id="workerCount"></span>
+          </div>
+          <div class="worker-list" id="workerList">
+            <div class="empty-state" id="emptyWorkers">
+              <div class="icon">&#9671;</div>
+              No active workers
+              <div style="font-size: 11px; color: var(--text-muted);">Workers will appear here when tasks are running</div>
+            </div>
+          </div>
         </div>
-        <div id="detailContent" style="display: none; flex-direction: column; flex: 1; overflow: hidden;">
-          <!-- Detail header -->
-          <div class="detail-header">
-            <div class="title-group">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <button class="mobile-back" id="mobileBack" onclick="showSidebar()">&#8592; Back</button>
+
+        <div class="detail" id="detail">
+          <div class="detail-empty" id="detailEmpty">
+            <div style="font-size: 24px; opacity: 0.4;">&#9656;</div>
+            Select a worker to view details
+          </div>
+          <div id="detailContent" style="display: none; flex-direction: column; flex: 1; overflow: hidden;">
+            <div class="detail-header">
+              <div class="title-group">
                 <h2 id="detailTitle">Worker</h2>
+                <div class="detail-meta" id="detailMeta"></div>
               </div>
-              <div class="detail-meta" id="detailMeta"></div>
+              <div class="actions">
+                <a class="btn" id="dashboardLink" href="#" target="_blank" style="display:none; text-decoration:none; color:var(--accent);">
+                  Dashboard &rarr;
+                </a>
+                <button class="btn btn-danger" id="abortBtn" onclick="abortWorker()">Abort</button>
+              </div>
             </div>
-            <div class="actions">
-              <a class="btn" id="dashboardLink" href="#" target="_blank" style="display:none; text-decoration:none; color:var(--accent);">
-                Respond on dashboard &rarr;
-              </a>
-              <button class="btn btn-danger" id="abortBtn" onclick="abortWorker()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                  <rect x="3" y="3" width="18" height="18" rx="2"/>
-                </svg>
-                Abort
-              </button>
+
+            <div class="tabs">
+              <button class="tab active" data-tab="messages" onclick="switchTab('messages')">Messages</button>
+              <button class="tab" data-tab="verification" onclick="switchTab('verification')">Verification</button>
+              <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
             </div>
-          </div>
 
-          <!-- Tabs -->
-          <div class="tabs">
-            <button class="tab active" data-tab="messages" onclick="switchTab('messages')">Messages</button>
-            <button class="tab" data-tab="verification" onclick="switchTab('verification')">Verification</button>
-            <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
-          </div>
+            <div class="message-stream" id="messagesTab"></div>
+            <div class="info-panel" id="verificationTab" style="display: none;"></div>
+            <div class="info-panel" id="infoTab" style="display: none;"></div>
 
-          <!-- Tab: Messages -->
-          <div class="message-stream" id="messagesTab"></div>
-
-          <!-- Tab: Verification -->
-          <div class="verification-panel" id="verificationTab" style="display: none;"></div>
-
-          <!-- Tab: Info -->
-          <div class="info-panel" id="infoTab" style="display: none;"></div>
-
-          <!-- Input bar -->
-          <div class="input-bar" id="inputBar">
-            <input
-              type="text"
-              id="msgInput"
-              placeholder="Send instruction to agent..."
-              autocomplete="off"
-              onkeydown="if(event.key==='Enter')sendInstruction()"
-            >
-            <button onclick="sendInstruction()" id="sendBtn">Send</button>
+            <div class="input-bar" id="inputBar">
+              <input type="text" id="msgInput" placeholder="Send instruction to agent..." autocomplete="off" onkeydown="if(event.key==='Enter')sendInstruction()">
+              <button onclick="sendInstruction()" id="sendBtn">Send</button>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Section: History -->
+    <div class="section" id="sec-history">
+      <div class="scroll-content" id="historyContent">
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 40px;">Loading history...</div>
+      </div>
+    </div>
+
+    <!-- Section: Diagnostics -->
+    <div class="section" id="sec-diagnostics">
+      <div class="scroll-content" id="diagnosticsContent">
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 40px;">Loading diagnostics...</div>
+      </div>
+    </div>
+
+    <!-- Section: Config -->
+    <div class="section" id="sec-config">
+      <div class="scroll-content" id="configContent">
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 40px;">Loading config...</div>
+      </div>
+    </div>
   </div>
 
-  <!-- Toast -->
   <div class="toast" id="toast"></div>
 
   <script>
@@ -704,35 +907,78 @@
     let workers = [];
     let selectedWorkerId = null;
     let currentTab = 'messages';
+    let currentSection = 'overview';
     let autoScroll = true;
     let eventSource = null;
-    let elapsedTimers = new Map();
+    let initData = {};
+
+    // Data caches
+    let cache = {
+      internals: { data: null, at: 0 },
+      claims: { data: null, at: 0 },
+      historyStats: { data: null, at: 0 },
+      doctor: { data: null, at: 0 },
+      config: { data: null, at: 0 },
+      version: { data: null, at: 0 },
+      workspaces: { data: null, at: 0 },
+    };
+
+    const CACHE_TTL = 30_000; // 30s
 
     // ── DOM refs ──
-    const $workerList = document.getElementById('workerList');
-    const $emptyWorkers = document.getElementById('emptyWorkers');
-    const $detail = document.getElementById('detail');
-    const $detailEmpty = document.getElementById('detailEmpty');
-    const $detailContent = document.getElementById('detailContent');
-    const $detailTitle = document.getElementById('detailTitle');
-    const $detailMeta = document.getElementById('detailMeta');
-    const $messagesTab = document.getElementById('messagesTab');
-    const $verificationTab = document.getElementById('verificationTab');
-    const $infoTab = document.getElementById('infoTab');
-    const $msgInput = document.getElementById('msgInput');
-    const $connDot = document.getElementById('connDot');
-    const $connLabel = document.getElementById('connLabel');
-    const $workerCount = document.getElementById('workerCount');
-    const $abortBtn = document.getElementById('abortBtn');
-    const $toast = document.getElementById('toast');
-    const $sidebar = document.getElementById('sidebar');
+    const $ = id => document.getElementById(id);
+    const $workerList = $('workerList');
+    const $emptyWorkers = $('emptyWorkers');
+    const $detail = $('detail');
+    const $detailEmpty = $('detailEmpty');
+    const $detailContent = $('detailContent');
+    const $detailTitle = $('detailTitle');
+    const $detailMeta = $('detailMeta');
+    const $messagesTab = $('messagesTab');
+    const $verificationTab = $('verificationTab');
+    const $infoTab = $('infoTab');
+    const $msgInput = $('msgInput');
+    const $connDot = $('connDot');
+    const $connLabel = $('connLabel');
+    const $workerCount = $('workerCount');
+    const $abortBtn = $('abortBtn');
+    const $toast = $('toast');
+    const $sidebar = $('sidebar');
+
+    // ── API Fetching ──
+    async function fetchCached(key, url, ttl) {
+      const c = cache[key];
+      if (c.data && Date.now() - c.at < (ttl || CACHE_TTL)) return c.data;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return c.data;
+        c.data = await res.json();
+        c.at = Date.now();
+        return c.data;
+      } catch { return c.data; }
+    }
+
+    // ── Section Navigation ──
+    function switchSection(name) {
+      currentSection = name;
+      document.querySelectorAll('.nav-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.section === name);
+      });
+      document.querySelectorAll('.section').forEach(el => {
+        el.classList.toggle('active', el.id === 'sec-' + name);
+      });
+      // Load data for section
+      if (name === 'overview') loadOverview();
+      else if (name === 'history') loadHistory();
+      else if (name === 'diagnostics') loadDiagnostics();
+      else if (name === 'config') loadConfig();
+      // Update hash
+      history.replaceState(null, '', '#' + name);
+    }
 
     // ── SSE Connection ──
     function connect() {
-      if (eventSource) {
-        eventSource.close();
-      }
-
+      if (eventSource) eventSource.close();
       eventSource = new EventSource('/api/events');
 
       eventSource.onopen = () => {
@@ -746,12 +992,8 @@
       };
 
       eventSource.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          handleEvent(event);
-        } catch (err) {
-          console.error('SSE parse error:', err);
-        }
+        try { handleEvent(JSON.parse(e.data)); }
+        catch (err) { console.error('SSE parse error:', err); }
       };
     }
 
@@ -759,8 +1001,11 @@
       switch (event.type) {
         case 'init':
           workers = sanitizeWorkers(event.workers || []);
+          initData = event;
+          updateHeader(event);
           renderWorkerList();
           if (selectedWorkerId) renderDetail();
+          if (currentSection === 'overview') loadOverview();
           break;
 
         case 'workers':
@@ -780,7 +1025,6 @@
         }
 
         case 'output': {
-          // Append output line to the worker
           const w = workers.find(x => x.id === event.workerId);
           if (w) {
             if (!w.output) w.output = [];
@@ -800,16 +1044,317 @@
           }
           break;
         }
+
+        case 'circuit_breaker':
+          updateCircuitBreaker(event);
+          break;
       }
     }
 
-    // LocalWorker has a Set for checkpointEvents which JSON doesn't serialize well
-    function sanitizeWorkers(list) {
-      return list.map(sanitizeWorker);
+    function updateHeader(event) {
+      const v = event.update;
+      if (v) {
+        $('versionBadge').textContent = v.currentCommit ? `v${v.currentCommit.slice(0, 7)}` : '';
+      }
+      if (event.uptime) {
+        $('uptimeBadge').textContent = `up ${formatDuration(event.uptime)}`;
+      }
+      updateCircuitBreaker(event.circuitBreaker || {});
     }
 
+    function updateCircuitBreaker(cb) {
+      const el = $('cbPill');
+      if (cb.paused) {
+        const remaining = cb.pausedUntil ? Math.max(0, cb.pausedUntil - Date.now()) : 0;
+        el.innerHTML = `<span class="pill error">PAUSED${remaining ? ' ' + formatDuration(remaining) : ''}</span>`;
+      } else {
+        el.innerHTML = '<span class="pill ok">claiming</span>';
+      }
+    }
+
+    // ── Overview Tab ──
+    async function loadOverview() {
+      const [internals, claims, stats] = await Promise.all([
+        fetchCached('internals', '/api/debug/internals', 10_000),
+        fetchCached('claims', '/api/debug/claims', 10_000),
+        fetchCached('historyStats', '/api/history/stats', CACHE_TTL),
+      ]);
+
+      const grid = $('overviewGrid');
+      let html = '';
+
+      // Capacity + Circuit Breaker
+      const activeCount = workers.filter(w => w.status === 'working' || w.status === 'waiting').length;
+      const maxConcurrent = initData.config?.maxConcurrent || 10;
+
+      html += `<div class="card">
+        <h3>Capacity</h3>
+        <div class="stat-row">
+          <div class="stat"><div class="number">${activeCount}</div><div class="label">Active</div></div>
+          <div class="stat"><div class="number">${maxConcurrent}</div><div class="label">Max</div></div>
+          <div class="stat"><div class="number">${maxConcurrent - activeCount}</div><div class="label">Available</div></div>
+        </div>
+      </div>`;
+
+      // Circuit Breaker detail
+      if (internals) {
+        const cb = internals.circuitBreaker;
+        const at = internals.adaptiveTimeout;
+        html += `<div class="card">
+          <h3>Circuit Breaker</h3>
+          <div class="kv-grid">
+            <div class="k">Status</div><div class="v">${cb.paused ? '<span style="color:var(--error)">PAUSED</span>' : '<span style="color:var(--success)">Active</span>'}</div>
+            ${cb.paused && cb.pausedUntil ? `<div class="k">Resumes</div><div class="v">${new Date(cb.pausedUntil).toLocaleTimeString()}</div>` : ''}
+            <div class="k">Quick Failures</div><div class="v">${cb.consecutiveQuickFailures}</div>
+            <div class="k">Stale Timeout</div><div class="v">${Math.round(at.currentMs / 1000)}s</div>
+            ${at.medianCycleMs != null ? `<div class="k">Median Cycle</div><div class="v">${Math.round(at.medianCycleMs / 1000)}s (${at.recentCycleTimes.length} samples)</div>` : ''}
+          </div>
+        </div>`;
+      }
+
+      // Quick Stats
+      if (stats) {
+        html += `<div class="card">
+          <h3>Session Stats</h3>
+          <div class="stat-row">
+            <div class="stat"><div class="number">${stats.totalSessions || 0}</div><div class="label">Total</div></div>
+            <div class="stat"><div class="number">$${(stats.totalCost || 0).toFixed(2)}</div><div class="label">Cost</div></div>
+            <div class="stat"><div class="number">${stats.avgDurationMs ? Math.round(stats.avgDurationMs / 1000) + 's' : '-'}</div><div class="label">Avg Duration</div></div>
+          </div>
+        </div>`;
+      }
+
+      // Pusher Channels
+      if (internals) {
+        const p = internals.pusher;
+        html += `<div class="card">
+          <h3>Pusher</h3>
+          <div class="kv-grid">
+            <div class="k">Connection</div><div class="v">${p.connected ? '<span style="color:var(--success)">connected</span>' : `<span style="color:var(--error)">${esc(p.connectionState)}</span>`}</div>
+            <div class="k">Worker Channels</div><div class="v">${p.workerChannels.length}</div>
+            <div class="k">Workspace Channels</div><div class="v">${p.workspaceChannels.length}</div>
+            ${p.unresolvableTaskIds.length > 0 ? `<div class="k">Unresolvable</div><div class="v">${p.unresolvableTaskIds.length} task(s)</div>` : ''}
+          </div>
+          ${p.workspaceChannels.length > 0 ? `<div style="margin-top: 10px;"><div class="channel-list">${p.workspaceChannels.map(ch => `<span class="channel-chip">${esc(ch.replace('workspace-', 'ws:').slice(0, 30))}</span>`).join('')}</div></div>` : ''}
+        </div>`;
+      }
+
+      // Memory
+      if (internals) {
+        const m = internals.memory;
+        html += `<div class="card">
+          <h3>Memory</h3>
+          <div class="kv-grid">
+            <div class="k">Workers</div><div class="v">${m.workersInMemory}</div>
+            <div class="k">Sessions</div><div class="v">${m.sessionsInMemory}</div>
+            <div class="k">Dirty (sync)</div><div class="v">${m.dirtyWorkers}</div>
+            <div class="k">Dirty (disk)</div><div class="v">${m.dirtyForDisk}</div>
+            ${m.probedWorkers.length > 0 ? `<div class="k">Probed</div><div class="v">${m.probedWorkers.length}</div>` : ''}
+            <div class="k">Uptime</div><div class="v">${formatDuration(internals.uptime)}</div>
+          </div>
+        </div>`;
+      }
+
+      // Environment
+      if (internals?.environment) {
+        const env = internals.environment;
+        html += `<div class="card">
+          <h3>Environment</h3>
+          <div class="kv-grid">
+            ${env.tools ? `<div class="k">Tools</div><div class="v">${env.tools.length} detected</div>` : ''}
+            ${env.envKeys ? `<div class="k">Env Keys</div><div class="v">${env.envKeys.length}</div>` : ''}
+            ${env.mcpServers ? `<div class="k">MCP Servers</div><div class="v">${env.mcpServers.length}</div>` : ''}
+          </div>
+        </div>`;
+      }
+
+      // Recent Claims
+      if (claims?.entries) {
+        const entries = claims.entries.slice(-20).reverse();
+        html += `<div class="card" style="grid-column: 1 / -1;">
+          <h3>Recent Claims</h3>
+          ${entries.length === 0 ? '<div style="color: var(--text-muted); font-size: 12px;">No claim activity</div>' : `
+          <div class="claim-timeline">
+            ${entries.map(e => {
+              const color = e.event === 'claim_success' ? 'var(--success)' : e.event === 'claim_empty' ? 'var(--text-muted)' : 'var(--error)';
+              const label = e.event === 'claim_success' ? `claimed ${e.workersClaimed}/${e.slotsRequested}${e.taskId ? ' (' + e.taskId.slice(0, 8) + ')' : ''}` : e.diagnosticReason || e.event;
+              return `<div class="claim-entry"><div class="c-dot" style="background:${color}"></div><div class="c-time">${formatTime(e.ts)}</div><span>${esc(label)}</span></div>`;
+            }).join('')}
+          </div>`}
+        </div>`;
+      }
+
+      grid.innerHTML = html;
+    }
+
+    // ── History Tab ──
+    async function loadHistory() {
+      const stats = await fetchCached('historyStats', '/api/history/stats', CACHE_TTL);
+      const el = $('historyContent');
+      if (!stats) { el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:40px;">No history data</div>'; return; }
+
+      let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:20px;">';
+
+      // Stats cards
+      html += `<div class="card"><h3>Overview</h3>
+        <div class="stat-row">
+          <div class="stat"><div class="number">${stats.totalSessions || 0}</div><div class="label">Sessions</div></div>
+          <div class="stat"><div class="number">$${(stats.totalCost || 0).toFixed(2)}</div><div class="label">Total Cost</div></div>
+          <div class="stat"><div class="number">${stats.avgDurationMs ? Math.round(stats.avgDurationMs / 60000) + 'm' : '-'}</div><div class="label">Avg Duration</div></div>
+        </div>
+      </div>`;
+
+      // By Status
+      if (stats.byStatus?.length) {
+        html += `<div class="card"><h3>By Status</h3>
+          ${stats.byStatus.map(s => {
+            const color = s.status === 'completed' ? 'var(--success)' : s.status === 'failed' ? 'var(--error)' : 'var(--text-muted)';
+            return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;"><span style="color:${color}">${esc(s.status)}</span><span style="font-family:var(--font-mono);color:var(--text-secondary)">${s.count}</span></div>`;
+          }).join('')}
+        </div>`;
+      }
+
+      // By Model
+      if (stats.byModel?.length) {
+        html += `<div class="card"><h3>By Model</h3>
+          ${stats.byModel.map(m => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;"><span style="color:var(--text-secondary)">${esc(m.model || 'unknown')}</span><span style="font-family:var(--font-mono);color:var(--text-muted)">${m.count} / $${(m.total_cost || 0).toFixed(2)}</span></div>`).join('')}
+        </div>`;
+      }
+
+      html += '</div>';
+
+      // By Workspace
+      if (stats.byWorkspace?.length) {
+        html += `<div class="card" style="margin-bottom:20px;"><h3>By Workspace</h3>
+          <table class="data-table"><thead><tr><th>Workspace</th><th>Sessions</th><th>Cost</th></tr></thead><tbody>
+          ${stats.byWorkspace.map(w => `<tr><td style="color:var(--text-primary)">${esc(w.workspace_name || w.workspace_id?.slice(0, 8))}</td><td>${w.count}</td><td>$${(w.total_cost || 0).toFixed(2)}</td></tr>`).join('')}
+          </tbody></table>
+        </div>`;
+      }
+
+      el.innerHTML = html;
+    }
+
+    // ── Diagnostics Tab ──
+    async function loadDiagnostics() {
+      const [doctor, workspaces] = await Promise.all([
+        fetchCached('doctor', '/api/doctor', 60_000),
+        fetchCached('workspaces', '/api/debug/resolve-all', 60_000),
+      ]);
+
+      const el = $('diagnosticsContent');
+      let html = '';
+
+      // Doctor checks
+      if (doctor?.checks) {
+        html += `<div class="card" style="margin-bottom:16px;">
+          <h3>Health Checks <button class="btn" style="float:right;font-size:10px;padding:3px 10px;" onclick="runFix()">Run Fix</button></h3>
+          ${doctor.checks.map(c => `
+            <div class="check-row">
+              <div class="check-dot ${c.status}"></div>
+              <div style="flex:1;">
+                <div style="color:var(--text-primary);font-weight:500;">${esc(c.name)}</div>
+                <div style="color:var(--text-muted);font-size:11px;">${esc(c.message)}</div>
+                ${c.detail ? `<div style="color:var(--text-muted);font-size:10px;font-family:var(--font-mono);margin-top:2px;">${esc(c.detail)}</div>` : ''}
+              </div>
+              <span class="pill ${c.status}">${c.status}</span>
+            </div>
+          `).join('')}
+        </div>`;
+      }
+
+      // Workspace Resolution
+      if (workspaces?.workspaces) {
+        html += `<div class="card" style="margin-bottom:16px;">
+          <h3>Workspace Resolution</h3>
+          <table class="data-table"><thead><tr><th>Workspace</th><th>Repo</th><th>Resolved Path</th><th>Method</th></tr></thead><tbody>
+          ${workspaces.workspaces.map(w => {
+            const ws = w.workspace;
+            return `<tr>
+              <td style="color:var(--text-primary)">${esc(ws.name)}</td>
+              <td>${esc(ws.repo || '-')}</td>
+              <td style="font-size:10px;">${esc(w.resolvedPath || w.path || '-')}</td>
+              <td>${esc(w.method || w.matchType || '-')}</td>
+            </tr>`;
+          }).join('')}
+          </tbody></table>
+        </div>`;
+      }
+
+      // Directories
+      if (workspaces) {
+        html += `<div class="card">
+          <h3>Project Roots</h3>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            ${(workspaces.projectRoots || []).map(p => `<span class="channel-chip">${esc(p)}</span>`).join('')}
+          </div>
+          ${Object.keys(workspaces.pathOverrides || {}).length > 0 ? `
+            <h3 style="margin-top:12px;">Path Overrides</h3>
+            <div class="kv-grid">
+              ${Object.entries(workspaces.pathOverrides).map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('')}
+            </div>
+          ` : ''}
+        </div>`;
+      }
+
+      el.innerHTML = html || '<div style="color:var(--text-muted);text-align:center;padding:40px;">No diagnostics data</div>';
+    }
+
+    async function runFix() {
+      try {
+        const res = await fetch('/api/doctor/fix', { method: 'POST' });
+        if (res.ok) {
+          cache.doctor.at = 0;
+          showToast('Fixes applied');
+          setTimeout(() => loadDiagnostics(), 1000);
+        } else {
+          showToast('Fix failed', true);
+        }
+      } catch { showToast('Network error', true); }
+    }
+
+    // ── Config Tab ──
+    async function loadConfig() {
+      const [cfg, ver] = await Promise.all([
+        fetchCached('config', '/api/config', 60_000),
+        fetchCached('version', '/api/version', 60_000),
+      ]);
+
+      const el = $('configContent');
+      let html = '';
+
+      if (ver) {
+        html += `<div class="card" style="margin-bottom:16px;">
+          <h3>Version</h3>
+          <div class="kv-grid">
+            <div class="k">Version</div><div class="v">${esc(ver.version || '-')}</div>
+            <div class="k">Commit</div><div class="v">${esc(ver.currentCommit || '-')}</div>
+            <div class="k">Latest</div><div class="v">${esc(ver.latestCommit || '-')}${ver.updateAvailable ? ' <span style="color:var(--warning)">(update available)</span>' : ''}</div>
+            <div class="k">Updating</div><div class="v">${ver.updating ? 'yes' : 'no'}</div>
+          </div>
+          ${ver.changelog?.length ? `<div style="margin-top:10px;"><h3>Changelog</h3><div style="font-size:11px;font-family:var(--font-mono);color:var(--text-secondary);margin-top:6px;">${ver.changelog.map(c => esc(c)).join('<br>')}</div></div>` : ''}
+        </div>`;
+      }
+
+      if (cfg) {
+        html += `<div class="card">
+          <h3>Runner Config</h3>
+          <div class="kv-grid">
+            ${Object.entries(cfg).filter(([k]) => k !== 'apiKey').map(([k, v]) => {
+              const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+              return `<div class="k">${esc(k)}</div><div class="v">${esc(display)}</div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }
+
+      el.innerHTML = html || '<div style="color:var(--text-muted);text-align:center;padding:40px;">No config data</div>';
+    }
+
+    // ── Worker Helpers ──
+    function sanitizeWorkers(list) { return list.map(sanitizeWorker); }
+
     function sanitizeWorker(w) {
-      // Ensure arrays exist
       if (!w.messages) w.messages = [];
       if (!w.output) w.output = [];
       if (!w.milestones) w.milestones = [];
@@ -819,16 +1364,14 @@
       return w;
     }
 
-    // ── Render: Worker List ──
+    // ── Worker List ──
     function renderWorkerList() {
-      // Sort: working first, then waiting, then others
       const order = { working: 0, waiting: 1, idle: 2, done: 3, error: 4, stale: 5 };
       const sorted = [...workers].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
 
       $emptyWorkers.style.display = sorted.length ? 'none' : 'flex';
       $workerCount.textContent = sorted.length ? ` (${sorted.length})` : '';
 
-      // Preserve selection
       const items = sorted.map(w => {
         const isActive = w.id === selectedWorkerId;
         const div = document.createElement('div');
@@ -850,7 +1393,6 @@
         return div;
       });
 
-      // Replace children
       $workerList.innerHTML = '';
       if (sorted.length === 0) {
         $workerList.appendChild($emptyWorkers);
@@ -859,29 +1401,13 @@
       }
     }
 
-    // ── Select Worker ──
     function selectWorker(id) {
       selectedWorkerId = id;
       renderWorkerList();
       renderDetail();
-
-      // Mobile: show detail
-      if (window.innerWidth <= 768) {
-        $sidebar.classList.add('hidden');
-        $detail.classList.add('visible');
-      }
     }
 
-    function showSidebar() {
-      selectedWorkerId = null;
-      $sidebar.classList.remove('hidden');
-      $detail.classList.remove('visible');
-      $detailContent.style.display = 'none';
-      $detailEmpty.style.display = 'flex';
-      renderWorkerList();
-    }
-
-    // ── Render: Detail ──
+    // ── Worker Detail ──
     function renderDetail() {
       const w = workers.find(x => x.id === selectedWorkerId);
       if (!w) {
@@ -895,29 +1421,19 @@
 
       $detailTitle.textContent = w.taskTitle || w.id;
 
-      // Meta badges
       const metaParts = [];
-      if (w.status) {
-        metaParts.push(`<span class="badge"><span class="status-dot ${w.status}" style="width:6px;height:6px;border-radius:50%;display:inline-block;"></span> ${w.status}</span>`);
-      }
-      if (w.branch) {
-        metaParts.push(`<span class="badge">${esc(w.branch)}</span>`);
-      }
-      if (w.startedAt) {
-        metaParts.push(`<span>${formatElapsed(w.startedAt)}</span>`);
-      }
+      if (w.status) metaParts.push(`<span class="badge"><span class="status-dot ${w.status}" style="width:6px;height:6px;border-radius:50%;display:inline-block;"></span> ${w.status}</span>`);
+      if (w.branch) metaParts.push(`<span class="badge">${esc(w.branch)}</span>`);
+      if (w.startedAt) metaParts.push(`<span>${formatElapsed(w.startedAt)}</span>`);
       $detailMeta.innerHTML = metaParts.join('');
 
-      // Show/hide abort based on status
       const canAbort = w.status === 'working' || w.status === 'waiting' || w.status === 'idle';
       $abortBtn.style.display = canAbort ? 'inline-flex' : 'none';
 
-      // Show/hide input bar based on status
       const canMessage = w.status === 'working' || w.status === 'waiting';
-      document.getElementById('inputBar').style.display = canMessage ? 'flex' : 'none';
+      $('inputBar').style.display = canMessage ? 'flex' : 'none';
 
-      // Show dashboard link for waiting workers (inputAsRetry default)
-      const $dashLink = document.getElementById('dashboardLink');
+      const $dashLink = $('dashboardLink');
       if (w.status === 'waiting' && w.taskId) {
         $dashLink.href = `https://app.buildd.dev/app/tasks/${w.taskId}`;
         $dashLink.style.display = 'inline-flex';
@@ -925,168 +1441,114 @@
         $dashLink.style.display = 'none';
       }
 
-      // Render active tab
       if (currentTab === 'messages') renderMessages(w);
       else if (currentTab === 'verification') renderVerification(w);
       else if (currentTab === 'info') renderInfo(w);
     }
 
-    // ── Render: Messages ──
     function renderMessages(w) {
       const stream = $messagesTab;
       const wasAtBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
-
       stream.innerHTML = '';
 
-      // Merge messages and output into chronological view
       const entries = [];
-
-      // Chat messages (from agent)
-      for (const msg of w.messages) {
-        entries.push({ ts: msg.timestamp, kind: msg.type, data: msg });
-      }
-
-      // Sort by timestamp
+      for (const msg of w.messages) entries.push({ ts: msg.timestamp, data: msg });
       entries.sort((a, b) => a.ts - b.ts);
 
       if (entries.length === 0 && w.output.length === 0) {
-        stream.innerHTML = '<div class="empty-state" style="padding: 60px 20px;"><div class="icon">&#9671;</div>No messages yet</div>';
+        stream.innerHTML = '<div class="empty-state" style="padding:60px 20px;"><div class="icon">&#9671;</div>No messages yet</div>';
         return;
       }
 
-      // Render chat messages
-      for (const entry of entries) {
-        const el = createMessageEl(entry.data);
-        stream.appendChild(el);
-      }
-
-      // If we have raw output lines not covered by messages, show them at the end
-      // (output lines are typically lower-level than chat messages)
-
-      if (wasAtBottom || autoScroll) {
-        stream.scrollTop = stream.scrollHeight;
-      }
+      for (const entry of entries) stream.appendChild(createMessageEl(entry.data));
+      if (wasAtBottom || autoScroll) stream.scrollTop = stream.scrollHeight;
     }
 
     function createMessageEl(msg) {
       const div = document.createElement('div');
       const time = formatTime(msg.timestamp);
-
       switch (msg.type) {
         case 'text':
           div.className = 'msg text';
           div.innerHTML = `<span class="timestamp">${time}</span>${esc(msg.content)}`;
           break;
-
         case 'tool_use':
           div.className = 'msg tool-use';
           const inputStr = msg.input ? formatToolInput(msg.name, msg.input) : '';
           div.innerHTML = `<span class="timestamp">${time}</span><span class="tool-name">${esc(msg.name)}</span>${inputStr ? `<div class="tool-input" onclick="this.classList.toggle('expanded')">${esc(inputStr)}</div>` : ''}`;
           break;
-
         case 'user':
           div.className = 'msg user-msg';
           div.innerHTML = `<span class="timestamp">${time}</span><strong>user:</strong> ${esc(msg.content)}`;
           break;
-
         default:
           div.className = 'msg text';
           div.innerHTML = `<span class="timestamp">${time}</span>${esc(JSON.stringify(msg))}`;
       }
-
       return div;
     }
 
     function appendOutputLine(line) {
       const stream = $messagesTab;
       const wasAtBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
-
       const div = document.createElement('div');
       div.className = 'msg text';
       div.textContent = line;
       stream.appendChild(div);
-
-      if (wasAtBottom) {
-        stream.scrollTop = stream.scrollHeight;
-      }
+      if (wasAtBottom) stream.scrollTop = stream.scrollHeight;
     }
 
     function formatToolInput(name, input) {
       if (!input) return '';
-      // Show compact summary for common tools
       if (typeof input === 'object') {
         if (input.command) return input.command;
         if (input.file_path) return input.file_path;
         if (input.pattern) return input.pattern;
         if (input.content && input.content.length > 120) return input.content.substring(0, 120) + '...';
-        try {
-          const s = JSON.stringify(input);
-          return s.length > 200 ? s.substring(0, 200) + '...' : s;
-        } catch { return ''; }
+        try { const s = JSON.stringify(input); return s.length > 200 ? s.substring(0, 200) + '...' : s; } catch { return ''; }
       }
       return String(input);
     }
 
-    // ── Render: Verification ──
     function renderVerification(w) {
       const panel = $verificationTab;
-      // Check for verification result in output or worker fields
-      const verificationResult = w.verificationResult;
-      if (verificationResult) {
-        panel.innerHTML = `<pre>${esc(typeof verificationResult === 'string' ? verificationResult : JSON.stringify(verificationResult, null, 2))}</pre>`;
+      const vr = w.verificationResult;
+      if (vr) {
+        panel.innerHTML = `<pre style="font-family:var(--font-mono);font-size:12px;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;">${esc(typeof vr === 'string' ? vr : JSON.stringify(vr, null, 2))}</pre>`;
       } else {
-        // Look for verification output in messages (tool_use for bash with test/build)
-        const verifyMsgs = w.messages.filter(m =>
-          m.type === 'tool_use' &&
-          m.name === 'Bash' &&
-          m.input?.command &&
-          (m.input.command.includes('test') || m.input.command.includes('build'))
-        );
+        const verifyMsgs = w.messages.filter(m => m.type === 'tool_use' && m.name === 'Bash' && m.input?.command && (m.input.command.includes('test') || m.input.command.includes('build')));
         if (verifyMsgs.length > 0) {
-          const content = verifyMsgs.map(m => `$ ${m.input.command}`).join('\n\n');
-          panel.innerHTML = `<pre>${esc(content)}</pre>`;
+          panel.innerHTML = `<pre style="font-family:var(--font-mono);font-size:12px;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;">${esc(verifyMsgs.map(m => `$ ${m.input.command}`).join('\n\n'))}</pre>`;
         } else {
-          panel.innerHTML = '<div class="empty">No verification output available</div>';
+          panel.innerHTML = '<div class="empty-state" style="padding:40px;">No verification output</div>';
         }
       }
     }
 
-    // ── Render: Info ──
     function renderInfo(w) {
       const panel = $infoTab;
       let html = '<div class="info-grid">';
 
       const fields = [
-        ['Worker ID', w.id],
-        ['Task ID', w.taskId],
-        ['Status', w.status],
-        ['Workspace', w.workspaceName],
-        ['Branch', w.branch],
-        ['Worktree', w.worktreePath],
+        ['Worker ID', w.id], ['Task ID', w.taskId], ['Status', w.status],
+        ['Workspace', w.workspaceName], ['Branch', w.branch], ['Worktree', w.worktreePath],
         ['Session ID', w.sessionId],
         ['Started', w.startedAt ? new Date(w.startedAt).toLocaleString() : '-'],
         ['Completed', w.completedAt ? new Date(w.completedAt).toLocaleString() : '-'],
-        ['Current Action', w.currentAction],
-        ['Commits', w.commits.length > 0 ? w.commits.map(c => c.message).join(', ') : '-'],
-        ['Tool Calls', w.toolCalls.length.toString()],
-        ['Error', w.error],
+        ['Current Action', w.currentAction], ['Commits', w.commits.length > 0 ? w.commits.map(c => c.message).join(', ') : '-'],
+        ['Tool Calls', w.toolCalls.length.toString()], ['Error', w.error],
       ];
 
       for (const [label, value] of fields) {
         if (!value) continue;
-        const isPath = label === 'Worktree';
-        html += `<div class="label">${esc(label)}</div><div class="value${isPath ? ' path' : ''}">${esc(String(value))}</div>`;
+        html += `<div class="label">${esc(label)}</div><div class="value">${esc(String(value))}</div>`;
       }
-
       html += '</div>';
 
-      // Result metadata
       if (w.resultMeta) {
-        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Result</h3>';
-        html += '<div class="info-grid">';
+        html += '<h3 style="margin-top:20px;font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Result</h3><div class="info-grid">';
         const meta = w.resultMeta;
         html += `<div class="label">Duration</div><div class="value">${Math.round((meta.durationMs || 0) / 1000)}s</div>`;
-        html += `<div class="label">API Duration</div><div class="value">${Math.round((meta.durationApiMs || 0) / 1000)}s</div>`;
         html += `<div class="label">Turns</div><div class="value">${meta.numTurns || 0}</div>`;
         html += `<div class="label">Stop Reason</div><div class="value">${esc(meta.stopReason || '-')}</div>`;
         if (meta.modelUsage) {
@@ -1097,21 +1559,16 @@
         html += '</div>';
       }
 
-      // Milestones
       if (w.milestones.length > 0) {
-        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Milestones</h3>';
-        html += '<div class="milestone-list">';
+        html += '<h3 style="margin-top:20px;font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Milestones</h3><div class="milestone-list">';
         for (const ms of w.milestones) {
-          const time = ms.ts ? formatTime(ms.ts) : '';
-          html += `<div class="milestone-item"><div class="ms-dot"></div><span>${esc(ms.label || ms.event || ms.type)}</span><span class="ms-time">${time}</span></div>`;
+          html += `<div class="milestone-item"><div class="ms-dot"></div><span>${esc(ms.label || ms.event || ms.type)}</span><span class="ms-time">${formatTime(ms.ts)}</span></div>`;
         }
         html += '</div>';
       }
 
-      // Subagent tasks
       if (w.subagentTasks.length > 0) {
-        html += '<h3 style="margin-top: 20px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Subagents</h3>';
-        html += '<div class="milestone-list">';
+        html += '<h3 style="margin-top:20px;font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Subagents</h3><div class="milestone-list">';
         for (const sa of w.subagentTasks) {
           const statusColor = sa.status === 'running' ? 'var(--running)' : sa.status === 'completed' ? 'var(--success)' : 'var(--error)';
           html += `<div class="milestone-item"><div class="ms-dot" style="background:${statusColor}"></div><span>${esc(sa.description || sa.taskType)} (${sa.status})</span></div>`;
@@ -1125,14 +1582,10 @@
     // ── Tabs ──
     function switchTab(tab) {
       currentTab = tab;
-      document.querySelectorAll('.tab').forEach(el => {
-        el.classList.toggle('active', el.dataset.tab === tab);
-      });
-
+      document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
       $messagesTab.style.display = tab === 'messages' ? 'flex' : 'none';
       $verificationTab.style.display = tab === 'verification' ? 'block' : 'none';
       $infoTab.style.display = tab === 'info' ? 'block' : 'none';
-
       if (selectedWorkerId) renderDetail();
     }
 
@@ -1140,47 +1593,37 @@
     async function sendInstruction() {
       const text = $msgInput.value.trim();
       if (!text || !selectedWorkerId) return;
-
       $msgInput.value = '';
-
       try {
         const res = await fetch(`/api/workers/${selectedWorkerId}/cmd`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'message', text }),
         });
-
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           showToast(data.error || 'Failed to send', true);
         }
-      } catch (err) {
-        showToast('Network error', true);
-      }
+      } catch { showToast('Network error', true); }
     }
 
     async function abortWorker() {
       if (!selectedWorkerId) return;
-
       const w = workers.find(x => x.id === selectedWorkerId);
       if (!confirm(`Abort worker for "${w?.taskTitle || selectedWorkerId}"?`)) return;
-
       try {
         const res = await fetch('/api/abort', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workerId: selectedWorkerId }),
         });
-
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           showToast(data.error || 'Failed to abort', true);
         } else {
           showToast('Worker aborted');
         }
-      } catch (err) {
-        showToast('Network error', true);
-      }
+      } catch { showToast('Network error', true); }
     }
 
     // ── Helpers ──
@@ -1194,6 +1637,16 @@
       const hours = Math.floor(minutes / 60);
       const mins = minutes % 60;
       return `${hours}h ${mins}m`;
+    }
+
+    function formatDuration(ms) {
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return `${h}h ${rm}m`;
     }
 
     function formatTime(ts) {
@@ -1213,36 +1666,39 @@
       $toast.textContent = msg;
       $toast.className = 'toast visible' + (isError ? ' error' : '');
       clearTimeout($toast._timer);
-      $toast._timer = setTimeout(() => {
-        $toast.className = 'toast';
-      }, 3000);
+      $toast._timer = setTimeout(() => { $toast.className = 'toast'; }, 3000);
     }
 
-    // ── Elapsed Time Updater ──
+    // ── Timers ──
     setInterval(() => {
-      // Update elapsed times in sidebar
       document.querySelectorAll('.worker-item .elapsed').forEach(el => {
         const started = parseInt(el.dataset.started);
         if (started) el.textContent = formatElapsed(started);
       });
-
-      // Update elapsed in detail meta
-      if (selectedWorkerId) {
-        const w = workers.find(x => x.id === selectedWorkerId);
-        if (w) {
-          renderDetail();
-        }
-      }
     }, 5000);
 
-    // ── Auto-scroll detection ──
+    // Auto-refresh overview every 30s
+    setInterval(() => {
+      if (currentSection === 'overview') {
+        cache.internals.at = 0;
+        cache.claims.at = 0;
+        loadOverview();
+      }
+    }, 30_000);
+
     $messagesTab.addEventListener('scroll', () => {
-      const stream = $messagesTab;
-      autoScroll = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 40;
+      autoScroll = $messagesTab.scrollHeight - $messagesTab.scrollTop - $messagesTab.clientHeight < 40;
     });
 
     // ── Init ──
+    // Check hash for section
+    const hash = location.hash.replace('#', '');
+    if (['overview', 'workers', 'history', 'diagnostics', 'config'].includes(hash)) {
+      switchSection(hash);
+    }
+
     connect();
+    loadOverview();
 
     // Also do an initial fetch in case SSE is slow
     fetch('/api/workers')

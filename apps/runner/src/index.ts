@@ -8,6 +8,7 @@ import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemo
 import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
+import { readClaimLogs } from './session-logger';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -1246,6 +1247,7 @@ const server = DEBUG_MODE ? Bun.serve({
       const activeWorkers = (workerManager?.getWorkers() || [])
         .filter((w: any) => w.status !== 'done' && w.status !== 'error');
 
+      const internals = workerManager?.getInternalState();
       const init = {
         type: 'init',
         configured: !!config.apiKey,
@@ -1265,6 +1267,10 @@ const server = DEBUG_MODE ? Bun.serve({
           latestCommit: updateState.latestCommit,
           updateAvailable: updateState.updateAvailable,
         },
+        // Debug dashboard fields
+        circuitBreaker: internals?.circuitBreaker || { paused: false, pausedUntil: null, consecutiveQuickFailures: 0 },
+        pusherConnected: internals?.pusher.connected || false,
+        uptime: internals?.uptime || 0,
       };
       const initMessage = `data: ${JSON.stringify(init)}\n\n`;
 
@@ -2142,6 +2148,18 @@ const server = DEBUG_MODE ? Bun.serve({
       }
       resolver.setPathOverride(workspaceName, localPath);
       return Response.json({ ok: true, overrides: resolver.getPathOverrides() }, { headers: corsHeaders });
+    }
+
+    // Debug internals — expose WorkerManager + PusherManager state for dashboard
+    if (path === '/api/debug/internals' && req.method === 'GET') {
+      const state = workerManager.getInternalState();
+      return Response.json(state, { headers: corsHeaders });
+    }
+
+    // Debug claims — recent claim log entries
+    if (path === '/api/debug/claims' && req.method === 'GET') {
+      const entries = readClaimLogs(50);
+      return Response.json({ entries }, { headers: corsHeaders });
     }
 
     // Doctor — self-diagnostics and auto-fix

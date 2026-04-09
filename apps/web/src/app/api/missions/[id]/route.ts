@@ -51,7 +51,7 @@ export async function GET(
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, title: true, status: true, priority: true, createdAt: true, result: true, updatedAt: true },
+          columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
         },
         subMissions: { columns: { id: true, title: true, status: true } },
