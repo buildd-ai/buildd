@@ -137,17 +137,13 @@ export function loadAllWorkers(): LocalWorker[] {
         continue;
       }
 
-      // A working worker with no messages and no tool calls never actually ran a session.
-      // Mark it as orphaned immediately rather than waiting for the 10-min reconcile.
-      // (Happens when the runner restarts between task assignment and session start,
-      //  or when server-side expiry fires before any SDK turns completed.)
-      const hasActivity =
-        (Array.isArray(data.messages) && (data.messages as unknown[]).length > 0) ||
-        (Array.isArray(data.toolCalls) && (data.toolCalls as unknown[]).length > 0) ||
-        (Array.isArray(data.milestones) && (data.milestones as unknown[]).length > 0);
-      if (data.status === 'working' && !hasActivity) {
+      // Any worker persisted as 'working' is a zombie at load time — Claude sessions
+      // cannot survive a runner restart. Mark all of them as error immediately.
+      // Previously we only caught workers with no activity, but even workers mid-session
+      // are dead after a restart and would block concurrency indefinitely if left as working.
+      if (data.status === 'working') {
         data.status = 'error';
-        data.error = 'Orphaned: loaded from disk as working but no session activity recorded';
+        data.error = 'Killed: runner restarted, in-flight session terminated';
         data._savedAt = now;
         try {
           writeFileSync(filePath, JSON.stringify(data, null, 2));
