@@ -1046,6 +1046,7 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
       "title": "Step title",
       "description": "What this step does and acceptance criteria",
       "dependsOn": ["ref-of-prerequisite-step"],
+      "baseBranch": "ref-of-step-to-branch-from",
       "requiredCapabilities": ["git", "web-search"],
       "outputRequirement": "pr_required|artifact_required|none|auto",
       "priority": 0
@@ -1056,11 +1057,12 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
 \`\`\`
 
 ### Guidelines for Planning
-- Break complex work into independent, parallelizable steps where possible
 - Be specific about what each step produces and what it depends on
 - Include capability requirements so the right worker type claims each step
 - Keep steps small enough for a single worker session (under $5 budget)
-- Use \`dependsOn\` to express ordering constraints between steps`);
+- Use \`dependsOn\` to express ordering constraints between steps
+- **For sequential code builds** (each phase adds new code on top of the previous): use BOTH \`dependsOn\` AND \`baseBranch\` pointing to the predecessor step. This makes each worker branch off the previous worker's branch, so changes stack rather than diverge from the same base commit. Example: Step 2 has \`"dependsOn": ["step-1"], "baseBranch": "step-1"\`. Without \`baseBranch\`, all phases start from the same commit and their PRs will conflict.
+- **For parallel work** (independent research, analysis, or separate features that don't build on each other): omit \`baseBranch\` so they run concurrently from the default branch`);
       }
     }
 
