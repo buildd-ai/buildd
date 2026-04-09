@@ -137,6 +137,23 @@ export function loadAllWorkers(): LocalWorker[] {
         continue;
       }
 
+      // A working worker with no messages and no tool calls never actually ran a session.
+      // Mark it as orphaned immediately rather than waiting for the 10-min reconcile.
+      // (Happens when the runner restarts between task assignment and session start,
+      //  or when server-side expiry fires before any SDK turns completed.)
+      const hasActivity =
+        (Array.isArray(data.messages) && (data.messages as unknown[]).length > 0) ||
+        (Array.isArray(data.toolCalls) && (data.toolCalls as unknown[]).length > 0) ||
+        (Array.isArray(data.milestones) && (data.milestones as unknown[]).length > 0);
+      if (data.status === 'working' && !hasActivity) {
+        data.status = 'error';
+        data.error = 'Orphaned: loaded from disk as working but no session activity recorded';
+        data._savedAt = now;
+        try {
+          writeFileSync(filePath, JSON.stringify(data, null, 2));
+        } catch {}
+      }
+
       // Reconstruct LocalWorker with transient defaults
       const worker: LocalWorker = {
         id: data.id as string,

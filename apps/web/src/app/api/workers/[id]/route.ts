@@ -275,14 +275,37 @@ export async function PATCH(
     }
   }
 
+  let shouldAutoRetry = false;
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();
 
     // Update task status + snapshot deliverables
     if (worker.taskId) {
+      // Auto-retry: mission tasks get 1 automatic retry before permanently failing
+      let taskCtxForRetry: Record<string, unknown> = {};
+      if (status === 'failed') {
+        const taskForRetry = await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+          columns: { missionId: true, context: true },
+        });
+        taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
+        const retryCount = (taskCtxForRetry.retryCount as number) || 0;
+        const maxRetries = taskForRetry?.missionId ? 1 : 0;
+        shouldAutoRetry = retryCount < maxRetries;
+        if (shouldAutoRetry) {
+          taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
+        }
+      }
+
       const taskUpdate: Record<string, unknown> = {
-        status: status === 'completed' ? 'completed' : 'failed',
+        status: shouldAutoRetry ? 'pending' : (status === 'completed' ? 'completed' : 'failed'),
         updatedAt: new Date(),
+        ...(shouldAutoRetry ? {
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          context: taskCtxForRetry,
+        } : {}),
       };
 
       // Snapshot worker stats into task.result on completion
@@ -427,14 +450,31 @@ export async function PATCH(
         });
         if (taskRecord) {
           const isDone = status === 'completed';
-          notify({
-            app: isDone ? 'tasks' : 'alerts',
-            title: isDone ? 'Task done' : 'Task failed',
-            message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-            url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-            urlTitle: 'View task',
-            priority: isDone ? -1 : 0,
-          });
+          if (shouldAutoRetry) {
+            // Broadcast the task as available for any worker to claim
+            await triggerEvent(
+              channels.workspace(worker.workspaceId),
+              events.TASK_ASSIGNED,
+              { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+            );
+            notify({
+              app: 'tasks',
+              title: 'Task retrying',
+              message: `Auto-retrying: ${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: 'View task',
+              priority: 0,
+            });
+          } else {
+            notify({
+              app: isDone ? 'tasks' : 'alerts',
+              title: isDone ? 'Task done' : 'Task failed',
+              message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: 'View task',
+              priority: isDone ? -1 : 0,
+            });
+          }
         }
       } catch (sideEffectErr) {
         console.error(`[Worker ${id}] Post-completion side effects failed:`, sideEffectErr);
@@ -496,8 +536,8 @@ export async function PATCH(
   }
 
   // Send Slack/Discord notifications and webhook callback on completion/failure
-  // Smart suppression: skip notifications for heartbeat tasks with status "ok"
-  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk) {
+  // Smart suppression: skip notifications for heartbeat tasks with status "ok" or auto-retried failures
+  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry) {
     try {
       const taskForNotify = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),

@@ -921,7 +921,14 @@ export class WorkerRunner extends EventEmitter {
     if (gitConfig && gitConfig.branchingStrategy !== 'none') {
       const gitContext: string[] = ['\n## Git Workflow'];
       gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
-      const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      // For stacked plan phases: target the predecessor's branch so the PR diff
+      // shows only this phase's changes (Graphite-style stacked PRs).
+      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
+      const baseBranch = taskContext?.baseBranch as string | undefined;
+      const prTarget = baseBranch || gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      if (baseBranch) {
+        gitContext.push(`- This task is part of a sequential plan chain. Your PR MUST target \`${baseBranch}\` (the previous phase's branch), NOT the default branch. This keeps the diff clean and allows phases to be merged in order.`);
+      }
       if (gitConfig.requiresPR) {
         gitContext.push(`- Changes require PR to \`${prTarget}\``);
         // If buildd MCP is available, prefer create_pr action to avoid double PR creation
@@ -1046,6 +1053,7 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
       "title": "Step title",
       "description": "What this step does and acceptance criteria",
       "dependsOn": ["ref-of-prerequisite-step"],
+      "baseBranch": "ref-of-step-to-branch-from",
       "requiredCapabilities": ["git", "web-search"],
       "outputRequirement": "pr_required|artifact_required|none|auto",
       "priority": 0
@@ -1056,11 +1064,12 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
 \`\`\`
 
 ### Guidelines for Planning
-- Break complex work into independent, parallelizable steps where possible
 - Be specific about what each step produces and what it depends on
 - Include capability requirements so the right worker type claims each step
 - Keep steps small enough for a single worker session (under $5 budget)
-- Use \`dependsOn\` to express ordering constraints between steps`);
+- Use \`dependsOn\` to express ordering constraints between steps
+- **For sequential code builds** (each phase adds new code on top of the previous): use BOTH \`dependsOn\` AND \`baseBranch\` pointing to the predecessor step. This makes each worker branch off the previous worker's branch, so changes stack rather than diverge from the same base commit. Example: Step 2 has \`"dependsOn": ["step-1"], "baseBranch": "step-1"\`. Without \`baseBranch\`, all phases start from the same commit and their PRs will conflict.
+- **For parallel work** (independent research, analysis, or separate features that don't build on each other): omit \`baseBranch\` so they run concurrently from the default branch`);
       }
     }
 

@@ -58,10 +58,17 @@ export async function POST(
       title: string;
       description: string;
       dependsOn?: string[];
+      baseBranch?: string;
       requiredCapabilities?: string[];
       outputRequirement?: string;
       priority?: number;
     }> | undefined;
+
+    // Workspace git config for branch name prediction
+    const gitConfig = (task.workspace as any)?.gitConfig as {
+      branchingStrategy?: string;
+      branchPrefix?: string;
+    } | null;
 
     if (!plan || !Array.isArray(plan) || plan.length === 0) {
       return NextResponse.json({ error: 'No plan found in task result' }, { status: 400 });
@@ -85,8 +92,9 @@ export async function POST(
       );
     }
 
-    // Create child tasks and build ref-to-id mapping
+    // Create child tasks and build ref-to-id/title mapping
     const refToId: Record<string, string> = {};
+    const refToTitle: Record<string, string> = {};
     const createdTaskIds: string[] = [];
 
     // First pass: create all tasks without dependsOn to get their IDs
@@ -110,22 +118,51 @@ export async function POST(
         .returning();
 
       refToId[step.ref] = created.id;
+      refToTitle[step.ref] = step.title;
       createdTaskIds.push(created.id);
     }
 
-    // Second pass: update dependsOn with resolved task IDs
+    // Second pass: update dependsOn and baseBranch context with resolved task IDs
     for (const step of plan) {
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+
       if (step.dependsOn && step.dependsOn.length > 0) {
         const resolvedDeps = step.dependsOn
           .map((ref) => refToId[ref])
           .filter(Boolean);
-
         if (resolvedDeps.length > 0) {
-          await db
-            .update(tasks)
-            .set({ dependsOn: resolvedDeps, updatedAt: new Date() })
-            .where(eq(tasks.id, refToId[step.ref]));
+          updates.dependsOn = resolvedDeps;
         }
+      }
+
+      // Resolve baseBranch ref to predicted branch name so the worker can
+      // check out the predecessor's branch and stack code changes sequentially.
+      if (step.baseBranch && refToId[step.baseBranch]) {
+        const depTaskId = refToId[step.baseBranch];
+        const depTitle = refToTitle[step.baseBranch];
+        const sanitizedTitle = depTitle
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .substring(0, 30);
+        const taskIdShort = depTaskId.substring(0, 8);
+
+        let predictedBranch: string;
+        if (gitConfig?.branchingStrategy === 'none') {
+          predictedBranch = `task-${taskIdShort}`;
+        } else if (gitConfig?.branchPrefix) {
+          predictedBranch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
+        } else {
+          predictedBranch = `buildd/${taskIdShort}-${sanitizedTitle}`;
+        }
+
+        updates.context = { baseBranch: predictedBranch };
+      }
+
+      if (Object.keys(updates).length > 1) { // more than just updatedAt
+        await db
+          .update(tasks)
+          .set(updates as any)
+          .where(eq(tasks.id, refToId[step.ref]));
       }
     }
 
