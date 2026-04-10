@@ -75,13 +75,13 @@ export async function PATCH(
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
     }
-    // For API key auth, verify workspace belongs to the API key's team
+    // For API key auth, verify workspace belongs to the API key's team or is open-access
     if (apiAccount) {
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, id),
-        columns: { teamId: true },
+        columns: { teamId: true, accessMode: true },
       });
-      if (!ws || ws.teamId !== apiAccount.teamId) {
+      if (!ws || (ws.teamId !== apiAccount.teamId && ws.accessMode !== 'open')) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
     }
