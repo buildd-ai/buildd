@@ -374,10 +374,11 @@ export async function PATCH(
           });
           if (taskForTriage?.mode === 'planning' && taskForTriage.missionId) {
             const ctx = (taskForTriage.context || {}) as Record<string, unknown>;
+            const planArr = body.structuredOutput.plan as unknown[] | undefined;
             console.log('[triage]', JSON.stringify({
               missionId: taskForTriage.missionId,
               triageOutcome: body.structuredOutput.triageOutcome,
-              tasksCreated: body.structuredOutput.tasksCreated,
+              tasksCreated: Array.isArray(planArr) ? planArr.length : body.structuredOutput.tasksCreated,
               missionComplete: body.structuredOutput.missionComplete,
               cycleNumber: ctx.cycleNumber,
             }));

@@ -35,6 +35,8 @@ export interface BuilddMcpServerOptions {
   memoryApiKey?: string;
   /** Project identifier for memory scoping */
   memoryProject?: string;
+  /** Task mode — planning workers get a restricted toolset */
+  taskMode?: string;
 }
 
 function apiCall(serverUrl: string, apiKey: string, endpoint: string, options: RequestInit = {}) {
@@ -80,12 +82,18 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
 
   // Determine account level once at creation for dynamic toolset
   const level = await getAccountLevel(serverUrl, apiKey);
-  const filteredActions = level === 'admin'
+  let filteredActions = level === 'admin'
     ? [...allActionsList]
     : level === 'trigger'
     ? [...triggerActions]
     : [...workerActions];
   const filteredMemoryActions = [...memoryActions];
+
+  // Planning workers output a structured plan — remove create_task so
+  // they physically cannot bypass the approve_plan flow.
+  if (opts.taskMode === 'planning') {
+    filteredActions = filteredActions.filter(a => a !== 'create_task');
+  }
 
   const ctx: ActionContext = {
     workerId,

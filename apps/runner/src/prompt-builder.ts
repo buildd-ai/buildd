@@ -271,7 +271,14 @@ export function buildPrompt(ctx: PromptContext): string {
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
   if (task.mode === 'planning') {
-    promptParts.push('## Output Requirement\nThis is a **planning task**. Produce a structured plan — do not make code changes.');
+    promptParts.push(
+      '## Output Requirement\n' +
+      'This is a **planning task**. Output a structured JSON plan.\n' +
+      'Each item needs: ref (unique ID like "step-1"), title, description.\n' +
+      'Optional: dependsOn (array of refs for ordering), baseBranch (ref of predecessor task to chain branches from), roleSlug (e.g. "builder", "researcher"), priority (integer).\n' +
+      'Set missionComplete: true when the mission goal is fully achieved.\n' +
+      'Do NOT call create_task — the system creates tasks from your plan automatically.'
+    );
   } else if (outputReq === 'pr_required') {
     promptParts.push('## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.');
   } else if (outputReq === 'artifact_required') {

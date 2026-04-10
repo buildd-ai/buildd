@@ -3,6 +3,7 @@ import { tasks, missions } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
+import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -30,22 +31,42 @@ export async function resolveCompletedTask(
     columns: { mode: true, missionId: true, status: true },
   });
 
-  if (completedTaskFull?.mode === 'planning' && completedTaskFull.missionId) {
+  if (completedTaskFull?.mode === 'planning') {
     if (completedTaskFull.status === 'failed') {
       // Failed planning task — auto-retry the mission (infrastructure failure, not stall)
-      retriggerMissionOnFailure(completedTaskFull.missionId, completedTaskId).catch((err) =>
-        console.error(`[mission-loop] failure auto-retry failed:`, err)
-      );
+      if (completedTaskFull.missionId) {
+        retriggerMissionOnFailure(completedTaskFull.missionId, completedTaskId).catch((err) =>
+          console.error(`[mission-loop] failure auto-retry failed:`, err)
+        );
+      }
     } else {
-      // Completed planning task with no children — orchestrator decided nothing to do
-      const children = await db.query.tasks.findMany({
-        where: eq(tasks.parentTaskId, completedTaskId),
-        columns: { id: true },
-        limit: 1,
+      // Completed planning task — auto-approve plan if present in structuredOutput
+      const taskWithResult = await db.query.tasks.findFirst({
+        where: eq(tasks.id, completedTaskId),
+        columns: { result: true },
       });
-      if (children.length === 0) {
+      const result = taskWithResult?.result as Record<string, unknown> | null;
+      const structuredOutput = result?.structuredOutput as Record<string, unknown> | undefined;
+      const plan = structuredOutput?.plan as PlanStep[] | undefined;
+
+      if (plan && Array.isArray(plan) && plan.length > 0) {
+        try {
+          await approvePlan(completedTaskId, plan, { autoApproved: true });
+          // Children created — retrigger will happen when they complete
+          // via checkChildrenCompleted → maybeCreateAggregationTask → maybeRetriggerMission
+        } catch (err) {
+          console.error(`[auto-approve] Failed for task ${completedTaskId}:`, err);
+          // Fall through to retrigger so the mission doesn't stall
+          if (completedTaskFull.missionId) {
+            maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((e) =>
+              console.error(`[mission-loop] retrigger after auto-approve failure:`, e)
+            );
+          }
+        }
+      } else if (completedTaskFull.missionId) {
+        // Empty plan or no plan — retrigger mission loop (checks missionComplete signal)
         maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
-          console.error(`[mission-loop] zero-child retrigger failed:`, err)
+          console.error(`[mission-loop] zero-plan retrigger failed:`, err)
         );
       }
     }
