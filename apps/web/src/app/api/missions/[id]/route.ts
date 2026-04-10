@@ -23,6 +23,19 @@ async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
   return [];
 }
 
+/** Check if a mission is accessible: team match OR open-access workspace */
+async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
+  if (teamIds.includes(mission.teamId)) return true;
+  if (mission.workspaceId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, mission.workspaceId),
+      columns: { accessMode: true },
+    });
+    if (ws?.accessMode === 'open') return true;
+  }
+  return false;
+}
+
 // GET /api/missions/[id]
 export async function GET(
   req: NextRequest,
@@ -59,7 +72,7 @@ export async function GET(
       },
     });
 
-    if (!mission || !teamIds.includes(mission.teamId)) {
+    if (!mission || !(await hasMissionAccess(mission, teamIds))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
@@ -150,7 +163,7 @@ export async function PATCH(
       where: eq(missions.id, id),
     });
 
-    if (!existing || !teamIds.includes(existing.teamId)) {
+    if (!existing || !(await hasMissionAccess(existing, teamIds))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
@@ -343,7 +356,7 @@ export async function DELETE(
       where: eq(missions.id, id),
     });
 
-    if (!existing || !teamIds.includes(existing.teamId)) {
+    if (!existing || !(await hasMissionAccess(existing, teamIds))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 

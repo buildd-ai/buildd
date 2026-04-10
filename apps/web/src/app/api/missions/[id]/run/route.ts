@@ -4,7 +4,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { runMission } from '@/lib/mission-run';
 import { db } from '@buildd/core/db';
-import { missions, teamMembers } from '@buildd/core/db/schema';
+import { missions, workspaces, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 
 async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
@@ -52,14 +52,28 @@ export async function POST(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
-    // Verify mission exists and belongs to user's team
+    // Verify mission exists and belongs to user's team (or open-access workspace)
     const mission = await db.query.missions.findFirst({
       where: eq(missions.id, id),
-      columns: { id: true, teamId: true },
+      columns: { id: true, teamId: true, workspaceId: true },
     });
 
-    if (!mission || !teamIds.includes(mission.teamId)) {
+    if (!mission) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    }
+    if (!teamIds.includes(mission.teamId)) {
+      // Check if workspace is open-access
+      let allowed = false;
+      if (mission.workspaceId) {
+        const ws = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, mission.workspaceId),
+          columns: { accessMode: true },
+        });
+        if (ws?.accessMode === 'open') allowed = true;
+      }
+      if (!allowed) {
+        return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      }
     }
 
     const result = await runMission(id, { manualRun: true });

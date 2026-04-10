@@ -156,14 +156,14 @@ export async function POST(req: NextRequest) {
       // Look up workspace without team filter — then verify user has access
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
-        columns: { id: true, teamId: true },
+        columns: { id: true, teamId: true, accessMode: true },
       });
       if (!ws) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
-      // For API key auth, workspace must belong to the account's team
+      // For API key auth, workspace must belong to the account's team or be open-access
       // For session auth, workspace must belong to one of the user's teams
-      if (apiAccount && ws.teamId !== teamId) {
+      if (apiAccount && ws.teamId !== teamId && ws.accessMode !== 'open') {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
       if (!apiAccount && !userTeamIds.includes(ws.teamId)) {
