@@ -197,6 +197,25 @@ export async function POST(req: NextRequest) {
     )
   );
 
+  // Prevent parallel workers on the same repo — if another task in the same
+  // workspace already has an active worker, skip this task. This avoids the
+  // "N parallel branches on the same repo" problem that causes merge conflicts.
+  // Only applies to workspaces with a repo (not coordination workspaces).
+  claimableConditions.push(
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${workers} w2
+      JOIN ${tasks} t3 ON t3.id = w2.task_id
+      WHERE t3.workspace_id = ${tasks.workspaceId}
+      AND w2.status IN ('running', 'starting', 'idle')
+      AND t3.id != ${tasks.id}
+      AND EXISTS (
+        SELECT 1 FROM ${workspaces} ws
+        WHERE ws.id = t3.workspace_id
+        AND ws.repo IS NOT NULL
+      )
+    )`
+  );
+
   // Filter by roleSlug: tasks with a role_slug are only claimable by runners
   // that advertise that slug in availableSkills.
   // If availableSkills is not provided, the runner can claim any task (backward compat).

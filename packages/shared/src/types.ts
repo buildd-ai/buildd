@@ -725,7 +725,8 @@ export type ClaimDiagnosticReason =
   | 'no_pending_tasks'
   | 'capability_mismatch'
   | 'race_lost'
-  | 'deps_blocked';
+  | 'deps_blocked'
+  | 'repo_busy';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
