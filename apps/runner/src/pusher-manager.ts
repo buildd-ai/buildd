@@ -1,4 +1,6 @@
-import Pusher from 'pusher-js';
+import PusherModule from 'pusher-js';
+// Handle CJS/ESM interop — pusher-js may export { Pusher } or default constructor
+const Pusher = ('Pusher' in PusherModule ? (PusherModule as any).Pusher : PusherModule) as typeof import('pusher-js').default;
 import type { BuilddTask, WorkerCommand, LocalUIConfig, LocalWorker } from './types';
 import type { BuilddClient } from './buildd';
 import { saveWorker as storeSaveWorker } from './worker-store';

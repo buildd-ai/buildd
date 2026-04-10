@@ -33,6 +33,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
+      workspaces: { findFirst: mock(() => Promise.resolve(null)) },
     },
     insert: (_table: any) => ({
       values: (vals: any) => {
@@ -60,6 +61,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', parentTaskId: 'parentTaskId' },
+  workspaces: { id: 'id' },
 }));
 
 // Import handler AFTER mocks
