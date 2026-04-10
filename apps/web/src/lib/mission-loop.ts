@@ -127,10 +127,11 @@ export async function maybeRetriggerMission(
   }
 
   // 5.5. Stuck-planning detection — zero tasks with no completion signal
-  // If the organizer reported tasksCreated: 0 and triageOutcome !== 'conflict',
+  // If the organizer reported an empty plan and triageOutcome !== 'conflict',
   // inject corrective feedback into the next cycle
   let stuckPlanningFeedback: string | null = null;
-  const tasksCreated = (structuredOutput as any)?.tasksCreated;
+  const planArray = (structuredOutput as any)?.plan as unknown[] | undefined;
+  const tasksCreated = Array.isArray(planArray) ? planArray.length : (structuredOutput as any)?.tasksCreated;
   const triageOutcome = (structuredOutput as any)?.triageOutcome;
 
   if (
@@ -141,15 +142,15 @@ export async function maybeRetriggerMission(
     const wsState = taskContext.workspaceState as { isCoordination?: boolean; repo?: string | null } | undefined;
     if (wsState?.isCoordination || (wsState && !wsState.repo)) {
       stuckPlanningFeedback =
-        'Previous planning cycle created 0 tasks. ' +
+        'Previous planning cycle produced an empty plan. ' +
         'You are in a meta-workspace (__coordination) or a workspace with no repo. ' +
-        'For code missions: create a workspace and repo using manage_workspaces FIRST, then create execution tasks. ' +
+        'For code missions: create a workspace and repo using manage_workspaces FIRST, then output plan items. ' +
         'Artifacts alone do not advance the mission.';
     } else {
       stuckPlanningFeedback =
-        'Previous planning cycle created 0 tasks and did not complete the mission. ' +
-        'Review your plan and create concrete execution tasks using create_task. ' +
-        'Every planning cycle must either create tasks or mark the mission complete.';
+        'Previous planning cycle produced an empty plan and did not complete the mission. ' +
+        'Output concrete plan items in the plan array. ' +
+        'Every planning cycle must either produce plan items or set missionComplete: true.';
     }
   }
 

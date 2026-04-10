@@ -578,20 +578,20 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   if (isBuild && taskPRs.length > 0) {
     descParts.push(
-      '**Sequencing**: Multiple PRs exist on this mission. When creating new tasks on the same repo, ' +
-      'chain them with `dependsOn` or create an integration task to avoid branch conflicts.'
+      '**Sequencing**: Multiple PRs exist on this mission. Chain plan steps with `dependsOn` and `baseBranch` to avoid branch conflicts.'
     );
   }
 
-  // Always instruct planners to use dependsOn for sequential work
-  descParts.push(
-    '\n**CRITICAL — Task Dependencies**: When creating multiple tasks that modify the same repo, you MUST chain them with `dependsOn` ' +
-    'so they execute sequentially. Parallel branches on the same repo cause merge conflicts and wasted compute.\n' +
-    'Usage: `create_task({ ..., dependsOn: ["<task-id-from-previous-create>"] })`. ' +
-    'The first task has no dependsOn. Each subsequent task depends on the one before it.\n' +
-    'If tasks already exist on this mission with `dependsOn` set (check activeTasks in context), ' +
-    'do NOT create overlapping tasks — build on the existing chain or skip what is already covered.'
-  );
+  // Remind planners about existing task chains
+  if (activeTasks.length > 0) {
+    const tasksWithDeps = activeTasks.filter((t: any) => t.dependsOn?.length > 0);
+    if (tasksWithDeps.length > 0) {
+      descParts.push(
+        '\n**Existing task chain detected** — there are pending/active tasks with `dependsOn` set. ' +
+        'Do NOT create overlapping tasks. If additional work is needed, add to the existing chain.'
+      );
+    }
+  }
 
   // Build context JSONB
   const contextData: Record<string, unknown> = {

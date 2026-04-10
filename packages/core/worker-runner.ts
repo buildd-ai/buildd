@@ -114,24 +114,13 @@ export class WorkerRunner extends EventEmitter {
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Extract outputSchema from task for structured output support
-      // For planning mode tasks without an explicit schema, inject the default plan schema
-      // Mission planning tasks get a simpler schema since they create tasks via MCP
+      // For planning mode tasks without an explicit schema, inject the unified planning schema
       const taskOutputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
       const isPlanningMode = (worker.task as any)?.mode === 'planning';
-      const isMissionPlanning = !!(worker.task as any)?.context?.missionId;
-      const missionPlanningSchema = {
+      const planningOutputSchema = {
         type: 'object',
         properties: {
-          triageOutcome: { type: 'string', enum: ['single_task', 'multi_task', 'conflict'], description: 'Triage classification: single_task (one well-scoped task, mission done), multi_task (multiple tasks needed), conflict (active work already covers this)' },
-          summary: { type: 'string', description: 'What was planned and why' },
-          tasksCreated: { type: 'number', description: 'Number of execution tasks created' },
-          missionComplete: { type: 'boolean', description: 'Whether the mission is fully complete' },
-        },
-        required: ['triageOutcome', 'summary', 'tasksCreated', 'missionComplete'],
-      };
-      const defaultPlanSchema = {
-        type: 'object',
-        properties: {
+          triageOutcome: { type: 'string', enum: ['single_task', 'multi_task', 'conflict'] },
           plan: {
             type: 'array',
             items: {
@@ -141,7 +130,8 @@ export class WorkerRunner extends EventEmitter {
                 title: { type: 'string' },
                 description: { type: 'string' },
                 dependsOn: { type: 'array', items: { type: 'string' } },
-                requiredCapabilities: { type: 'array', items: { type: 'string' } },
+                baseBranch: { type: 'string' },
+                roleSlug: { type: 'string' },
                 outputRequirement: { type: 'string' },
                 priority: { type: 'integer' },
               },
@@ -149,11 +139,12 @@ export class WorkerRunner extends EventEmitter {
             },
           },
           summary: { type: 'string' },
+          missionComplete: { type: 'boolean' },
         },
-        required: ['plan', 'summary'],
+        required: ['plan', 'summary', 'missionComplete'],
       };
       const outputSchema = taskOutputSchema || (isPlanningMode
-        ? (isMissionPlanning ? missionPlanningSchema : defaultPlanSchema)
+        ? planningOutputSchema
         : null);
 
       // Resolve primary model: task-level override > runner default
@@ -187,6 +178,7 @@ export class WorkerRunner extends EventEmitter {
             apiKey: config.builddApiKey,
             workerId: this.workerId,
             workspaceId: worker.workspace?.id,
+            taskMode: (worker.task as any)?.mode || undefined,
           })
         : null;
 
@@ -1014,9 +1006,9 @@ Workspace: ${wsLabel}
 8. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
 
 ### Critical Rules
-- **Tasks are your deliverable.** Every planning cycle must either create tasks OR set missionComplete: true.
-- If you complete with tasksCreated: 0 and missionComplete: false, the system will retrigger you with feedback.
-- Artifacts supplement tasks but do not replace them.
+- **Your plan array is your deliverable.** Every planning cycle must either output plan items OR set missionComplete: true.
+- If you complete with an empty plan and missionComplete: false, the system will retrigger you with feedback.
+- Artifacts supplement plan items but do not replace them.
 
 ### Artifact Continuity
 - Use consistent keys: \`mission-${missionId}-research\`, \`mission-${missionId}-analysis\`
