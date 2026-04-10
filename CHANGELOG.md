@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mark ALL working workers as error on startup, not just zero-activity ones (#623)
 - Scope secrets by workspace team to prevent cross-team leakage (#529)
 - Claim pending tasks on runner startup (#527)
 - Use task terminology on task creation page
