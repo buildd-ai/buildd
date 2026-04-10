@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts } from '@buildd/core/db/schema';
-import { eq, desc, inArray } from 'drizzle-orm';
+import { tasks, workers, artifacts, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -13,6 +13,7 @@ import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import PlanReviewPanel from './PlanReviewPanel';
+import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -100,6 +101,74 @@ export default async function TaskDetailPage({
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
   );
+
+  // Fetch execution plan chain: siblings (if child) or children (if parent)
+  const planParentId = task.parentTaskId ?? (task.subTasks?.length ? task.id : null);
+  type ChainTask = {
+    id: string; title: string; status: string; roleSlug: string | null;
+    worker: { prUrl: string | null; prNumber: number | null; turns: number; branch: string } | null;
+    artifacts: Array<{ id: string; type: string; title: string | null }>;
+  };
+  let planChain: ChainTask[] = [];
+  let roleMap = new Map<string, { name: string; color: string }>();
+
+  if (planParentId) {
+    const chainBase = await db.query.tasks.findMany({
+      where: eq(tasks.parentTaskId, planParentId),
+      columns: { id: true, title: true, status: true, roleSlug: true },
+      orderBy: asc(tasks.createdAt),
+    });
+
+    if (chainBase.length > 0) {
+      const chainIds = chainBase.map(t => t.id);
+
+      const chainWorkers = await db.query.workers.findMany({
+        where: inArray(workers.taskId, chainIds),
+        columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true },
+        orderBy: desc(workers.createdAt),
+      });
+      const latestWorker = new Map<string, typeof chainWorkers[0]>();
+      for (const w of chainWorkers) {
+        if (w.taskId && !latestWorker.has(w.taskId)) latestWorker.set(w.taskId, w);
+      }
+
+      const chainWorkerIds = [...latestWorker.values()].map(w => w.id);
+      const chainArts = chainWorkerIds.length > 0
+        ? await db.query.artifacts.findMany({
+            where: and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan')),
+            columns: { id: true, workerId: true, type: true, title: true },
+          })
+        : [];
+      const artsByWorker = new Map<string, typeof chainArts>();
+      for (const a of chainArts) {
+        if (!a.workerId) continue;
+        if (!artsByWorker.has(a.workerId)) artsByWorker.set(a.workerId, []);
+        artsByWorker.get(a.workerId)!.push(a);
+      }
+
+      planChain = chainBase.map(t => {
+        const w = latestWorker.get(t.id) ?? null;
+        return {
+          ...t,
+          worker: w ? { prUrl: w.prUrl, prNumber: w.prNumber, turns: w.turns, branch: w.branch } : null,
+          artifacts: w ? (artsByWorker.get(w.id) ?? []) : [],
+        };
+      });
+
+      const slugs = [...new Set(planChain.map(t => t.roleSlug).filter(Boolean))] as string[];
+      if (slugs.length > 0) {
+        const roles = await db.query.workspaceSkills.findMany({
+          where: and(
+            eq(workspaceSkills.workspaceId, task.workspaceId),
+            eq(workspaceSkills.isRole, true),
+            inArray(workspaceSkills.slug, slugs),
+          ),
+          columns: { slug: true, name: true, color: true },
+        });
+        roles.forEach(r => roleMap.set(r.slug, { name: r.name, color: r.color }));
+      }
+    }
+  }
 
   // Get the active worker (if any)
   const activeWorker = taskWorkers.find(w =>
@@ -329,8 +398,14 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Task Relationships */}
-        {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+        {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
+        {planChain.length > 0 ? (
+          <PlanChainView
+            currentTaskId={id}
+            tasks={planChain}
+            roleMap={Object.fromEntries(roleMap)}
+          />
+        ) : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
           <div className="mb-6">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
