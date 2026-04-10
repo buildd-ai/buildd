@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, artifacts, teamMembers } from '@buildd/core/db/schema';
+import { missions, artifacts, workspaces, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -60,8 +60,22 @@ export async function POST(
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
-  if (!mission || !teamIds.includes(mission.teamId)) {
+  if (!mission) {
     return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+  }
+  if (!teamIds.includes(mission.teamId)) {
+    // Allow access to open-access workspace missions
+    let allowed = false;
+    if (mission.workspaceId) {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: { accessMode: true },
+      });
+      if (ws?.accessMode === 'open') allowed = true;
+    }
+    if (!allowed) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    }
   }
 
   const body = await req.json();
@@ -176,11 +190,24 @@ export async function GET(
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
-    columns: { id: true, teamId: true },
+    columns: { id: true, teamId: true, workspaceId: true },
   });
 
-  if (!mission || !teamIds.includes(mission.teamId)) {
+  if (!mission) {
     return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+  }
+  if (!teamIds.includes(mission.teamId)) {
+    let allowed = false;
+    if (mission.workspaceId) {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: { accessMode: true },
+      });
+      if (ws?.accessMode === 'open') allowed = true;
+    }
+    if (!allowed) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    }
   }
 
   const missionArtifacts = await db.query.artifacts.findMany({
