@@ -140,6 +140,13 @@ describe('Concurrency Control', () => {
           // and this attempt). Treat as valid enforcement and stop claiming.
           console.log(`  ✓ Claim rejected by server concurrency limit after ${claimedWorkerIds.length} claims (server-side enforcement working)`);
           break;
+        } else if (err.message?.includes('Claim returned no worker') && claimedWorkerIds.length > 0) {
+          // Single-writer-per-repo enforcement: the server won't issue a second worker
+          // for the same workspace (with a repo) while an active worker exists there.
+          // This returns a 200 with empty workers (not a 429), so we handle it separately.
+          // Treat as valid workspace-level enforcement and stop claiming.
+          console.log(`  ✓ Claim blocked (workspace single-writer or race constraint) after ${claimedWorkerIds.length} claims`);
+          break;
         } else {
           throw err;
         }
