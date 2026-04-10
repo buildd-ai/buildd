@@ -74,6 +74,7 @@ export const events = {
   // Task dependency events
   CHILDREN_COMPLETED: 'task:children_completed',
   TASK_UNBLOCKED: 'task:unblocked',
+  TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
   // Mission loop events
   MISSION_CYCLE_STARTED: 'mission:cycle_started',
   MISSION_LOOP_COMPLETED: 'mission:loop_completed',

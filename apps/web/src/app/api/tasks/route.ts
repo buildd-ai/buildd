@@ -170,6 +170,8 @@ export async function POST(req: NextRequest) {
       dependsOn,
       // Role routing — only runners with this skill can claim the task
       roleSlug,
+      // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
+      context: incomingContext,
     } = body;
 
     if (!title) {
@@ -217,6 +219,22 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           { error: `Account "${apiAccount.name}" does not have permission to create tasks in this workspace.` },
           { status: 403 }
+        );
+      }
+    }
+
+    // Validate dependsOn references exist in the same workspace
+    if (Array.isArray(dependsOn) && dependsOn.length > 0) {
+      const depTasks = await db.query.tasks.findMany({
+        where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)),
+        columns: { id: true },
+      });
+      const foundIds = new Set(depTasks.map(t => t.id));
+      const missing = dependsOn.filter((id: string) => !foundIds.has(id));
+      if (missing.length > 0) {
+        return NextResponse.json(
+          { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
+          { status: 400 }
         );
       }
     }
@@ -318,6 +336,9 @@ export async function POST(req: NextRequest) {
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {
+          // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
+          ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
+          // Route-computed fields take precedence
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
