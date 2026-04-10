@@ -6,6 +6,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsFindMany = mock(() => [] as any[]);
 
@@ -51,6 +52,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: mockMissionsFindFirst },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
       artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
     insert: () => mockArtifactsInsert(),
@@ -111,6 +113,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
     mockGetUserTeamIds.mockReset();
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
     insertedArtifactValues = null;
@@ -244,6 +247,7 @@ describe('GET /api/missions/[id]/artifacts', () => {
     mockGetUserTeamIds.mockReset();
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockArtifactsFindMany.mockReset();
 
     mockAuthenticateApiKey.mockResolvedValue(null);

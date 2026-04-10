@@ -277,7 +277,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
     limit: 5,
-    columns: { id: true, title: true, status: true, description: true },
+    columns: { id: true, title: true, status: true, description: true, dependsOn: true },
   });
 
   // Recent failed tasks
@@ -583,6 +583,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     );
   }
 
+  // Always instruct planners to use dependsOn for sequential work
+  descParts.push(
+    '\n**CRITICAL — Task Dependencies**: When creating multiple tasks that modify the same repo, you MUST chain them with `dependsOn` ' +
+    'so they execute sequentially. Parallel branches on the same repo cause merge conflicts and wasted compute.\n' +
+    'Usage: `create_task({ ..., dependsOn: ["<task-id-from-previous-create>"] })`. ' +
+    'The first task has no dependsOn. Each subsequent task depends on the one before it.\n' +
+    'If tasks already exist on this mission with `dependsOn` set (check activeTasks in context), ' +
+    'do NOT create overlapping tasks — build on the existing chain or skip what is already covered.'
+  );
+
   // Build context JSONB
   const contextData: Record<string, unknown> = {
     missionId: mission.id,
@@ -609,6 +619,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       taskId: t.id,
       title: t.title,
       status: t.status,
+      dependsOn: (t as any).dependsOn || null,
     })),
     ...(recipeSteps ? { recipeSteps } : {}),
     priorArtifacts: allArtifacts.map(a => ({

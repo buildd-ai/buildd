@@ -24,7 +24,7 @@ const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
 async function resolveStaleTask(
   taskId: string,
   workspaceId: string,
-  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null } | undefined,
+  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
 ) {
   // Check if the stale worker produced deliverables
   let hasDeliverables = false;
@@ -62,13 +62,23 @@ async function resolveStaleTask(
         })
         .where(eq(tasks.id, taskId));
     } else {
-      // Retries remaining — reset to pending
+      // Retries remaining — reset to pending, preserving branch context for continuity
+      const currentTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, taskId),
+        columns: { context: true },
+      });
+      const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
       await db
         .update(tasks)
         .set({
           status: 'pending',
           claimedBy: null,
           claimedAt: null,
+          context: {
+            ...existingCtx,
+            ...(staleWorker?.branch ? { baseBranch: staleWorker.branch } : {}),
+            failureContext: staleWorker?.error || 'Previous worker expired',
+          },
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
@@ -105,7 +115,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
       ),
     ),
-    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
+    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
   });
 
   if (staleWorkers.length > 0) {
@@ -171,7 +181,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
         lt(workers.updatedAt, heartbeatCutoff),
       ),
-      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
+      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
     });
 
     if (orphanedByHeartbeat.length > 0) {
@@ -323,7 +333,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, waitingFor: true, updatedAt: true },
+    columns: { id: true, taskId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
     with: { task: { columns: { missionId: true } } },
   });
 
@@ -380,14 +390,22 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       })
       .where(eq(tasks.id, originalTask.id));
 
-    // Create retry task
+    // Create retry task with enriched context for branch continuity
+    const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
+    const retryContext = {
+      ...existingCtx,
+      ...(worker.branch ? { baseBranch: worker.branch } : {}),
+      failureContext: worker.error || 'Worker stalled in waiting_input',
+      iteration: ((existingCtx.iteration as number) || 0) + 1,
+    };
+
     await db
       .insert(tasks)
       .values({
         workspaceId: originalTask.workspaceId,
         title: originalTask.title,
         description: retryDescription,
-        context: originalTask.context,
+        context: retryContext,
         priority: originalTask.priority,
         category: originalTask.category,
         project: originalTask.project,

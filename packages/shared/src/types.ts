@@ -724,7 +724,8 @@ export type ClaimDiagnosticReason =
   | 'no_workspaces'
   | 'no_pending_tasks'
   | 'capability_mismatch'
-  | 'race_lost';
+  | 'race_lost'
+  | 'deps_blocked';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;

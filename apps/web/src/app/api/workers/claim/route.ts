@@ -185,13 +185,13 @@ export async function POST(req: NextRequest) {
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-      // All dependencies are in a terminal state
+      // All dependencies must be completed (failed deps block downstream tasks)
       sql`NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${tasks} t2
           WHERE t2.id = dep_id::uuid
-          AND t2.status IN ('completed', 'failed')
+          AND t2.status = 'completed'
         )
       )`
     )

@@ -298,6 +298,27 @@ export function buildPrompt(ctx: PromptContext): string {
     promptParts.push(aggParts.join('\n'));
   }
 
+  // Render retry context so workers know they're continuing previous work
+  const retryIteration = (taskCtx as any)?.iteration as number | undefined;
+  const failureCtx = (taskCtx as any)?.failureContext as string | undefined;
+  const retryBaseBranch = (taskCtx as any)?.baseBranch as string | undefined;
+  const maxIter = (taskCtx as any)?.maxIterations as number | undefined;
+
+  if (retryIteration || failureCtx) {
+    const retryParts: string[] = ['## Retry Context'];
+    if (retryIteration) {
+      retryParts.push(`This is attempt ${retryIteration}${maxIter ? ` of ${maxIter}` : ''}.`);
+    }
+    if (retryBaseBranch) {
+      retryParts.push(`Previous work is on branch \`${retryBaseBranch}\`. Your worktree is based on that branch — continue from existing work, do NOT start fresh.`);
+    }
+    if (failureCtx) {
+      retryParts.push(`Previous failure: ${failureCtx}`);
+    }
+    retryParts.push('Review the existing work and continue from where the previous attempt left off. Do not redo completed work.');
+    promptParts.push(retryParts.join('\n'));
+  }
+
   // Communication instruction: configurable input policy
   // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
   if (inputPolicy === 'allow') {

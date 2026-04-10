@@ -14,7 +14,7 @@ async function main() {
   // Retry loop for Neon preview branch cold starts. The CI now extracts
   // the connection URI directly from the Neon API, so "password authentication
   // failed" should be rare. Retries mainly cover ECONNREFUSED / endpoint-disabled.
-  const maxAttempts = 12;
+  const maxAttempts = 24;
   const retryDelayMs = 5000;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
