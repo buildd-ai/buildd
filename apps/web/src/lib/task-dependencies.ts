@@ -70,7 +70,13 @@ export async function resolveCompletedTask(
   }
 
   // Check if any tasks have this task in their dependsOn list
-  await checkDependsOnResolved(completedTaskId);
+  // For failed tasks: cascade failure to dependent tasks
+  // For completed tasks: check if deps are now unblocked
+  if (completedTaskFull?.status === 'failed') {
+    await cascadeDependencyFailure(completedTaskId);
+  } else {
+    await checkDependsOnResolved(completedTaskId);
+  }
 }
 
 /**
@@ -245,12 +251,12 @@ async function checkDependsOnResolved(
     const deps = task.dependsOn as string[] | null;
     if (!deps || deps.length === 0) continue;
 
-    const allResolved = deps.every((depId) => {
+    const allCompleted = deps.every((depId) => {
       const status = statusMap.get(depId);
-      return status === 'completed' || status === 'failed';
+      return status === 'completed';
     });
 
-    if (allResolved) {
+    if (allCompleted) {
       await triggerEvent(
         channels.workspace(task.workspaceId),
         events.TASK_UNBLOCKED,
@@ -260,5 +266,65 @@ async function checkDependsOnResolved(
         }
       );
     }
+  }
+}
+
+/**
+ * Cascade failure to tasks that depend on the failed task.
+ * Auto-fails dependent tasks and recursively resolves them (triggering further cascades).
+ */
+async function cascadeDependencyFailure(
+  failedTaskId: string
+): Promise<void> {
+  // Find all pending/assigned tasks where dependsOn contains the failed task ID
+  const dependentTasks = await db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      workspaceId: tasks.workspaceId,
+      status: tasks.status,
+    })
+    .from(tasks)
+    .where(
+      and(
+        sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([failedTaskId])}::jsonb`,
+        // Only cascade to non-terminal tasks
+        sql`${tasks.status} NOT IN ('completed', 'failed', 'cancelled')`,
+      )
+    );
+
+  if (dependentTasks.length === 0) return;
+
+  // Fetch the failed task's title for a meaningful error message
+  const failedTask = await db.query.tasks.findFirst({
+    where: eq(tasks.id, failedTaskId),
+    columns: { title: true },
+  });
+  const failedTitle = failedTask?.title || failedTaskId;
+
+  for (const task of dependentTasks) {
+    // Auto-fail the dependent task
+    await db
+      .update(tasks)
+      .set({
+        status: 'failed',
+        result: { error: `Blocked: dependency "${failedTitle}" (${failedTaskId}) failed` } as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id));
+
+    // Fire event for dashboard visibility
+    await triggerEvent(
+      channels.workspace(task.workspaceId),
+      events.TASK_DEPENDENCY_FAILED,
+      {
+        taskId: task.id,
+        failedDependency: failedTaskId,
+        failedDependencyTitle: failedTitle,
+      }
+    );
+
+    // Recursively resolve — triggers further cascades, mission loop updates, etc.
+    await resolveCompletedTask(task.id, task.workspaceId);
   }
 }
