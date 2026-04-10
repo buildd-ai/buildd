@@ -169,6 +169,7 @@ export class WorkerManager {
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
   private reconcileInterval?: Timer;
+  private claimPollInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -356,6 +357,16 @@ export class WorkerManager {
           console.warn('[Reconcile] Periodic reconciliation failed:', err instanceof Error ? err.message : err);
         });
       }, 10 * 60_000); // Every 10 minutes
+
+      // Fallback poll: catch tasks whose Pusher events were missed (crash, reconnect race)
+      this.claimPollInterval = setInterval(() => {
+        const active = Array.from(this.workers.values()).filter(
+          w => w.status === 'working' || w.status === 'stale'
+        ).length;
+        if (active < this.config.maxConcurrent) {
+          this.claimPendingTasks().catch(() => {});
+        }
+      }, 2 * 60_000); // Every 2 min, only when idle slots exist
     }
 
     // Initialize Pusher if configured
@@ -1712,6 +1723,8 @@ If something is missing or incomplete, describe what and fix it now.`;
         }
       } else if (worker.status === 'done') {
         this.consecutiveQuickFailures = 0;
+        // A slot freed up — check for pending tasks
+        this.claimPendingTasks().catch(() => {});
       }
     }
   }
@@ -2425,6 +2438,9 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
     if (this.reconcileInterval) {
       clearInterval(this.reconcileInterval);
+    }
+    if (this.claimPollInterval) {
+      clearInterval(this.claimPollInterval);
     }
     // Unsubscribe from all Pusher channels and disconnect
     this.pusherManager.destroy();
