@@ -353,12 +353,13 @@ describe('task-dependencies aggregation', () => {
     );
   });
 
-  it('cancels stale pending aggregator and creates a new one', async () => {
+  it('cancels stale pending aggregator and creates a new one (multi-child)', async () => {
     findFirstResults[0] = { parentTaskId: 'parent-1' };
     findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: null };
 
     mockFindMany.mockResolvedValue([
       { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+      { id: 'child-2', status: 'completed', workspaceId: 'ws-1', title: 'Step 2', result: null },
     ]);
 
     // select[0]: existing stale pending aggregator (created 2 hours ago)
@@ -382,6 +383,24 @@ describe('task-dependencies aggregation', () => {
         status: 'pending',
       })
     );
+  });
+
+  it('skips aggregation for single-child planning tasks', async () => {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: 'mission-1' };
+
+    missionsFindFirstResults[0] = { id: 'mission-1', status: 'active' };
+
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+    ]);
+
+    selectWhereResults = [[], []];
+
+    await resolveCompletedTask('child-1', 'ws-1');
+
+    // Should NOT create aggregation task — single child, retrigger instead
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it('does NOT cancel recent pending aggregator', async () => {
@@ -426,7 +445,7 @@ describe('task-dependencies aggregation', () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it('still creates aggregation when mission is active', async () => {
+  it('still creates aggregation when mission is active (multi-child)', async () => {
     findFirstResults[0] = { parentTaskId: 'parent-1' };
     findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan X', workspaceId: 'ws-1', missionId: 'mission-1' };
 
@@ -435,6 +454,7 @@ describe('task-dependencies aggregation', () => {
 
     mockFindMany.mockResolvedValue([
       { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: null },
+      { id: 'child-2', status: 'completed', workspaceId: 'ws-1', title: 'Step 2', result: null },
     ]);
 
     // select[0]: no existing aggregation task

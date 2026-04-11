@@ -853,7 +853,8 @@ async function buildHeartbeatContext(mission: {
 - If you created tasks, retried failures, or made changes, report status "action_taken" with what you did.
 - Only report "ok" if the mission is actively progressing and no action is needed RIGHT NOW.
 - If the mission is stalled (same state as prior heartbeats), you MUST take action or escalate — never report "ok" for a stalled mission.
-- If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.`);
+- If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.
+- Before creating a task, check the "Active/Pending Tasks" section. If a pending task with a similar title already exists, do NOT create a duplicate.`);
 
   // Direct action guidance — let heartbeats do small tasks in-session
   descParts.push(`\n## Direct Action
@@ -893,7 +894,7 @@ Only create child tasks when the work requires:
 
   // Active tasks
   if (activeTasks.length > 0) {
-    descParts.push('\n## Active Tasks');
+    descParts.push('\n## Active/Pending Tasks (DO NOT DUPLICATE)');
     for (const t of activeTasks) {
       descParts.push(`- [${t.roleSlug || 'none'}] ${t.title} — ${t.status}`);
     }

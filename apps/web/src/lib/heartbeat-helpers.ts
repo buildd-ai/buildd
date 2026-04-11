@@ -21,7 +21,7 @@ export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: 
 - [ ] Retry any failed tasks with failureContext
 - [ ] Check PR merge status — create integration task if conflicts exist
 - [ ] Do NOT report OK if the mission has not made forward progress since last heartbeat
-- [ ] Do NOT declare missionComplete — only a human or independent evaluator can end a mission`;
+- [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput`;
 
 // ── Hour formatting ──
 

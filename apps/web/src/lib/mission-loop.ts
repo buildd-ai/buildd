@@ -83,12 +83,55 @@ export async function maybeRetriggerMission(
   const triggerChainId = (taskContext.triggerChainId as string) || crypto.randomUUID();
   const currentCycle = (taskContext.cycleNumber as number) || 1;
 
-  // 4. Completion detection — intercept missionComplete signal and spawn evaluation
+  // 4. Completion detection — intercept missionComplete signal
   const structuredOutput = taskResult.structuredOutput as Record<string, unknown> | undefined;
   if (
     taskResult.missionComplete === true ||
     structuredOutput?.missionComplete === true
   ) {
+    // Fast-path: if all work tasks are terminal, auto-complete without evaluation
+    const allMissionTasks = await db.query.tasks.findMany({
+      where: eq(tasks.missionId, missionId),
+      columns: { status: true, title: true },
+    });
+    const workTasks = allMissionTasks.filter(t =>
+      !t.title.startsWith('Aggregate results:') &&
+      !t.title.startsWith('Evaluate mission completion:') &&
+      !t.title.startsWith('Mission:')
+    );
+    const allDone = workTasks.length > 0 && workTasks.every(t =>
+      t.status === 'completed' || t.status === 'failed'
+    );
+    const hasDeliverables = workTasks.some(t => t.status === 'completed');
+
+    if (allDone && hasDeliverables) {
+      // All work tasks are terminal — auto-complete
+      await db
+        .update(missions)
+        .set({ status: 'completed', updatedAt: new Date() })
+        .where(eq(missions.id, missionId));
+
+      // Disable schedule if present
+      const m = await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
+        columns: { scheduleId: true },
+      });
+      if (m?.scheduleId) {
+        await db
+          .update(taskSchedules)
+          .set({ enabled: false, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, m.scheduleId));
+      }
+
+      await triggerEvent(
+        channels.mission(missionId),
+        events.MISSION_LOOP_COMPLETED,
+        { missionId, reason: 'auto_complete_all_done' }
+      );
+      return { action: 'completed' };
+    }
+
+    // Non-trivial state — spawn independent evaluation
     const spawnEval = _spawnEvaluation ?? (await import('@/lib/mission-evaluation')).spawnEvaluationTask;
     const evalTaskId = await spawnEval(missionId, completedPlanningTaskId);
 
