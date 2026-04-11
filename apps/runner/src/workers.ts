@@ -469,13 +469,22 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
       // Emit version info for auto-update checks
       if (latestCommit) {
         this.emit({ type: 'version_info', latestCommit });
+      }
+      // If server reports pending tasks and we have capacity, claim immediately
+      if (pendingTaskCount && pendingTaskCount > 0 && this.acceptRemoteTasks) {
+        const active = Array.from(this.workers.values()).filter(
+          w => w.status === 'working' || w.status === 'stale'
+        ).length;
+        if (active < this.config.maxConcurrent) {
+          this.claimPendingTasks().catch(() => {});
+        }
       }
     } catch {
       // Non-fatal - heartbeat is best-effort
