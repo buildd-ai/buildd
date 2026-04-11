@@ -2055,19 +2055,19 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
 
-      // Inject tenant API key from task context (Dispatch multi-tenant mode)
-      // Tenant context carries AES-256-GCM encrypted Anthropic API key from Dispatch's tenantSecrets.
-      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's account.
+      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
+      // Tenants authenticate via their Anthropic subscription (OAuth).
+      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
       const tenantCtx = extractTenantContext(task.context as Record<string, unknown>);
-      if (tenantCtx?.encryptedApiKey && process.env.TENANT_MASTER_KEY) {
+      if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
         try {
-          const tenantApiKey = decryptTenantSecret(tenantCtx.encryptedApiKey);
-          cleanEnv.ANTHROPIC_API_KEY = tenantApiKey;
-          console.log(`[Worker ${worker.id}] Injected tenant API key for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
+          const tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
+          cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
+          console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
           this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
         } catch (err) {
-          console.error(`[Worker ${worker.id}] Failed to decrypt tenant API key:`, err);
-          this.addMilestone(worker, { type: 'status', label: 'Tenant key decryption failed', ts: Date.now() });
+          console.error(`[Worker ${worker.id}] Failed to decrypt tenant OAuth token:`, err);
+          this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
       }
 

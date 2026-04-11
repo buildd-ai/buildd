@@ -1,9 +1,12 @@
 /**
  * Decrypt tenant-encrypted secrets from Dispatch.
  *
- * Dispatch encrypts tenant API keys with AES-256-GCM using TENANT_MASTER_KEY.
+ * Dispatch encrypts tenant OAuth tokens with AES-256-GCM using TENANT_MASTER_KEY.
  * The runner shares the same master key so it can decrypt at runtime without
  * a round-trip to the Dispatch server.
+ *
+ * Tenants authenticate via their Anthropic subscription (Pro/Team/Enterprise)
+ * using OAuth. The encrypted token is injected as CLAUDE_CODE_OAUTH_TOKEN.
  */
 import { createDecipheriv } from 'crypto';
 
@@ -18,7 +21,7 @@ export interface EncryptedSecret {
 export interface TenantContext {
   tenantId: string;
   displayName?: string;
-  encryptedApiKey?: EncryptedSecret;
+  encryptedOauthToken?: EncryptedSecret;
   dispatchUrl?: string;
 }
 

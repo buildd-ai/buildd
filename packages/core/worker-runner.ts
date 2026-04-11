@@ -60,14 +60,16 @@ export class WorkerRunner extends EventEmitter {
         }
       }
 
-      // Inject tenant API key from task context (Dispatch multi-tenant mode)
+      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
+      // Tenants authenticate via their Anthropic subscription (OAuth).
+      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
       const tenantCtx = extractTenantContext((worker.task as any)?.context);
-      if (tenantCtx?.encryptedApiKey && process.env.TENANT_MASTER_KEY) {
+      if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
         try {
-          env.ANTHROPIC_API_KEY = decryptTenantSecret(tenantCtx.encryptedApiKey);
-          console.log(`[WorkerRunner ${this.workerId}] Using tenant API key for ${tenantCtx.tenantId}`);
+          env.CLAUDE_CODE_OAUTH_TOKEN = decryptTenantSecret(tenantCtx.encryptedOauthToken);
+          console.log(`[WorkerRunner ${this.workerId}] Using tenant OAuth token for ${tenantCtx.tenantId}`);
         } catch (err) {
-          console.error(`[WorkerRunner ${this.workerId}] Failed to decrypt tenant API key:`, err);
+          console.error(`[WorkerRunner ${this.workerId}] Failed to decrypt tenant OAuth token:`, err);
         }
       }
 
