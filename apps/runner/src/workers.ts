@@ -15,6 +15,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
+import { extractTenantContext, decryptTenantSecret } from '@buildd/core/tenant-crypto';
 import type { WorkerEnvironment } from '@buildd/shared';
 import {
   resolveBypassPermissions,
@@ -1061,7 +1062,7 @@ export class WorkerManager {
 
       // Build prompt with workspace context
       const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
-      const promptText = buildPrompt({
+      let promptText = buildPrompt({
         task,
         worker,
         gitConfig,
@@ -1073,6 +1074,21 @@ export class WorkerManager {
         hasApiKey: !!this.config.apiKey,
         inputAsRetry: this.config.inputAsRetry,
       });
+
+      // Add tenant context to prompt (Dispatch multi-tenant mode)
+      const promptTenantCtx = extractTenantContext(task.context as Record<string, unknown>);
+      if (promptTenantCtx) {
+        const tenantLines = [
+          `## Tenant Context`,
+          `You are processing work for tenant **${promptTenantCtx.displayName || promptTenantCtx.tenantId}** (ID: ${promptTenantCtx.tenantId}).`,
+          `All Dispatch API calls must include the header \`X-Tenant-ID: ${promptTenantCtx.tenantId}\`.`,
+          `Results and data must be scoped to this tenant — never mix data across tenants.`,
+        ];
+        if (promptTenantCtx.dispatchUrl) {
+          tenantLines.push(`Dispatch API base URL: ${promptTenantCtx.dispatchUrl}`);
+        }
+        promptText = promptText + '\n\n' + tenantLines.join('\n');
+      }
 
       // Filter out potentially problematic env vars (expired OAuth tokens)
       const cleanEnv = Object.fromEntries(
@@ -1107,6 +1123,22 @@ export class WorkerManager {
       if (worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
         cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
+      }
+
+      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
+      // Tenants authenticate via their Anthropic subscription (OAuth).
+      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
+      const tenantCtx = extractTenantContext(task.context as Record<string, unknown>);
+      if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
+        try {
+          const tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
+          cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
+          console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
+          this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Failed to decrypt tenant OAuth token:`, err);
+          this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
+        }
       }
 
       // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
