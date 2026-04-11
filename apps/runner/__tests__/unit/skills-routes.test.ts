@@ -105,7 +105,7 @@ describe('Skills Routes', () => {
   });
 
   afterAll(() => {
-    server.stop();
+    server.stop(true);
   });
 
   describe('POST /api/skills/list', () => {

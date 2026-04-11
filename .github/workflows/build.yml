@@ -50,6 +50,7 @@ jobs:
 
       - name: Run tests
         if: steps.affected.outputs.tests != 'SKIP'
+        timeout-minutes: 5
         run: |
           TESTS="${{ steps.affected.outputs.tests }}"
           if [ "$TESTS" = "ALL" ]; then
