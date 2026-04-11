@@ -313,7 +313,7 @@ describe('mission-loop', () => {
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('retriggered');
     const runCall = mockRunMission.mock.calls[0];
-    expect((runCall[1] as any).stuckPlanningFeedback).toContain('create concrete execution tasks');
+    expect((runCall[1] as any).stuckPlanningFeedback).toContain('concrete plan items');
   });
 
   it('does not pass stuck-planning feedback for conflict triage', async () => {
