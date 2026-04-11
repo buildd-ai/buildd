@@ -259,7 +259,27 @@ export async function retriggerMissionOnFailure(
     return { action: 'skipped' };
   }
 
-  // 3. Count recent failures — guard against infinite retry loops
+  // 3. Classify the failure — environmental failures should never be retried
+  const failedTask = await db.query.tasks.findFirst({
+    where: eq(tasks.id, failedTaskId),
+    columns: { result: true },
+  });
+  const { classifyFailure, extractErrorFromResult } = await import('./failure-classifier');
+  const failedResult = (failedTask?.result || {}) as Record<string, unknown>;
+  const errorText = extractErrorFromResult(failedResult);
+  const failureClass = classifyFailure(errorText);
+
+  if (failureClass === 'environmental') {
+    console.warn(`[mission-loop] Mission ${missionId}: environmental failure — not retrying (${errorText.slice(0, 100)})`);
+    await triggerEvent(
+      channels.mission(missionId),
+      events.TASK_RETRY_CAP,
+      { missionId, failedTaskId, failureClass, lastError: errorText.slice(0, 200), reason: 'environmental' }
+    );
+    return { action: 'failure_limit' };
+  }
+
+  // 4. Count recent failures — guard against infinite retry loops
   const failureWindowStart = new Date(Date.now() - FAILURE_WINDOW_MS);
   const recentFailures = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -273,12 +293,13 @@ export async function retriggerMissionOnFailure(
       )
     );
 
-  if ((recentFailures[0]?.count || 0) >= MAX_PLANNING_FAILURE_RETRIES) {
-    console.warn(`[mission-loop] Mission ${missionId}: ${recentFailures[0]?.count} planning failures in last hour, stopping auto-retry`);
+  const maxRetries = failureClass === 'transient' ? MAX_PLANNING_FAILURE_RETRIES : 2;
+  if ((recentFailures[0]?.count || 0) >= maxRetries) {
+    console.warn(`[mission-loop] Mission ${missionId}: ${recentFailures[0]?.count} planning failures (${failureClass}) in last hour, stopping auto-retry`);
     await triggerEvent(
       channels.mission(missionId),
-      events.MISSION_LOOP_STALLED,
-      { missionId, reason: 'failure_limit', recentFailures: recentFailures[0]?.count }
+      events.TASK_RETRY_CAP,
+      { missionId, failedTaskId, failureClass, recentFailures: recentFailures[0]?.count, lastError: errorText.slice(0, 200) }
     );
     return { action: 'failure_limit' };
   }

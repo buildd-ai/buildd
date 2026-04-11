@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, not, isNotNull, sql } from 'drizzle-orm';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
@@ -97,6 +97,26 @@ export async function runMission(
   // Get template config for mode/priority from schedule if available
   const template = (mission.schedule as any)?.taskTemplate;
 
+  // Derive heartbeat role from mission's dominant child task role
+  // (first heartbeat with no tasks yet falls back to organizer)
+  let roleSlug = template?.roleSlug || 'organizer';
+  if (roleSlug === 'organizer') {
+    const dominantRole = await db
+      .select({ roleSlug: tasks.roleSlug, count: sql<number>`count(*)::int` })
+      .from(tasks)
+      .where(and(
+        eq(tasks.missionId, mission.id),
+        not(eq(tasks.mode, 'planning')),
+        isNotNull(tasks.roleSlug),
+      ))
+      .groupBy(tasks.roleSlug)
+      .orderBy(sql`count(*) desc`)
+      .limit(1);
+    if (dominantRole[0]?.roleSlug) {
+      roleSlug = dominantRole[0].roleSlug;
+    }
+  }
+
   // Create the planning task
   const [task] = await db
     .insert(tasks)
@@ -107,7 +127,7 @@ export async function runMission(
       priority: template?.priority || mission.priority || 0,
       status: 'pending',
       mode: template?.mode || 'planning',
-      roleSlug: 'organizer',
+      roleSlug,
       runnerPreference: template?.runnerPreference || 'any',
       requiredCapabilities: template?.requiredCapabilities || [],
       context: taskContext,

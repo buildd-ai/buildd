@@ -208,6 +208,17 @@ async function maybeCreateAggregationTask(
     result: c.result ?? null,
   }));
 
+  // Skip aggregation when all children failed — nothing to synthesize
+  const hasCompletedChild = childSummaries.some(c => c.status === 'completed');
+  if (!hasCompletedChild) {
+    if (parent.missionId) {
+      maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
+        console.error(`[aggregation] all children failed, retrigger error:`, err)
+      );
+    }
+    return;
+  }
+
   await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
     title: `Aggregate results: ${parent.title}`,

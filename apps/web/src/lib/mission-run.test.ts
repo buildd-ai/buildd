@@ -11,6 +11,13 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
 const mockInsert = mock(() => ({ values: mockInsertValues }));
+const mockSelectResult = mock(() => Promise.resolve([] as any[]));
+const mockSelectLimit = mock(() => mockSelectResult());
+const mockSelectOrderBy = mock(() => ({ limit: mockSelectLimit }));
+const mockSelectGroupBy = mock(() => ({ orderBy: mockSelectOrderBy }));
+const mockSelectWhere = mock(() => ({ groupBy: mockSelectGroupBy }));
+const mockSelectFrom = mock(() => ({ where: mockSelectWhere }));
+const mockSelect = mock(() => ({ from: mockSelectFrom }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -19,16 +26,23 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: mockInsert,
+    select: mockSelect,
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
+  not: (arg: any) => ({ arg, type: 'not' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {
+    raw: (s: string) => s,
+  }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id' },
-  tasks: { id: 'id', workspaceId: 'workspaceId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId' },
   workspaces: { id: 'id' },
 }));
 

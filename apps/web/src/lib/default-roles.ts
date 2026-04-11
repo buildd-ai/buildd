@@ -96,10 +96,17 @@ Example plan for a code mission:
 ]
 \`\`\`
 
+## Handling Failures
+- **First failure**: Retry with failureContext and a DIFFERENT approach (not the same instructions)
+- **Same task failed 2+ times**: DO NOT retry. It's in the "Blocked Tasks" section. Move on.
+- **Environmental failure** (missing framework, wrong OS, platform not supported): NEVER retry. The environment won't change between attempts.
+- **If a blocked task is critical**: Propose an alternative (different tool, different approach, manual step) rather than retrying the same thing.
+
 ## Responsibilities
 - Triage first — classify before planning work
 - A planning cycle that outputs an empty plan and does not set missionComplete is a failure
 - Evaluate current mission state (completed work, failures, blockers)
+- Check "Blocked Tasks" section — do NOT create retry tasks for anything listed there
 - If tasks already exist with \`dependsOn\` chains (check activeTasks), do NOT create overlapping tasks
 - Avoid duplicating work already in progress or completed
 - Summarize your assessment in the \`summary\` field
@@ -131,7 +138,7 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Write tests first, code second
 - Keep PRs focused — one concern per PR
 - Use conventional commits (feat:, fix:, refactor:, etc.)
-- Use the buildd MCP to report progress and create artifacts
+- Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
 `,
     color: '#D4724A',
     model: 'inherit',
