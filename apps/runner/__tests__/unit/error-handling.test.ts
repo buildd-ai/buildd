@@ -594,6 +594,26 @@ describe('Error Handling', () => {
       expect(manager.getWorkers()).toEqual([]);
     });
 
+    test('heartbeat with pendingTaskCount triggers claim', async () => {
+      mockSendHeartbeat.mockImplementation(async () => ({
+        pendingTaskCount: 3,
+      }));
+      // Return empty claims so we don't need to mock the full worker lifecycle
+      mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+
+      manager = new WorkerManager(makeConfig({
+        serverless: false,
+        localUiUrl: 'http://localhost:3456',
+        acceptRemoteTasks: true,
+      }));
+
+      // Give time for initial heartbeat + claim
+      await new Promise(r => setTimeout(r, 200));
+
+      // claimTask should have been called as a result of heartbeat reporting pending tasks
+      expect(mockClaimTask).toHaveBeenCalled();
+    });
+
     test('server reports 500 on worker update — abort still sets correct state', async () => {
       mockUpdateWorker.mockImplementation(async () => {
         throw new Error('API error: 500 - Internal Server Error');
