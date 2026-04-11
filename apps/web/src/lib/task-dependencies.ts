@@ -240,6 +240,17 @@ async function maybeCreateAggregationTask(
     return;
   }
 
+  // Skip aggregation for single-child planning tasks — redundant overhead
+  const nonAggChildren = children.filter(c => !c.title.startsWith('Aggregate results:'));
+  if (nonAggChildren.length <= 1) {
+    if (parent.missionId) {
+      maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
+        console.error(`[aggregation] single child, skipping aggregation:`, err)
+      );
+    }
+    return;
+  }
+
   await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
     title: `Aggregate results: ${parent.title}`,

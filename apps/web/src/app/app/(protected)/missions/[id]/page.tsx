@@ -21,6 +21,8 @@ import HeartbeatTimeline from './HeartbeatTimeline';
 import PrioritySelector from './PrioritySelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
+import MissionTabs from './MissionTabs';
+import MissionFeed from './MissionFeed';
 
 export const dynamic = 'force-dynamic';
 
@@ -438,8 +440,9 @@ export default async function MissionDetailPage({
         </div>
       )}
 
-      {/* ── Orchestration Timeline ── */}
-      {displayCycles.length > 0 && (
+      {/* ── Timeline / Feed Tabs ── */}
+      <MissionTabs
+        timelineContent={displayCycles.length > 0 ? (<>
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="section-label">Timeline</h2>
@@ -669,7 +672,6 @@ export default async function MissionDetailPage({
             )}
           </div>
         </div>
-      )}
 
       {/* ── Heartbeat Timeline (heartbeat missions only) ── */}
       {isHeartbeat && heartbeatTasks.length > 0 && (
@@ -702,6 +704,9 @@ export default async function MissionDetailPage({
           </Link>
         </div>
       )}
+        </>) : <p className="text-[13px] text-text-muted italic mb-6">No tasks yet</p>}
+        feedContent={<MissionFeed missionId={id} />}
+      />
 
       {/* ── Artifacts ── */}
       {allArtifacts.length > 0 && (

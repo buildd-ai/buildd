@@ -91,6 +91,12 @@ export default function MissionAutoRefresh({
     channel.bind('worker:failed', handleWorkerFailed);
     channel.bind('task:children_completed', handleChildrenCompleted);
 
+    // Also subscribe to mission channel for note events
+    const missionChannelName = `${CHANNEL_PREFIX}mission-${missionId}`;
+    const missionChannel = subscribeToChannel(missionChannelName);
+    const handleNotePosted = () => doRefresh();
+    missionChannel?.bind('mission:note_posted', handleNotePosted);
+
     return () => {
       channel.unbind('task:created', handleTaskCreated);
       channel.unbind('task:claimed', handleTaskClaimed);
@@ -99,6 +105,8 @@ export default function MissionAutoRefresh({
       channel.unbind('worker:failed', handleWorkerFailed);
       channel.unbind('task:children_completed', handleChildrenCompleted);
       unsubscribeFromChannel(channelName);
+      missionChannel?.unbind('mission:note_posted', handleNotePosted);
+      unsubscribeFromChannel(missionChannelName);
       if (refreshTimerRef.current) {
         clearTimeout(refreshTimerRef.current);
       }
