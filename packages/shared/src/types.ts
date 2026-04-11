@@ -269,6 +269,25 @@ export interface Mission {
   completedTasks?: number;
 }
 
+export type MissionNoteAuthorType = 'agent' | 'user' | 'system';
+export type MissionNoteType = 'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance';
+export type MissionNoteStatus = 'open' | 'answered' | 'dismissed';
+
+export interface MissionNote {
+  id: string;
+  missionId: string;
+  taskId: string | null;
+  workerId: string | null;
+  authorType: MissionNoteAuthorType;
+  type: MissionNoteType;
+  title: string;
+  body: string | null;
+  replyTo: string | null;
+  defaultChoice: string | null;
+  status: MissionNoteStatus;
+  createdAt: Date;
+}
+
 export interface McpToolCall {
   server: string;
   tool: string;

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions } from '@buildd/core/db/schema';
+import { tasks, missions, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
@@ -48,6 +48,27 @@ export async function resolveCompletedTask(
       const result = taskWithResult?.result as Record<string, unknown> | null;
       const structuredOutput = result?.structuredOutput as Record<string, unknown> | undefined;
       const plan = structuredOutput?.plan as PlanStep[] | undefined;
+
+      // Extract questions from planning output and post as mission notes
+      const questions = structuredOutput?.questions as Array<{ ref?: string; question: string; context?: string; defaultChoice?: string }> | undefined;
+      if (questions?.length && completedTaskFull.missionId) {
+        try {
+          for (const q of questions) {
+            await db.insert(missionNotes).values({
+              missionId: completedTaskFull.missionId,
+              taskId: completedTaskId,
+              authorType: 'agent',
+              type: 'question',
+              title: q.question,
+              body: q.context || null,
+              defaultChoice: q.defaultChoice || null,
+              status: 'open',
+            });
+          }
+        } catch (err) {
+          console.error(`[mission-notes] Failed to extract questions from task ${completedTaskId}:`, err);
+        }
+      }
 
       if (plan && Array.isArray(plan) && plan.length > 0) {
         try {
@@ -214,6 +235,17 @@ async function maybeCreateAggregationTask(
     if (parent.missionId) {
       maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
         console.error(`[aggregation] all children failed, retrigger error:`, err)
+      );
+    }
+    return;
+  }
+
+  // Skip aggregation for single-child planning tasks — redundant overhead
+  const nonAggChildren = children.filter(c => !c.title.startsWith('Aggregate results:'));
+  if (nonAggChildren.length <= 1) {
+    if (parent.missionId) {
+      maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
+        console.error(`[aggregation] single child, skipping aggregation:`, err)
       );
     }
     return;

@@ -10,6 +10,7 @@ import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusTy
 import { checkReservation, acquireReservation, releaseWorkerReservations } from './file-reservations';
 import { resolveModelNameSync, updateModelAliases } from './model-aliases';
 import { artifactTemplates } from './artifact-templates';
+import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
@@ -56,6 +57,19 @@ export class WorkerRunner extends EventEmitter {
         if (config.llmApiKey) {
           env.ANTHROPIC_AUTH_TOKEN = config.llmApiKey;
           env.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
+        }
+      }
+
+      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
+      // Tenants authenticate via their Anthropic subscription (OAuth).
+      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
+      const tenantCtx = extractTenantContext((worker.task as any)?.context);
+      if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
+        try {
+          env.CLAUDE_CODE_OAUTH_TOKEN = decryptTenantSecret(tenantCtx.encryptedOauthToken);
+          console.log(`[WorkerRunner ${this.workerId}] Using tenant OAuth token for ${tenantCtx.tenantId}`);
+        } catch (err) {
+          console.error(`[WorkerRunner ${this.workerId}] Failed to decrypt tenant OAuth token:`, err);
         }
       }
 
@@ -140,6 +154,19 @@ export class WorkerRunner extends EventEmitter {
           },
           summary: { type: 'string' },
           missionComplete: { type: 'boolean' },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string' },
+                question: { type: 'string' },
+                context: { type: 'string' },
+                defaultChoice: { type: 'string' },
+              },
+              required: ['ref', 'question'],
+            },
+          },
         },
         required: ['plan', 'summary', 'missionComplete'],
       };

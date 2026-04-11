@@ -85,6 +85,7 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findMany: mockArtifactsFindMany },
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
+      missionNotes: { findMany: mock(() => Promise.resolve([])) },
     },
     select: mockSelect,
   },
@@ -107,6 +108,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },
   artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', teamId: 'teamId', name: 'name', repo: 'repo', githubInstallationId: 'githubInstallationId' },
+  missionNotes: { id: 'id', missionId: 'missionId', type: 'type', status: 'status', authorType: 'authorType', createdAt: 'createdAt' },
 }));
 
 mock.module('./heartbeat-helpers', () => ({
