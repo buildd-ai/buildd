@@ -10,6 +10,7 @@ import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, type SSEEvent, type WorkerStatusTy
 import { checkReservation, acquireReservation, releaseWorkerReservations } from './file-reservations';
 import { resolveModelNameSync, updateModelAliases } from './model-aliases';
 import { artifactTemplates } from './artifact-templates';
+import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
@@ -56,6 +57,17 @@ export class WorkerRunner extends EventEmitter {
         if (config.llmApiKey) {
           env.ANTHROPIC_AUTH_TOKEN = config.llmApiKey;
           env.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
+        }
+      }
+
+      // Inject tenant API key from task context (Dispatch multi-tenant mode)
+      const tenantCtx = extractTenantContext((worker.task as any)?.context);
+      if (tenantCtx?.encryptedApiKey && process.env.TENANT_MASTER_KEY) {
+        try {
+          env.ANTHROPIC_API_KEY = decryptTenantSecret(tenantCtx.encryptedApiKey);
+          console.log(`[WorkerRunner ${this.workerId}] Using tenant API key for ${tenantCtx.tenantId}`);
+        } catch (err) {
+          console.error(`[WorkerRunner ${this.workerId}] Failed to decrypt tenant API key:`, err);
         }
       }
 

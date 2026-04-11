@@ -17,7 +17,8 @@
     "./mcp-tools": "./mcp-tools.ts",
     "./secrets": "./secrets/index.ts",
     "./file-reservations": "./file-reservations.ts",
-    "./memory-client": "./memory-client.ts"
+    "./memory-client": "./memory-client.ts",
+    "./tenant-crypto": "./tenant-crypto.ts"
   },
   "dependencies": {
     "@buildd/shared": "workspace:*",
