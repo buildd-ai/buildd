@@ -408,9 +408,8 @@ export async function PATCH(
             let artifactKey: string | null = null;
             let artifactTitle: string | null = null;
 
-            if (isHeartbeat && missionId) {
-              artifactKey = `heartbeat-${missionId}`;
-              artifactTitle = `Heartbeat: ${missionTitle || 'Status'}`;
+            if (isHeartbeat) {
+              // Heartbeats are coordination — structured output is logged but doesn't need a standalone artifact
             } else if (missionId) {
               artifactKey = `mission-${missionId}`;
               artifactTitle = `${missionTitle || 'Mission'} — Latest`;

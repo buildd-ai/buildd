@@ -937,10 +937,12 @@ export class WorkerRunner extends EventEmitter {
 
     // Add output requirement context
     const isPlanning = worker.task?.mode === 'planning';
+    const taskCtxForMode = worker.task?.context as Record<string, unknown> | undefined;
+    const isHeartbeat = !!taskCtxForMode?.heartbeat;
     const outputContext: string[] = ['\n## Output Requirement'];
-    if (isPlanning) {
+    if (isPlanning && !isHeartbeat) {
       outputContext.push('This is a **planning task**. Produce a structured plan — do not make code changes.');
-    } else {
+    } else if (!isHeartbeat) {
       const outputReq = worker.task?.outputRequirement || 'auto';
       if (outputReq === 'pr_required') {
         outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
@@ -956,16 +958,19 @@ export class WorkerRunner extends EventEmitter {
       } else if (outputReq === 'none') {
         outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
       } else {
-        outputContext.push('Output: **auto** — if you make commits, create a PR or artifact. If no code changes needed, just complete with a summary.');
+        outputContext.push('Output: **auto** — if you make commits, create a PR. Only create artifacts for non-code deliverables (research, analysis, recommendations). If no code changes needed, complete with a summary.');
       }
+    }
+    // Retry dedup: discourage artifacts on retry attempts
+    if (taskCtxForMode?.failureContext) {
+      outputContext.push('\n> **Note**: This is a retry of a previously failed attempt. Focus on completing the work — do not create artifacts until successful.');
     }
     parts.push(outputContext.join('\n'));
 
-    // Add planning mode context when task mode is 'planning'
-    if (isPlanning) {
-      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
-      const missionId = taskContext?.missionId as string | undefined;
-      const missionTitle = taskContext?.missionTitle as string | undefined;
+    // Add planning mode context when task mode is 'planning' (skip for heartbeats — they use their own Protocol section)
+    if (isPlanning && !isHeartbeat) {
+      const missionId = taskCtxForMode?.missionId as string | undefined;
+      const missionTitle = taskCtxForMode?.missionTitle as string | undefined;
 
       if (missionId) {
         // Mission-aware planning mode
@@ -1021,7 +1026,10 @@ Workspace: ${wsLabel}
 
 ### Guidelines
 - Prefer 1-2 focused tasks over many small ones
-- If a previous task failed, adjust approach rather than retry blindly
+- Check "Blocked Tasks" section — do NOT create retry tasks for anything listed there
+- **Environmental failures** (missing framework, wrong OS): NEVER retry — the environment won't change
+- **First failure only**: retry with failureContext and a DIFFERENT approach, not the same instructions
+- **2+ failures on same task**: skip it or propose an alternative approach
 - Use structured outputs (outputSchema) when tasks need to return data for future cycles
 - Don't duplicate work that's already in progress (check active tasks)`);
       } else {

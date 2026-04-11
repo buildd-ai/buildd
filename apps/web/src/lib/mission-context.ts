@@ -280,14 +280,14 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     columns: { id: true, title: true, status: true, description: true, dependsOn: true },
   });
 
-  // Recent failed tasks
+  // Recent failed tasks (include more for grouping)
   const failedTasks = await db.query.tasks.findMany({
     where: and(
       eq(tasks.missionId, missionId),
       eq(tasks.status, 'failed')
     ),
     orderBy: [desc(tasks.createdAt)],
-    limit: 3,
+    limit: 15,
     columns: { id: true, title: true, result: true, description: true },
   });
 
@@ -435,13 +435,43 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   if (failedTasks.length > 0) {
-    descParts.push('\n## Failed Tasks (recent)');
+    const { classifyFailure, extractErrorFromResult } = await import('./failure-classifier');
+
+    // Group failures by normalized title
+    const failureGroups = new Map<string, typeof failedTasks>();
     for (const t of failedTasks) {
-      const result = t.result as Record<string, unknown> | null;
-      const errorSummary = result?.summary as string || 'unknown error';
-      let line = `- [${t.title}] error: ${errorSummary}`;
-      if (t.description) line += `\n  ${t.description.slice(0, 200)}`;
-      descParts.push(line);
+      const normalizedTitle = t.title.replace(/\s*\(retry\s*\d+\)\s*$/i, '').trim();
+      const group = failureGroups.get(normalizedTitle) || [];
+      group.push(t);
+      failureGroups.set(normalizedTitle, group);
+    }
+
+    const blockedEntries: string[] = [];
+    const retryableEntries: string[] = [];
+
+    for (const [title, failures] of failureGroups) {
+      const lastError = extractErrorFromResult(failures[0]?.result as Record<string, unknown> | null);
+      const failClass = classifyFailure(lastError);
+
+      if (failures.length >= 2 || failClass === 'environmental') {
+        blockedEntries.push(`- **${title}** — failed ${failures.length}x (${failClass}): ${lastError.slice(0, 150)}`);
+      } else {
+        let line = `- [${title}] (${failClass}): ${lastError.slice(0, 200)}`;
+        const orig = failures[0];
+        if (orig?.description) line += `\n  ${orig.description.slice(0, 200)}`;
+        retryableEntries.push(line);
+      }
+    }
+
+    if (blockedEntries.length > 0) {
+      descParts.push(`\n## Blocked Tasks (DO NOT RETRY)\n${blockedEntries.join('\n')}\n\nThese tasks have failed multiple times or have environmental failures. Do NOT create retry tasks for them. Find an alternative approach or skip.`);
+    }
+
+    if (retryableEntries.length > 0) {
+      descParts.push('\n## Failed Tasks (may retry with different approach)');
+      for (const e of retryableEntries) {
+        descParts.push(e);
+      }
     }
   }
 
@@ -674,14 +704,14 @@ async function buildHeartbeatContext(mission: {
       limit: 10,
       columns: { id: true, title: true, status: true, roleSlug: true },
     }),
-    // Failed tasks
+    // Failed tasks (include more for grouping)
     db.query.tasks.findMany({
       where: and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'failed')
       ),
       orderBy: [desc(tasks.createdAt)],
-      limit: 5,
+      limit: 20,
       columns: { id: true, title: true, result: true },
     }),
     // Mission artifacts (non-heartbeat)
@@ -769,6 +799,19 @@ async function buildHeartbeatContext(mission: {
 - If the mission is stalled (same state as prior heartbeats), you MUST take action or escalate — never report "ok" for a stalled mission.
 - If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.`);
 
+  // Direct action guidance — let heartbeats do small tasks in-session
+  descParts.push(`\n## Direct Action
+If the required work is small (< 5 tool calls) and you have the right tools available, do it yourself instead of creating a task. Examples:
+- Classify a few transactions → call the relevant MCP tool directly
+- Send a notification → use the notification tool
+- Check a status and report → read the data, summarize
+
+Only create child tasks when the work requires:
+- A separate git branch / PR
+- Extended multi-file code changes
+- A different role's expertise (e.g., builder for code)
+- More than ~5 minutes of work`);
+
   // Prior heartbeats
   if (priorHeartbeats.length > 0) {
     descParts.push('\n## Prior Heartbeats');
@@ -800,13 +843,43 @@ async function buildHeartbeatContext(mission: {
     }
   }
 
-  // Failed tasks
+  // Failed tasks — group by normalized title to detect repeated failures
   if (failedTasks.length > 0) {
-    descParts.push('\n## Failed Tasks');
+    const { classifyFailure, extractErrorFromResult } = await import('./failure-classifier');
+
+    // Group failures by normalized title (strip retry suffixes like "(retry 2)")
+    const failureGroups = new Map<string, typeof failedTasks>();
     for (const t of failedTasks) {
-      const result = t.result as Record<string, unknown> | null;
-      const error = result?.summary as string || 'unknown error';
-      descParts.push(`- ${t.title}: ${error.slice(0, 200)}`);
+      const normalizedTitle = t.title.replace(/\s*\(retry\s*\d+\)\s*$/i, '').trim();
+      const group = failureGroups.get(normalizedTitle) || [];
+      group.push(t);
+      failureGroups.set(normalizedTitle, group);
+    }
+
+    // Blocked tasks: failed 2+ times — DO NOT RETRY
+    const blockedEntries: string[] = [];
+    const singleFailures: string[] = [];
+
+    for (const [title, failures] of failureGroups) {
+      const lastError = extractErrorFromResult(failures[0]?.result as Record<string, unknown> | null);
+      const failClass = classifyFailure(lastError);
+
+      if (failures.length >= 2 || failClass === 'environmental') {
+        blockedEntries.push(`- **${title}** — failed ${failures.length}x (${failClass}): ${lastError.slice(0, 150)}`);
+      } else {
+        singleFailures.push(`- ${title} (${failClass}): ${lastError.slice(0, 200)}`);
+      }
+    }
+
+    if (blockedEntries.length > 0) {
+      descParts.push(`\n## Blocked Tasks (DO NOT RETRY)\n${blockedEntries.join('\n')}\n\nThese tasks have failed multiple times or have environmental failures. Do NOT create retry tasks for them. Either find an alternative approach or skip them.`);
+    }
+
+    if (singleFailures.length > 0) {
+      descParts.push('\n## Failed Tasks (first failure — may retry with different approach)');
+      for (const f of singleFailures) {
+        descParts.push(f);
+      }
     }
   }
 
@@ -848,6 +921,8 @@ async function buildHeartbeatContext(mission: {
     priorArtifacts: deliverableArtifacts.map(a => ({
       artifactId: a.id, key: a.key, type: a.type, title: a.title,
     })),
+    // Pass skillSlugs so claim route resolves skill bundles with workspace MCPs
+    ...(mission.skillSlugs?.length ? { skillSlugs: mission.skillSlugs } : {}),
   };
 
   return { description: descParts.join('\n'), context: contextData };
