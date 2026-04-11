@@ -37,8 +37,8 @@ export async function POST(req: NextRequest) {
   }
 
   for (const file of files) {
-    if (!file.mimeType?.startsWith('image/')) {
-      return NextResponse.json({ error: `Only image files are allowed (got ${file.mimeType})` }, { status: 400 });
+    if (!file.mimeType) {
+      return NextResponse.json({ error: `mimeType is required for each file` }, { status: 400 });
     }
     if (file.sizeBytes > MAX_FILE_SIZE) {
       return NextResponse.json({ error: `File "${file.filename}" exceeds 10MB limit` }, { status: 400 });

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 
 export async function POST(req: NextRequest) {
@@ -222,16 +222,23 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   const { action, check_suite, repository, installation } = event;
 
-  // Only process completed, successful check suites
-  if (action !== 'completed' || check_suite.conclusion !== 'success') {
-    return;
-  }
-
-  if (!installation) {
+  if (action !== 'completed' || !installation) {
     return;
   }
 
   const headSha = check_suite.head_sha;
+
+  // CI failures are logged but no longer trigger automatic retry tasks.
+  // Verification retries are handled in-session by the runner's ralph-loop pattern.
+  if (check_suite.conclusion === 'failure') {
+    console.log(`CI check suite failed on ${repository.full_name} (SHA: ${headSha}) — no retry task created`);
+    return;
+  }
+
+  // Handle CI success — auto-merge if enabled
+  if (check_suite.conclusion !== 'success') {
+    return;
+  }
 
   for (const pr of check_suite.pull_requests) {
     try {

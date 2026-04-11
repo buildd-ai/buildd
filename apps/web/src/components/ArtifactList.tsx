@@ -127,8 +127,9 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
           const isCopied = copiedId === artifact.id;
 
           return (
-            <div
+            <Link
               key={artifact.id}
+              href={`/app/artifacts/${artifact.id}`}
               className="bg-surface-2 border border-border-default rounded-[10px] p-4 flex flex-col hover:border-border-hover transition-colors"
             >
               {/* Type badge */}
@@ -156,6 +157,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                       href={preview}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
                       className="text-xs text-primary-400 hover:underline break-all line-clamp-2"
                     >
                       {preview}
@@ -178,6 +180,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                   {artifact.taskId && (
                     <Link
                       href={`/app/tasks/${artifact.taskId}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="text-[11px] text-text-muted hover:text-text-secondary truncate"
                       title={artifact.taskTitle || undefined}
                     >
@@ -191,7 +194,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
 
                 {artifact.shareToken && (
                   <button
-                    onClick={() => copyShareLink(artifact)}
+                    onClick={(e) => { e.preventDefault(); copyShareLink(artifact); }}
                     className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary flex-shrink-0 transition-colors"
                   >
                     {isCopied ? (
@@ -212,7 +215,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                   </button>
                 )}
               </div>
-            </div>
+            </Link>
           );
         })}
       </div>

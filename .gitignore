@@ -10,10 +10,10 @@ coverage/
 .next/
 .vercel
 .claude/
-*.tsbuildinfo
 .mcp.json
+*.tsbuildinfo
 .plan
 .buildd-worktrees/
 scripts/seed/.last-seed.json
-.agent/research/
-.agent/runbooks/
+.agent/
+*.pen

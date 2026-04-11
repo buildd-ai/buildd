@@ -113,6 +113,7 @@ mock.module('../../src/session-logger', () => ({
   sessionLog: mockSessionLog,
   readSessionLogs: () => [],
   cleanupOldLogs: () => {},
+  claimLog: () => {},
 }));
 
 const { WorkerManager } = await import('../../src/workers');
@@ -279,7 +280,7 @@ describe('Resume layer logging', () => {
       injectWorker(manager, worker);
 
       // Trigger eviction by calling the private method
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const logs = getSessionLogCalls();
       const evictLog = logs.find(l => l.event === 'worker_evicted');
@@ -304,7 +305,7 @@ describe('Resume layer logging', () => {
       });
       injectWorker(manager, worker);
 
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       const logs = getSessionLogCalls();
       const evictLog = logs.find(l => l.event === 'worker_evicted');

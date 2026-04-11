@@ -12,79 +12,116 @@
 
 /* ── Buildd Design Tokens ── */
 
-:root {
-  /* Light mode */
-  --surface-1: #f8fafc;
-  --surface-2: #ffffff;
-  --surface-3: #f1f5f9;
-  --surface-4: #e2e8f0;
-  --text-primary: #0f172a;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
-  --border: #e2e8f0;
+/* Night — Warm Charcoal */
+:root, [data-theme="dark"] {
+  --surface-1: #1a1816;
+  --surface-2: #211f1c;
+  --surface-3: #2a2724;
+  --surface-4: #302c28;
 
-  /* Primary (shared) */
-  --primary: #7c3aed;
-  --primary-hover: #6d28d9;
-  --primary-subtle: rgba(124, 58, 237, 0.08);
-  --primary-ring: rgba(124, 58, 237, 0.25);
+  --card: #2a2724;
+  --card-hover: #302c28;
+  --card-finding: #252220;
+  --card-rightnow: #1f1d1a;
+  --card-border: rgba(255, 245, 230, 0.06);
+  --card-shadow: 0 1px 4px rgba(12, 10, 8, 0.35);
 
-  /* Status (shared) */
-  --status-success: #34d399;
-  --status-running: #a78bfa;
-  --status-warning: #fbbf24;
-  --status-error: #f87171;
-  --status-info: #60a5fa;
+  --text-primary: #ede8e2;
+  --text-secondary: #a89f96;
+  --text-muted: #5e5850;
+  --text-desc: #8a827a;
 
-  /* Category (shared) */
-  --cat-bug: #f87171;
-  --cat-feature: #60a5fa;
+  --border: rgba(255, 245, 230, 0.07);
+  --border-strong: rgba(255, 245, 230, 0.12);
+
+  --accent: #c8956a;
+  --accent-soft: rgba(200, 149, 106, 0.12);
+  --accent-text: #d4a574;
+
+  --primary: #c8956a;
+  --primary-hover: #b8854f;
+  --primary-subtle: rgba(200, 149, 106, 0.08);
+  --primary-ring: rgba(200, 149, 106, 0.25);
+
+  --status-success: #5ec495;
+  --status-running: #c8956a;
+  --status-warning: #e0b35a;
+  --status-error: #d4736a;
+  --status-info: #7aacca;
+
+  --cat-bug: #d4736a;
+  --cat-feature: #7aacca;
   --cat-refactor: #a78bfa;
-  --cat-chore: #a1a1aa;
-  --cat-docs: #2dd4bf;
-  --cat-test: #fbbf24;
-  --cat-infra: #fb923c;
-  --cat-design: #f472b6;
+  --cat-chore: #8a827a;
+  --cat-docs: #5ec495;
+  --cat-test: #e0b35a;
+  --cat-infra: #c8956a;
+  --cat-design: #d4a574;
+
+  --chrome-bg: rgba(26, 24, 22, 0.92);
+  --chrome-sidebar: #15130f;
+
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-1: #16171f;
-    --surface-2: #1e1f2b;
-    --surface-3: #282a3a;
-    --surface-4: #323447;
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #475569;
-    --border: #334155;
-  }
-}
+/* Day — Warm Linen */
+[data-theme="light"] {
+  --surface-1: #f7f4f0;
+  --surface-2: #eee9e3;
+  --surface-3: #e5dfd8;
+  --surface-4: #dbd4cc;
 
-/* Mobile: force dark mode */
-@media (max-width: 767px) {
-  :root {
-    --surface-1: #16171f;
-    --surface-2: #1e1f2b;
-    --surface-3: #282a3a;
-    --surface-4: #323447;
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #475569;
-    --border: #334155;
-  }
+  --card: #ffffff;
+  --card-hover: #fdfcfa;
+  --card-finding: #faf8f5;
+  --card-rightnow: #f5f2ee;
+  --card-border: rgba(0, 0, 0, 0.06);
+  --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 
-  body {
-    color-scheme: dark;
-  }
+  --text-primary: #2a2520;
+  --text-secondary: #6b6258;
+  --text-muted: #b0a89e;
+  --text-desc: #8a827a;
+
+  --border: rgba(0, 0, 0, 0.07);
+  --border-strong: rgba(0, 0, 0, 0.12);
+
+  --accent: #c8956a;
+  --accent-soft: rgba(200, 149, 106, 0.10);
+  --accent-text: #b07d4f;
+
+  --primary: #c8956a;
+  --primary-hover: #b07d4f;
+  --primary-subtle: rgba(200, 149, 106, 0.08);
+  --primary-ring: rgba(200, 149, 106, 0.25);
+
+  --status-success: #3a9864;
+  --status-running: #b07d4f;
+  --status-warning: #9a7a20;
+  --status-error: #c0524a;
+  --status-info: #5088b0;
+
+  --cat-bug: #c0524a;
+  --cat-feature: #5088b0;
+  --cat-refactor: #8b6dd4;
+  --cat-chore: #8a827a;
+  --cat-docs: #3a9864;
+  --cat-test: #9a7a20;
+  --cat-infra: #b07d4f;
+  --cat-design: #b07d4f;
+
+  --chrome-bg: rgba(247, 244, 240, 0.92);
+  --chrome-sidebar: #eee9e3;
+
+  color-scheme: light;
 }
 
 body {
-  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  font-family: var(--font-outfit), system-ui, sans-serif;
   background-color: var(--surface-1);
   color: var(--text-primary);
 }
 
-/* Status dot pulse animation */
 @keyframes status-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
@@ -94,30 +131,17 @@ body {
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
-/* ── Glass Panels ──
- * Semi-transparent surfaces with backdrop blur for elevated depth.
- * Use on cards, modals, and panels over --surface-1 backgrounds.
- */
-@layer components {
-  .glass-panel {
-    background: rgba(30, 31, 43, 0.6);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
-  }
-  .glass-panel-light {
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    border-radius: 10px;
-  }
+.grain-texture::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: inherit;
 }
 
-/* ── Status Glow Dots ──
- * Targeted neon glow on status indicators. Color earns its place.
- */
 @keyframes glow-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--glow-color); }
   50% { opacity: 0.6; box-shadow: 0 0 14px var(--glow-color); }
@@ -132,80 +156,167 @@ body {
   }
   .glow-dot-success {
     background: var(--status-success);
-    --glow-color: rgba(52, 211, 153, 0.4);
+    --glow-color: rgba(94, 196, 149, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
   .glow-dot-running {
     background: var(--status-running);
-    --glow-color: rgba(167, 139, 250, 0.4);
+    --glow-color: rgba(200, 149, 106, 0.4);
     animation: glow-pulse 1.5s ease-in-out infinite;
   }
   .glow-dot-warning {
     background: var(--status-warning);
-    --glow-color: rgba(251, 191, 36, 0.4);
+    --glow-color: rgba(224, 179, 90, 0.4);
     animation: glow-pulse 1.5s ease-in-out infinite;
   }
   .glow-dot-error {
     background: var(--status-error);
-    --glow-color: rgba(248, 113, 113, 0.4);
+    --glow-color: rgba(212, 115, 106, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
   .glow-dot-info {
     background: var(--status-info);
-    --glow-color: rgba(96, 165, 250, 0.4);
+    --glow-color: rgba(122, 172, 202, 0.4);
     box-shadow: 0 0 8px var(--glow-color);
   }
 }
 
-/* ── Cards & Elevation ──
- * Subtle depth for interactive containers. Hover lifts cards slightly.
- */
 @layer components {
   .card {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
-    transition: box-shadow 150ms ease, transform 150ms ease;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    box-shadow: var(--card-shadow);
+    transition: background 150ms ease, transform 150ms ease;
   }
   .card-interactive:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-    transform: translateY(-1px);
+    background: var(--card-hover);
+    transform: translateY(-0.5px);
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  @layer components {
-    .card {
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
-    }
-    .card-interactive:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
-    }
-  }
-}
-
-@media (max-width: 767px) {
-  @layer components {
-    .card {
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.12);
-    }
-    .card-interactive:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.15);
-    }
-  }
-}
-
-/* ── Section Labels ──
- * JetBrains Mono uppercase micro-labels for sidebar sections and panels.
- */
 @layer components {
   .section-label {
-    font-family: var(--font-jetbrains), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 11px;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 2px;
     color: var(--text-muted);
   }
 }
+
+@layer components {
+  .type-label {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+}
+
+@layer components {
+  .health-pill {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 9999px;
+  }
+  .health-pill-active {
+    background: rgba(94, 196, 149, 0.12);
+    color: var(--status-success);
+  }
+  .health-pill-on-schedule {
+    background: rgba(122, 172, 202, 0.12);
+    color: var(--status-info);
+  }
+  .health-pill-stalled {
+    background: rgba(224, 179, 90, 0.12);
+    color: var(--status-warning);
+  }
+  .health-pill-shipped {
+    background: rgba(94, 196, 149, 0.08);
+    color: var(--status-success);
+  }
+  .health-pill-paused {
+    background: rgba(138, 130, 122, 0.12);
+    color: var(--text-muted);
+  }
+  .health-pill-idle {
+    background: rgba(138, 130, 122, 0.08);
+    color: var(--text-desc);
+  }
+}
+
+@layer components {
+  /* Mission card accent borders */
+  .mission-card {
+    border-left: 4px solid transparent;
+  }
+  .mission-card-running { border-left-color: var(--status-success); }
+  .mission-card-scheduled { border-left-color: var(--status-info); }
+  .mission-card-attention { border-left-color: var(--status-warning); }
+  .mission-card-completed { border-left-color: var(--text-muted); }
+
+  /* Compact completed cards */
+  .mission-card-compact {
+    opacity: 0.7;
+    transition: opacity 150ms ease, background 150ms ease, transform 150ms ease;
+  }
+  .mission-card-compact:hover {
+    opacity: 0.85;
+  }
+
+  /* Hibernating (far-future schedule) */
+  .mission-card-hibernating {
+    opacity: 0.8;
+  }
+
+  /* Filter pill bar */
+  .filter-pill {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    padding: 5px 12px;
+    border-radius: 9999px;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    transition: all 150ms ease;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .filter-pill:hover {
+    color: var(--text-secondary);
+    background: rgba(255, 245, 230, 0.04);
+  }
+  .filter-pill-active {
+    background: rgba(255, 245, 230, 0.08);
+    color: var(--text-primary);
+  }
+
+  /* Section header label */
+  .section-label-missions {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* Imminent run highlight */
+  .next-run-imminent {
+    color: var(--status-success);
+    font-weight: 500;
+  }
+}
+
+[data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
+[data-theme="light"] .glow-dot-running { --glow-color: rgba(176, 125, 79, 0.25); }
+[data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }
+[data-theme="light"] .glow-dot-error { --glow-color: rgba(192, 82, 74, 0.25); }
+[data-theme="light"] .glow-dot-info { --glow-color: rgba(80, 136, 176, 0.25); }

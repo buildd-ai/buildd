@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts } from '@buildd/core/db/schema';
-import { eq, desc, inArray } from 'drizzle-orm';
+import { tasks, workers, artifacts, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { displayWorkspaceName } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
@@ -12,6 +13,7 @@ import DeleteTaskButton from './DeleteTaskButton';
 import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import PlanReviewPanel from './PlanReviewPanel';
+import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -57,7 +59,7 @@ export default async function TaskDetailPage({
     with: {
       workspace: true,
       account: true,
-      objective: { columns: { id: true, title: true, status: true } },
+      mission: { columns: { id: true, title: true, status: true } },
       parentTask: { columns: { id: true, title: true, status: true } },
       subTasks: { columns: { id: true, title: true, status: true } },
     },
@@ -99,6 +101,74 @@ export default async function TaskDetailPage({
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
   );
+
+  // Fetch execution plan chain: siblings (if child) or children (if parent)
+  const planParentId = task.parentTaskId ?? (task.subTasks?.length ? task.id : null);
+  type ChainTask = {
+    id: string; title: string; status: string; roleSlug: string | null;
+    worker: { prUrl: string | null; prNumber: number | null; turns: number; branch: string } | null;
+    artifacts: Array<{ id: string; type: string; title: string | null }>;
+  };
+  let planChain: ChainTask[] = [];
+  let roleMap = new Map<string, { name: string; color: string }>();
+
+  if (planParentId) {
+    const chainBase = await db.query.tasks.findMany({
+      where: eq(tasks.parentTaskId, planParentId),
+      columns: { id: true, title: true, status: true, roleSlug: true },
+      orderBy: asc(tasks.createdAt),
+    });
+
+    if (chainBase.length > 0) {
+      const chainIds = chainBase.map(t => t.id);
+
+      const chainWorkers = await db.query.workers.findMany({
+        where: inArray(workers.taskId, chainIds),
+        columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true },
+        orderBy: desc(workers.createdAt),
+      });
+      const latestWorker = new Map<string, typeof chainWorkers[0]>();
+      for (const w of chainWorkers) {
+        if (w.taskId && !latestWorker.has(w.taskId)) latestWorker.set(w.taskId, w);
+      }
+
+      const chainWorkerIds = [...latestWorker.values()].map(w => w.id);
+      const chainArts = chainWorkerIds.length > 0
+        ? await db.query.artifacts.findMany({
+            where: and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan')),
+            columns: { id: true, workerId: true, type: true, title: true },
+          })
+        : [];
+      const artsByWorker = new Map<string, typeof chainArts>();
+      for (const a of chainArts) {
+        if (!a.workerId) continue;
+        if (!artsByWorker.has(a.workerId)) artsByWorker.set(a.workerId, []);
+        artsByWorker.get(a.workerId)!.push(a);
+      }
+
+      planChain = chainBase.map(t => {
+        const w = latestWorker.get(t.id) ?? null;
+        return {
+          ...t,
+          worker: w ? { prUrl: w.prUrl, prNumber: w.prNumber, turns: w.turns, branch: w.branch } : null,
+          artifacts: w ? (artsByWorker.get(w.id) ?? []) : [],
+        };
+      });
+
+      const slugs = [...new Set(planChain.map(t => t.roleSlug).filter(Boolean))] as string[];
+      if (slugs.length > 0) {
+        const roles = await db.query.workspaceSkills.findMany({
+          where: and(
+            eq(workspaceSkills.workspaceId, task.workspaceId),
+            eq(workspaceSkills.isRole, true),
+            inArray(workspaceSkills.slug, slugs),
+          ),
+          columns: { slug: true, name: true, color: true },
+        });
+        roles.forEach(r => roleMap.set(r.slug, { name: r.name, color: r.color }));
+      }
+    }
+  }
 
   // Get the active worker (if any)
   const activeWorker = taskWorkers.find(w =>
@@ -182,11 +252,26 @@ export default async function TaskDetailPage({
           hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
         />
 
-        {/* Breadcrumbs — hidden on mobile (mobile header has nav) */}
-        <nav aria-label="Breadcrumb" className="hidden md:block text-sm text-text-secondary mb-4">
-          <Link href="/app/tasks" className="hover:text-text-primary">Tasks</Link>
-          <span className="mx-2">/</span>
-          <span className="text-text-primary">{task.title}</span>
+        {/* Breadcrumbs */}
+        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+          {task.mission ? (
+            <>
+              <Link href={`/app/missions/${task.mission.id}`} className="hover:text-text-primary inline-flex items-center gap-1">
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                {task.mission.title}
+              </Link>
+              <span className="mx-2">/</span>
+            </>
+          ) : (
+            <>
+              <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                Tasks
+              </Link>
+              <span className="mx-2">/</span>
+            </>
+          )}
+          <span className="text-text-primary hidden md:inline">{task.title}</span>
         </nav>
 
         {/* Header */}
@@ -215,20 +300,20 @@ export default async function TaskDetailPage({
                   {task.project}
                 </span>
               )}
-              {task.objective && (
+              {task.mission && (
                 <Link
-                  href={`/app/objectives/${task.objective.id}`}
+                  href={`/app/missions/${task.mission.id}`}
                   className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  {task.objective.title}
+                  {task.mission.title}
                 </Link>
               )}
             </div>
             <p className="text-[14px] text-text-secondary">
-              {task.workspace?.name} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
+              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -313,8 +398,14 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Task Relationships */}
-        {(task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+        {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
+        {planChain.length > 0 ? (
+          <PlanChainView
+            currentTaskId={id}
+            tasks={planChain}
+            roleMap={Object.fromEntries(roleMap)}
+          />
+        ) : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
           <div className="mb-6">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
@@ -524,7 +615,7 @@ export default async function TaskDetailPage({
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,
-                localUiUrl: activeWorker.localUiUrl,
+                localUiUrl: null,
                 commitCount: activeWorker.commitCount,
                 filesChanged: activeWorker.filesChanged,
                 linesAdded: activeWorker.linesAdded,
@@ -712,7 +803,10 @@ export default async function TaskDetailPage({
                         {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
                           <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
                         )}
-                        {(worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
+                        {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
+                          <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
+                        )}
+                        {!(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
                           <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
                         )}
                       </div>
@@ -746,16 +840,6 @@ export default async function TaskDetailPage({
                           className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
                         >
                           PR #{worker.prNumber}
-                        </a>
-                      )}
-                      {worker.localUiUrl && (
-                        <a
-                          href={`${worker.localUiUrl}/worker/${worker.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4${/^https?:\/\/(localhost|127\.0\.0\.1)/.test(worker.localUiUrl) ? ' hidden sm:inline-block' : ''}`}
-                        >
-                          View
                         </a>
                       )}
                     </div>

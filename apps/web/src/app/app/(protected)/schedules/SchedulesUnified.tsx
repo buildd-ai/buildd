@@ -3,11 +3,21 @@
 import { useState, useMemo, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
+
+export type PendingSuggestion = {
+  cronExpression?: string;
+  enabled?: boolean;
+  reason: string;
+  suggestedAt: string;
+  suggestedByTaskId?: string;
+  suggestedByWorkerId?: string;
+};
 
 export type UnifiedScheduleItem = {
   id: string;
   name: string;
-  type: 'heartbeat' | 'cron-objective' | 'workspace-schedule';
+  type: 'heartbeat' | 'cron-mission' | 'workspace-schedule';
   workspaceId: string | null;
   workspaceName: string | null;
   cronExpression: string;
@@ -17,13 +27,14 @@ export type UnifiedScheduleItem = {
   consecutiveFailures: number;
   isEnabled: boolean;
   href: string;
-  apiType: 'objective' | 'taskSchedule';
+  apiType: 'mission' | 'taskSchedule';
   apiId: string;
   apiWorkspaceId: string | null;
+  pendingSuggestion?: PendingSuggestion | null;
 };
 
 type WorkspaceOption = { id: string; name: string };
-type FilterType = 'all' | 'heartbeat' | 'cron-objective' | 'workspace-schedule';
+type FilterType = 'all' | 'heartbeat' | 'cron-mission' | 'workspace-schedule';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -58,7 +69,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
       </span>
     );
   }
-  if (type === 'cron-objective') {
+  if (type === 'cron-mission') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -112,72 +123,156 @@ function ToggleSwitch({
   );
 }
 
+function SuggestionBanner({
+  item,
+  onApprove,
+  onDismiss,
+  loading,
+}: {
+  item: UnifiedScheduleItem;
+  onApprove: (item: UnifiedScheduleItem) => void;
+  onDismiss: (item: UnifiedScheduleItem) => void;
+  loading: boolean;
+}) {
+  const s = item.pendingSuggestion;
+  if (!s) return null;
+
+  const changes: string[] = [];
+  if (s.cronExpression) changes.push(`cron → ${s.cronExpression}`);
+  if (s.enabled === false) changes.push('disable schedule');
+  if (s.enabled === true) changes.push('enable schedule');
+
+  return (
+    <div className="mt-2 p-3 rounded-lg bg-status-warning/10 border border-status-warning/20">
+      <div className="flex items-start gap-2">
+        <svg className="w-4 h-4 text-status-warning shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
+        </svg>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-medium text-status-warning mb-1">Agent suggestion</div>
+          <p className="text-xs text-text-secondary">{s.reason}</p>
+          {changes.length > 0 && (
+            <p className="text-xs text-text-muted mt-1 font-mono">{changes.join(', ')}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onApprove(item); }}
+              disabled={loading}
+              className="px-2.5 py-1 text-xs font-medium bg-status-success/15 text-status-success border border-status-success/25 rounded-md hover:bg-status-success/25 transition-colors disabled:opacity-50"
+            >
+              Approve
+            </button>
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDismiss(item); }}
+              disabled={loading}
+              className="px-2.5 py-1 text-xs font-medium bg-surface-3 text-text-secondary border border-border-default rounded-md hover:bg-surface-4 transition-colors disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+            {s.suggestedByTaskId && (
+              <a
+                href={`/app/tasks/${s.suggestedByTaskId}`}
+                onClick={(e) => e.stopPropagation()}
+                className="text-[10px] text-primary hover:underline ml-auto"
+              >
+                View task
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ScheduleRow({
   item,
   onToggle,
+  onApproveSuggestion,
+  onDismissSuggestion,
   toggling,
+  suggestionLoading,
 }: {
   item: UnifiedScheduleItem;
   onToggle: (item: UnifiedScheduleItem) => void;
+  onApproveSuggestion: (item: UnifiedScheduleItem) => void;
+  onDismissSuggestion: (item: UnifiedScheduleItem) => void;
   toggling: boolean;
+  suggestionLoading: boolean;
 }) {
   const isOverdue = item.nextRunAt && new Date(item.nextRunAt) < new Date() && item.isEnabled;
   const hasFailures = item.consecutiveFailures > 0;
 
   return (
-    <div className={`group flex items-center gap-3 p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
+    <div className={`group p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
       !item.isEnabled ? 'opacity-60' : ''
-    } ${isOverdue ? 'border-status-warning/30' : 'border-border-default'}`}>
-      {/* Toggle */}
-      <div className="shrink-0">
-        <ToggleSwitch item={item} onToggle={onToggle} loading={toggling} />
+    } ${item.pendingSuggestion ? 'border-status-warning/30' : isOverdue ? 'border-status-warning/30' : 'border-border-default'}`}>
+      <div className="flex items-center gap-3">
+        {/* Toggle */}
+        <div className="shrink-0">
+          <ToggleSwitch item={item} onToggle={onToggle} loading={toggling} />
+        </div>
+
+        {/* Main content — click to navigate */}
+        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3">
+          {/* Name + type badge */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <TypeBadge type={item.type} />
+              {item.workspaceName && (
+                <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
+                  {item.workspaceName}
+                </span>
+              )}
+              {hasFailures && (
+                <span className="text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
+                  {item.consecutiveFailures} fail{item.consecutiveFailures !== 1 ? 's' : ''}
+                </span>
+              )}
+              {item.pendingSuggestion && (
+                <span className="text-[10px] font-medium text-status-warning">suggestion</span>
+              )}
+            </div>
+            <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
+            <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+          </div>
+
+          {/* Stats column */}
+          <div className="shrink-0 text-right hidden sm:block">
+            {item.nextRunAt && item.isEnabled ? (
+              <div className={`text-xs font-medium ${isOverdue ? 'text-status-warning' : 'text-text-primary'}`}>
+                {timeUntil(item.nextRunAt)}
+              </div>
+            ) : item.isEnabled ? (
+              <div className="text-xs text-text-muted">—</div>
+            ) : (
+              <div className="text-xs text-text-muted">paused</div>
+            )}
+            <div className="text-[10px] text-text-muted mt-0.5">
+              {item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run'}
+            </div>
+            {item.lastRunAt && (
+              <div className="text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
+            )}
+          </div>
+
+          {/* Chevron */}
+          <svg className="w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </Link>
       </div>
 
-      {/* Main content — click to navigate */}
-      <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3">
-        {/* Name + type badge */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <TypeBadge type={item.type} />
-            {item.workspaceName && (
-              <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
-                {item.workspaceName}
-              </span>
-            )}
-            {hasFailures && (
-              <span className="text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
-                {item.consecutiveFailures} fail{item.consecutiveFailures !== 1 ? 's' : ''}
-              </span>
-            )}
-          </div>
-          <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
-          <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
-        </div>
-
-        {/* Stats column */}
-        <div className="shrink-0 text-right hidden sm:block">
-          {item.nextRunAt && item.isEnabled ? (
-            <div className={`text-xs font-medium ${isOverdue ? 'text-status-warning' : 'text-text-primary'}`}>
-              {timeUntil(item.nextRunAt)}
-            </div>
-          ) : item.isEnabled ? (
-            <div className="text-xs text-text-muted">—</div>
-          ) : (
-            <div className="text-xs text-text-muted">paused</div>
-          )}
-          <div className="text-[10px] text-text-muted mt-0.5">
-            {item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run'}
-          </div>
-          {item.lastRunAt && (
-            <div className="text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
-          )}
-        </div>
-
-        {/* Chevron */}
-        <svg className="w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-      </Link>
+      {item.pendingSuggestion && (
+        <SuggestionBanner
+          item={item}
+          onApprove={onApproveSuggestion}
+          onDismiss={onDismissSuggestion}
+          loading={suggestionLoading}
+        />
+      )}
     </div>
   );
 }
@@ -195,6 +290,7 @@ export default function SchedulesUnified({
   const [filter, setFilter] = useState<FilterType>('all');
   const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
   const [toggling, setToggling] = useState<Set<string>>(new Set());
+  const [suggestionLoading, setSuggestionLoading] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     return items.filter(item => {
@@ -214,7 +310,7 @@ export default function SchedulesUnified({
     return diff > 0 && diff < 24 * 60 * 60 * 1000;
   }).length;
   const heartbeats = items.filter(i => i.type === 'heartbeat').length;
-  const objectives = items.filter(i => i.type === 'cron-objective').length;
+  const missions = items.filter(i => i.type === 'cron-mission').length;
   const scheduleCount = items.filter(i => i.type === 'workspace-schedule').length;
 
   async function handleToggle(item: UnifiedScheduleItem) {
@@ -227,8 +323,8 @@ export default function SchedulesUnified({
     setToggling(prev => new Set(prev).add(item.id));
 
     try {
-      if (item.apiType === 'objective') {
-        await fetch(`/api/objectives/${item.apiId}`, {
+      if (item.apiType === 'mission') {
+        await fetch(`/api/missions/${item.apiId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newEnabled ? 'active' : 'paused' }),
@@ -255,10 +351,48 @@ export default function SchedulesUnified({
     }
   }
 
+  async function handleSuggestionAction(item: UnifiedScheduleItem, action: 'approve' | 'dismiss') {
+    if (item.apiType !== 'taskSchedule' || !item.apiWorkspaceId) return;
+    setSuggestionLoading(prev => new Set(prev).add(item.id));
+
+    try {
+      const res = await fetch(
+        `/api/workspaces/${item.apiWorkspaceId}/schedules/${item.apiId}/suggestion`,
+        { method: action === 'approve' ? 'PATCH' : 'DELETE' },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setItems(prev =>
+          prev.map(i => {
+            if (i.id !== item.id) return i;
+            return {
+              ...i,
+              pendingSuggestion: null,
+              ...(action === 'approve' && data.schedule ? {
+                cronExpression: data.schedule.cronExpression,
+                isEnabled: data.schedule.enabled,
+                nextRunAt: data.schedule.nextRunAt,
+              } : {}),
+            };
+          })
+        );
+        startTransition(() => router.refresh());
+      }
+    } catch {
+      // Silent failure
+    } finally {
+      setSuggestionLoading(prev => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }
+
   const filterTabs: { key: FilterType; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: total },
     { key: 'heartbeat', label: 'Heartbeats', count: heartbeats },
-    { key: 'cron-objective', label: 'Objectives', count: objectives },
+    { key: 'cron-mission', label: 'Missions', count: missions },
     { key: 'workspace-schedule', label: 'Workspace', count: scheduleCount },
   ];
 
@@ -276,14 +410,14 @@ export default function SchedulesUnified({
           </div>
           <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Set up heartbeats for periodic monitoring or schedule objectives to run automatically on a cron.
+            Set up heartbeats for periodic monitoring or schedule missions to run automatically on a cron.
           </p>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
-              href="/app/objectives?new=1"
+              href="/app/missions/new"
               className="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-primary-hover transition-colors"
             >
-              + New objective
+              + New Mission
             </Link>
             {workspaces.length > 0 && (
               <Link
@@ -302,17 +436,17 @@ export default function SchedulesUnified({
   return (
     <div className="max-w-4xl mx-auto p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Schedules</h1>
           <p className="text-sm text-text-secondary mt-0.5">All automated task creation across your workspaces</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            href="/app/objectives"
+            href="/app/missions/new"
             className="px-3 py-1.5 text-xs text-text-secondary bg-surface-3 border border-border-default rounded-lg hover:border-primary/30 transition-colors"
           >
-            + Objective
+            + Mission
           </Link>
           {workspaces.length > 0 && (
             <Link
@@ -326,7 +460,7 @@ export default function SchedulesUnified({
       </div>
 
       {/* Stats strip */}
-      <div className="flex gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
+      <div className="flex flex-wrap gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
         <div>
           <div className="text-xl font-semibold text-text-primary">{total}</div>
           <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
@@ -347,9 +481,9 @@ export default function SchedulesUnified({
             <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
           </div>
         )}
-        <div className="ml-auto flex gap-3 text-xs text-text-muted self-center">
+        <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
           {heartbeats > 0 && <span>{heartbeats} heartbeat{heartbeats !== 1 ? 's' : ''}</span>}
-          {objectives > 0 && <span>{objectives} objective{objectives !== 1 ? 's' : ''}</span>}
+          {missions > 0 && <span>{missions} mission{missions !== 1 ? 's' : ''}</span>}
           {scheduleCount > 0 && <span>{scheduleCount} workspace schedule{scheduleCount !== 1 ? 's' : ''}</span>}
         </div>
       </div>
@@ -376,16 +510,16 @@ export default function SchedulesUnified({
         </div>
 
         {workspaces.length > 1 && (
-          <select
+          <Select
             value={workspaceFilter}
-            onChange={e => setWorkspaceFilter(e.target.value)}
-            className="ml-auto text-xs bg-surface-2 border border-border-default rounded-md px-2 py-1.5 text-text-secondary focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            <option value="all">All workspaces</option>
-            {workspaces.map(ws => (
-              <option key={ws.id} value={ws.id}>{ws.name}</option>
-            ))}
-          </select>
+            onChange={setWorkspaceFilter}
+            options={[
+              { value: 'all', label: 'All workspaces' },
+              ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
+            ]}
+            size="sm"
+            className="ml-auto"
+          />
         )}
       </div>
 
@@ -401,7 +535,10 @@ export default function SchedulesUnified({
               key={`${item.apiType}-${item.id}`}
               item={item}
               onToggle={handleToggle}
+              onApproveSuggestion={(i) => handleSuggestionAction(i, 'approve')}
+              onDismissSuggestion={(i) => handleSuggestionAction(i, 'dismiss')}
               toggling={toggling.has(item.id)}
+              suggestionLoading={suggestionLoading.has(item.id)}
             />
           ))}
         </div>
@@ -425,9 +562,9 @@ export default function SchedulesUnified({
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
                 <path d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
-              Objective
+              Mission
             </div>
-            Scheduled goal. Creates a planning task on each run to make progress toward the objective.
+            Scheduled goal. Creates a planning task on each run to make progress toward the mission.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-text-secondary font-medium">

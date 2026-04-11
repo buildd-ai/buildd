@@ -1,4 +1,19 @@
 // ============================================================================
+// UTILS
+// ============================================================================
+
+/** System workspaces (prefixed with __) are auto-managed and hidden from UI */
+export function isSystemWorkspace(name: string): boolean {
+  return name.startsWith('__');
+}
+
+/** Returns a user-friendly display name for a workspace, replacing internal names */
+export function displayWorkspaceName(name: string): string {
+  if (isSystemWorkspace(name)) return 'Organizer';
+  return name;
+}
+
+// ============================================================================
 // ENUMS & CONSTANTS
 // ============================================================================
 
@@ -73,6 +88,7 @@ export const ArtifactType = {
   RECOMMENDATION: 'recommendation',
   ALERT: 'alert',
   CALENDAR_EVENT: 'calendar_event',
+  FILE: 'file',
 } as const;
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
@@ -85,6 +101,7 @@ export const CreationSource = {
   LOCAL_UI: 'local_ui',
   SCHEDULE: 'schedule',
   WEBHOOK: 'webhook',
+  ORCHESTRATOR: 'orchestrator',
 } as const;
 
 export type CreationSourceValue = typeof CreationSource[keyof typeof CreationSource];
@@ -102,14 +119,14 @@ export const TaskCategory = {
 
 export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
 
-export const ObjectiveStatus = {
+export const MissionStatus = {
   ACTIVE: 'active',
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ARCHIVED: 'archived',
 } as const;
 
-export type ObjectiveStatusValue = typeof ObjectiveStatus[keyof typeof ObjectiveStatus];
+export type MissionStatusValue = typeof MissionStatus[keyof typeof MissionStatus];
 
 export const OutputRequirement = {
   PR_REQUIRED: 'pr_required',
@@ -228,29 +245,55 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
-export interface Objective {
+export interface Mission {
   id: string;
   teamId: string;
   workspaceId: string | null;
   title: string;
   description: string | null;
-  status: ObjectiveStatusValue;
+  status: MissionStatusValue;
   priority: number;
-  cronExpression: string | null;
   scheduleId: string | null;
-  parentObjectiveId: string | null;
+  parentMissionId: string | null;
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
   // Relations
   workspace?: Workspace;
   tasks?: Task[];
-  subObjectives?: Objective[];
-  parentObjective?: Objective;
+  subMissions?: Mission[];
+  parentMission?: Mission;
   // Computed
   progress?: number;
   totalTasks?: number;
   completedTasks?: number;
+}
+
+export type MissionNoteAuthorType = 'agent' | 'user' | 'system';
+export type MissionNoteType = 'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance';
+export type MissionNoteStatus = 'open' | 'answered' | 'dismissed';
+
+export interface MissionNote {
+  id: string;
+  missionId: string;
+  taskId: string | null;
+  workerId: string | null;
+  authorType: MissionNoteAuthorType;
+  type: MissionNoteType;
+  title: string;
+  body: string | null;
+  replyTo: string | null;
+  defaultChoice: string | null;
+  status: MissionNoteStatus;
+  createdAt: Date;
+}
+
+export interface McpToolCall {
+  server: string;
+  tool: string;
+  ts: number;
+  ok: boolean;
+  durationMs?: number;
 }
 
 export interface TaskResult {
@@ -264,6 +307,30 @@ export interface TaskResult {
   prUrl?: string;
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
+  mcpServers?: string[];
+  nextSuggestion?: string;
+}
+
+/**
+ * Structured artifact protocol for task results.
+ *
+ * This defines the TARGET shape that task results should converge towards.
+ * Existing tasks may not match this shape — consumers must handle missing fields.
+ * The orchestrator uses this structure to reason about completed work and decide next steps.
+ */
+export interface TaskArtifactResult {
+  type: 'summary' | 'finding' | 'report' | 'review' | 'error';
+  output: string;
+  status: 'completed' | 'needs_followup' | 'blocked';
+  nextSuggestion?: string;
+  metadata?: {
+    pr?: string;
+    prNumber?: number;
+    branch?: string;
+    filesChanged?: number;
+    commitCount?: number;
+    custom?: Record<string, unknown>;
+  };
 }
 
 export interface Task {
@@ -291,15 +358,15 @@ export interface Task {
   category?: TaskCategoryValue | null;
   outputRequirement?: OutputRequirementValue;
   outputSchema?: Record<string, unknown> | null;
-  // Objective linking
-  objectiveId: string | null;
+  // Mission linking
+  missionId: string | null;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: string[];
   result: TaskResult | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
-  objective?: Objective;
+  mission?: Mission;
   worker?: Worker;
   account?: Account;
   // Creator tracking relations
@@ -326,16 +393,33 @@ export interface Worker {
   error: string | null;
   createdAt: Date;
   updatedAt: Date;
+  mcpCalls?: McpToolCall[];
   task?: Task;
   workspace?: Workspace;
   account?: Account;
   artifacts?: Artifact[];
 }
 
+export interface WaitingForOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
 export interface WaitingFor {
   type: 'question' | 'permission' | 'confirmation';
   prompt: string;
-  options?: string[];
+  options?: (string | WaitingForOption)[];
+}
+
+/** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
+export function normalizeWaitingForOptions(
+  raw?: (string | WaitingForOption)[] | null
+): WaitingForOption[] | undefined {
+  if (!raw?.length) return undefined;
+  return raw.map((o) =>
+    typeof o === 'string' ? { label: o } : o
+  );
 }
 
 export interface Artifact {
@@ -440,6 +524,8 @@ export interface RecipeStep {
 
 export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
+export type SkillModel = 'sonnet' | 'opus' | 'haiku' | 'inherit';
+
 export interface WorkspaceSkill {
   id: string;
   workspaceId: string;
@@ -452,6 +538,15 @@ export interface WorkspaceSkill {
   enabled: boolean;
   origin: WorkspaceSkillOrigin;
   metadata: SkillMetadata;
+  // Role config
+  model: SkillModel;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
+  color: string;
+  mcpServers: string[];
+  requiredEnvVars: Record<string, string>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -471,6 +566,35 @@ export interface SkillBundle {
   contentHash?: string;
   referenceFiles?: Record<string, string>;
   files?: SkillBundleFile[];
+  // Role config
+  model: SkillModel;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
+  mcpServers: string[];
+  requiredEnvVars: Record<string, string>;
+}
+
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  type?: 'stdio' | 'http';
+  url?: string;
+}
+
+export interface RoleConfig {
+  slug: string;
+  configHash: string;
+  configUrl: string;
+  type: 'builder' | 'service';
+  repoUrl?: string;
+  model: string;
+  allowedTools: string[];
+  canDelegateTo: string[];
+  background: boolean;
+  maxTurns: number | null;
 }
 
 export interface SkillMetadata {
@@ -506,10 +630,17 @@ export interface WorkerTool {
   version?: string;
 }
 
+export interface McpServerInfo {
+  name: string;
+  requiredVars: string[];
+  resolved: boolean;
+}
+
 export interface WorkerEnvironment {
   tools: WorkerTool[];
   envKeys: string[];
-  mcp: string[];
+  mcp: string[] | McpServerInfo[];
+  mcpServers?: McpServerInfo[];
   labels: Record<string, string>;
   scannedAt: string;
 }
@@ -545,19 +676,19 @@ export interface CreateTaskInput {
   outputRequirement?: OutputRequirementValue;
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown>;
-  // Objective linking
-  objectiveId?: string;
+  // Mission linking
+  missionId?: string;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn?: string[];
 }
 
-export interface CreateObjectiveInput {
+export interface CreateMissionInput {
   title: string;
   description?: string;
   workspaceId?: string;
   cronExpression?: string;
   priority?: number;
-  parentObjectiveId?: string;
+  parentMissionId?: string;
 }
 
 export interface CreateWorkerInput {
@@ -604,6 +735,7 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
+  availableSkills?: string[]; // skill slugs this runner can execute
 }
 
 export type ClaimDiagnosticReason =
@@ -611,7 +743,9 @@ export type ClaimDiagnosticReason =
   | 'no_workspaces'
   | 'no_pending_tasks'
   | 'capability_mismatch'
-  | 'race_lost';
+  | 'race_lost'
+  | 'deps_blocked'
+  | 'repo_busy';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
@@ -630,10 +764,14 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /** Single-use secret reference for server-managed API key (redeem via GET /api/workers/secret/:ref) */
-    secretRef?: string;
-    /** Single-use secret reference for server-managed OAuth token (redeem via GET /api/workers/secret/:ref) */
-    oauthSecretRef?: string;
+    /** Decrypted server-managed API key (inline) */
+    serverApiKey?: string;
+    /** Decrypted server-managed OAuth token (inline) */
+    serverOauthToken?: string;
+    /** Decrypted MCP credential secrets mapped by label (env var name) → value */
+    mcpSecrets?: Record<string, string>;
+    /** Role configuration for the claimed task's assigned role */
+    roleConfig?: RoleConfig;
   }>;
   diagnostics?: ClaimDiagnostics;
 }
@@ -668,6 +806,15 @@ export interface CreateWorkspaceSkillInput {
   source?: string;
   metadata?: SkillMetadata;
   enabled?: boolean;
+  // Role config
+  model?: SkillModel;
+  allowedTools?: string[];
+  canDelegateTo?: string[];
+  background?: boolean;
+  maxTurns?: number;
+  color?: string;
+  mcpServers?: string[];
+  requiredEnvVars?: Record<string, string>;
 }
 
 

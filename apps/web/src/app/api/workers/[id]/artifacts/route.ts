@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts } from '@buildd/core/db/schema';
+import { workers, artifacts, tasks } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -13,6 +13,7 @@ const DELIVERABLE_TYPES = new Set([
   ArtifactType.DATA,
   ArtifactType.LINK,
   ArtifactType.SUMMARY,
+  ArtifactType.FILE,
 ]);
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
@@ -43,8 +44,15 @@ export async function POST(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  const linkedTask = worker.taskId
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true },
+      })
+    : null;
+
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, storageKey } = body;
 
   if (!type || !DELIVERABLE_TYPES.has(type)) {
     return NextResponse.json(
@@ -88,6 +96,7 @@ export async function POST(
         .set({
           title,
           content: content || null,
+          storageKey: storageKey || existing.storageKey || null,
           metadata: artifactMetadata,
           workerId: id,
           type,
@@ -127,10 +136,12 @@ export async function POST(
     .values({
       workerId: id,
       workspaceId: worker.workspaceId || null,
+      missionId: linkedTask?.missionId ?? null,
       key: key || null,
       type,
       title,
       content: content || null,
+      storageKey: storageKey || null,
       shareToken,
       metadata: artifactMetadata,
     })

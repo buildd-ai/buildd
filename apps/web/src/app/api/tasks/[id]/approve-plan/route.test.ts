@@ -33,6 +33,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
+      workspaces: { findFirst: mock(() => Promise.resolve(null)) },
     },
     insert: (_table: any) => ({
       values: (vals: any) => {
@@ -60,6 +61,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', parentTaskId: 'parentTaskId' },
+  workspaces: { id: 'id' },
 }));
 
 // Import handler AFTER mocks
@@ -290,6 +292,35 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     expect(data.error).toBe('Plan already approved');
     // Ensure no inserts happened
     expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('preserves missionId on child execution tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      missionId: 'mission-42',
+      result: {
+        structuredOutput: {
+          plan: [
+            { ref: 'step-1', title: 'Research', description: 'Do research' },
+            { ref: 'step-2', title: 'Implement', description: 'Write code' },
+          ],
+          summary: 'Two step plan',
+        },
+      },
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest();
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    expect(mockInsertValues).toHaveLength(2);
+    expect(mockInsertValues[0].missionId).toBe('mission-42');
+    expect(mockInsertValues[1].missionId).toBe('mission-42');
   });
 
   it('returns 400 when plan has circular dependencies', async () => {

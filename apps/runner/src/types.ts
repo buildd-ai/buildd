@@ -1,3 +1,5 @@
+import type { RoleConfig } from './roles.js';
+
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -146,6 +148,7 @@ export interface LocalWorker {
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
+  pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
@@ -154,10 +157,14 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
-  // Server-managed API key (redeemed from secretRef, injected into subprocess env)
+  // Server-managed API key (delivered inline during claim, injected into subprocess env)
   serverApiKey?: string;
-  // Server-managed OAuth token (redeemed from oauthSecretRef, injected as CLAUDE_CODE_OAUTH_TOKEN)
+  // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // Server-managed MCP credential secrets (label/env var name → decrypted value)
+  mcpSecrets?: Record<string, string>;
+  // Role config from claim route (for role env resolution)
+  roleConfig?: RoleConfig;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
@@ -186,6 +193,7 @@ export interface ModelUsage {
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
+  terminalReason?: string | null;
   durationMs: number;
   durationApiMs: number;
   numTurns: number;
@@ -212,6 +220,8 @@ export interface BuilddTask {
   dependsOn?: string[];
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // Output requirement — what deliverables are enforced on completion
+  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema?: Record<string, unknown> | null;
   // Assignment tracking
@@ -346,4 +356,9 @@ export interface LocalUIConfig {
   maxBudgetUsd?: number;
   // Maximum turns per worker session (default: no limit)
   maxTurns?: number;
+  // Controls AskUserQuestion behavior. Default (undefined/true): abort+retry —
+  // the worker is marked failed with failReason 'needs_input' and the user
+  // responds asynchronously via the dashboard, creating a follow-up task.
+  // Set to false to preserve the legacy blocking waiting_input behavior.
+  inputAsRetry?: boolean;
 }

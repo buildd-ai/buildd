@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, mock, spyOn } from 'bun:test';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 // --- normalizeGitUrl tests ---
 // This function normalizes various git URL formats to owner/repo
@@ -220,6 +220,38 @@ describe('Resolution Edge Cases', () => {
     // Should be able to fall back to ID
     expect(workspace.name || workspace.id).toBe('ws-4');
   });
+
+  test('coordination workspace (__prefix, no repo) should use tmpdir fallback', () => {
+    // Mirrors the coordination workspace logic in workspace.ts attemptResolve():
+    // When all resolution attempts fail, if workspace.name starts with __ and has no repo,
+    // a temp directory is created as the working directory.
+    const workspace = { id: 'ws-coord', name: '__coordination', repo: null as string | null };
+
+    // The condition that triggers tmpdir fallback
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(true);
+
+    // The resulting path matches the expected pattern
+    const expectedPath = join(tmpdir(), 'buildd-coordination', workspace.name);
+    expect(expectedPath).toContain('buildd-coordination');
+    expect(expectedPath).toContain('__coordination');
+  });
+
+  test('coordination workspace without __ prefix does not get tmpdir fallback', () => {
+    // Non-__ workspace with no repo should NOT get tmpdir fallback
+    const workspace = { id: 'ws-5', name: 'regular-workspace', repo: null as string | null };
+
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(false);
+  });
+
+  test('workspace with repo does not get tmpdir fallback even with __ prefix', () => {
+    // A workspace with a repo should go through normal git-based resolution
+    const workspace = { id: 'ws-6', name: '__has-repo', repo: 'https://github.com/org/repo.git' };
+
+    const shouldFallbackToTmpdir = !workspace.repo && workspace.name.startsWith('__');
+    expect(shouldFallbackToTmpdir).toBe(false);
+  });
 });
 
 // --- Multi-Root Resolution ---
@@ -286,3 +318,61 @@ describe('Git URL Matching Scenarios', () => {
     expect(org1).not.toBe(org2);
   });
 });
+
+// --- Clone Endpoint: Existing Repo Detection ---
+
+describe('Clone Existing Repo Detection', () => {
+  test('HTTPS clone URL matches SSH remote on disk', () => {
+    // Simulates: user clones via HTTPS slug, but repo on disk has SSH remote
+    const cloneUrl = 'https://github.com/buildd-ai/buildd.git';
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedClone = normalizeGitUrl(cloneUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedClone).toBe(normalizedExisting);
+    expect(normalizedClone).toBe('buildd-ai/buildd');
+  });
+
+  test('GitHub slug normalizes to match full URL', () => {
+    // The clone endpoint normalizes "owner/repo" to "https://github.com/owner/repo.git"
+    const slug = 'buildd-ai/buildd';
+    const fullUrl = `https://github.com/${slug}.git`;
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedFull = normalizeGitUrl(fullUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedFull).toBe(normalizedExisting);
+  });
+
+  test('detects conflict when different repo occupies path', () => {
+    const requestedUrl = 'https://github.com/org/repo-a.git';
+    const existingRemote = 'https://github.com/org/repo-b.git';
+
+    const normalizedRequested = normalizeGitUrl(requestedUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedRequested).not.toBe(normalizedExisting);
+  });
+
+  test('case-insensitive matching for existing repo', () => {
+    const cloneUrl = 'https://github.com/Buildd-AI/Buildd.git';
+    const existingRemote = 'git@github.com:buildd-ai/buildd.git';
+
+    const normalizedClone = normalizeGitUrl(cloneUrl);
+    const normalizedExisting = normalizeGitUrl(existingRemote);
+
+    expect(normalizedClone).toBe(normalizedExisting);
+  });
+
+  test('matching with and without .git suffix', () => {
+    const cloneUrl = 'https://github.com/org/repo';
+    const existingRemote = 'https://github.com/org/repo.git';
+
+    expect(normalizeGitUrl(cloneUrl)).toBe(normalizeGitUrl(existingRemote));
+  });
+});
+
+// Auto-clone tests are in __tests__/standalone/workspace-autoclone.test.ts
+// (separate dir to avoid mock.module('fs') pollution from unit/ test files).

@@ -5,7 +5,7 @@ Enforced workflow for buildd tasks. Not suggestions — process.
 ## Lifecycle
 
 ```
-claim → understand → plan → implement (TDD) → verify → PR → complete
+claim → understand → plan → implement (TDD) → verify → PR → document → complete
 ```
 
 ## Steps
@@ -16,7 +16,8 @@ claim → understand → plan → implement (TDD) → verify → PR → complete
 4. **Implement with TDD** — failing test first, then minimal code, then refactor
 5. **Verify** — run full test suite, build, type check. Evidence, not promises.
 6. `buildd action=create_pr` — never `gh pr create`
-7. `buildd action=complete_task` — with summary
+7. **Document** — write summary artifact (`create_artifact` type=summary) and save workspace memories (`buildd_memory` action=save) for patterns, gotchas, and decisions discovered
+8. `buildd action=complete_task` — with summary
 
 ## Non-Negotiables
 

@@ -154,6 +154,8 @@ describe('GET /api/workspaces', () => {
 describe('POST /api/workspaces', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesInsert.mockReset();
     mockGetUserDefaultTeamId.mockReset();
     mockGetUserTeamIds.mockReset();
@@ -210,5 +212,39 @@ describe('POST /api/workspaces', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(200);
+  });
+
+  it('creates workspace with API key auth using API key team', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces', {
+      method: 'POST',
+      headers: new Headers({
+        'content-type': 'application/json',
+        'authorization': 'Bearer bld_testkey',
+      }),
+      body: JSON.stringify({ name: 'API Workspace' }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 401 when neither session nor API key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces', {
+      method: 'POST',
+      headers: new Headers({
+        'content-type': 'application/json',
+        'authorization': 'Bearer bld_invalid',
+      }),
+      body: JSON.stringify({ name: 'Should Fail' }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(401);
   });
 });

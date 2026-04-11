@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -44,6 +44,11 @@ export default async function WorkspaceSkillsPage({
     orderBy: [desc(workspaceSkills.createdAt)],
   });
 
+  // Get enabled skills for delegation picker in the new role form
+  const enabledSkills = skills
+    .filter(s => s.enabled)
+    .map(s => ({ slug: s.slug, name: s.name }));
+
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -53,9 +58,9 @@ export default async function WorkspaceSkillsPage({
 
         <div className="flex justify-between items-center mb-8">
           <div>
-            <h1 className="text-3xl font-bold">Skills</h1>
+            <h1 className="text-3xl font-bold">Roles</h1>
             <p className="text-text-muted mt-1">
-              {skills.length} skill{skills.length !== 1 ? 's' : ''}
+              {skills.length} role{skills.length !== 1 ? 's' : ''}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -72,7 +77,7 @@ export default async function WorkspaceSkillsPage({
                 href={`/app/workspaces/${id}/skills?new=1`}
                 className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
               >
-                + New Skill
+                + New Role
               </Link>
             )}
           </div>
@@ -80,7 +85,7 @@ export default async function WorkspaceSkillsPage({
 
         {showNew && (
           <div className="mb-8">
-            <SkillForm workspaceId={id} />
+            <SkillForm workspaceId={id} delegateOptions={enabledSkills} />
           </div>
         )}
 

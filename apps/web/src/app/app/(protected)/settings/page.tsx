@@ -6,14 +6,11 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
-import SkillsSection from './SkillsSection';
-import SlackSection from './SlackSection';
-import DiscordSection from './DiscordSection';
-
-
+import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +26,6 @@ export default async function SettingsPage() {
   let teamsError = false;
   let userWorkspaces: { id: string; name: string; repo: string | null }[] = [];
 
-  // Fetch teams - uses React cache() so shared with layout
   try {
     userTeams = await getUserTeamsWithDetails(user.id);
   } catch (error) {
@@ -39,14 +35,12 @@ export default async function SettingsPage() {
 
   const teamIds = userTeams.map(t => t.id);
 
-  // Resolve current team for mobile switcher
   const cookieStore = await cookies();
   const teamCookie = cookieStore.get('buildd-team')?.value;
   const currentTeamId = (teamCookie && userTeams.some(t => t.id === teamCookie))
     ? teamCookie
     : userTeams[0]?.id || null;
 
-  // Fetch accounts
   try {
     if (teamIds.length > 0) {
       allAccounts = await db.query.accounts.findMany({
@@ -62,7 +56,6 @@ export default async function SettingsPage() {
     console.error('Settings: accounts query error:', error);
   }
 
-  // Fetch workspaces for skill management link
   try {
     const wsIds = await getUserWorkspaceIds(user.id);
     if (wsIds.length > 0) {
@@ -82,120 +75,124 @@ export default async function SettingsPage() {
   };
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
-      <div className="max-w-2xl mx-auto">
-        <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          &larr; Dashboard
-        </Link>
-        <h1 className="text-2xl font-semibold tracking-tight mb-8">Settings</h1>
+    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+      <div className="max-w-2xl mx-auto space-y-12">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        </div>
 
-        <div className="space-y-10">
-          {/* Team Switcher (mobile only) */}
-          {userTeams.length > 1 && (
-            <section className="md:hidden">
-              <h2 className="text-lg font-semibold mb-3">Switch Team</h2>
-              <div className="bg-surface-2 border border-border-default rounded-lg p-3">
-                <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
-              </div>
-            </section>
-          )}
+        {/* Team Switcher (mobile only) */}
+        {userTeams.length > 1 && (
+          <section className="md:hidden">
+            <h2 className="section-label mb-3">Switch Team</h2>
+            <div className="card p-3">
+              <TeamSwitcher teams={userTeams} currentTeamId={currentTeamId} />
+            </div>
+          </section>
+        )}
 
-          {/* GitHub */}
-          <GitHubSection />
+        {/* GitHub */}
+        <GitHubSection />
 
-          <hr className="border-border-default" />
+        {/* API Keys — compact view */}
+        <ApiKeysSection
+          accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
+          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+        />
 
-          {/* API Keys */}
-          <ApiKeysSection
-            accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
-            workspaces={userWorkspaces}
-          />
+        {/* Teams */}
+        <section>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="section-label">Teams</h2>
+            <Link
+              href="/app/teams/new"
+              className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+            >
+              + New Team
+            </Link>
+          </div>
 
-          <hr className="border-border-default" />
-
-          {/* Teams */}
-          <section>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold">Teams</h2>
-              <Link
-                href="/app/teams/new"
-                className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover"
-              >
-                + New Team
+          {teamsError ? (
+            <div className="card p-6 text-center">
+              <p className="text-text-muted text-sm mb-3">Failed to load teams</p>
+              <Link href="/app/settings" className="text-sm text-primary hover:underline">
+                Retry
               </Link>
             </div>
-
-            {teamsError ? (
-              <div className="border border-dashed border-status-error/30 rounded-lg p-6 text-center">
-                <p className="text-text-secondary mb-3 text-sm">Failed to load teams</p>
-                <Link
-                  href="/app/settings"
-                  className="text-sm text-primary hover:underline"
-                >
-                  Retry
-                </Link>
-              </div>
-            ) : userTeams.length === 0 ? (
-              <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-                <p className="text-text-secondary mb-3 text-sm">No teams yet</p>
-                <Link
-                  href="/app/teams/new"
-                  className="text-sm text-primary hover:underline"
-                >
-                  Create a team
-                </Link>
-              </div>
-            ) : (
-              <div className="border border-border-default rounded-lg divide-y divide-border-default">
-                {userTeams.map((team) => {
-                  const isPersonal = team.slug.startsWith('personal-');
-                  return (
-                    <Link
-                      key={team.id}
-                      href={`/app/teams/${team.id}`}
-                      className="block p-4 hover:bg-surface-3"
-                    >
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <h3 className="font-medium truncate">{team.name}</h3>
-                          {isPersonal && (
-                            <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded flex-shrink-0">
-                              Personal
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 text-sm flex-shrink-0">
-                          <span className="text-text-secondary">
-                            {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
+          ) : userTeams.length === 0 ? (
+            <div className="card p-6 text-center">
+              <p className="text-text-muted text-sm mb-3">No teams yet</p>
+              <Link href="/app/teams/new" className="text-sm text-primary hover:underline">
+                Create a team
+              </Link>
+            </div>
+          ) : (
+            <div className="card divide-y divide-border-default">
+              {userTeams.map((team) => {
+                const isPersonal = team.slug.startsWith('personal-');
+                return (
+                  <Link
+                    key={team.id}
+                    href={`/app/teams/${team.id}`}
+                    className="block p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
+                  >
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="font-medium truncate">{team.name}</h3>
+                        {isPersonal && (
+                          <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-muted rounded flex-shrink-0">
+                            Personal
                           </span>
-                          <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>
-                            {team.role}
-                          </span>
-                        </div>
+                        )}
                       </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
+                      <div className="flex items-center gap-3 text-sm flex-shrink-0">
+                        <span className="text-text-muted">
+                          {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
+                        </span>
+                        <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[team.role] || roleColors.member}`}>
+                          {team.role}
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Workspaces — links to per-workspace settings */}
+        {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length > 0 && (
+          <section>
+            <h2 className="section-label mb-4">Workspaces</h2>
+            <div className="card divide-y divide-border-default">
+              {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).map((ws) => (
+                <Link
+                  key={ws.id}
+                  href={`/app/workspaces/${ws.id}/skills`}
+                  className="flex items-center justify-between p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{ws.name}</p>
+                    {ws.repo && <p className="text-xs text-text-muted truncate">{ws.repo}</p>}
+                  </div>
+                  <span className="text-xs text-text-muted flex-shrink-0">Skills, Slack, Discord</span>
+                </Link>
+              ))}
+            </div>
           </section>
-
-          <hr className="border-border-default" />
-
-          {/* Slack */}
-          <SlackSection workspaces={userWorkspaces} />
-
-          <hr className="border-border-default" />
-
-          {/* Discord */}
-          <DiscordSection workspaces={userWorkspaces} />
-
-          <hr className="border-border-default" />
-
-          {/* Skills */}
-          <SkillsSection workspaces={userWorkspaces} />
-
-        </div>
+        )}
+        {/* Sign Out */}
+        <section>
+          <h2 className="section-label mb-4">Account</h2>
+          <div className="card p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Sign out</p>
+              <p className="text-xs text-text-muted mt-0.5">Sign out of your account on this device</p>
+            </div>
+            <SignOutButton />
+          </div>
+        </section>
       </div>
     </main>
   );

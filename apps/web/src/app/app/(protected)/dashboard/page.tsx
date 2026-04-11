@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills, objectives } from '@buildd/core/db/schema';
+import { workspaces, tasks, workers, githubInstallations, accounts, workerHeartbeats, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, inArray, eq, and, sql, gt, asc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -8,8 +8,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import DashboardStartTask from './DashboardStartTask';
-import DiscoveredRepos from './DiscoveredRepos';
 import OnboardingChecklist from './OnboardingChecklist';
 import RetryTaskButton from './RetryTaskButton';
 
@@ -30,7 +30,7 @@ export default async function DashboardPage() {
   let connectedAgents: { localUiUrl: string; accountName: string; activeWorkers: number; maxConcurrent: number; lastHeartbeat: Date }[] = [];
   let connectedAccountIds = new Set<string>();
   let dashboardSkills: any[] = [];
-  let dashboardObjectives: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
+  let dashboardMissions: { id: string; title: string; status: string; priority: number; totalTasks: number; completedTasks: number; progress: number }[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -162,16 +162,16 @@ export default async function DashboardPage() {
         }));
       }
 
-      // Get active objectives
+      // Get active missions
       if (teamIds.length > 0) {
-        const activeObjs = await db.query.objectives.findMany({
-          where: inArray(objectives.teamId, teamIds),
+        const activeMissns = await db.query.missions.findMany({
+          where: inArray(missions.teamId, teamIds),
           columns: { id: true, title: true, status: true, priority: true },
-          orderBy: [desc(objectives.priority), desc(objectives.createdAt)],
+          orderBy: [desc(missions.priority), desc(missions.createdAt)],
           with: { tasks: { columns: { id: true, status: true } } },
         });
 
-        dashboardObjectives = activeObjs
+        dashboardMissions = activeMissns
           .filter(obj => obj.status === 'active' || obj.status === 'paused')
           .slice(0, 5)
           .map(obj => {
@@ -196,6 +196,9 @@ export default async function DashboardPage() {
       console.error('Dashboard query error:', error);
     }
   }
+
+  // Filter system workspaces from UI display
+  const visibleWorkspaces = userWorkspaces.filter(ws => !isSystemWorkspace(ws.name));
 
   // --- Helpers ---
 
@@ -319,7 +322,7 @@ export default async function DashboardPage() {
             className="bg-surface-2 border border-border-default rounded-[10px] p-4 hover:border-text-muted transition-colors"
           >
             <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workspaces</div>
-            <div className="text-2xl font-semibold">{userWorkspaces.length}</div>
+            <div className="text-2xl font-semibold">{visibleWorkspaces.length}</div>
           </Link>
           <Link
             href="/app/tasks"
@@ -346,29 +349,29 @@ export default async function DashboardPage() {
         {/* Onboarding Checklist */}
         <OnboardingChecklist
           hasGithub={githubOrgs.length > 0}
-          hasWorkspaces={userWorkspaces.length > 0}
+          hasWorkspaces={visibleWorkspaces.length > 0}
           hasCompletedTask={completedRecentCount > 0}
           hasConnectedAgent={connectedAgents.length > 0}
           githubConfigured={githubConfigured}
         />
 
         {/* Objectives */}
-        {dashboardObjectives.length > 0 && (
+        {dashboardMissions.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
-              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Objectives</span>
+              <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Missions</span>
               <Link
-                href="/app/objectives"
+                href="/app/missions"
                 className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 View All
               </Link>
             </div>
             <div className="border border-border-default rounded-[10px] overflow-hidden">
-              {dashboardObjectives.map((obj) => (
+              {dashboardMissions.map((obj) => (
                 <Link
                   key={obj.id}
-                  href={`/app/objectives/${obj.id}`}
+                  href={`/app/missions/${obj.id}`}
                   className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3"
                 >
                   <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center flex-shrink-0 ${
@@ -468,21 +471,6 @@ export default async function DashboardPage() {
                           PR #{worker.prNumber}
                         </a>
                       )}
-                      {worker.localUiUrl && (() => {
-                        const isOnline = worker.accountId ? connectedAccountIds.has(worker.accountId) : false;
-                        return (
-                          <a
-                            href={`${worker.localUiUrl}/worker/${worker.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={`px-3 py-[5px] text-xs rounded-[6px] ${isOnline ? 'bg-status-info/10 text-status-info hover:bg-status-info/20' : 'bg-surface-3 text-text-muted hover:bg-surface-4'}`}
-                            title={isOnline ? undefined : 'Runner may be offline'}
-                          >
-                            {!isOnline && <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-muted mr-1.5 align-middle" />}
-                            Open Terminal
-                          </a>
-                        );
-                      })()}
                     </div>
                   </div>
                 );
@@ -512,7 +500,7 @@ export default async function DashboardPage() {
               {/* Mobile: Start Task modal */}
               <div className="md:hidden">
                 <DashboardStartTask
-                  workspaces={userWorkspaces.map(w => ({ id: w.id, name: w.name }))}
+                  workspaces={visibleWorkspaces.map(w => ({ id: w.id, name: w.name }))}
                 />
               </div>
             </div>
@@ -580,12 +568,12 @@ export default async function DashboardPage() {
         </div>
 
         {/* Skills */}
-        {userWorkspaces.length > 0 && (
+        {visibleWorkspaces.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between pb-2 border-b border-border-default mb-6">
               <span className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted">Skills</span>
               <Link
-                href={`/app/workspaces/${dashboardSkills[0]?.workspace?.id || userWorkspaces[0]?.id}/skills`}
+                href={`/app/workspaces/${dashboardSkills[0]?.workspace?.id || visibleWorkspaces[0]?.id}/skills`}
                 className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
               >
                 Manage
@@ -602,7 +590,7 @@ export default async function DashboardPage() {
                   ].map((template) => (
                     <Link
                       key={template.name}
-                      href={`/app/workspaces/${userWorkspaces[0]?.id}/skills`}
+                      href={`/app/workspaces/${visibleWorkspaces[0]?.id}/skills`}
                       className="border border-dashed border-border-default rounded-[10px] p-4 hover:border-text-muted hover:bg-surface-2 transition-colors"
                     >
                       <div className="text-[13px] font-medium text-text-primary mb-1">{template.name}</div>
@@ -673,14 +661,9 @@ export default async function DashboardPage() {
                       ? `${agent.maxConcurrent - agent.activeWorkers} slots available`
                       : 'At capacity'}
                   </span>
-                  <a
-                    href={agent.localUiUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-[5px] text-xs rounded-[6px] bg-surface-3 border border-border-default hover:bg-surface-4"
-                  >
-                    Open
-                  </a>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {timeAgo(agent.lastHeartbeat)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -713,15 +696,6 @@ export default async function DashboardPage() {
           )}
         </div>
 
-        {/* Discovered Repos (client-side, fetches from connected agents) */}
-        {connectedAgents.length > 0 && (
-          <DiscoveredRepos
-            agents={connectedAgents.map(a => ({
-              localUiUrl: a.localUiUrl,
-              accountName: a.accountName,
-            }))}
-          />
-        )}
 
         {/* Empty Workers State */}
         {activeWorkers.length === 0 && (

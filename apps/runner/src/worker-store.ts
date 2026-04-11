@@ -137,6 +137,19 @@ export function loadAllWorkers(): LocalWorker[] {
         continue;
       }
 
+      // Any worker persisted as 'working' is a zombie at load time — Claude sessions
+      // cannot survive a runner restart. Mark all of them as error immediately.
+      // Previously we only caught workers with no activity, but even workers mid-session
+      // are dead after a restart and would block concurrency indefinitely if left as working.
+      if (data.status === 'working') {
+        data.status = 'error';
+        data.error = 'Killed: runner restarted, in-flight session terminated';
+        data._savedAt = now;
+        try {
+          writeFileSync(filePath, JSON.stringify(data, null, 2));
+        } catch {}
+      }
+
       // Reconstruct LocalWorker with transient defaults
       const worker: LocalWorker = {
         id: data.id as string,

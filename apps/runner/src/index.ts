@@ -1,13 +1,14 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient } from './buildd';
 import { WorkerManager } from './workers';
-import { createWorkspaceResolver, parseProjectRoots } from './workspace';
+import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
+import { readClaimLogs } from './session-logger';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -15,6 +16,49 @@ const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json')
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+
+// --doctor: run diagnostics and exit
+if (process.argv.includes('--doctor')) {
+  const doctor = await import('./doctor');
+  const doFix = process.argv.includes('--fix');
+
+  const report = doctor.runDiagnostics();
+
+  const RED = '\x1b[31m';
+  const GREEN = '\x1b[32m';
+  const YELLOW = '\x1b[33m';
+  const DIM = '\x1b[2m';
+  const BOLD = '\x1b[1m';
+  const RESET = '\x1b[0m';
+
+  const icon = (s: string) => s === 'ok' ? `${GREEN}✓${RESET}` : s === 'warn' ? `${YELLOW}!${RESET}` : `${RED}✗${RESET}`;
+
+  console.log(`\n${BOLD}buildd doctor${RESET}  ${DIM}${report.timestamp}${RESET}\n`);
+  for (const c of report.checks) {
+    const fixTag = c.fixable ? ` ${DIM}[fixable]${RESET}` : '';
+    console.log(`  ${icon(c.status)} ${c.name}  ${DIM}${c.message}${RESET}${fixTag}`);
+  }
+  console.log(`\n  ${GREEN}${report.summary.ok} ok${RESET}  ${YELLOW}${report.summary.warn} warn${RESET}  ${RED}${report.summary.error} error${RESET}\n`);
+
+  if (doFix) {
+    const fixResults = doctor.autoFix(report);
+    if (fixResults.length > 0) {
+      console.log(`${BOLD}Auto-fixes:${RESET}\n`);
+      for (const f of fixResults) {
+        console.log(`  ${f.success ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`} ${f.check}  ${DIM}${f.message}${RESET}`);
+      }
+      console.log('');
+    }
+  } else if (report.summary.error > 0 || report.summary.warn > 0) {
+    console.log(`${DIM}Run with --fix to auto-repair fixable issues${RESET}\n`);
+  }
+
+  process.exit(report.summary.error > 0 ? 1 : 0);
+}
+
+// --debug flag: opt-in to HTTP server + debug UI (default: headless)
+// Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
+const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
@@ -325,7 +369,12 @@ function detectTailscaleIp(): string | null {
 }
 
 // Resolve localUiUrl: env var > config.json > Tailscale auto-detect > localhost
+// In headless mode (no --debug), returns a sentinel for heartbeat identification only
 function resolveLocalUiUrl(): string {
+  if (!DEBUG_MODE) {
+    // Headless sentinel — unique per host, used as heartbeat upsert key only
+    return `headless://${hostname()}`;
+  }
   if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
   if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
   const tsIp = detectTailscaleIp();
@@ -400,6 +449,7 @@ interface UpdateState {
   updating: boolean;
   changelog: string[];
   lastIdleAt: number | null; // Timestamp when workers last became idle
+  autoUpdateRetries: number; // Prevent infinite retry loops
 }
 
 const updateState: UpdateState = {
@@ -409,6 +459,7 @@ const updateState: UpdateState = {
   updating: false,
   changelog: [],
   lastIdleAt: Date.now(),
+  autoUpdateRetries: 0,
 };
 
 // Kick off async commit resolution (non-blocking)
@@ -472,6 +523,7 @@ async function setLatestCommit(sha: string) {
     // Only show update if there are actual code changes (skip empty releases)
     updateState.updateAvailable = updateState.changelog.length > 0;
     if (updateState.updateAvailable && !wasAvailable) {
+      updateState.autoUpdateRetries = 0; // Reset retries for new version
       console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
       broadcast({
         type: 'update_available',
@@ -643,8 +695,13 @@ async function parseBody(req: Request) {
   }
 }
 
-// Handle requests
-const server = Bun.serve({
+// Handle requests — HTTP server only starts in --debug mode
+if (!DEBUG_MODE) {
+  // Headless mode: no HTTP server, no UI. Runner operates purely as a background daemon.
+  // Tasks are claimed from and reported to the buildd server; the dashboard is the only UI.
+}
+
+const server = DEBUG_MODE ? Bun.serve({
   port: PORT,
   development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
   idleTimeout: 120, // 2 minutes for long-running requests
@@ -942,7 +999,7 @@ const server = Bun.serve({
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
-        await fetchAccountInfo();
+        fetchAccountInfo(); // fire-and-forget — don't block the response
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
           outbox.flush();
@@ -1185,10 +1242,16 @@ const server = Bun.serve({
       let sseController: ReadableStreamDefaultController | null = null;
 
       // Prepare initial state outside the stream to ensure it's ready
+      // Only send active workers in init — completed workers are fetched on demand.
+      // Full worker list was 4MB+ and broke reverse proxies (Coder).
+      const activeWorkers = (workerManager?.getWorkers() || [])
+        .filter((w: any) => w.status !== 'done' && w.status !== 'error');
+
+      const internals = workerManager?.getInternalState();
       const init = {
         type: 'init',
         configured: !!config.apiKey,
-        workers: workerManager?.getWorkers() || [],
+        workers: activeWorkers,
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -1204,6 +1267,10 @@ const server = Bun.serve({
           latestCommit: updateState.latestCommit,
           updateAvailable: updateState.updateAvailable,
         },
+        // Debug dashboard fields
+        circuitBreaker: internals?.circuitBreaker || { paused: false, pausedUntil: null, consecutiveQuickFailures: 0 },
+        pusherConnected: internals?.pusher.connected || false,
+        uptime: internals?.uptime || 0,
       };
       const initMessage = `data: ${JSON.stringify(init)}\n\n`;
 
@@ -1776,7 +1843,36 @@ const server = Bun.serve({
 
       try {
         const { execSync } = require('child_process');
+
+        // Check if the target directory already exists
+        if (existsSync(clonePath)) {
+          const existingRemote = getGitRemote(clonePath);
+          if (existingRemote) {
+            // Compare normalized URLs to see if it's the same repo
+            const normalizedExisting = normalizeGitUrl(existingRemote);
+            const normalizedRequested = normalizeGitUrl(cloneUrl);
+            if (normalizedExisting && normalizedRequested && normalizedExisting === normalizedRequested) {
+              // Same repo already exists - invalidate caches so it's discoverable
+              cachedRepos = null;
+              resolver.scanGitRepos();
+              return Response.json({ ok: true, path: clonePath, alreadyExists: true, message: 'Repository already exists at path' }, { headers: corsHeaders });
+            } else {
+              return Response.json({
+                error: `Directory already exists with a different remote (existing: ${existingRemote}, requested: ${cloneUrl})`,
+              }, { status: 409, headers: corsHeaders });
+            }
+          } else {
+            return Response.json({
+              error: `Directory already exists at ${clonePath} but is not a git repository`,
+            }, { status: 409, headers: corsHeaders });
+          }
+        }
+
         execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+
+        // Invalidate caches so the new repo is immediately discoverable
+        cachedRepos = null;
+        resolver.scanGitRepos();
 
         return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
       } catch (err: any) {
@@ -2054,29 +2150,50 @@ const server = Bun.serve({
       return Response.json({ ok: true, overrides: resolver.getPathOverrides() }, { headers: corsHeaders });
     }
 
-    // Static files
+    // Debug internals — expose WorkerManager + PusherManager state for dashboard
+    if (path === '/api/debug/internals' && req.method === 'GET') {
+      const state = workerManager.getInternalState();
+      return Response.json(state, { headers: corsHeaders });
+    }
+
+    // Debug claims — recent claim log entries
+    if (path === '/api/debug/claims' && req.method === 'GET') {
+      const entries = readClaimLogs(50);
+      return Response.json({ entries }, { headers: corsHeaders });
+    }
+
+    // Doctor — self-diagnostics and auto-fix
+    if (path === '/api/doctor' && req.method === 'GET') {
+      const { runDiagnostics } = await import('./doctor');
+      const report = runDiagnostics();
+      return Response.json(report, { headers: corsHeaders });
+    }
+
+    if (path === '/api/doctor/fix' && req.method === 'POST') {
+      const { runDiagnostics, autoFix } = await import('./doctor');
+      const report = runDiagnostics();
+      const fixes = autoFix(report);
+      // Re-run diagnostics after fixes
+      const afterReport = runDiagnostics();
+      return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
+    }
+
+    // Static files — serve debug UI (single HTML file)
     if (path === '/' || path === '/index.html') {
-      return serveStatic('index.html', req);
+      const debugHtml = join(import.meta.dir, '..', 'ui-debug', 'debug.html');
+      try {
+        const content = readFileSync(debugHtml);
+        return new Response(content, {
+          headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+        });
+      } catch {
+        return new Response('Debug UI not found', { status: 404 });
+      }
     }
-    if (path === '/styles.css') {
-      return serveStatic('styles.css', req);
-    }
-    if (path === '/app.js') {
-      return serveStatic('app.js', req);
-    }
+
+    // Legacy static files (kept for API endpoints above)
     if (path === '/icon.png') {
       return serveStatic('icon.png', req);
-    }
-
-    // ES modules: /modules/**/*.js
-    if (path.startsWith('/modules/') && path.endsWith('.js')) {
-      return serveStatic(path.slice(1), req);
-    }
-
-    // SPA routing: /worker/:id routes to index.html (client handles routing)
-    // Exclude /worker/api/ to avoid silently serving HTML for misrouted API calls
-    if (path.startsWith('/worker/') && !path.includes('/api/')) {
-      return serveStatic('index.html', req);
     }
 
     return new Response('Not found', { status: 404 });
@@ -2089,32 +2206,69 @@ const server = Bun.serve({
       { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } },
     );
   },
-});
+}) : null;
 
 const localUrl = `http://localhost:${PORT}`;
 
+// ── Startup banner ──────────────────────────────────────────────────────────
+
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const AMBER = '\x1b[38;2;200;149;106m';   // warm charcoal accent #c8956a
+const WARM = '\x1b[38;2;138;132;128m';     // muted warm gray
+const GREEN = '\x1b[38;2;52;211;153m';     // status-success
+const RED = '\x1b[38;2;248;113;113m';      // status-error
+
+const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
+
+// Amber gradient hero — each line subtly shifts warmth
+const A1 = '\x1b[38;2;210;160;110m';
+const A2 = '\x1b[38;2;200;149;106m';
+const A3 = '\x1b[38;2;185;138;100m';
+const A4 = '\x1b[38;2;168;126;92m';
+const A5 = '\x1b[38;2;148;112;82m';
+
 console.log('');
-const versionStr = `v${PKG_VERSION}${updateState.currentCommit ? ` (${updateState.currentCommit.slice(0, 7)})` : ''}`;
-console.log(`╔════════════════════════════════════════════╗`);
-console.log(`║  buildd runner ${versionStr.padEnd(27)}║`);
-console.log(`╚════════════════════════════════════════════╝`);
-console.log(`  URL:        ${terminalLink(localUrl)}`);
-if (config.localUiUrl && config.localUiUrl !== localUrl) {
-  console.log(`  External:   ${terminalLink(config.localUiUrl)}`);
+console.log(`${A1}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
+console.log(`${A2}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
+console.log(`${A3}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${A4}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${A5}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
+console.log(`${DIM}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
+console.log('');
+console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
+console.log(`${DIM}   ${'─'.repeat(48)}${RESET}`);
+
+// Status lines
+const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;
+const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
+console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
+console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
+const keyDisplay = config.apiKey
+  ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
+  : `${RED}not set${RESET}`;
+console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
+if (DEBUG_MODE) {
+  console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
+  if (config.localUiUrl && config.localUiUrl !== localUrl) {
+    console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
+  }
 }
-console.log(`  Server:     ${config.builddServer}`);
-console.log(`  API Key:    ${config.apiKey ? 'bld_***' + config.apiKey.slice(-4) : 'not set'}`);
-console.log(`  Serverless: ${config.serverless ? 'yes' : 'no'}`);
-console.log(`  Config:     ${CONFIG_FILE}`);
-console.log('');
-console.log(`Project root(s): ${projectRoots.join(', ')}`);
+
 const repos = getRepos(); // Use cached, will scan only if no cache
-console.log(`${repos.length} git repositories${reposLoadedFromCache ? ' (cached)' : ''}`);
+console.log('');
+console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
 
 if (!config.apiKey && !config.serverless) {
   console.log('');
-  console.log(`⚠ No API key configured. Visit ${terminalLink(localUrl)} to set up.`);
+  if (DEBUG_MODE) {
+    console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
+  } else {
+    console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
+  }
 }
+console.log('');
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)
 async function autoInstallMcp() {
@@ -2157,7 +2311,7 @@ async function autoInstallMcp() {
           existing.mcpServers.buildd = {
             type: 'http',
             url: desiredUrl,
-            headers: { Authorization: `Bearer ${config.apiKey}` },
+            headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
           };
           writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2) + '\n');
           console.log(`  Updated MCP config: ${mcpJsonPath}`);
@@ -2173,7 +2327,7 @@ async function autoInstallMcp() {
           buildd: {
             type: 'http',
             url: desiredUrl,
-            headers: { Authorization: `Bearer ${config.apiKey}` },
+            headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
           },
         },
       };
@@ -2206,6 +2360,9 @@ function markBrowserOpened() {
 }
 
 (async () => {
+  // Browser auto-open only in debug mode
+  if (!DEBUG_MODE) return;
+
   // Check if this is first run (openBrowser preference not set)
   if (savedConfig.openBrowser === undefined) {
     // Skip interactive prompt when running without a TTY (e.g. in screen, CI)
@@ -2254,15 +2411,17 @@ setInterval(async () => {
     updateState.lastIdleAt = Date.now(); // Just became idle
   }
 
-  // Auto-update when: update available, not already updating, idle long enough
+  // Auto-update when: update available, not already updating, idle long enough, retries not exhausted
   if (
     updateState.updateAvailable &&
     !updateState.updating &&
     updateState.lastIdleAt &&
-    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS
+    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS &&
+    updateState.autoUpdateRetries < 3
   ) {
-    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle...`);
+    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/3)`);
     updateState.updating = true;
+    updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
     const prevBranch = await getCurrentBranch();
     broadcast({ type: 'update_started' });
@@ -2274,25 +2433,33 @@ setInterval(async () => {
       }
       await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
       const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-      await installProc.exited;
+      const installTimeout = setTimeout(() => { try { installProc.kill(); } catch {} }, 120_000);
+      const installExit = await installProc.exited;
+      clearTimeout(installTimeout);
+      if (installExit !== 0) {
+        throw new Error(`bun install failed with exit code ${installExit}`);
+      }
       await initCurrentCommit();
 
-      // Health check on temp port
-      const healthPort = PORT + 1;
-      const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts'], {
-        cwd: join(import.meta.dir, '..'),
-        env: { ...process.env, PORT: String(healthPort) },
-        stdout: 'pipe', stderr: 'pipe',
-      });
-      let healthOk = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        try {
-          const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
-          if (res.ok) { healthOk = true; break; }
-        } catch { /* retry */ }
+      // Health check on temp port (only meaningful in debug mode with HTTP server)
+      let healthOk = true; // Default to true for headless mode
+      if (DEBUG_MODE) {
+        const healthPort = PORT + 1;
+        const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts', '--debug'], {
+          cwd: join(import.meta.dir, '..'),
+          env: { ...process.env, PORT: String(healthPort) },
+          stdout: 'pipe', stderr: 'pipe',
+        });
+        healthOk = false;
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          try {
+            const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
+            if (res.ok) { healthOk = true; break; }
+          } catch { /* retry */ }
+        }
+        healthProc.kill();
       }
-      healthProc.kill();
 
       if (!healthOk && prevCommit) {
         await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
@@ -2325,7 +2492,32 @@ setInterval(async () => {
       }
       updateState.updating = false;
       console.error('Auto-update failed:', err.message);
+      if (updateState.autoUpdateRetries >= 3) {
+        console.error('Auto-update retries exhausted — will not retry until a new version is available');
+      }
       broadcast({ type: 'update_failed', error: err.message });
     }
   }
 }, 60_000); // Check every 60 seconds
+
+// Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
+let lastSelfHeal = Date.now();
+setInterval(async () => {
+  if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
+  lastSelfHeal = Date.now();
+
+  try {
+    const { runDiagnostics, autoFix } = await import('./doctor');
+    const report = runDiagnostics();
+    const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
+    if (fixable.length > 0) {
+      console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
+      const fixes = autoFix(report);
+      for (const f of fixes) {
+        console.log(`[self-heal] ${f.success ? '✓' : '✗'} ${f.check}: ${f.message}`);
+      }
+    }
+  } catch (err: any) {
+    console.error('[self-heal] Doctor check failed:', err.message);
+  }
+}, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes

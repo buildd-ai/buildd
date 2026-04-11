@@ -4,8 +4,89 @@ import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
-/** 24 hours — how long a worker can sit in waiting_input before being cleaned up */
+/** Maximum number of failed worker attempts before a task is permanently failed */
+const MAX_WORKER_RETRIES = 3;
+
+/** 24 hours — how long a standalone worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
+
+/** 4 hours — shorter timeout for mission tasks since missions are time-sensitive */
+const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Decide what to do with a task whose worker just died:
+ * 1. If the worker produced deliverables → promote to completed
+ * 2. If retry cap reached (3+ failed workers) → fail permanently
+ * 3. Otherwise → reset to pending for another attempt
+ *
+ * Always resolves dependencies afterward.
+ */
+async function resolveStaleTask(
+  taskId: string,
+  workspaceId: string,
+  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
+) {
+  // Check if the stale worker produced deliverables
+  let hasDeliverables = false;
+  if (staleWorker) {
+    try {
+      const artifactCount = await getWorkerArtifactCount(staleWorker.id);
+      const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
+      hasDeliverables = deliverables.hasAny;
+    } catch { /* non-fatal — default to pending */ }
+  }
+
+  if (hasDeliverables) {
+    await db
+      .update(tasks)
+      .set({ status: 'completed', updatedAt: new Date() })
+      .where(eq(tasks.id, taskId));
+  } else {
+    // Count how many workers have already failed on this task
+    const failedWorkers = await db.query.workers.findMany({
+      where: and(
+        eq(workers.taskId, taskId),
+        eq(workers.status, 'failed'),
+      ),
+      columns: { id: true },
+    });
+
+    if (failedWorkers.length >= MAX_WORKER_RETRIES) {
+      // Retry cap reached — permanently fail the task
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          result: { error: `Task failed after ${failedWorkers.length} worker attempts` } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    } else {
+      // Retries remaining — reset to pending, preserving branch context for continuity
+      const currentTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, taskId),
+        columns: { context: true },
+      });
+      const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          claimedBy: null,
+          claimedAt: null,
+          context: {
+            ...existingCtx,
+            ...(staleWorker?.branch ? { baseBranch: staleWorker.branch } : {}),
+            failureContext: staleWorker?.error || 'Previous worker expired',
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    }
+  }
+
+  await resolveCompletedTask(taskId, workspaceId);
+}
 
 /**
  * Clean up stale workers for a specific account.
@@ -34,7 +115,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
       ),
     ),
-    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
+    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
   });
 
   if (staleWorkers.length > 0) {
@@ -72,40 +153,11 @@ export async function cleanupStaleWorkers(accountId: string) {
         });
 
         if (otherActiveWorkers.length === 0) {
-          // Check if the stale worker actually produced deliverables
-          // If so, promote the task to completed instead of resetting to pending
           const staleWorker = staleWorkers.find(w => w.taskId === t.id);
-          let hasDeliverables = false;
-          if (staleWorker) {
-            try {
-              const artifactCount = await getWorkerArtifactCount(staleWorker.id);
-              const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
-              hasDeliverables = deliverables.hasAny;
-            } catch { /* non-fatal — default to pending */ }
-          }
-
-          if (hasDeliverables) {
-            await db
-              .update(tasks)
-              .set({
-                status: 'completed',
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, t.id));
-          } else {
-            await db
-              .update(tasks)
-              .set({
-                status: 'pending',
-                claimedBy: null,
-                claimedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, t.id));
-          }
+          await resolveStaleTask(t.id, t.workspaceId, staleWorker);
+        } else {
+          await resolveCompletedTask(t.id, t.workspaceId);
         }
-
-        await resolveCompletedTask(t.id, t.workspaceId);
       }
     }
   }
@@ -129,7 +181,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
         lt(workers.updatedAt, heartbeatCutoff),
       ),
-      columns: { id: true, taskId: true },
+      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
     });
 
     if (orphanedByHeartbeat.length > 0) {
@@ -147,11 +199,17 @@ export async function cleanupStaleWorkers(accountId: string) {
         .where(inArray(workers.id, orphanIds));
 
       if (orphanTaskIds.length > 0) {
+        // Fetch workspace IDs for dependency resolution
+        const orphanTasks = await db.query.tasks.findMany({
+          where: inArray(tasks.id, orphanTaskIds),
+          columns: { id: true, workspaceId: true },
+        });
+
         // Only reset tasks that have NO other active workers
-        for (const taskId of orphanTaskIds) {
+        for (const task of orphanTasks) {
           const otherActiveWorkers = await db.query.workers.findMany({
             where: and(
-              eq(workers.taskId, taskId),
+              eq(workers.taskId, task.id),
               inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
               not(inArray(workers.id, orphanIds)),
             ),
@@ -160,15 +218,8 @@ export async function cleanupStaleWorkers(accountId: string) {
           });
 
           if (otherActiveWorkers.length === 0) {
-            await db
-              .update(tasks)
-              .set({
-                status: 'pending',
-                claimedBy: null,
-                claimedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(tasks.id, taskId));
+            const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === task.id);
+            await resolveStaleTask(task.id, task.workspaceId, orphanWorker);
           }
         }
       }
@@ -273,14 +324,24 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
  * the original task stalled waiting for a response that never came.
  */
 export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: number; retriedTasks: number }> {
-  const cutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
+  // Fetch all waiting workers past the shorter (mission) threshold, then filter
+  const missionCutoff = new Date(Date.now() - WAITING_INPUT_MISSION_STALE_MS);
+  const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
-  const stuckWorkers = await db.query.workers.findMany({
+  const allWaitingWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.status, 'waiting_input'),
-      lt(workers.updatedAt, cutoff),
+      lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, waitingFor: true },
+    columns: { id: true, taskId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
+    with: { task: { columns: { missionId: true } } },
+  });
+
+  // Mission tasks use 4h timeout, standalone tasks use 24h timeout
+  const stuckWorkers = allWaitingWorkers.filter(w => {
+    const isMissionTask = !!(w as any).task?.missionId;
+    if (isMissionTask) return true; // Already past 4h cutoff
+    return w.updatedAt < standaloneCutoff;
   });
 
   if (stuckWorkers.length === 0) {
@@ -296,7 +357,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       .update(workers)
       .set({
         status: 'failed',
-        error: 'Worker timed out waiting for user input (24+ hours)',
+        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
         completedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -329,19 +390,27 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       })
       .where(eq(tasks.id, originalTask.id));
 
-    // Create retry task
+    // Create retry task with enriched context for branch continuity
+    const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
+    const retryContext = {
+      ...existingCtx,
+      ...(worker.branch ? { baseBranch: worker.branch } : {}),
+      failureContext: worker.error || 'Worker stalled in waiting_input',
+      iteration: ((existingCtx.iteration as number) || 0) + 1,
+    };
+
     await db
       .insert(tasks)
       .values({
         workspaceId: originalTask.workspaceId,
         title: originalTask.title,
         description: retryDescription,
-        context: originalTask.context,
+        context: retryContext,
         priority: originalTask.priority,
         category: originalTask.category,
         project: originalTask.project,
         requiredCapabilities: originalTask.requiredCapabilities,
-        objectiveId: originalTask.objectiveId,
+        missionId: originalTask.missionId,
         runnerPreference: originalTask.runnerPreference,
         mode: originalTask.mode,
         outputRequirement: originalTask.outputRequirement,

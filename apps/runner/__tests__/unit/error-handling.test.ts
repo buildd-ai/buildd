@@ -129,6 +129,9 @@ mock.module('../../src/skills.js', () => ({
 // Mock env-scan
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
 }));
 
 // Import WorkerManager after all mocks
@@ -925,7 +928,7 @@ describe('Error Handling', () => {
       }
 
       // Manually trigger eviction (normally runs on interval)
-      (manager as any).evictCompletedWorkers();
+      (manager as any).workerSync.evictCompletedWorkers();
 
       // Worker should be evicted
       expect(manager.getWorker('w-evict')).toBeUndefined();

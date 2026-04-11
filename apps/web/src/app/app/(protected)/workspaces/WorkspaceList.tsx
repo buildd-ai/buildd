@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 export interface WorkspaceWithRunners {
     id: string;
@@ -159,23 +160,24 @@ export default function WorkspaceList({
                                         {teams.length > 1 && (
                                             <div className="flex w-full md:justify-end items-center gap-2 text-xs">
                                                 <span className="text-text-muted">Move to:</span>
-                                                <select
-                                                    className="bg-surface-2 border border-border-default text-text-secondary rounded px-2 py-1 text-xs focus:ring-1 focus:ring-primary w-full md:w-auto"
+                                                <Select
                                                     value={workspace.teamId || ''}
                                                     disabled={movingWorkspaceId === workspace.id}
-                                                    onChange={(e) => {
-                                                        if (e.target.value && e.target.value !== workspace.teamId) {
-                                                            handleMoveWorkspace(workspace.id, e.target.value);
+                                                    onChange={(v) => {
+                                                        if (v && v !== workspace.teamId) {
+                                                            handleMoveWorkspace(workspace.id, v);
                                                         }
                                                     }}
-                                                >
-                                                    {!workspace.teamId && <option value="">Select Team...</option>}
-                                                    {teams.map((t) => (
-                                                        <option key={t.id} value={t.id}>
-                                                            {t.name} {t.slug.startsWith('personal') ? '(Personal)' : ''}
-                                                        </option>
-                                                    ))}
-                                                </select>
+                                                    options={[
+                                                        ...(!workspace.teamId ? [{ value: '', label: 'Select Team...' }] : []),
+                                                        ...teams.map((t) => ({
+                                                            value: t.id,
+                                                            label: `${t.name} ${t.slug.startsWith('personal') ? '(Personal)' : ''}`,
+                                                        })),
+                                                    ]}
+                                                    size="sm"
+                                                    className="w-full md:w-auto"
+                                                />
                                             </div>
                                         )}
                                     </div>

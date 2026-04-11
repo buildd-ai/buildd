@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, objectives, workers, workerHeartbeats } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { buildObjectiveContext, isWithinActiveHours } from '@/lib/objective-context';
+import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
+import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -168,16 +169,15 @@ export async function GET(req: NextRequest) {
         // Check maxConcurrentFromSchedule - count active tasks from this schedule
         if (schedule.maxConcurrentFromSchedule > 0) {
           const activeStatuses = ['pending', 'assigned', 'in_progress'];
+          const concurrentConditions = [
+            ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
+            inArray(tasks.status, activeStatuses),
+            sql`${tasks.context}->>'scheduleId' = ${schedule.id}`,
+          ] as const;
           const [activeCount] = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(tasks)
-            .where(
-              and(
-                eq(tasks.workspaceId, schedule.workspaceId),
-                inArray(tasks.status, activeStatuses),
-                sql`${tasks.context}->>'scheduleId' = ${schedule.id}`
-              )
-            );
+            .where(and(...concurrentConditions));
 
           if ((activeCount?.count ?? 0) >= schedule.maxConcurrentFromSchedule) {
             // Too many active tasks from this schedule, skip but advance nextRunAt
@@ -258,12 +258,13 @@ export async function GET(req: NextRequest) {
         // for this schedule with the same trigger value
         if (triggerResult) {
           const externalId = `schedule-${schedule.id}-${triggerResult.currentValue}`;
+          const dedupConditions = [
+            ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
+            eq(tasks.externalId, externalId),
+            inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+          ] as const;
           const existing = await db.query.tasks.findFirst({
-            where: and(
-              eq(tasks.workspaceId, schedule.workspaceId),
-              eq(tasks.externalId, externalId),
-              inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
-            ),
+            where: and(...dedupConditions),
           });
           if (existing) {
             skipped++;
@@ -275,25 +276,62 @@ export async function GET(req: NextRequest) {
           ? `schedule-${schedule.id}-${triggerResult.currentValue}`
           : undefined;
 
-        // Check if this schedule is linked to an objective
-        const linkedObjective = await db.query.objectives.findFirst({
-          where: eq(objectives.scheduleId, schedule.id),
+        // Check if this schedule is linked to a mission
+        const linkedMission = await db.query.missions.findFirst({
+          where: eq(missions.scheduleId, schedule.id),
           columns: {
             id: true,
-            isHeartbeat: true,
-            activeHoursStart: true,
-            activeHoursEnd: true,
-            activeHoursTimezone: true,
+            status: true,
+            workspaceId: true,
+            teamId: true,
           },
         });
 
-        // Active hours gating for heartbeat objectives
+        // Skip if linked mission is no longer active
+        if (linkedMission && linkedMission.status !== 'active') {
+          // Auto-disable the schedule so it stops firing
+          await db.update(taskSchedules).set({
+            enabled: false,
+            updatedAt: now,
+          }).where(eq(taskSchedules.id, schedule.id));
+          continue;
+        }
+
+        // Resolve workspace: schedule.workspaceId takes priority, fall back to mission.workspaceId
+        let taskWorkspaceId = schedule.workspaceId;
+        if (!taskWorkspaceId && linkedMission?.workspaceId) {
+          taskWorkspaceId = linkedMission.workspaceId;
+        }
+        // Auto-create orchestrator workspace if mission has a teamId but no workspace
+        if (!taskWorkspaceId && linkedMission?.teamId) {
+          taskWorkspaceId = (await getOrCreateCoordinationWorkspace(linkedMission.teamId)).id;
+        }
+
+        if (!taskWorkspaceId) {
+          const newFailures = (schedule.consecutiveFailures || 0) + 1;
+          await db.update(taskSchedules).set({
+            consecutiveFailures: newFailures,
+            lastError: 'No workspace: schedule and mission both lack workspaceId',
+            updatedAt: now,
+          }).where(eq(taskSchedules.id, schedule.id));
+          errors++;
+          continue;
+        }
+
+        // Read heartbeat/activeHours config from the schedule's taskTemplate.context
+        const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
+        const isHeartbeat = templateCtx?.heartbeat === true;
+        const activeHoursStart = templateCtx?.activeHoursStart as number | undefined;
+        const activeHoursEnd = templateCtx?.activeHoursEnd as number | undefined;
+        const activeHoursTimezone = templateCtx?.activeHoursTimezone as string | undefined;
+
+        // Active hours gating for heartbeat schedules
         if (
-          linkedObjective?.isHeartbeat &&
-          linkedObjective.activeHoursStart != null &&
-          linkedObjective.activeHoursEnd != null
+          isHeartbeat &&
+          activeHoursStart != null &&
+          activeHoursEnd != null
         ) {
-          const tz = linkedObjective.activeHoursTimezone || schedule.timezone || 'UTC';
+          const tz = activeHoursTimezone || schedule.timezone || 'UTC';
           const currentHourStr = new Date().toLocaleString('en-US', {
             timeZone: tz,
             hour: 'numeric',
@@ -301,7 +339,7 @@ export async function GET(req: NextRequest) {
           });
           const currentHour = parseInt(currentHourStr, 10);
 
-          if (!isWithinActiveHours(currentHour, linkedObjective.activeHoursStart, linkedObjective.activeHoursEnd)) {
+          if (!isWithinActiveHours(currentHour, activeHoursStart, activeHoursEnd)) {
             // Outside active hours — advance nextRunAt, skip task creation
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
             const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
@@ -315,20 +353,26 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // If linked to an objective, build rich planning context
-        if (linkedObjective) {
-          const objContext = await buildObjectiveContext(linkedObjective.id, template.context);
-          if (objContext) {
-            taskDescription = objContext.description;
-            Object.assign(taskContext, objContext.context);
+        // If linked to a mission, build rich planning context
+        if (linkedMission) {
+          const missionContext = await buildMissionContext(linkedMission.id, {
+            ...template.context,
+            triggerSource: 'cron',
+          });
+          if (missionContext) {
+            taskDescription = missionContext.description;
+            Object.assign(taskContext, missionContext.context);
           }
         }
+
+        // Promote outputSchema from context to top-level column so the runner can read it
+        const outputSchema = taskContext.outputSchema as Record<string, unknown> | undefined;
 
         // Create task from template
         const [task] = await db
           .insert(tasks)
           .values({
-            workspaceId: schedule.workspaceId,
+            workspaceId: taskWorkspaceId,
             title: taskTitle,
             description: taskDescription,
             priority: template.priority || 0,
@@ -337,9 +381,10 @@ export async function GET(req: NextRequest) {
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
-            creationSource: 'schedule',
+            creationSource: linkedMission ? 'orchestrator' : 'schedule',
             ...(externalId ? { externalId } : {}),
-            ...(linkedObjective ? { objectiveId: linkedObjective.id } : {}),
+            ...(linkedMission ? { missionId: linkedMission.id } : {}),
+            ...(outputSchema ? { outputSchema } : {}),
           })
           .returning();
 
@@ -351,7 +396,7 @@ export async function GET(req: NextRequest) {
 
         // Dispatch task
         const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, schedule.workspaceId),
+          where: eq(workspaces.id, taskWorkspaceId),
         });
 
         if (workspace) {
@@ -360,7 +405,7 @@ export async function GET(req: NextRequest) {
 
         // Fire schedule triggered event
         await triggerEvent(
-          channels.workspace(schedule.workspaceId),
+          channels.workspace(taskWorkspaceId),
           events.SCHEDULE_TRIGGERED,
           { schedule: { id: schedule.id, name: schedule.name }, task }
         );

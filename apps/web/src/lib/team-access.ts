@@ -22,10 +22,15 @@ export async function verifyWorkspaceAccess(
 ): Promise<{ teamId: string; role: TeamRole } | null> {
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { teamId: true },
+    columns: { teamId: true, accessMode: true },
   });
 
   if (!workspace) return null;
+
+  // Open workspaces are accessible to any authenticated user (matches API key auth behavior)
+  if ((workspace as any).accessMode === 'open' && !requiredRole) {
+    return { teamId: workspace.teamId, role: 'member' };
+  }
 
   const membership = await db.query.teamMembers.findFirst({
     where: and(
@@ -84,21 +89,37 @@ export async function verifyAccountWorkspaceAccess(
  * Get all workspace IDs accessible to a user via their team memberships.
  */
 export async function getUserWorkspaceIds(userId: string): Promise<string[]> {
+  const ids = new Set<string>();
+
+  // 1. Workspaces via personal team (for users missing team_members rows)
+  const personalTeam = await db.query.teams.findFirst({
+    where: eq(teams.slug, `personal-${userId}`),
+    columns: { id: true },
+  });
+  if (personalTeam) {
+    const personalWorkspaces = await db.query.workspaces.findMany({
+      where: eq(workspaces.teamId, personalTeam.id),
+      columns: { id: true },
+    });
+    for (const w of personalWorkspaces) ids.add(w.id);
+  }
+
+  // 2. Workspaces via team membership
   const memberships = await db.query.teamMembers.findMany({
     where: eq(teamMembers.userId, userId),
     columns: { teamId: true },
   });
 
-  if (memberships.length === 0) return [];
+  if (memberships.length > 0) {
+    const teamIds = memberships.map(m => m.teamId);
+    const teamWorkspaces = await db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true },
+    });
+    for (const w of teamWorkspaces) ids.add(w.id);
+  }
 
-  const teamIds = memberships.map(m => m.teamId);
-
-  const userWorkspaces = await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds),
-    columns: { id: true },
-  });
-
-  return userWorkspaces.map(w => w.id);
+  return [...ids];
 }
 
 /**

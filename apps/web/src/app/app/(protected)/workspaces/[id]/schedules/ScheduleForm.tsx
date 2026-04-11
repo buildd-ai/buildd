@@ -278,7 +278,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">Mode</label>
               <Select
@@ -352,7 +352,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <button
           type="submit"
           disabled={saving}

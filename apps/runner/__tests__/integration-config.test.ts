@@ -54,9 +54,8 @@ async function restoreServer(url: string) {
 
 // --- Setup & Teardown ---
 
-// Use BUILDD_TEST_SERVER as the known-good server, not whatever config currently has
-// (a previous crashed run may have left it pointing at localhost:1)
-const KNOWN_GOOD_SERVER = process.env.BUILDD_TEST_SERVER || 'https://buildd.dev';
+// The runner's own config is the known-good server (e.g. localhost:3333 in CI).
+// BUILDD_TEST_SERVER is the external IP for the test client, not for the runner itself.
 let originalServer: string;
 
 beforeAll(async () => {
@@ -86,19 +85,12 @@ beforeAll(async () => {
   viewerToken = config!.viewerToken || null;
   console.log(`Original server URL: ${originalServer}`);
   if (viewerToken) console.log(`Viewer token acquired`);
-
-  // Ensure we start with a valid server URL (previous run may have left bogus URL)
-  if (originalServer !== KNOWN_GOOD_SERVER) {
-    console.log(`Restoring to known-good server: ${KNOWN_GOOD_SERVER}`);
-    await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
-    originalServer = KNOWN_GOOD_SERVER;
-  }
 }, 35000);
 
 afterAll(async () => {
-  // Always restore to the known-good server
+  // Restore to the runner's original server URL
   try {
-    const res = await api('/api/config/server', 'POST', { server: KNOWN_GOOD_SERVER });
+    const res = await api('/api/config/server', 'POST', { server: originalServer });
     const data = await res.json();
     console.log(`Restored server URL to: ${data.builddServer}`);
   } catch {

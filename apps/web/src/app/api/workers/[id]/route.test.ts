@@ -516,6 +516,108 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones[0].label).toBe('First milestone');
   });
 
+  it('stores structured WaitingForOption objects in waitingFor', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1',
+              status: 'waiting_input',
+              accountId: 'account-1',
+              workspaceId: 'ws-1',
+              taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    });
+
+    const structuredOptions = [
+      { label: 'Use OAuth2', description: 'Standard OAuth2 flow with PKCE', recommended: true },
+      { label: 'Use API keys', description: 'Simple API key authentication' },
+      { label: 'Use SAML', description: 'Enterprise SSO via SAML 2.0' },
+    ];
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'waiting_input',
+        waitingFor: {
+          type: 'question',
+          prompt: 'Which authentication method should I implement?',
+          options: structuredOptions,
+        },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.waitingFor).toBeDefined();
+    expect(capturedSet.waitingFor.type).toBe('question');
+    expect(capturedSet.waitingFor.prompt).toBe('Which authentication method should I implement?');
+    expect(capturedSet.waitingFor.options).toHaveLength(3);
+    expect(capturedSet.waitingFor.options[0]).toEqual({
+      label: 'Use OAuth2',
+      description: 'Standard OAuth2 flow with PKCE',
+      recommended: true,
+    });
+    expect(capturedSet.waitingFor.options[1].label).toBe('Use API keys');
+    expect(capturedSet.waitingFor.options[2].label).toBe('Use SAML');
+  });
+
+  it('clears waitingFor when worker resumes running', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1',
+              status: 'running',
+              accountId: 'account-1',
+              workspaceId: 'ws-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'waiting_input',
+      workspaceId: 'ws-1',
+      waitingFor: { type: 'question', prompt: 'Which auth?', options: [{ label: 'OAuth2' }] },
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.waitingFor).toBeNull();
+  });
+
   it('includes phases and lastQuestion in task.result on completion', async () => {
     let capturedTaskSet: any = null;
     mockTasksUpdate.mockReturnValue({
@@ -934,8 +1036,182 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBeUndefined();
   });
 
+  describe('appendMcpCalls', () => {
+    it('merges new MCP calls with existing', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: [{ server: 'github', tool: 'list_issues', ts: 1000, ok: true }],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [{ server: 'slack', tool: 'send_message', ts: 2000, ok: true, durationMs: 150 }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.mcpCalls).toHaveLength(2);
+      expect(capturedSet.mcpCalls[0].server).toBe('github');
+      expect(capturedSet.mcpCalls[1].server).toBe('slack');
+      expect(capturedSet.mcpCalls[1].durationMs).toBe(150);
+    });
+
+    it('caps MCP calls at 100 entries', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      const existing = Array.from({ length: 98 }, (_, i) => ({ server: 'gh', tool: `t${i}`, ts: i, ok: true }));
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: existing,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [
+            { server: 'slack', tool: 'a', ts: 200, ok: true },
+            { server: 'slack', tool: 'b', ts: 201, ok: true },
+            { server: 'slack', tool: 'c', ts: 202, ok: false },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // 98 + 3 = 101, capped to last 100
+      expect(capturedSet.mcpCalls).toHaveLength(100);
+      expect(capturedSet.mcpCalls[99].tool).toBe('c');
+    });
+
+    it('handles null existing mcpCalls', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        mcpCalls: null,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendMcpCalls: [{ server: 'github', tool: 'create_pr', ts: 1000, ok: true }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.mcpCalls).toHaveLength(1);
+      expect(capturedSet.mcpCalls[0].server).toBe('github');
+    });
+
+    it('snapshots unique mcpServers into task.result on completion', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return {
+            where: mock(() => Promise.resolve()),
+          };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        mcpCalls: [
+          { server: 'github', tool: 'list_issues', ts: 1000, ok: true },
+          { server: 'slack', tool: 'send_message', ts: 2000, ok: true },
+          { server: 'github', tool: 'create_pr', ts: 3000, ok: true },
+        ],
+        milestones: null,
+        waitingFor: null,
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet).not.toBeNull();
+      expect(capturedTaskSet.result.mcpServers).toEqual(['github', 'slack']);
+    });
+  });
+
   describe('auto-artifact creation', () => {
-    it('auto-creates artifact on heartbeat task completion', async () => {
+    it('skips auto-artifact for heartbeat task completion', async () => {
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({
@@ -959,8 +1235,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue({
         id: 'task-1',
         title: 'Heartbeat check',
-        context: { heartbeat: true, objectiveTitle: 'My Objective' },
-        objectiveId: 'obj-123',
+        context: { heartbeat: true, missionTitle: 'My Mission' },
+        missionId: 'obj-123',
       });
 
       const req = createMockRequest({
@@ -974,13 +1250,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(mockUpsertAutoArtifact).toHaveBeenCalledTimes(1);
-      const call = mockUpsertAutoArtifact.mock.calls[0][0] as any;
-      expect(call.key).toBe('heartbeat-obj-123');
-      expect(call.title).toBe('Heartbeat: My Objective');
-      expect(call.type).toBe('report');
-      expect(call.metadata.autoGenerated).toBe(true);
-      expect(call.metadata.heartbeatStatus).toBe('ok');
+      // Heartbeats are coordination — no auto-artifact created
+      expect(mockUpsertAutoArtifact).toHaveBeenCalledTimes(0);
     });
 
     it('auto-creates artifact on schedule task completion', async () => {
@@ -1094,7 +1365,7 @@ describe('PATCH /api/workers/[id]', () => {
         id: 'task-1',
         title: 'Heartbeat check',
         context: { heartbeat: true },
-        objectiveId: 'obj-123',
+        missionId: 'obj-123',
       });
 
       mockUpsertAutoArtifact.mockRejectedValue(new Error('DB exploded'));

@@ -21,11 +21,16 @@ const mockWorkersInsert = mock(() => ({
     returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', branch: 'buildd/test', status: 'idle' }]),
   })),
 }));
+const mockDbExecute = mock(() => Promise.resolve({
+  rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+}));
 const mockAccountsUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -44,6 +49,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
+      secrets: { findMany: mockSecretsFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -52,6 +58,7 @@ mock.module('@buildd/core/db', () => ({
       return mockTasksUpdate();
     },
     insert: (table: any) => mockWorkersInsert(),
+    execute: mockDbExecute,
   },
 }));
 
@@ -74,6 +81,37 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
+  secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
+}));
+
+mock.module('@buildd/core/secrets', () => ({
+  getSecretsProvider: () => ({
+    get: mockSecretsProviderGet,
+  }),
+}));
+
+// Stub non-critical modules used by claim route
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+}));
+mock.module('@/lib/notify', () => ({
+  notify: mock(() => {}),
+}));
+mock.module('@/lib/stale-workers', () => ({
+  cleanupStaleWorkers: mock(() => Promise.resolve()),
+}));
+mock.module('@/lib/api-response', () => ({
+  jsonResponse: (data: any, init?: any) => {
+    const body = JSON.stringify(data);
+    return new Response(body, { ...init, headers: { 'content-type': 'application/json' } });
+  },
+}));
+mock.module('@/lib/storage', () => ({
+  isStorageConfigured: () => false,
+  generateDownloadUrl: mock(() => ''),
+}));
+mock.module('@/lib/pushover', () => ({
+  notify: mock(() => Promise.resolve()),
 }));
 
 import { POST } from './route';
@@ -103,9 +141,15 @@ describe('POST /api/workers/claim', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
     mockHeartbeatsFindFirst.mockReset();
+    mockSecretsFindMany.mockReset();
+    mockSecretsProviderGet.mockReset();
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no open workspaces
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    // Default: no secrets
+    mockSecretsFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
     // Default: no workspace permissions
@@ -151,11 +195,8 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    // First findMany call (stale workers) returns empty
-    // Second findMany call (active workers) returns 2
-    mockWorkersFindMany
-      .mockResolvedValueOnce([]) // stale workers
-      .mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }]); // active workers
+    // cleanupStaleWorkers is mocked as no-op, so only the active workers query hits findMany
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -167,6 +208,7 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.error).toBe('Max concurrent workers limit reached');
     expect(data.limit).toBe(2);
+    expect(data.current).toBe(2);
   });
 
   it('returns 429 when daily cost limit exceeded for API auth type', async () => {
@@ -179,10 +221,8 @@ describe('POST /api/workers/claim', () => {
       totalCost: '15.00',
     });
 
-    // No stale workers, no active workers
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    // No active workers (cleanupStaleWorkers is mocked)
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -205,9 +245,7 @@ describe('POST /api/workers/claim', () => {
       activeSessions: 2,
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -228,9 +266,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -253,9 +289,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
@@ -279,9 +313,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])   // stale workers
-      .mockResolvedValueOnce([]);  // active workers
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -304,16 +336,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const environment = {
       tools: [{ name: 'node', version: '22.1.0' }, { name: 'git', version: '2.43.0' }],
@@ -346,9 +371,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -397,9 +420,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -426,9 +447,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -450,16 +469,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -481,9 +493,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -505,16 +515,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -536,9 +539,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -566,9 +567,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])   // stale workers
-      .mockResolvedValueOnce([]);  // active workers for concurrency check
+    mockWorkersFindMany.mockResolvedValueOnce([]);
 
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
@@ -652,9 +651,7 @@ describe('POST /api/workers/claim', () => {
       authType: 'api',
     });
 
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
 
@@ -676,16 +673,9 @@ describe('POST /api/workers/claim', () => {
         })),
       })),
     });
-    mockWorkersInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => [{
-          id: 'worker-1',
-          taskId: 'task-1',
-          branch: 'buildd/test',
-          status: 'idle',
-        }]),
-      })),
-    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -697,5 +687,272 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers.length).toBe(1);
     expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('attaches mcpSecrets when mcp_credential secrets exist for account', async () => {
+    // Set ENCRYPTION_KEY so secrets branch executes
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // Mock secrets: return mcp_credential secrets scoped to workspace team
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'secret-1', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
+      { id: 'secret-2', purpose: 'mcp_credential', label: 'SLACK_TOKEN' },
+    ]);
+
+    // provider.get called for each mcp_credential secret (no api_key/oauth found)
+    mockSecretsProviderGet
+      .mockResolvedValueOnce('decrypted-dispatch-key')
+      .mockResolvedValueOnce('decrypted-slack-token');
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].mcpSecrets).toEqual({
+      DISPATCH_API_KEY: 'decrypted-dispatch-key',
+      SLACK_TOKEN: 'decrypted-slack-token',
+    });
+
+    // Restore
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('does not include mcpSecrets when no mcp_credential secrets exist', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // No secrets at all
+    mockSecretsFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('scopes secrets query by workspace teamId to prevent cross-team leakage', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task workspace has teamId 'team-A'
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-A', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // Return empty — simulating that the team-scoped query filters out secrets from other teams
+    mockSecretsFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    // No secrets should be attached since the team-scoped query returned none
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
+    expect(data.workers[0].serverApiKey).toBeUndefined();
+
+    // Verify secrets.findMany was called with a where clause (team-scoped)
+    expect(mockSecretsFindMany).toHaveBeenCalled();
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('skips secrets when workspace has no teamId', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Workspace without teamId (edge case)
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    // No secrets attached since workspace has no teamId
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
+    expect(data.workers[0].serverApiKey).toBeUndefined();
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
   });
 });

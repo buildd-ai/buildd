@@ -7,8 +7,9 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['var(--font-dm-sans)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-jetbrains)', 'ui-monospace', 'monospace'],
+        sans: ['var(--font-outfit)', 'system-ui', 'sans-serif'],
+        display: ['var(--font-fraunces)', 'Georgia', 'serif'],
+        mono: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
       },
       colors: {
         primary: {
@@ -16,17 +17,11 @@ const config: Config = {
           hover: 'var(--primary-hover)',
           subtle: 'var(--primary-subtle)',
           ring: 'var(--primary-ring)',
-          50: '#f5f3ff',
-          100: '#ede9fe',
-          200: '#ddd6fe',
-          300: '#c4b5fd',
-          400: '#a78bfa',
-          500: '#8b5cf6',
-          600: '#7C3AED',
-          700: '#6d28d9',
-          800: '#5b21b6',
-          900: '#4c1d95',
-          950: '#2e1065',
+        },
+        accent: {
+          DEFAULT: 'var(--accent)',
+          soft: 'var(--accent-soft)',
+          text: 'var(--accent-text)',
         },
         surface: {
           1: 'var(--surface-1)',
@@ -34,10 +29,19 @@ const config: Config = {
           3: 'var(--surface-3)',
           4: 'var(--surface-4)',
         },
+        card: {
+          DEFAULT: 'var(--card)',
+          hover: 'var(--card-hover)',
+          finding: 'var(--card-finding)',
+          rightnow: 'var(--card-rightnow)',
+          border: 'var(--card-border)',
+        },
         'text-primary': 'var(--text-primary)',
         'text-secondary': 'var(--text-secondary)',
         'text-muted': 'var(--text-muted)',
+        'text-desc': 'var(--text-desc)',
         'border-default': 'var(--border)',
+        'border-strong': 'var(--border-strong)',
         status: {
           success: 'var(--status-success)',
           running: 'var(--status-running)',
@@ -67,11 +71,14 @@ const config: Config = {
         'card-enter': 'card-enter 300ms ease-out',
         'slide-up': 'slide-up 300ms ease-out',
         'dropdown-in': 'dropdown-in 100ms ease-out',
+        'status-pulse': 'status-pulse 2s ease-in-out infinite',
+        'timeline-enter': 'timeline-enter 400ms ease-out both',
+        'slide-in-right': 'slide-in-right 200ms ease-out',
       },
       keyframes: {
         'pulse-border': {
-          '0%, 100%': { boxShadow: '0 0 0 0 rgba(245, 158, 11, 0)' },
-          '50%': { boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.3)' },
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(200, 149, 106, 0)' },
+          '50%': { boxShadow: '0 0 0 4px rgba(200, 149, 106, 0.3)' },
         },
         'card-enter': {
           '0%': { opacity: '0', transform: 'translateY(20px)' },
@@ -84,6 +91,18 @@ const config: Config = {
         'dropdown-in': {
           '0%': { opacity: '0', transform: 'scale(0.97)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+        'status-pulse': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.3' },
+        },
+        'timeline-enter': {
+          '0%': { opacity: '0', transform: 'translateX(-8px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
+        },
+        'slide-in-right': {
+          '0%': { transform: 'translateX(100%)' },
+          '100%': { transform: 'translateX(0)' },
         },
       },
     },

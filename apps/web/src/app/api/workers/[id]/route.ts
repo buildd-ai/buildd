@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -102,6 +102,7 @@ export async function PATCH(
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
+    appendMcpCalls,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -132,6 +133,12 @@ export async function PATCH(
     const merged = [...existing, ...appendMilestones];
     updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
   }
+  // appendMcpCalls: merge new MCP tool calls into existing log
+  if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
+    const existing = (worker.mcpCalls as any[]) || [];
+    const merged = [...existing, ...appendMcpCalls];
+    updates.mcpCalls = merged.length > 100 ? merged.slice(-100) : merged;
+  }
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
@@ -140,6 +147,17 @@ export async function PATCH(
   if (typeof linesRemoved === 'number') updates.linesRemoved = linesRemoved;
   // Waiting state
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
+  // Pushover notification when agent needs input
+  if (waitingFor?.type === 'question') {
+    notify({
+      app: 'tasks',
+      title: 'Agent needs your input',
+      message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
+      url: `https://app.buildd.dev/app/tasks/${worker.taskId}`,
+      urlTitle: 'Respond',
+      priority: 0,
+    });
+  }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
@@ -150,6 +168,7 @@ export async function PATCH(
     const existingMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
     const transition = {
       type: 'statusTransition',
+      label: `Status: ${worker.status} → ${status}`,
       from: worker.status,
       to: status,
       ts: Date.now(),
@@ -256,14 +275,37 @@ export async function PATCH(
     }
   }
 
+  let shouldAutoRetry = false;
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();
 
     // Update task status + snapshot deliverables
     if (worker.taskId) {
+      // Auto-retry: mission tasks get 1 automatic retry before permanently failing
+      let taskCtxForRetry: Record<string, unknown> = {};
+      if (status === 'failed') {
+        const taskForRetry = await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+          columns: { missionId: true, context: true },
+        });
+        taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
+        const retryCount = (taskCtxForRetry.retryCount as number) || 0;
+        const maxRetries = taskForRetry?.missionId ? 1 : 0;
+        shouldAutoRetry = retryCount < maxRetries;
+        if (shouldAutoRetry) {
+          taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
+        }
+      }
+
       const taskUpdate: Record<string, unknown> = {
-        status: status === 'completed' ? 'completed' : 'failed',
+        status: shouldAutoRetry ? 'pending' : (status === 'completed' ? 'completed' : 'failed'),
         updatedAt: new Date(),
+        ...(shouldAutoRetry ? {
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          context: taskCtxForRetry,
+        } : {}),
       };
 
       // Snapshot worker stats into task.result on completion
@@ -306,7 +348,15 @@ export async function PATCH(
           ...(lastQuestion && { lastQuestion }),
           // Structured output from SDK (validated JSON matching task.outputSchema)
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
+          // Artifact protocol: hint for the orchestrator on what to consider next
+          ...(body.nextSuggestion && typeof body.nextSuggestion === 'string' && { nextSuggestion: body.nextSuggestion }),
         };
+
+        // Snapshot unique MCP servers into task result
+        const allMcpCalls = (updates.mcpCalls ?? worker.mcpCalls ?? []) as any[];
+        if (allMcpCalls.length > 0) {
+          (taskUpdate.result as any).mcpServers = [...new Set(allMcpCalls.map((c: any) => c.server))];
+        }
       }
 
       await db
@@ -316,6 +366,25 @@ export async function PATCH(
 
       // Post-completion side effects (non-fatal — must not block worker update)
       try {
+        // Log triage outcome for planning tasks (evaluation telemetry)
+        if (status === 'completed' && body.structuredOutput?.triageOutcome) {
+          const taskForTriage = await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { mode: true, missionId: true, context: true },
+          });
+          if (taskForTriage?.mode === 'planning' && taskForTriage.missionId) {
+            const ctx = (taskForTriage.context || {}) as Record<string, unknown>;
+            const planArr = body.structuredOutput.plan as unknown[] | undefined;
+            console.log('[triage]', JSON.stringify({
+              missionId: taskForTriage.missionId,
+              triageOutcome: body.structuredOutput.triageOutcome,
+              tasksCreated: Array.isArray(planArr) ? planArr.length : body.structuredOutput.tasksCreated,
+              missionComplete: body.structuredOutput.missionComplete,
+              cycleNumber: ctx.cycleNumber,
+            }));
+          }
+        }
+
         // Resolve dependencies (check if parent's children all completed)
         await resolveCompletedTask(worker.taskId, worker.workspaceId);
 
@@ -323,7 +392,7 @@ export async function PATCH(
         if (status === 'completed') {
           const taskForArtifact = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            columns: { context: true, objectiveId: true, title: true },
+            columns: { context: true, missionId: true, title: true },
           });
           const ctx = (taskForArtifact?.context || {}) as Record<string, unknown>;
           const structuredOutput = body.structuredOutput;
@@ -331,20 +400,19 @@ export async function PATCH(
 
           if (structuredOutput || summary) {
             const isHeartbeat = ctx.heartbeat === true;
-            const objectiveId = taskForArtifact?.objectiveId as string | undefined;
-            const objectiveTitle = ctx.objectiveTitle as string | undefined;
+            const missionId = taskForArtifact?.missionId as string | undefined;
+            const missionTitle = ctx.missionTitle as string | undefined;
             const scheduleId = ctx.scheduleId as string | undefined;
             const scheduleName = ctx.scheduleName as string | undefined;
 
             let artifactKey: string | null = null;
             let artifactTitle: string | null = null;
 
-            if (isHeartbeat && objectiveId) {
-              artifactKey = `heartbeat-${objectiveId}`;
-              artifactTitle = `Heartbeat: ${objectiveTitle || 'Status'}`;
-            } else if (objectiveId) {
-              artifactKey = `objective-${objectiveId}`;
-              artifactTitle = `${objectiveTitle || 'Objective'} — Latest`;
+            if (isHeartbeat) {
+              // Heartbeats are coordination — structured output is logged but doesn't need a standalone artifact
+            } else if (missionId) {
+              artifactKey = `mission-${missionId}`;
+              artifactTitle = `${missionTitle || 'Mission'} — Latest`;
             } else if (scheduleId) {
               artifactKey = `schedule-${scheduleId}`;
               artifactTitle = `${scheduleName || 'Schedule'} — Latest`;
@@ -382,14 +450,31 @@ export async function PATCH(
         });
         if (taskRecord) {
           const isDone = status === 'completed';
-          notify({
-            app: isDone ? 'tasks' : 'alerts',
-            title: isDone ? 'Task done' : 'Task failed',
-            message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-            url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-            urlTitle: 'View task',
-            priority: isDone ? -1 : 0,
-          });
+          if (shouldAutoRetry) {
+            // Broadcast the task as available for any worker to claim
+            await triggerEvent(
+              channels.workspace(worker.workspaceId),
+              events.TASK_ASSIGNED,
+              { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+            );
+            notify({
+              app: 'tasks',
+              title: 'Task retrying',
+              message: `Auto-retrying: ${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: 'View task',
+              priority: 0,
+            });
+          } else {
+            notify({
+              app: isDone ? 'tasks' : 'alerts',
+              title: isDone ? 'Task done' : 'Task failed',
+              message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: 'View task',
+              priority: isDone ? -1 : 0,
+            });
+          }
         }
       } catch (sideEffectErr) {
         console.error(`[Worker ${id}] Post-completion side effects failed:`, sideEffectErr);
@@ -451,8 +536,8 @@ export async function PATCH(
   }
 
   // Send Slack/Discord notifications and webhook callback on completion/failure
-  // Smart suppression: skip notifications for heartbeat tasks with status "ok"
-  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk) {
+  // Smart suppression: skip notifications for heartbeat tasks with status "ok" or auto-retried failures
+  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry) {
     try {
       const taskForNotify = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
@@ -507,10 +592,75 @@ export async function PATCH(
     }
   }
 
+  // Deliver unread mission note replies/guidance to this worker
+  let noteInstructions = '';
+  if (status !== 'completed' && status !== 'failed' && worker.taskId) {
+    try {
+      const taskForNotes = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true },
+      });
+      if (taskForNotes?.missionId) {
+        // Find this worker's open questions that have replies
+        const workerQuestions = await db.query.missionNotes.findMany({
+          where: and(
+            eq(missionNotes.missionId, taskForNotes.missionId),
+            eq(missionNotes.workerId, id),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'answered'),
+          ),
+          columns: { id: true, title: true },
+        });
+
+        if (workerQuestions.length > 0) {
+          // Fetch replies to those questions
+          const questionIds = workerQuestions.map(q => q.id);
+          const replies = await db.query.missionNotes.findMany({
+            where: and(
+              eq(missionNotes.missionId, taskForNotes.missionId),
+              eq(missionNotes.type, 'reply'),
+              eq(missionNotes.authorType, 'user'),
+              inArray(missionNotes.replyTo, questionIds),
+            ),
+            orderBy: [desc(missionNotes.createdAt)],
+          });
+
+          if (replies.length > 0) {
+            const replyLines = replies.map(r => {
+              const q = workerQuestions.find(wq => wq.id === r.replyTo);
+              return `- Re: "${q?.title || 'question'}": ${r.title}${r.body ? ` — ${r.body}` : ''}`;
+            });
+            noteInstructions += `\n\n**USER REPLIES:**\n${replyLines.join('\n')}`;
+          }
+        }
+
+        // Also deliver mission-wide guidance notes
+        const guidance = await db.query.missionNotes.findMany({
+          where: and(
+            eq(missionNotes.missionId, taskForNotes.missionId),
+            eq(missionNotes.type, 'guidance'),
+            eq(missionNotes.status, 'open'),
+          ),
+          orderBy: [desc(missionNotes.createdAt)],
+          limit: 5,
+        });
+
+        if (guidance.length > 0) {
+          const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
+          noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
+        }
+      }
+    } catch (err) {
+      console.error(`[Worker ${id}] Note delivery failed:`, err);
+    }
+  }
+
+  const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
+
   // Return worker with any pending instructions and output warnings
   return jsonResponse({
     ...updated,
-    instructions: pendingInstructions || undefined,
+    instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
   });
 }

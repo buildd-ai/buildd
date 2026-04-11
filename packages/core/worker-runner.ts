@@ -128,23 +128,13 @@ export class WorkerRunner extends EventEmitter {
       const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
 
       // Extract outputSchema from task for structured output support
-      // For planning mode tasks without an explicit schema, inject the default plan schema
-      // Objective planning tasks get a simpler schema since they create tasks via MCP
+      // For planning mode tasks without an explicit schema, inject the unified planning schema
       const taskOutputSchema = (worker.task as any)?.outputSchema as Record<string, unknown> | null | undefined;
       const isPlanningMode = (worker.task as any)?.mode === 'planning';
-      const isObjectivePlanning = !!(worker.task as any)?.context?.objectiveId;
-      const objectivePlanningSchema = {
+      const planningOutputSchema = {
         type: 'object',
         properties: {
-          summary: { type: 'string', description: 'What was planned and why' },
-          tasksCreated: { type: 'number', description: 'Number of execution tasks created' },
-          objectiveComplete: { type: 'boolean', description: 'Whether the objective is fully complete' },
-        },
-        required: ['summary', 'tasksCreated', 'objectiveComplete'],
-      };
-      const defaultPlanSchema = {
-        type: 'object',
-        properties: {
+          triageOutcome: { type: 'string', enum: ['single_task', 'multi_task', 'conflict'] },
           plan: {
             type: 'array',
             items: {
@@ -154,7 +144,8 @@ export class WorkerRunner extends EventEmitter {
                 title: { type: 'string' },
                 description: { type: 'string' },
                 dependsOn: { type: 'array', items: { type: 'string' } },
-                requiredCapabilities: { type: 'array', items: { type: 'string' } },
+                baseBranch: { type: 'string' },
+                roleSlug: { type: 'string' },
                 outputRequirement: { type: 'string' },
                 priority: { type: 'integer' },
               },
@@ -162,11 +153,25 @@ export class WorkerRunner extends EventEmitter {
             },
           },
           summary: { type: 'string' },
+          missionComplete: { type: 'boolean' },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string' },
+                question: { type: 'string' },
+                context: { type: 'string' },
+                defaultChoice: { type: 'string' },
+              },
+              required: ['ref', 'question'],
+            },
+          },
         },
-        required: ['plan', 'summary'],
+        required: ['plan', 'summary', 'missionComplete'],
       };
       const outputSchema = taskOutputSchema || (isPlanningMode
-        ? (isObjectivePlanning ? objectivePlanningSchema : defaultPlanSchema)
+        ? planningOutputSchema
         : null);
 
       // Resolve primary model: task-level override > runner default
@@ -200,6 +205,7 @@ export class WorkerRunner extends EventEmitter {
             apiKey: config.builddApiKey,
             workerId: this.workerId,
             workspaceId: worker.workspace?.id,
+            taskMode: (worker.task as any)?.mode || undefined,
           })
         : null;
 
@@ -389,9 +395,13 @@ export class WorkerRunner extends EventEmitter {
             await this.storeMessage('tool', null, block.name, block.input);
             if (block.name === 'AskUserQuestion') {
               await this.setStatus('waiting_input');
+              const input = block.input as Record<string, unknown>;
+              const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
+              const firstQuestion = questions?.[0];
               await this.setWaitingFor({
                 type: 'question',
-                prompt: block.input.question || block.input.message || 'Awaiting input',
+                prompt: firstQuestion?.question || (input.question as string) || (input.message as string) || 'Awaiting input',
+                options: firstQuestion?.options,
               });
             }
           }
@@ -457,33 +467,56 @@ export class WorkerRunner extends EventEmitter {
           ...(totalInput > 0 && { inputTokens: totalInput }),
           ...(totalOutput > 0 && { outputTokens: totalOutput }),
         }).where(eq(workers.id, this.workerId));
+
+        // Backfill task summary with lastAssistantMessage if the PATCH API didn't include one.
+        // This happens when the agent calls complete_task without a summary param —
+        // the Stop hook's last_assistant_message is a better summary than nothing.
+        if (this.lastAssistantMessage && currentWorker?.taskId) {
+          try {
+            const task = await db.query.tasks.findFirst({
+              where: eq(tasks.id, currentWorker.taskId),
+              columns: { result: true },
+            });
+            const taskResult = task?.result as Record<string, unknown> | null;
+            if (!taskResult?.summary) {
+              await db.update(tasks).set({
+                result: { ...(taskResult || {}), summary: this.lastAssistantMessage },
+              }).where(eq(tasks.id, currentWorker.taskId));
+            }
+          } catch { /* non-fatal */ }
+        }
       } else {
-        // Worker hasn't been completed yet — set status and update task
+        // Worker hasn't been completed yet — set status and update task.
+        // Key fix: if SDK errored but worker has deliverables (PR, commits),
+        // treat the worker as completed — the agent did real work before the SDK errored.
+        const hasDeliverables = !!currentWorker?.prUrl
+          || (typeof currentWorker?.commitCount === 'number' && currentWorker.commitCount > 0);
+        const effectiveError = resultMsg.is_error && !hasDeliverables;
+
         await db.update(workers).set({
-          status: resultMsg.is_error ? 'error' : 'completed',
+          status: effectiveError ? 'error' : 'completed',
           costUsd: this.costUsd.toString(),
           turns,
           completedAt: new Date(),
           error: isBudgetExceeded
             ? `Budget limit exceeded: $${this.costUsd.toFixed(2)} (max $${config.maxCostPerWorker})`
-            : resultMsg.is_error ? (resultMsg.result || 'Unknown error') : null,
+            : effectiveError ? (resultMsg.result || 'Unknown error') : null,
           resultMeta,
           ...(totalInput > 0 && { inputTokens: totalInput }),
           ...(totalOutput > 0 && { outputTokens: totalOutput }),
         }).where(eq(workers.id, this.workerId));
 
-        // Re-read worker for task update (need fresh data after our write)
         const worker = currentWorker;
 
         if (worker?.taskId) {
           try {
             const taskUpdate: Record<string, unknown> = {
-              status: resultMsg.is_error ? 'failed' : 'completed',
+              status: effectiveError ? 'failed' : 'completed',
               updatedAt: new Date(),
             };
 
-            // Snapshot deliverables on completion
-            if (!resultMsg.is_error) {
+            // Snapshot deliverables on completion (including when SDK errored but worker has deliverables)
+            if (!effectiveError) {
               taskUpdate.result = {
                 // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
                 ...(this.lastAssistantMessage ? { summary: this.lastAssistantMessage } : {}),
@@ -907,7 +940,14 @@ export class WorkerRunner extends EventEmitter {
     if (gitConfig && gitConfig.branchingStrategy !== 'none') {
       const gitContext: string[] = ['\n## Git Workflow'];
       gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
-      const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      // For stacked plan phases: target the predecessor's branch so the PR diff
+      // shows only this phase's changes (Graphite-style stacked PRs).
+      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
+      const baseBranch = taskContext?.baseBranch as string | undefined;
+      const prTarget = baseBranch || gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
+      if (baseBranch) {
+        gitContext.push(`- This task is part of a sequential plan chain. Your PR MUST target \`${baseBranch}\` (the previous phase's branch), NOT the default branch. This keeps the diff clean and allows phases to be merged in order.`);
+      }
       if (gitConfig.requiresPR) {
         gitContext.push(`- Changes require PR to \`${prTarget}\``);
         // If buildd MCP is available, prefer create_pr action to avoid double PR creation
@@ -924,10 +964,12 @@ export class WorkerRunner extends EventEmitter {
 
     // Add output requirement context
     const isPlanning = worker.task?.mode === 'planning';
+    const taskCtxForMode = worker.task?.context as Record<string, unknown> | undefined;
+    const isHeartbeat = !!taskCtxForMode?.heartbeat;
     const outputContext: string[] = ['\n## Output Requirement'];
-    if (isPlanning) {
+    if (isPlanning && !isHeartbeat) {
       outputContext.push('This is a **planning task**. Produce a structured plan — do not make code changes.');
-    } else {
+    } else if (!isHeartbeat) {
       const outputReq = worker.task?.outputRequirement || 'auto';
       if (outputReq === 'pr_required') {
         outputContext.push('This task **requires a PR**. Make your changes, commit, push, and create a PR before completing.');
@@ -943,43 +985,78 @@ export class WorkerRunner extends EventEmitter {
       } else if (outputReq === 'none') {
         outputContext.push('This task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
       } else {
-        outputContext.push('Output: **auto** — if you make commits, create a PR or artifact. If no code changes needed, just complete with a summary.');
+        outputContext.push('Output: **auto** — if you make commits, create a PR. Only create artifacts for non-code deliverables (research, analysis, recommendations). If no code changes needed, complete with a summary.');
       }
+    }
+    // Retry dedup: discourage artifacts on retry attempts
+    if (taskCtxForMode?.failureContext) {
+      outputContext.push('\n> **Note**: This is a retry of a previously failed attempt. Focus on completing the work — do not create artifacts until successful.');
     }
     parts.push(outputContext.join('\n'));
 
-    // Add planning mode context when task mode is 'planning'
-    if (isPlanning) {
-      const taskContext = worker.task?.context as Record<string, unknown> | undefined;
-      const objectiveId = taskContext?.objectiveId as string | undefined;
-      const objectiveTitle = taskContext?.objectiveTitle as string | undefined;
+    // Add planning mode context when task mode is 'planning' (skip for heartbeats — they use their own Protocol section)
+    if (isPlanning && !isHeartbeat) {
+      const missionId = taskCtxForMode?.missionId as string | undefined;
+      const missionTitle = taskCtxForMode?.missionTitle as string | undefined;
 
-      if (objectiveId) {
-        // Objective-aware planning mode
+      if (missionId) {
+        // Mission-aware planning mode
+        const wsState = taskContext?.workspaceState as { name?: string; repo?: string | null; isCoordination?: boolean; hasGitHubApp?: boolean } | undefined;
+        const wsLabel = wsState?.isCoordination
+          ? '__coordination (no repo — meta-workspace)'
+          : wsState?.name
+            ? `"${wsState.name}"${wsState.repo ? ` (repo: ${wsState.repo})` : ' (no repo)'}`
+            : 'unknown';
+
         parts.push(`
-## Objective Planning
+## Mission Planning
 
-You are the autonomous planner for: "${objectiveTitle || 'Untitled Objective'}"
-Objective ID: ${objectiveId}
+You are the autonomous planner for: "${missionTitle || 'Untitled Mission'}"
+Mission ID: ${missionId}
+Workspace: ${wsLabel}
 
 ### Your Process
-1. Review the task history in the description above
-2. Search team memories (\`buildd_memory\` action: search) for relevant context
-3. Assess: what's been accomplished, what's in progress, what remains
-4. Create 1-3 execution tasks using \`buildd\` action: create_task
-   - Each task auto-links to this objective
-   - Set appropriate outputRequirement (artifact_required for research, none for lightweight)
+1. **Triage first.** Check "Active Tasks" section. Is this work already covered? If yes, set triageOutcome: "conflict", create 0 tasks, set missionComplete: true, explain the overlap.
+2. **Bootstrap workspace (code missions only).** Check "Workspace State" in your context.
+   - If workspace is \`__coordination\` or has no repo, and this mission needs builder tasks:
+     a. Check "Team Workspaces" for a reusable workspace
+     b. If none fits: \`buildd\` action=manage_workspaces, params: { action: "create", name: "<project-name>" }
+     c. Then: \`buildd\` action=manage_workspaces, params: { action: "create_repo", name: "<repo-name>" }
+     d. The mission auto-migrates to the new workspace
+   - If workspace has a repo, or this is a non-code mission: skip this step
+3. **Assess scope.** Is this a single well-scoped task or does it need decomposition?
+   - Single task → create 1 execution task with right role, set triageOutcome: "single_task", missionComplete: true
+   - Multiple tasks → create 1-3 tasks, set triageOutcome: "multi_task", missionComplete: false
+4. Review task history and prior artifacts in the description above
+5. **Check prior artifacts**: Look at "Prior Artifacts" section above. Use \`buildd\` action: get_artifact to fetch full content of relevant artifacts.
+6. Search team memories (\`buildd_memory\` action: search) for decisions from prior runs
+7. Create execution tasks using \`buildd\` action: create_task
+   - Each task auto-links to this mission
+   - Set appropriate outputRequirement (pr_required for code, artifact_required for research, none for lightweight)
    - Set outputSchema on tasks when you need structured data back
    - Write self-contained descriptions (execution workers don't have your context)
-5. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+8. Save planning decisions to memory (\`buildd_memory\` action: save, type: decision)
+
+### Critical Rules
+- **Your plan array is your deliverable.** Every planning cycle must either output plan items OR set missionComplete: true.
+- If you complete with an empty plan and missionComplete: false, the system will retrigger you with feedback.
+- Artifacts supplement plan items but do not replace them.
+
+### Artifact Continuity
+- Use consistent keys: \`mission-${missionId}-research\`, \`mission-${missionId}-analysis\`
+- Use \`update_artifact\` if the same key exists from a prior run
+- Artifacts auto-link to this mission for the next planning cycle
 
 ### When Done
-- If all work is complete → update objective status to "completed" via manage_objectives
+- If all work is complete → update mission status to "completed" via manage_missions
 - Otherwise → complete with a summary of what you planned and why
 
 ### Guidelines
 - Prefer 1-2 focused tasks over many small ones
-- If a previous task failed, adjust approach rather than retry blindly
+- Check "Blocked Tasks" section — do NOT create retry tasks for anything listed there
+- **Environmental failures** (missing framework, wrong OS): NEVER retry — the environment won't change
+- **First failure only**: retry with failureContext and a DIFFERENT approach, not the same instructions
+- **2+ failures on same task**: skip it or propose an alternative approach
 - Use structured outputs (outputSchema) when tasks need to return data for future cycles
 - Don't duplicate work that's already in progress (check active tasks)`);
       } else {
@@ -1003,6 +1080,7 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
       "title": "Step title",
       "description": "What this step does and acceptance criteria",
       "dependsOn": ["ref-of-prerequisite-step"],
+      "baseBranch": "ref-of-step-to-branch-from",
       "requiredCapabilities": ["git", "web-search"],
       "outputRequirement": "pr_required|artifact_required|none|auto",
       "priority": 0
@@ -1013,15 +1091,16 @@ Complete the task by calling \`complete_task\` with a \`structuredOutput\` conta
 \`\`\`
 
 ### Guidelines for Planning
-- Break complex work into independent, parallelizable steps where possible
 - Be specific about what each step produces and what it depends on
 - Include capability requirements so the right worker type claims each step
 - Keep steps small enough for a single worker session (under $5 budget)
-- Use \`dependsOn\` to express ordering constraints between steps`);
+- Use \`dependsOn\` to express ordering constraints between steps
+- **For sequential code builds** (each phase adds new code on top of the previous): use BOTH \`dependsOn\` AND \`baseBranch\` pointing to the predecessor step. This makes each worker branch off the previous worker's branch, so changes stack rather than diverge from the same base commit. Example: Step 2 has \`"dependsOn": ["step-1"], "baseBranch": "step-1"\`. Without \`baseBranch\`, all phases start from the same commit and their PRs will conflict.
+- **For parallel work** (independent research, analysis, or separate features that don't build on each other): omit \`baseBranch\` so they run concurrently from the default branch`);
       }
     }
 
-    parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed`);
+    parts.push(`\n## Guidelines\n- Create a brief task plan first\n- Make incremental commits\n- Ask for clarification if needed\n- Before completing: write a summary artifact (buildd action=create_artifact, type=summary) documenting what changed, key decisions, and gotchas\n- Save useful discoveries to workspace memory (buildd_memory action=save) — patterns, gotchas, architecture decisions`);
     return parts.join('\n');
   }
 

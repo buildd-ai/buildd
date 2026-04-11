@@ -37,7 +37,7 @@ Check `authType` field to know which limits apply.
 
 Postgres via Neon + Drizzle ORM.
 
-**Key tables**: `accounts`, `workspaces`, `tasks`, `workers`, `accountWorkspaces`
+**Key tables**: `accounts`, `workspaces`, `tasks`, `workers`, `missions`, `taskSchedules`, `accountWorkspaces`
 
 ### Schema Changes (Important!)
 
@@ -71,6 +71,26 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 - **Normal** (`bun run release`): Feature/fix goes to `dev` first, then release PR merges dev→main. Use this when there's no urgency.
 - **Hotfix** (`bun run release:hotfix`): Run from a feature branch. Creates PR directly to `main` with a patch bump. Use only for urgent production fixes that can't wait for the normal dev→main cycle. After merging, backport to dev: `git checkout dev && git merge origin/main && git push origin dev`.
 
+## Missions
+
+Missions are high-level goals that organize and generate tasks. Tasks are concrete units of work; missions are containers that track progress across multiple tasks and optionally create them on a schedule.
+
+- **DB table**: `missions` (with `tasks.missionId` FK)
+- **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
+- **Context builder**: `apps/web/src/lib/mission-context.ts` — injects workspace roles + active workers into planning prompts
+- **Status**: Derived from task health via `deriveMissionHealth` in `packages/core/mission-helpers.ts` — NOT stored as a type
+
+## Roles & Teams
+
+Roles are skills with `isRole: true` on the `workspaceSkills` table. They define agent personas with model preferences, tool access, and delegation rules.
+
+- **Key fields**: `model`, `allowedTools`, `canDelegateTo`, `color`, `background`, `maxTurns`, `mcpServers`, `requiredEnvVars`
+- **Default roles**: **Organizer**, **Builder**, and **Researcher** — seeded on workspace creation (`apps/web/src/lib/default-roles.ts`)
+- **Task routing**: `tasks.roleSlug` → claim route filters by runner's `availableSkills`
+- **Config packaging**: `apps/web/src/lib/role-config.ts` bundles CLAUDE.md + .mcp.json + env mapping → R2
+- **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
+- **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
+
 ## When Modifying
 
 - **Schema changes** → run `bun db:generate` and commit migration files (see Database section)
@@ -101,7 +121,9 @@ bun run test:integration                    # Integration tests (live server)
 bun run test:e2e                            # E2E tests (full stack)
 ```
 
-See `.agent/testing.md` and `.agent/testing-strategy.md` for full details.
+**Smoke tests** (`*-smoke.test.ts`): Lightweight guards that always run in CI. Cover CRUD + auth + endpoint existence for a feature. Full suites (e.g., `missions.test.ts`) run on-demand or when affected code changes.
+
+See `docs/testing.md` and `docs/testing-strategy.md` for full details.
 
 ### Dev Mode Auth
 Use `DEV_USER_EMAIL` to test as a real user locally:
@@ -129,7 +151,7 @@ Key components have `data-testid` attributes for E2E testing:
 - `sidebar-task-item` - Sidebar task links (includes `data-status`)
 - `worker-needs-input-banner` - "Needs Input" banner
 
-See `.agent/testing.md` for details.
+See `docs/testing.md` for details.
 
 ## Related Repos
 
@@ -156,5 +178,6 @@ This repo (`apps/web`) serves the dashboard and API at `app.buildd.dev`.
 
 ## Docs
 
-- **Architecture deep-dives**: `.agent/` directory (e.g., `.agent/claude-agent-sdk.md`)
+- **Testing guides**: `docs/testing.md` and `docs/testing-strategy.md`
+- **Internal knowledge base** (architecture, SDK research, plans): `buildd-ai/knowledge-base` repo (private)
 - **Product documentation**: Check the `buildd-docs` sibling repo for user-facing docs on features like skills, schedules, deployment, etc.

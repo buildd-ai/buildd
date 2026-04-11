@@ -50,14 +50,17 @@ jobs:
 
       - name: Run tests
         if: steps.affected.outputs.tests != 'SKIP'
+        timeout-minutes: 5
         run: |
           TESTS="${{ steps.affected.outputs.tests }}"
           if [ "$TESTS" = "ALL" ]; then
-            echo "Running all tests..."
-            bun test apps/web/src apps/runner/__tests__/unit
+            echo "Running web tests..."
+            bun test --only-failures apps/web/src
+            echo "Running runner tests..."
+            bun test --only-failures apps/runner/__tests__/unit
           else
             echo "Running affected tests: $TESTS"
-            bun test $TESTS
+            bun test --only-failures $TESTS
           fi
 
       - name: Build
@@ -67,9 +70,47 @@ jobs:
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           AUTH_SECRET: "dummy-secret-for-build"
 
-  integration:
+  # Detect which areas changed to skip expensive integration/E2E when unnecessary
+  changes:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      runner: ${{ steps.filter.outputs.runner }}
+      needs_server: ${{ steps.filter.outputs.needs_server }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # API/server changes — triggers integration tests
+          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|packages/core/|packages/shared/)' && echo "true" || echo "false")
+
+          # Runner changes — triggers E2E tests
+          RUNNER=$(echo "$CHANGED" | grep -qE '^(apps/runner/)' && echo "true" || echo "false")
+
+          # Either requires the server infrastructure
+          NEEDS_SERVER=$( [[ "$API" == "true" || "$RUNNER" == "true" ]] && echo "true" || echo "false" )
+
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
+          echo "needs_server=$NEEDS_SERVER" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::api=$API runner=$RUNNER needs_server=$NEEDS_SERVER"
+
+  # Shared infrastructure: Neon branch + Tailscale + preview server + runner
+  # Only spins up when API or runner code changed
+  integration:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.needs_server == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -94,88 +135,68 @@ jobs:
             | jq -r --arg name "$BRANCH_NAME" '.branches[] | select(.name == $name) | .id')
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "Reusing existing Neon branch: $EXISTING"
-            BRANCH_ID="$EXISTING"
-          else
-            echo "Creating Neon branch: $BRANCH_NAME"
-            RESPONSE=$(curl -s -X POST \
+            echo "Deleting stale Neon branch: $EXISTING"
+            curl -sf -X DELETE \
               -H "Authorization: Bearer $NEON_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
-            BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
-            if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
-              echo "::error::Failed to create Neon branch"
-              echo "$RESPONSE" | jq .
-              exit 1
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$EXISTING" || true
+            sleep 2
+          fi
+
+          echo "Creating Neon branch: $BRANCH_NAME"
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\": {\"name\": \"$BRANCH_NAME\", \"parent_id\": \"$NEON_PARENT_BRANCH_ID\"}, \"endpoints\": [{\"type\": \"read_write\"}]}" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+          if [ "$BRANCH_ID" = "null" ] || [ -z "$BRANCH_ID" ]; then
+            echo "::error::Failed to create Neon branch"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+
+          # Extract connection URI directly from the API response — avoids static
+          # password secrets that may not match the new branch endpoint immediately.
+          CONNECTION_URI=$(echo "$RESPONSE" | jq -r '.connection_uris[0].connection_uri // empty')
+
+          if [ -z "$CONNECTION_URI" ]; then
+            echo "::warning::connection_uris not in branch response, fetching connection string via endpoint API"
+            ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
+            if [ -n "$ENDPOINT_ID" ]; then
+              # Get connection URI from the endpoint's connection_uri API
+              CONN_RESPONSE=$(curl -sf \
+                -H "Authorization: Bearer $NEON_API_KEY" \
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
+              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
             fi
           fi
 
-          ENDPOINTS=$(curl -sf \
-            -H "Authorization: Bearer $NEON_API_KEY" \
-            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
-          HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+          if [ -z "$CONNECTION_URI" ]; then
+            echo "::warning::Could not extract connection URI from API, falling back to manual construction"
+            ENDPOINTS=$(curl -sf \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+            CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
+          fi
+
+          # Ensure sslmode=require is present
+          if [[ "$CONNECTION_URI" != *"sslmode=require"* ]]; then
+            if [[ "$CONNECTION_URI" == *"?"* ]]; then
+              CONNECTION_URI="${CONNECTION_URI}&sslmode=require"
+            else
+              CONNECTION_URI="${CONNECTION_URI}?sslmode=require"
+            fi
+          fi
 
           echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
-          echo "database_url=postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "database_url=$CONNECTION_URI" >> "$GITHUB_OUTPUT"
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
-
-      - name: Set Vercel env vars for preview branch
-        run: |
-          GIT_BRANCH="${{ github.head_ref }}"
-
-          # Set DATABASE_URL for this branch's preview deployments
-          curl -sf -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"key\":\"DATABASE_URL\",\"value\":\"$DATABASE_URL\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
-            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
-
-          # Set AUTH_SECRET for this branch's preview deployments
-          curl -sf -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"key\":\"AUTH_SECRET\",\"value\":\"$AUTH_SECRET\",\"type\":\"encrypted\",\"target\":[\"preview\"],\"gitBranch\":\"$GIT_BRANCH\"}" \
-            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" || true
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
-          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-
-      - name: Deploy preview to Vercel
-        id: vercel-deploy
-        run: |
-          npm i -g vercel@latest
-
-          DEPLOY_URL=$(vercel deploy --token=${{ secrets.VERCEL_TOKEN }} --yes \
-            --force 2>&1 | grep -oE 'https://[^ ]+\.vercel\.app' | head -1)
-
-          echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
-          echo "Deployed to: $DEPLOY_URL"
-          for i in $(seq 1 30); do
-            BODY=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
-            if echo "$BODY" | jq -e . >/dev/null 2>&1; then
-              echo "Deployment ready: $BODY"
-              break
-            fi
-            echo "Waiting for deployment... (attempt $i)"
-            sleep 10
-          done
-          # Final check
-          FINAL=$(curl -s "$DEPLOY_URL/api/version" 2>/dev/null || echo "")
-          if ! echo "$FINAL" | jq -e . >/dev/null 2>&1; then
-            echo "::error::Deployment never became ready. Last response: $(echo "$FINAL" | head -5)"
-            exit 1
-          fi
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
@@ -184,21 +205,79 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Sync branch code to test machine
+      - name: Sync code and build on test machine
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
+              set -e
               export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-              rm -rf /tmp/buildd-ci
+              (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
               git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
               cd /tmp/buildd-ci && bun install 2>&1 | tail -3
+              cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
+              test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
             "
           SCRIPT
 
-      - name: Start preview runner
+      - name: Run migrations on Neon preview branch
+        run: cd packages/core && bun db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
+      - name: Raise concurrency limits for CI
         run: |
-          DEPLOY_URL="${{ steps.vercel-deploy.outputs.url }}"
+          psql "$DATABASE_URL" <<'SQL'
+            UPDATE accounts SET max_concurrent_workers = 50;
+            UPDATE runner_instances SET max_concurrent_workers = 50;
+          SQL
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
+      - name: Start preview server
+        run: |
+          # Pipe env vars to a file on the remote — avoids all escaping issues
+          printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
+            tailscale ssh ubuntu@100.82.109.19 \
+              "docker exec -i coder-ai-run-my-claude-workspace bash -c 'cat > /tmp/buildd-ci/.env.test'"
+
+          # Start Next.js server with real env vars
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            docker exec coder-ai-run-my-claude-workspace bash -c '
+              export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
+              screen -X -S buildd-web quit 2>/dev/null || true
+              screen -dmS buildd-web bash -c "
+                export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
+                set -a; source /tmp/buildd-ci/.env.test; set +a
+                export PORT=3333
+                cd /tmp/buildd-ci/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
+              "
+            '
+          SCRIPT
+
+          # Wait for server
+          for i in $(seq 1 30); do
+            if curl -s http://100.82.109.19:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Preview server failed to start after 150s"
+              echo "--- /tmp/buildd-web.log ---"
+              tailscale ssh ubuntu@100.82.109.19 \
+                "docker exec coder-ai-run-my-claude-workspace cat /tmp/buildd-web.log 2>/dev/null" || true
+              exit 1
+            fi
+            echo "Waiting for server... (attempt $i)"
+            sleep 5
+          done
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+
+      - name: Start preview runner
+        if: needs.changes.outputs.runner == 'true'
+        run: |
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
               export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
@@ -207,7 +286,7 @@ jobs:
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
                 export BUILDD_API_KEY=$BUILDD_API_KEY
-                export BUILDD_SERVER=$DEPLOY_URL
+                export BUILDD_SERVER=http://localhost:3333
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
@@ -217,32 +296,45 @@ jobs:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
 
       - name: Integration tests
+        if: needs.changes.outputs.api == 'true'
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
                apps/web/tests/integration/worker-state-machine.test.ts \
                apps/web/tests/integration/schedule-triggers.test.ts \
                apps/web/tests/integration/artifacts.test.ts \
                apps/web/tests/integration/recipes.test.ts \
+               apps/web/tests/integration/missions-smoke.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
-          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
+          BUILDD_TEST_SERVER: http://100.82.109.19:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
 
-      - name: E2E dogfood tests
+      - name: E2E tests
         run: bun test tests/e2e/server-worker-flow.test.ts
         timeout-minutes: 10
         env:
-          BUILDD_TEST_SERVER: ${{ steps.vercel-deploy.outputs.url }}
+          BUILDD_TEST_SERVER: http://100.82.109.19:3333
+          BUILDD_RUNNER_SERVER: http://localhost:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://100.82.109.19:8767
           SKIP_LOCAL_UI_START: "1"
+          # Scope E2E tests based on what changed:
+          #   api only    → run API tests (fast, no runner needed)
+          #   runner only → run all (worker tests need API too)
+          #   both        → run all
+          E2E_SCOPE: ${{ needs.changes.outputs.runner == 'true' && 'all' || 'api' }}
 
-      - name: Cleanup preview runner
+      - name: Cleanup
         if: always()
         run: |
-          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "screen -X -S buildd-test quit 2>/dev/null; rm -rf /tmp/buildd-ci"' || true
+          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
+            screen -X -S buildd-web quit 2>/dev/null
+            screen -X -S buildd-test quit 2>/dev/null
+            (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
+          "' || true
 
       - name: Cleanup Neon branch
         if: always()

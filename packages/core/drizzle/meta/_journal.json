@@ -99,6 +99,111 @@
       "when": 1773017459077,
       "tag": "0013_violet_deathbird",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1773543626885,
+      "tag": "0014_loving_ultimo",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "5",
+      "when": 1773584418687,
+      "tag": "0015_funny_earthquake",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1773619607509,
+      "tag": "0016_abnormal_tarantula",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1773703756905,
+      "tag": "0017_amused_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1773711690131,
+      "tag": "0018_mature_archangel",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1773712457615,
+      "tag": "0019_loving_pride",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1773886800000,
+      "tag": "0020_data_fix_is_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1773749254048,
+      "tag": "0021_faithful_warbound",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1773882537172,
+      "tag": "0022_mixed_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1773923008871,
+      "tag": "0023_nice_vulture",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1774396800000,
+      "tag": "0024_artifact_worker_nullable",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1774483200000,
+      "tag": "0025_artifacts_mission_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1774569600000,
+      "tag": "0026_mission_evaluation_task",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "5",
+      "when": 1774656000000,
+      "tag": "0027_context_artifact_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1775878758422,
+      "tag": "0028_safe_venus",
+      "breakpoints": true
     }
   ]
 }

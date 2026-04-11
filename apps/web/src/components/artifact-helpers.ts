@@ -6,6 +6,7 @@
 export interface ArtifactPreviewInput {
   type: string;
   content: string | null;
+  storageKey?: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -18,6 +19,16 @@ export interface ArtifactPreviewInput {
 export function getArtifactPreview(artifact: ArtifactPreviewInput): string | null {
   if (artifact.type === 'link') {
     return (artifact.metadata?.url as string) || null;
+  }
+  if (artifact.storageKey) {
+    const filename = artifact.metadata?.filename as string | undefined;
+    const sizeBytes = artifact.metadata?.sizeBytes as number | undefined;
+    const size = sizeBytes
+      ? sizeBytes < 1024 * 1024
+        ? `${(sizeBytes / 1024).toFixed(1)} KB`
+        : `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+      : null;
+    return [filename, size].filter(Boolean).join(' — ') || 'File';
   }
   if (!artifact.content) return null;
   if (artifact.type === 'data') {

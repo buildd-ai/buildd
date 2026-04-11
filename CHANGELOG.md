@@ -7,6 +7,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Team badges on mission cards + remember last team (#528)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to 0.2.97 (focus view toggle, status line refresh interval, git worktree support, MCP HTTP/SSE buffer leak fix, hardened Bash tool permissions, Cedar syntax highlighting)
+
+### Fixed
+
+- Mark ALL working workers as error on startup, not just zero-activity ones (#623)
+- Scope secrets by workspace team to prevent cross-team leakage (#529)
+- Claim pending tasks on runner startup (#527)
+- Use task terminology on task creation page
+- Remove task CTA from no-agents state on home page
+- Add New Mission CTA to home page, simplify no-agents text
+- Restore "Create a task" CTA on home page
+- Simplify "no agents running" message on home page
+
+### Docs
+
+- Add Missions section to CLAUDE.md
+
+## [0.36.2] - 2026-03-11
+
+### Fixed
+
+- Treat workers with deliverables as completed even when SDK errors
+
+## [0.36.1] - 2026-03-11
+
+### Changed
+
+- Drop Vercel from integration tests, run Next.js on Coder (#359)
+
+## [0.36.0] - 2026-03-11
+
+### Added
+
+- Auto-create artifacts on heartbeat/schedule task completion
+- Global notification UI for tasks needing input
+
+### Fixed
+
+- Reliable task completion with deliverable-aware resolution + audit trail
+- Hide idle workspaces behind quiet count to reduce empty-state noise (sidebar)
+- Remove ignoreCommand — let dashboard 'Only build production' control builds
+- Make checkWorkerDeliverables a pure function to fix mock collision in CI
+
+### Changed
+
+- Redesign objectives list — drop progress bars, add inline pause toggle, show last deliverable
+- Unify card elevation style + remove objectives from tasks sidebar
+
+### CI
+
+- Bump bun to 1.3.10 — fixes mock.module isolation bug
+- Write JSON payload to file to avoid shell escaping issues
+- Use project-level preview env vars instead of branch-scoped
+
+### Tests
+
+- Inline pure function to avoid mock.module pollution
+- Re-register real module to prevent mock.module leak
+
+## [0.35.0] - 2026-03-11
+
+### Added
+
+- Global notification UI for tasks needing input
+
+## [0.34.1] - 2026-03-11
+
+### CI
+
+- Use Vercel API for env vars, skip migrate on preview via VERCEL_ENV
+
+## [0.34.0] - 2026-03-11
+
+### Added
+
+- Unified /app/schedules page + nav entry
+- Workspace swim lanes + collapse recurring tasks
+
+### Fixed
+
+- Prevent worker-runner from overwriting completed task status
+- Prevent auth() from crashing API routes on preview deploys
+- Remove ignoreCommand, use Vercel dashboard 'Only build production' setting
+- Use valid UUID for dev mock user id
+- Collapsed recurring tiles link to objective instead of last task
+
+### CI
+
+- On-demand Neon branch for integration tests
+- Skip db:migrate on CI preview deploys via SKIP_MIGRATE flag
+- Pass DATABASE_URL and AUTH_SECRET as runtime env to preview deploy
+- Run migrations on Neon clone before deploying preview
+- Build Vercel preview locally to guarantee DATABASE_URL
+- Detect failed Vercel deployments instead of accepting HTTP 200
+- Cleanup both ci/ and preview/ Neon branches, remove redundant neon-preview
+- Use regular vercel deploy with SKIP_MIGRATE for previews
+
+## [0.33.0] - 2026-03-10
+
+### Added
+
+- Workspace swim lanes + collapse recurring tasks
+- Track public endpoint events via OTEL to Axiom
+
+### Fixed
+
+- Use model aliases instead of hardcoded model IDs in objectives config
+- Extract PrLink client component to fix onClick in server component
+- Build Vercel previews on PRs, skip plain branch pushes
+- Only build production on Vercel, skip all preview deploys
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to 0.2.72
+- Remove disabled preview-tests workflow
+
+### CI
+
+- On-demand Neon branches per PR, remove shared dev branch
+- Use Vercel API v10 for env creation
+
+## [0.32.1] - 2026-03-09
+
+### Fixed
+
+- Return 405 for MCP GET/SSE endpoint to stop polling loop
+
+## [0.32.0] - 2026-03-09
+
+### Added
+
+- Worker recovery system with server-orchestrated diagnose/complete/restart
+- Adaptive idle timeout and graduated stale recovery (runner)
+- Replace empty tasks index with visual task grid
+- Desktop top nav with centered links, hide bottom nav on md+
+
+### Documentation
+
+- Weekly SDK ecosystem research update (2026-03-09)
+- Add claude-code-by-agents assessment to SDK ecosystem research
+
+### CI
+
+- Deploy preview to Vercel before integration tests
+- Use --yes instead of deprecated --confirm for vercel deploy
+- Extract Vercel deploy URL with grep instead of tail
+
 ## [0.31.0] - 2026-03-08
 
 ### Added
@@ -510,7 +663,16 @@ _Release PR._
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.36.2...HEAD
+[0.36.2]: https://github.com/buildd-ai/buildd/compare/v0.36.1...v0.36.2
+[0.36.1]: https://github.com/buildd-ai/buildd/compare/v0.36.0...v0.36.1
+[0.36.0]: https://github.com/buildd-ai/buildd/compare/v0.35.0...v0.36.0
+[0.35.0]: https://github.com/buildd-ai/buildd/compare/v0.34.1...v0.35.0
+[0.34.1]: https://github.com/buildd-ai/buildd/compare/v0.34.0...v0.34.1
+[0.34.0]: https://github.com/buildd-ai/buildd/compare/v0.33.0...v0.34.0
+[0.33.0]: https://github.com/buildd-ai/buildd/compare/v0.32.1...v0.33.0
+[0.32.1]: https://github.com/buildd-ai/buildd/compare/v0.32.0...v0.32.1
+[0.32.0]: https://github.com/buildd-ai/buildd/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/buildd-ai/buildd/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/buildd-ai/buildd/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/buildd-ai/buildd/compare/v0.28.0...v0.29.0

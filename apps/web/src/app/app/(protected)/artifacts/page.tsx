@@ -4,6 +4,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { isSystemWorkspace } from '@buildd/shared';
 import ArtifactList from '@/components/ArtifactList';
 
 export const dynamic = 'force-dynamic';
@@ -77,7 +78,7 @@ export default async function ArtifactsPage() {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const artifactItems = deliverableArtifacts.map(a => {
-    const meta = workerMeta.get(a.workerId);
+    const meta = a.workerId ? workerMeta.get(a.workerId) : undefined;
     const taskId = meta?.taskId || null;
     const task = taskId ? taskMap.get(taskId) : null;
     const workspaceName = meta?.workspaceId ? wsNameMap.get(meta.workspaceId) || null : null;
@@ -98,11 +99,11 @@ export default async function ArtifactsPage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Artifacts</h1>
             <p className="text-text-muted mt-1">
-              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.length} workspace{userWorkspaces.length !== 1 ? 's' : ''}
+              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length} workspace{userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>

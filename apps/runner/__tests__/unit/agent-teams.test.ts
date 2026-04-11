@@ -263,11 +263,11 @@ describe('Stale timeout', () => {
       phaseTools: [],
     } as LocalWorker);
 
-    (manager as any).checkStale();
+    (manager as any).workerSync.checkStale();
     expect(workers.get('w-not-stale')?.status).toBe('working');
   });
 
-  test('marks worker stale after 300s', () => {
+  test('aborts worker after 300s inactivity (no session)', async () => {
     manager = new WorkerManager(makeConfig());
 
     const workers = (manager as any).workers as Map<string, LocalWorker>;
@@ -293,8 +293,12 @@ describe('Stale timeout', () => {
       phaseTools: [],
     } as LocalWorker);
 
-    (manager as any).checkStale();
-    expect(workers.get('w-stale')?.status).toBe('stale');
+    (manager as any).workerSync.checkStale();
+
+    // abort() is async — give it a tick to complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(workers.get('w-stale')?.status).toBe('error');
   });
 });
 

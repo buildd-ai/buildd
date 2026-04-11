@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { execSync } from 'child_process';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 export interface WorkspaceResolver {
   resolve(workspace: { id: string; name: string; repo?: string | null }): string | null;
@@ -86,7 +86,7 @@ const pathOverrides: Record<string, string> = {};
 let gitRemoteCache: Map<string, string | null> | null = null;
 
 // Normalize git URL to comparable format (owner/repo)
-function normalizeGitUrl(url: string | null | undefined): string | null {
+export function normalizeGitUrl(url: string | null | undefined): string | null {
   if (!url) return null;
 
   // Handle various formats:
@@ -109,7 +109,7 @@ function normalizeGitUrl(url: string | null | undefined): string | null {
 }
 
 // Get git remote URL for a directory
-function getGitRemote(dirPath: string): string | null {
+export function getGitRemote(dirPath: string): string | null {
   try {
     const result = execSync('git remote get-url origin', {
       cwd: dirPath,
@@ -234,6 +234,66 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
       attempts.push({ path: byKebab, exists: kebabExists, method: 'kebab-case' });
       if (kebabExists) {
         return { path: byKebab, attempts };
+      }
+    }
+
+    // No-repo workspace fallback: create a persistent project directory
+    // - Workspaces prefixed with '__' (e.g. __coordination) get a temp directory
+    // - All other no-repo workspaces get a persistent directory in the first project root
+    //   so agents can bootstrap new projects without an existing repo
+    if (!workspace.repo) {
+      if (workspace.name.startsWith('__')) {
+        const tmpPath = join(tmpdir(), 'buildd-coordination', workspace.name);
+        mkdirSync(tmpPath, { recursive: true });
+        attempts.push({ path: tmpPath, exists: true, method: 'coordination-tmpdir' });
+        console.log(`Coordination workspace "${workspace.name}" resolved to temp dir: ${tmpPath}`);
+        return { path: tmpPath, attempts };
+      }
+
+      // Persistent project directory for new projects without repos
+      if (roots.length > 0) {
+        const projectDir = join(roots[0], workspace.name);
+        mkdirSync(projectDir, { recursive: true });
+        attempts.push({ path: projectDir, exists: true, method: 'no-repo-project-dir' });
+        console.log(`No-repo workspace "${workspace.name}" resolved to project dir: ${projectDir}`);
+        return { path: projectDir, attempts };
+      }
+    }
+
+    // Auto-clone: workspace has a repo URL but no local clone exists
+    if (workspace.repo && roots.length > 0) {
+      const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
+      if (repoName) {
+        const clonePath = join(roots[0], repoName);
+
+        // Normalize to full clone URL (handle owner/repo slugs)
+        let cloneUrl = workspace.repo;
+        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
+          cloneUrl = `https://github.com/${cloneUrl}.git`;
+        }
+
+        // Validate URL format to prevent command injection
+        // Allows: https://, git@, and absolute local paths (/path/to/repo)
+        if (!/^(https?:\/\/|git@|\/[\w./-]+)[\w.@:/-]*$/.test(cloneUrl)) {
+          attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
+          console.error(`Auto-clone skipped: invalid repo URL format "${cloneUrl}"`);
+          return { path: null, attempts };
+        }
+
+        try {
+          console.log(`Auto-cloning "${cloneUrl}" into "${clonePath}" for workspace "${workspace.name}"...`);
+          execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+
+          // Invalidate git cache so the new repo is discoverable
+          gitRemoteCache = null;
+
+          attempts.push({ path: clonePath, exists: true, method: 'auto-clone' });
+          console.log(`Auto-cloned workspace "${workspace.name}" to: ${clonePath}`);
+          return { path: clonePath, attempts };
+        } catch (err: any) {
+          attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
+          console.error(`Auto-clone failed for "${workspace.name}": ${err.message}`);
+        }
       }
     }
 

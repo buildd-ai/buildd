@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId } = body;
+  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [] } = body;
 
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
@@ -185,17 +185,45 @@ export async function POST(req: NextRequest) {
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-      // All dependencies are in a terminal state
+      // All dependencies must be completed (failed deps block downstream tasks)
       sql`NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${tasks} t2
           WHERE t2.id = dep_id::uuid
-          AND t2.status IN ('completed', 'failed')
+          AND t2.status = 'completed'
         )
       )`
     )
   );
+
+  // Prevent parallel workers on the same repo — if another task in the same
+  // workspace already has an active worker, skip this task. This avoids the
+  // "N parallel branches on the same repo" problem that causes merge conflicts.
+  // Only applies to workspaces with a repo (not coordination workspaces).
+  claimableConditions.push(
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${workers} w2
+      JOIN ${tasks} t3 ON t3.id = w2.task_id
+      WHERE t3.workspace_id = ${tasks.workspaceId}
+      AND w2.status IN ('running', 'starting', 'idle')
+      AND t3.id != ${tasks.id}
+      AND EXISTS (
+        SELECT 1 FROM ${workspaces} ws
+        WHERE ws.id = t3.workspace_id
+        AND ws.repo IS NOT NULL
+      )
+    )`
+  );
+
+  // Filter by roleSlug: tasks with a role_slug are only claimable by runners
+  // that advertise that slug in availableSkills.
+  // If availableSkills is not provided, the runner can claim any task (backward compat).
+  if (availableSkills.length > 0) {
+    claimableConditions.push(
+      or(isNull(tasks.roleSlug), inArray(tasks.roleSlug, availableSkills))
+    );
+  }
 
   const claimableTasks = await db.query.tasks.findMany({
     where: and(...claimableConditions),
@@ -240,21 +268,13 @@ export async function POST(req: NextRequest) {
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
   for (const task of filteredTasks) {
-    // Re-check concurrency limit before each claim to prevent race condition bypass
-    const currentActive = await db.query.workers.findMany({
-      where: and(
-        eq(workers.accountId, account.id),
-        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
-      ),
-      columns: { id: true },
-    });
-
-    if (currentActive.length >= account.maxConcurrentWorkers) {
-      // Limit reached during claim loop - stop claiming more tasks
-      break;
-    }
-
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
+    const taskContext = task.context as Record<string, unknown> | null;
+    const timeoutMinutes = Math.min(
+      typeof taskContext?.timeoutMinutes === 'number' ? taskContext.timeoutMinutes : 15,
+      240,
+    );
+    const expiresAt = new Date(Date.now() + timeoutMinutes * 60 * 1000);
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     const updated = await db
@@ -295,18 +315,30 @@ export async function POST(req: NextRequest) {
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
     }
 
-    const [worker] = await db
-      .insert(workers)
-      .values({
-        taskId: task.id,
-        workspaceId: task.workspaceId,
-        accountId: account.id,
-        name: `${account.name}-${task.id.substring(0, 8)}`,
-        runner,
-        branch,
-        status: 'idle',
-      })
-      .returning();
+    // Atomic conditional insert: only creates worker if under concurrency limit.
+    // This prevents the TOCTOU race where multiple requests pass the count check
+    // but then all insert, exceeding the limit.
+    const insertResult = await db.execute(sql`
+      INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
+      SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+      WHERE (
+        SELECT count(*) FROM ${workers}
+        WHERE account_id = ${account.id}
+        AND status IN ('idle', 'running', 'starting', 'waiting_input')
+      ) < ${account.maxConcurrentWorkers}
+      RETURNING *
+    `);
+
+    const worker = insertResult.rows?.[0] as any;
+
+    if (!worker) {
+      // Concurrency limit reached — roll back the task claim
+      await db
+        .update(tasks)
+        .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+        .where(eq(tasks.id, task.id));
+      break;
+    }
 
     claimedWorkers.push({
       id: worker.id,
@@ -444,7 +476,9 @@ export async function POST(req: NextRequest) {
         ),
       });
 
+      const foundSlugs = new Set<string>();
       for (const ws of wsSkills) {
+        foundSlugs.add(ws.slug);
         const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
         bundles.push({
           slug: ws.slug,
@@ -452,12 +486,98 @@ export async function POST(req: NextRequest) {
           description: ws.description || undefined,
           content: ws.content,
           ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
+          model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+          allowedTools: (ws.allowedTools as string[]) || [],
+          canDelegateTo: (ws.canDelegateTo as string[]) || [],
+          background: ws.background ?? false,
+          maxTurns: ws.maxTurns ?? null,
+          mcpServers: (ws.mcpServers as string[]) || [],
+          requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
         });
+      }
+
+      // Fallback: account-level skills for slugs not found at workspace level
+      const missingSlugs = slugs.filter(s => !foundSlugs.has(s));
+      if (missingSlugs.length > 0) {
+        const acctSkills = await db.query.workspaceSkills.findMany({
+          where: and(
+            eq(workspaceSkills.accountId, account.id),
+            inArray(workspaceSkills.slug, missingSlugs),
+            eq(workspaceSkills.enabled, true),
+          ),
+        });
+        for (const ws of acctSkills) {
+          const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
+          bundles.push({
+            slug: ws.slug,
+            name: ws.name,
+            description: ws.description || undefined,
+            content: ws.content,
+            ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
+            model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+            allowedTools: (ws.allowedTools as string[]) || [],
+            canDelegateTo: (ws.canDelegateTo as string[]) || [],
+            background: ws.background ?? false,
+            maxTurns: ws.maxTurns ?? null,
+            mcpServers: (ws.mcpServers as string[]) || [],
+            requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
+          });
+        }
       }
     }
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+    }
+  }
+
+  // Enrich claimed workers with role config (for role-based task routing)
+  if (isStorageConfigured()) {
+    for (const cw of claimedWorkers) {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      const roleSlug = (task as any)?.roleSlug as string | null;
+      if (!roleSlug) continue;
+
+      const wsId = task?.workspaceId;
+      if (!wsId) continue;
+
+      // Look up the role: workspace-level first, then account-level fallback
+      let role = await db.query.workspaceSkills.findFirst({
+        where: and(
+          eq(workspaceSkills.workspaceId, wsId),
+          eq(workspaceSkills.slug, roleSlug),
+          eq(workspaceSkills.enabled, true),
+          eq(workspaceSkills.isRole, true),
+        ),
+      });
+
+      // Fallback: account-level role
+      if (!role) {
+        role = await db.query.workspaceSkills.findFirst({
+          where: and(
+            eq(workspaceSkills.accountId, account.id),
+            eq(workspaceSkills.slug, roleSlug),
+            eq(workspaceSkills.enabled, true),
+            eq(workspaceSkills.isRole, true),
+          ),
+        });
+      }
+
+      if (role?.configStorageKey && role?.configHash) {
+        const configUrl = await generateDownloadUrl(role.configStorageKey);
+        (cw as any).roleConfig = {
+          slug: role.slug,
+          configHash: role.configHash,
+          configUrl,
+          type: role.repoUrl ? 'builder' : 'service',
+          repoUrl: role.repoUrl || undefined,
+          model: role.model,
+          allowedTools: (role.allowedTools as string[]) || [],
+          canDelegateTo: (role.canDelegateTo as string[]) || [],
+          background: role.background ?? false,
+          maxTurns: role.maxTurns ?? null,
+        };
+      }
     }
   }
 
@@ -479,46 +599,69 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Attach secretRefs for server-managed credentials (API key and/or OAuth token)
+  // Attach inline decrypted secrets for server-managed credentials (API key and/or OAuth token)
+  // Secrets are scoped by the task's workspace team to prevent cross-team leakage.
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     try {
-      const accountSecrets = await db.query.secrets.findMany({
-        where: and(
-          eq(secrets.accountId, account.id),
-          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token']),
-        ),
-        columns: { id: true, purpose: true },
-      });
+      const provider = getSecretsProvider();
 
-      if (accountSecrets.length > 0) {
-        const provider = getSecretsProvider();
-        const apiKeySecret = accountSecrets.find(s => s.purpose === 'anthropic_api_key');
-        const oauthSecret = accountSecrets.find(s => s.purpose === 'oauth_token');
+      for (const cw of claimedWorkers) {
+        const task = cw.task as any;
+        const workspaceTeamId = task?.workspace?.teamId;
 
-        for (const cw of claimedWorkers) {
-          if (apiKeySecret) {
-            const ref = await provider.createRef(apiKeySecret.id, cw.id, 300);
-            (cw as any).secretRef = ref;
+        if (!workspaceTeamId) continue;
+
+        const workerSecrets = await db.query.secrets.findMany({
+          where: and(
+            eq(secrets.teamId, workspaceTeamId),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+            or(
+              isNull(secrets.accountId),
+              eq(secrets.accountId, account.id),
+            ),
+            or(
+              isNull(secrets.workspaceId),
+              eq(secrets.workspaceId, task.workspaceId),
+            ),
+          ),
+          columns: { id: true, purpose: true, label: true },
+        });
+
+        if (workerSecrets.length === 0) continue;
+
+        const apiKeySecret = workerSecrets.find(s => s.purpose === 'anthropic_api_key');
+        const oauthSecret = workerSecrets.find(s => s.purpose === 'oauth_token');
+        const mcpSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
+
+        const [decryptedApiKey, decryptedOauthToken, ...decryptedMcpValues] = await Promise.all([
+          apiKeySecret ? provider.get(apiKeySecret.id) : null,
+          oauthSecret ? provider.get(oauthSecret.id) : null,
+          ...mcpSecrets.map(s => provider.get(s.id)),
+        ]);
+
+        if (decryptedApiKey) {
+          (cw as any).serverApiKey = decryptedApiKey;
+        }
+        if (decryptedOauthToken) {
+          (cw as any).serverOauthToken = decryptedOauthToken;
+        }
+
+        // Build MCP secrets map: label (env var name) → decrypted value
+        const mcpSecretsMap: Record<string, string> = {};
+        mcpSecrets.forEach((s, i) => {
+          const val = decryptedMcpValues[i];
+          if (val && s.label) {
+            mcpSecretsMap[s.label] = val;
           }
-          if (oauthSecret) {
-            const ref = await provider.createRef(oauthSecret.id, cw.id, 300);
-            (cw as any).oauthSecretRef = ref;
-          }
+        });
+
+        if (Object.keys(mcpSecretsMap).length > 0) {
+          (cw as any).mcpSecrets = mcpSecretsMap;
         }
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials
-      console.warn('Failed to create secret refs:', err);
-    }
-  }
-
-  // Piggyback: clean up expired secret refs
-  if (process.env.ENCRYPTION_KEY) {
-    try {
-      const provider = getSecretsProvider();
-      await provider.cleanupExpiredRefs();
-    } catch {
-      // Non-fatal cleanup
+      console.warn('Failed to decrypt server-managed secrets:', err);
     }
   }
 

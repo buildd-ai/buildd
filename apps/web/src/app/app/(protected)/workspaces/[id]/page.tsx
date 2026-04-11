@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, objectives } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions } from '@buildd/core/db/schema';
 import { MemoryClient } from '@buildd/core/memory-client';
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import Link from 'next/link';
@@ -92,9 +92,9 @@ export default async function WorkspaceDetailPage({
 
   const [objCount] = await db
     .select({ count: count() })
-    .from(objectives)
-    .where(eq(objectives.workspaceId, id));
-  const objectiveCount = Number(objCount?.count || 0);
+    .from(missions)
+    .where(eq(missions.workspaceId, id));
+  const missionCount = Number(objCount?.count || 0);
 
   const [skillCount] = await db
     .select({ count: count() })
@@ -148,10 +148,10 @@ export default async function WorkspaceDetailPage({
         {/* Tab bar */}
         <div className="flex gap-1 border-b border-border-default pb-0 mb-8 overflow-x-auto whitespace-nowrap scrollbar-hide">
           <Link
-            href={`/app/objectives?workspaceId=${workspace.id}`}
+            href={`/app/missions?workspaceId=${workspace.id}`}
             className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
-            Objectives{objectiveCount > 0 ? ` (${objectiveCount})` : ''}
+            Missions{missionCount > 0 ? ` (${missionCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/artifacts`}

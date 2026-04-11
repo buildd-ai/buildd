@@ -43,22 +43,27 @@ export type ToolResult = {
 // Trigger level: can create tasks and artifacts, but cannot claim or execute
 export const triggerActions = [
   'list_tasks', 'create_task', 'create_artifact',
-  'list_artifacts', 'emit_event',
+  'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
 ] as const;
 
 export const workerActions = [
   'list_tasks', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
-  'list_artifacts', 'update_artifact',
+  'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events',
   'list_artifact_templates',
+  'suggest_schedule_update',
+  'post_note',
 ] as const;
 
 export const adminActions = [
-  'create_schedule', 'update_schedule', 'list_schedules', 'register_skill',
+  'create_schedule', 'update_schedule', 'list_schedules',
+  'register_skill', 'list_skills', 'update_skill', 'delete_skill',
+  'manage_secrets',
   'approve_plan', 'reject_plan',
-  'manage_objectives',
+  'manage_missions',
+  'manage_workspaces',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -80,26 +85,35 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset? }',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput? } — if error present, marks task as failed. workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), objectiveId? (auto-inherited from caller), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
-    create_artifact: '{ workerId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, key?, type?, limit? }',
+    get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     list_schedules: '{ workspaceId? } [admin]',
-    register_skill: '{ name?, content?, filePath?, repo?, description?, source?, workspaceId? } [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
+    list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled? } — update skill by slug [admin]',
+    delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
+    manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_objectives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", objectiveId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team objectives [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
+    suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
+    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
 
@@ -147,6 +161,39 @@ function resolveWorkerId(param: unknown, ctx: ActionContext): string {
 }
 
 /**
+ * Resolve a skill's UUID from its slug within a workspace.
+ */
+async function resolveSkillId(api: ApiFn, wsId: string, slug: string): Promise<string> {
+  const data = await api(`/api/workspaces/${wsId}/skills`);
+  const match = (data.skills || []).find((s: any) => s.slug === slug);
+  if (!match) throw new Error(`Skill with slug "${slug}" not found in workspace`);
+  return match.id;
+}
+
+/**
+ * Build a skill update body from params, picking only defined fields.
+ */
+function buildSkillBody(params: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (params.name) body.name = params.name;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.content) body.content = params.content;
+  if (params.source) body.source = params.source;
+  if (params.model) body.model = params.model;
+  if (Array.isArray(params.allowedTools)) body.allowedTools = params.allowedTools;
+  if (Array.isArray(params.canDelegateTo)) body.canDelegateTo = params.canDelegateTo;
+  if (typeof params.background === 'boolean') body.background = params.background;
+  if (typeof params.maxTurns === 'number') body.maxTurns = params.maxTurns;
+  if (params.color) body.color = params.color;
+  if (params.mcpServers && typeof params.mcpServers === 'object') body.mcpServers = params.mcpServers;
+  if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') body.requiredEnvVars = params.requiredEnvVars;
+  if (typeof params.isRole === 'boolean') body.isRole = params.isRole;
+  if (typeof params.enabled === 'boolean') body.enabled = params.enabled;
+  if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
+  return body;
+}
+
+/**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
  * Falls back to context workspace ID if no param given.
  */
@@ -179,6 +226,24 @@ async function resolveWorkspaceId(
   if (match) return match.id;
 
   return null;
+}
+
+/**
+ * Resolve missionId from explicit param or by inheriting from the calling worker's task.
+ */
+async function resolveMissionId(
+  api: ApiFn,
+  param: unknown,
+  ctx: ActionContext,
+): Promise<string | null> {
+  if (param && typeof param === 'string') return param;
+  if (!ctx.workerId) return null;
+  try {
+    const workerData = await api(`/api/workers/${ctx.workerId}`);
+    return workerData?.task?.missionId || workerData?.task?.context?.missionId || null;
+  } catch {
+    return null;
+  }
 }
 
 // Actions that require at least worker level (trigger tokens cannot use these)
@@ -365,6 +430,7 @@ export async function handleBuilddAction(
             status: 'completed',
             ...(params.summary ? { summary: params.summary } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
+            ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
           }),
         });
       } catch (err: unknown) {
@@ -448,8 +514,15 @@ export async function handleBuilddAction(
         creationSource: 'mcp',
       };
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
+      if (params.parentTaskId && typeof params.parentTaskId === 'string') {
+        taskBody.parentTaskId = params.parentTaskId;
+      }
+      if (Array.isArray(params.dependsOn) && params.dependsOn.length > 0) {
+        taskBody.dependsOn = params.dependsOn;
+      }
       if (params.category) taskBody.category = params.category;
-      // outputRequirement inheritance from objective is handled by the API route;
+      if (params.roleSlug && typeof params.roleSlug === 'string') taskBody.roleSlug = params.roleSlug;
+      // outputRequirement inheritance from mission is handled by the API route;
       // only pass through if explicitly provided by the caller.
       if (params.outputRequirement) taskBody.outputRequirement = params.outputRequirement;
       if (params.outputSchema && typeof params.outputSchema === 'object') {
@@ -457,16 +530,16 @@ export async function handleBuilddAction(
       }
       if (params.project) taskBody.project = params.project;
 
-      // Auto-link to objective: explicit param takes precedence, then inherit from caller's task
-      if (params.objectiveId) {
-        taskBody.objectiveId = params.objectiveId;
+      // Auto-link to mission: explicit param takes precedence, then inherit from caller's task
+      if (params.missionId) {
+        taskBody.missionId = params.missionId;
       } else if (ctx.workerId) {
-        // Fetch caller worker's task to inherit objectiveId
+        // Fetch caller worker's task to inherit missionId
         try {
           const workerData = await api(`/api/workers/${ctx.workerId}`);
-          const callerObjectiveId = workerData?.task?.objectiveId || workerData?.task?.context?.objectiveId;
-          if (callerObjectiveId) {
-            taskBody.objectiveId = callerObjectiveId;
+          const callerMissionId = workerData?.task?.missionId || workerData?.task?.context?.missionId;
+          if (callerMissionId) {
+            taskBody.missionId = callerMissionId;
           }
         } catch {
           // Non-fatal — skip auto-linking if worker lookup fails
@@ -483,6 +556,22 @@ export async function handleBuilddAction(
       }
       if (params.effort && typeof params.effort === 'string') {
         taskContext.effort = params.effort;
+      }
+      // Ralph loop fields — branch continuity, verification, and retry metadata
+      if (params.baseBranch && typeof params.baseBranch === 'string') {
+        taskContext.baseBranch = params.baseBranch;
+      }
+      if (params.verificationCommand && typeof params.verificationCommand === 'string') {
+        taskContext.verificationCommand = params.verificationCommand;
+      }
+      if (typeof params.iteration === 'number') {
+        taskContext.iteration = params.iteration;
+      }
+      if (typeof params.maxIterations === 'number') {
+        taskContext.maxIterations = params.maxIterations;
+      }
+      if (params.failureContext && typeof params.failureContext === 'string') {
+        taskContext.failureContext = params.failureContext;
       }
       if (params.callbackUrl && typeof params.callbackUrl === 'string') {
         if (!params.callbackUrl.startsWith('https://')) {
@@ -504,7 +593,7 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.objectiveId ? `\nLinked to objective: ${taskBody.objectiveId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -571,6 +660,7 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
       if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
+      if (params.workspaceId !== undefined) updateBody.workspaceId = params.workspaceId;
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
         const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
@@ -585,7 +675,7 @@ export async function handleBuilddAction(
       }
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs) must be provided');
+        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, workspaceId) must be provided');
       }
 
       const updated = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {
@@ -647,25 +737,246 @@ export async function handleBuilddAction(
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
+      const skillBody: Record<string, unknown> = {
+        name: params.name,
+        content: params.content,
+        description: params.description || undefined,
+        source: params.source || 'mcp',
+      };
+      if (params.model) skillBody.model = params.model;
+      if (Array.isArray(params.allowedTools)) skillBody.allowedTools = params.allowedTools;
+      if (Array.isArray(params.canDelegateTo)) skillBody.canDelegateTo = params.canDelegateTo;
+      if (typeof params.background === 'boolean') skillBody.background = params.background;
+      if (typeof params.maxTurns === 'number') skillBody.maxTurns = params.maxTurns;
+      if (params.color) skillBody.color = params.color;
+      if (params.mcpServers && typeof params.mcpServers === 'object') skillBody.mcpServers = params.mcpServers;
+      if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') skillBody.requiredEnvVars = params.requiredEnvVars;
+      if (typeof params.isRole === 'boolean') skillBody.isRole = params.isRole;
+      if (params.slug) skillBody.slug = params.slug;
+
       const data = await api(`/api/workspaces/${wsId}/skills`, {
         method: 'POST',
-        body: JSON.stringify({
-          name: params.name,
-          content: params.content,
-          description: params.description || undefined,
-          source: params.source || 'mcp',
-        }),
+        body: JSON.stringify(skillBody),
       });
 
       const skill = data.skill;
       return text(`Skill registered: "${skill.name}" (slug: ${skill.slug})\nOrigin: ${skill.origin}\nEnabled: ${skill.enabled}`);
     }
 
-    case 'create_artifact': {
-      const workerId = resolveWorkerId(params.workerId, ctx);
+    case 'list_skills': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+
+      // If workspace specified, list its skills
+      if (wsId) {
+        const qp = new URLSearchParams();
+        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+        const qs = qp.toString() ? `?${qp.toString()}` : '';
+
+        const data = await api(`/api/workspaces/${wsId}/skills${qs}`);
+        const skills = data.skills || [];
+        if (skills.length === 0) return text('No skills found.');
+
+        const summary = skills.map((s: any) => {
+          const mcpCount = s.mcpServers
+            ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+            : 0;
+          const tags = [
+            s.isRole ? 'role' : 'skill',
+            s.enabled ? '' : 'DISABLED',
+            s.model !== 'inherit' ? s.model : '',
+            mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
+          ].filter(Boolean).join(', ');
+          return `- **${s.name}** (\`${s.slug}\`) [${tags}]${s.description ? `\n  ${s.description}` : ''}`;
+        }).join('\n');
+
+        return text(`${skills.length} skill(s):\n\n${summary}`);
+      }
+
+      // No workspace — list across all accessible workspaces
+      const wsData = await api('/api/workspaces');
+      const workspaces = wsData.workspaces || [];
+      if (workspaces.length === 0) return text('No workspaces found.');
+
+      const allSkills: { workspace: string; skill: any }[] = [];
+      for (const ws of workspaces) {
+        const qp = new URLSearchParams();
+        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+        const qs = qp.toString() ? `?${qp.toString()}` : '';
+        const data = await api(`/api/workspaces/${ws.id}/skills${qs}`);
+        for (const s of (data.skills || [])) {
+          allSkills.push({ workspace: ws.name, skill: s });
+        }
+      }
+
+      if (allSkills.length === 0) return text('No skills found across any workspace.');
+
+      const summary = allSkills.map(({ workspace, skill: s }) => {
+        const mcpCount = s.mcpServers
+          ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+          : 0;
+        const tags = [
+          s.isRole ? 'role' : 'skill',
+          s.enabled ? '' : 'DISABLED',
+          s.model !== 'inherit' ? s.model : '',
+          mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
+        ].filter(Boolean).join(', ');
+        return `- **${s.name}** (\`${s.slug}\`) [${tags}] — ${workspace}${s.description ? `\n  ${s.description}` : ''}`;
+      }).join('\n');
+
+      return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'update_skill': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.slug) throw new Error('slug is required to identify the skill to update');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const skillId = await resolveSkillId(api, wsId, params.slug as string);
+      const body = buildSkillBody(params);
+
+      if (Object.keys(body).length === 0) {
+        throw new Error('No fields to update. Provide at least one field (name, content, mcpServers, etc.)');
+      }
+
+      const data = await api(`/api/workspaces/${wsId}/skills/${skillId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+
+      const s = data.skill;
+      const mcpCount = s.mcpServers
+        ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
+        : 0;
+      return text(`Skill updated: "${s.name}" (slug: ${s.slug})\nModel: ${s.model} | Tools: ${(s.allowedTools || []).length || 'all'} | MCPs: ${mcpCount} | Delegates to: ${(s.canDelegateTo || []).join(', ') || 'none'}\nEnabled: ${s.enabled}`);
+    }
+
+    case 'delete_skill': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.slug) throw new Error('slug is required to identify the skill to delete');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const skillId = await resolveSkillId(api, wsId, params.slug as string);
+
+      await api(`/api/workspaces/${wsId}/skills/${skillId}`, {
+        method: 'DELETE',
+      });
+
+      return text(`Skill "${params.slug}" deleted successfully.`);
+    }
+
+    case 'manage_secrets': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const subAction = params.action as string;
+      if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
+        throw new Error('action is required: "list", "set", or "delete"');
+      }
+
+      if (subAction === 'list') {
+        const data = await api('/api/secrets');
+        const secrets = data.secrets || [];
+        if (secrets.length === 0) return text('No secrets found.');
+
+        const summary = secrets.map((s: any) =>
+          `- **${s.label || s.purpose}** (${s.purpose})\n  ID: ${s.id} | Created: ${s.createdAt}`
+        ).join('\n');
+        return text(`${secrets.length} secret(s):\n\n${summary}`);
+      }
+
+      if (subAction === 'set') {
+        if (!params.label) throw new Error('label is required (env var name, e.g. "buildd-api-key")');
+        if (!params.value) throw new Error('value is required (the secret value)');
+
+        const data = await api('/api/secrets', {
+          method: 'POST',
+          body: JSON.stringify({
+            value: params.value,
+            purpose: params.purpose || 'mcp_credential',
+            label: params.label,
+          }),
+        });
+
+        return text(`Secret stored: label="${params.label}" | ID: ${data.id}`);
+      }
+
+      if (subAction === 'delete') {
+        if (!params.secretId) throw new Error('secretId is required');
+
+        await api(`/api/secrets?id=${params.secretId}`, {
+          method: 'DELETE',
+        });
+
+        return text(`Secret ${params.secretId} deleted.`);
+      }
+
+      return text('Unknown action');
+    }
+
+    case 'post_note': {
       if (!params.type || !params.title) throw new Error('type and title are required');
 
-      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event'];
+      const validNoteTypes = ['decision', 'question', 'warning', 'suggestion', 'update'];
+      if (!validNoteTypes.includes(params.type as string)) {
+        throw new Error(`Invalid type. Must be one of: ${validNoteTypes.join(', ')}`);
+      }
+
+      // Resolve missionId from task context if not provided
+      let missionId = params.missionId as string | undefined;
+      if (!missionId) {
+        // Get missionId from the current worker's task
+        const workerId = resolveWorkerId(params.workerId, ctx);
+        const workerData = await api(`/api/workers/${workerId}`);
+        if (workerData.task?.missionId) {
+          missionId = workerData.task.missionId;
+        }
+      }
+      if (!missionId) throw new Error('Could not resolve missionId — pass it explicitly or ensure this task is linked to a mission');
+
+      const workerId = ctx.workerId || (params.workerId as string) || undefined;
+
+      const noteBody: Record<string, unknown> = {
+        type: params.type,
+        title: params.title,
+        authorType: 'agent',
+        taskId: undefined as string | undefined,
+        workerId,
+        status: params.type === 'question' ? 'open' : 'answered',
+      };
+      if (params.body) noteBody.bodyText = params.body;
+      if (params.defaultChoice) noteBody.defaultChoice = params.defaultChoice;
+
+      // Resolve taskId from worker context
+      if (workerId) {
+        try {
+          const workerData = await api(`/api/workers/${workerId}`);
+          if (workerData.taskId) noteBody.taskId = workerData.taskId;
+        } catch { /* ignore — taskId is optional */ }
+      }
+
+      const note = await api(`/api/missions/${missionId}/notes`, {
+        method: 'POST',
+        body: JSON.stringify(noteBody),
+      });
+
+      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered on your next update_progress call.` : ''}`);
+    }
+
+    case 'create_artifact': {
+      if (!params.type || !params.title) throw new Error('type and title are required');
+
+      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event', 'file'];
       if (!validArtifactTypes.includes(params.type as string)) {
         throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
       }
@@ -679,14 +990,66 @@ export async function handleBuilddAction(
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
 
-      const artifactData = await api(`/api/workers/${workerId}/artifacts`, {
-        method: 'POST',
-        body: JSON.stringify(artifactBody),
-      });
+      // Support mission-level artifacts (no worker required) or worker artifacts
+      let artifactData;
+      if (params.missionId) {
+        artifactData = await api(`/api/missions/${params.missionId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      } else {
+        const workerId = resolveWorkerId(params.workerId, ctx);
+        artifactData = await api(`/api/workers/${workerId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      }
 
       const art = artifactData.artifact;
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
+    }
+
+    case 'upload_artifact': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.filename || !params.mimeType || !params.sizeBytes) {
+        throw new Error('filename, mimeType, and sizeBytes are required');
+      }
+
+      const uploadBody: Record<string, unknown> = {
+        workerId,
+        filename: params.filename,
+        mimeType: params.mimeType,
+        sizeBytes: params.sizeBytes,
+      };
+      if (params.title) uploadBody.title = params.title;
+      if (params.type) uploadBody.type = params.type;
+      if (params.metadata && typeof params.metadata === 'object') uploadBody.metadata = params.metadata;
+
+      const data = await api('/api/artifacts/upload-url', {
+        method: 'POST',
+        body: JSON.stringify(uploadBody),
+      });
+
+      const mimeStr = params.mimeType as string;
+      const lines = [
+        `Upload URL ready (expires in 10 minutes).`,
+        ``,
+        `Upload the file:`,
+        `curl -X PUT -H "Content-Type: ${mimeStr}" --data-binary @./${params.filename} "${data.uploadUrl}"`,
+        ``,
+        `Download URL (permanent, for markdown embedding):`,
+        data.downloadUrl,
+        ``,
+        `Share URL: ${data.shareUrl}`,
+        `Artifact ID: ${data.artifactId}`,
+      ];
+
+      if (mimeStr.startsWith('image/')) {
+        lines.push(``, `Markdown image: ![${params.title || params.filename}](${data.downloadUrl})`);
+      }
+
+      return text(lines.join('\n'));
     }
 
     case 'list_artifacts': {
@@ -733,6 +1096,28 @@ export async function handleBuilddAction(
 
       const summary = allArtifacts.map(({ workspace, artifact: a }) => formatArtifact(a, workspace)).join('\n\n');
       return text(`${allArtifacts.length} artifact(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'get_artifact': {
+      if (!params.artifactId) throw new Error('artifactId is required');
+
+      const data = await api(`/api/artifacts/${params.artifactId}`);
+      const art = data.artifact;
+
+      const meta = [
+        `**Title:** ${art.title || '(untitled)'}`,
+        `**Type:** ${art.type}`,
+        `**ID:** ${art.id}`,
+        art.key && `**Key:** ${art.key}`,
+        `**Created:** ${art.createdAt}`,
+        `**Updated:** ${art.updatedAt}`,
+        art.shareUrl && `**Share URL:** ${art.shareUrl}`,
+        art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
+      ].filter(Boolean).join('\n');
+
+      const content = art.content || '(no content)';
+
+      return text(`${meta}\n\n## Content\n\n${content}`);
     }
 
     case 'update_artifact': {
@@ -808,6 +1193,55 @@ export async function handleBuilddAction(
       return text(`${filtered.length} event(s):\n\n${summary}`);
     }
 
+    case 'suggest_schedule_update': {
+      if (!params.reason) throw new Error('reason is required');
+      if (params.cronExpression === undefined && params.enabled === undefined) {
+        throw new Error('At least one of cronExpression or enabled must be provided');
+      }
+
+      // Resolve scheduleId from params or from worker's task context
+      let scheduleId = params.scheduleId as string | undefined;
+      let wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+
+      if (!scheduleId && ctx.workerId) {
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskContext = workerData?.task?.context || workerData?.context || {};
+        scheduleId = taskContext.scheduleId;
+        if (!wsId) wsId = workerData?.workspaceId || workerData?.task?.workspaceId;
+      }
+
+      if (!scheduleId) throw new Error('scheduleId is required — pass it explicitly or run from a scheduled task');
+      if (!wsId) throw new Error('Could not determine workspace.');
+
+      const suggestionBody: Record<string, unknown> = {
+        reason: params.reason,
+      };
+      if (params.cronExpression !== undefined) suggestionBody.cronExpression = params.cronExpression;
+      if (params.enabled !== undefined) suggestionBody.enabled = params.enabled;
+      if (ctx.workerId) suggestionBody.workerId = ctx.workerId;
+
+      // Get taskId from worker context
+      if (ctx.workerId) {
+        try {
+          const workerData = await api(`/api/workers/${ctx.workerId}`);
+          if (workerData?.taskId) suggestionBody.taskId = workerData.taskId;
+        } catch {
+          // non-critical
+        }
+      }
+
+      const result = await api(`/api/workspaces/${wsId}/schedules/${scheduleId}/suggestion`, {
+        method: 'POST',
+        body: JSON.stringify(suggestionBody),
+      });
+
+      const changes: string[] = [];
+      if (params.cronExpression) changes.push(`cron → "${params.cronExpression}"`);
+      if (params.enabled !== undefined) changes.push(`enabled → ${params.enabled}`);
+
+      return text(`Schedule suggestion created for schedule ${scheduleId}.\nProposed changes: ${changes.join(', ')}\nReason: ${params.reason}\n\nThe suggestion is now pending human approval in the dashboard.`);
+    }
+
     case 'approve_plan': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
@@ -835,31 +1269,38 @@ export async function handleBuilddAction(
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
-    case 'manage_objectives': {
+    case 'manage_missions': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
-      const objAction = params.action as string;
-      if (!objAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
+      const missionAction = params.action as string;
+      if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
 
-      switch (objAction) {
+      switch (missionAction) {
         case 'list': {
           const qs = new URLSearchParams();
-          if (params.workspaceId) qs.set('workspaceId', params.workspaceId as string);
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (wsId) qs.set('workspaceId', wsId);
+          }
           if (params.status) qs.set('status', params.status as string);
-          const data = await api(`/api/objectives?${qs}`);
-          const objs = data.objectives || [];
-          if (objs.length === 0) return text('No objectives found.');
-          const summary = objs.map((o: any) =>
-            `- **${o.title}** [${o.status}] — ${o.progress}% (${o.completedTasks}/${o.totalTasks} tasks)\n  ID: ${o.id}${o.workspace ? `\n  Workspace: ${o.workspace.name}` : ''}`
+          const data = await api(`/api/missions?${qs}`);
+          const missions = data.missions || [];
+          if (missions.length === 0) return text('No missions found.');
+          const summary = missions.map((m: any) =>
+            `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}`
           ).join('\n\n');
-          return text(`${objs.length} objective(s):\n\n${summary}`);
+          return text(`${missions.length} mission(s):\n\n${summary}`);
         }
         case 'create': {
           if (!params.title) throw new Error('title is required');
           const body: Record<string, unknown> = { title: params.title };
           if (params.description) body.description = params.description;
-          if (params.workspaceId) body.workspaceId = params.workspaceId;
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
@@ -870,29 +1311,35 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
-          const data = await api('/api/objectives', {
+          const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
           });
-          return text(`Objective created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}${data.isHeartbeat ? `\nHeartbeat: enabled` : ''}`);
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}`);
         }
         case 'get': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
-          const data = await api(`/api/objectives/${params.objectiveId}`);
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}`);
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
-          const heartbeatInfo = data.isHeartbeat ? `\nHeartbeat: enabled${data.activeHoursStart !== null && data.activeHoursEnd !== null ? ` (active ${data.activeHoursStart}:00–${data.activeHoursEnd}:00${data.activeHoursTimezone ? ` ${data.activeHoursTimezone}` : ''})` : ''}${data.heartbeatChecklist ? `\nChecklist: ${data.heartbeatChecklist}` : ''}` : '';
+          const schedCtx = data.schedule?.taskTemplate?.context;
+          const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
           return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
+          if (!params.missionId) throw new Error('missionId is required');
           const body: Record<string, unknown> = {};
           if (params.title !== undefined) body.title = params.title;
           if (params.description !== undefined) body.description = params.description;
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.workspaceId !== undefined) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
           if (params.recipeId !== undefined) body.recipeId = params.recipeId;
           if (params.model !== undefined) body.model = params.model;
@@ -902,35 +1349,137 @@ export async function handleBuilddAction(
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
-          const data = await api(`/api/objectives/${params.objectiveId}`, {
+          const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
-          return text(`Objective updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+          return text(`Mission updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
         }
         case 'delete': {
-          if (!params.objectiveId) throw new Error('objectiveId is required');
-          await api(`/api/objectives/${params.objectiveId}`, { method: 'DELETE' });
-          return text(`Objective deleted: ${params.objectiveId}`);
+          if (!params.missionId) throw new Error('missionId is required');
+          await api(`/api/missions/${params.missionId}`, { method: 'DELETE' });
+          return text(`Mission deleted: ${params.missionId}`);
         }
         case 'link_task': {
-          if (!params.objectiveId || !params.taskId) throw new Error('objectiveId and taskId are required');
+          if (!params.missionId || !params.taskId) throw new Error('missionId and taskId are required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ objectiveId: params.objectiveId }),
+            body: JSON.stringify({ missionId: params.missionId }),
           });
-          return text(`Task ${params.taskId} linked to objective ${params.objectiveId}`);
+          return text(`Task ${params.taskId} linked to mission ${params.missionId}`);
         }
         case 'unlink_task': {
           if (!params.taskId) throw new Error('taskId is required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ objectiveId: null }),
+            body: JSON.stringify({ missionId: null }),
           });
-          return text(`Task ${params.taskId} unlinked from objective`);
+          return text(`Task ${params.taskId} unlinked from mission`);
         }
         default:
-          throw new Error(`Unknown objectives action: ${objAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+      }
+    }
+
+    // ── Workspaces ─────────────────────────────────────────────────────────
+
+    case 'manage_workspaces': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsAction = params.action as string;
+      if (!wsAction) throw new Error('action is required (list, create, update, create_repo, init)');
+
+      switch (wsAction) {
+        case 'create': {
+          if (!params.name && !params.repoUrl) throw new Error('name or repoUrl is required');
+          const body: Record<string, unknown> = {};
+          if (params.name) body.name = params.name;
+          if (params.repoUrl) body.repoUrl = params.repoUrl;
+          if (params.defaultBranch) body.defaultBranch = params.defaultBranch;
+          if (params.accessMode) body.accessMode = params.accessMode;
+          const wsData = await api('/api/workspaces', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+
+          // Auto-migrate calling mission to the new workspace
+          const createMissionId = await resolveMissionId(api, params.missionId, ctx);
+          let migrated = false;
+          if (createMissionId) {
+            try {
+              await api(`/api/missions/${createMissionId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ workspaceId: wsData.id }),
+              });
+              migrated = true;
+            } catch { /* non-fatal */ }
+          }
+          return text(`Workspace created: "${wsData.name}" (ID: ${wsData.id})${wsData.repo ? `\nRepo: ${wsData.repo}` : ''}${migrated ? `\nMission ${createMissionId} migrated to this workspace.` : ''}`);
+        }
+        case 'list': {
+          const data = await api('/api/workspaces');
+          const wsList = data.workspaces || [];
+          if (wsList.length === 0) return text('No workspaces found.');
+          const summary = wsList.map((ws: any) =>
+            `- **${ws.name}**${ws.repo ? ` (${ws.repo})` : ' (no repo)'}\n  ID: ${ws.id}${ws.accessMode ? ` | Access: ${ws.accessMode}` : ''}`
+          ).join('\n\n');
+          return text(`${wsList.length} workspace(s):\n\n${summary}`);
+        }
+        case 'update': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for update');
+          const body: Record<string, unknown> = {};
+          if (params.name !== undefined) body.name = params.name;
+          if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
+          if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
+          if (params.accessMode !== undefined) body.accessMode = params.accessMode;
+          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required (name, repoUrl, defaultBranch, accessMode)');
+          await api(`/api/workspaces/${wsId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}`);
+        }
+        case 'create_repo': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for create_repo');
+          if (!params.name) throw new Error('name (repo name) is required for create_repo');
+          const repoData = await api(`/api/workspaces/${wsId}/create-repo`, {
+            method: 'POST',
+            body: JSON.stringify({
+              name: params.name,
+              org: params.org || undefined,
+              private: params.private !== false,
+              description: params.description || undefined,
+            }),
+          });
+          if (repoData.error) {
+            return errorResult(`Failed to create repo: ${repoData.error}${repoData.hint ? `\nHint: ${repoData.hint}` : ''}`);
+          }
+
+          // Auto-migrate calling mission to this workspace
+          const repoMissionId = await resolveMissionId(api, params.missionId, ctx);
+          let repoMigrated = false;
+          if (repoMissionId) {
+            try {
+              await api(`/api/missions/${repoMissionId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ workspaceId: wsId }),
+              });
+              repoMigrated = true;
+            } catch { /* non-fatal */ }
+          }
+          return text(`Repository created: ${repoData.repoUrl}\nWorkspace updated with new repo URL.${repoMigrated ? `\nMission ${repoMissionId} migrated to this workspace.` : ''}`);
+        }
+        case 'init': {
+          // init is a runner-side action — return instructions for the agent
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for init');
+          return text(`Workspace ${wsId} directory will be auto-created by the runner when a task is claimed. No-repo workspaces are resolved to a persistent project directory on the runner (e.g. /home/coder/project/{workspace-name}/). To set up the project:\n1. The runner creates the directory automatically\n2. Run \`git init\` in the workspace directory\n3. Use manage_workspaces action=create_repo or action=update to link a remote repo`);
+        }
+        default:
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, create, update, create_repo, init`);
       }
     }
 

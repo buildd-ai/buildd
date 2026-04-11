@@ -171,6 +171,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task via task.context.useBackgroundAgents.
   useBackgroundAgents?: boolean;
 
+  // CI failure auto-retry: max number of retry attempts when CI fails on a worker's PR
+  // Defaults to 3 if not set. Set to 0 to disable CI retries entirely.
+  maxCiRetries?: number;
+
   // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
@@ -228,6 +232,7 @@ export interface TaskResult {
   prUrl?: string;
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
+  mcpServers?: string[];
 }
 
 // Per-model token usage from SDK result
@@ -242,6 +247,7 @@ export interface ModelUsage {
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
+  terminalReason?: string | null;
   durationMs: number;
   durationApiMs: number;
   numTurns: number;
@@ -297,8 +303,8 @@ export const workspaces = pgTable('workspaces', {
   configStatusIdx: index('workspaces_config_status_idx').on(t.configStatus),
 }));
 
-// Objectives — first-class goals that tasks can be linked to
-export const objectives = pgTable('objectives', {
+// Missions — first-class goals that tasks can be linked to
+export const missions = pgTable('missions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
@@ -306,25 +312,21 @@ export const objectives = pgTable('objectives', {
   description: text('description'),
   status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
-  cronExpression: text('cron_expression'),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   scheduleId: uuid('schedule_id'),
-  parentObjectiveId: uuid('parent_objective_id'),
+  parentMissionId: uuid('parent_mission_id'),
+  lastEvaluationTaskId: uuid('last_evaluation_task_id'),
+  contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  // Heartbeat mode
-  isHeartbeat: boolean('is_heartbeat').default(false).notNull(),
-  heartbeatChecklist: text('heartbeat_checklist'),
-  activeHoursStart: integer('active_hours_start'),  // 0-23, null = always active
-  activeHoursEnd: integer('active_hours_end'),       // 0-23, null = always active
-  activeHoursTimezone: text('active_hours_timezone'), // e.g. 'America/New_York'
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  teamIdx: index('objectives_team_idx').on(t.teamId),
-  workspaceIdx: index('objectives_workspace_idx').on(t.workspaceId),
-  statusIdx: index('objectives_status_idx').on(t.status),
-  parentIdx: index('objectives_parent_idx').on(t.parentObjectiveId),
+  teamIdx: index('missions_team_idx').on(t.teamId),
+  workspaceIdx: index('missions_workspace_idx').on(t.workspaceId),
+  statusIdx: index('missions_status_idx').on(t.status),
+  parentIdx: index('missions_parent_idx').on(t.parentMissionId),
 }));
+
 
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -345,7 +347,7 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator'>(),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
@@ -354,8 +356,10 @@ export const tasks = pgTable('tasks', {
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // JSON Schema for structured output — passed to SDK outputFormat
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
-  // Objective linking
-  objectiveId: uuid('objective_id').references(() => objectives.id, { onDelete: 'set null' }),
+  // Mission linking
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // Role routing — if set, only runners with this skill can claim
+  roleSlug: text('role_slug'),
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: jsonb('depends_on').default([]).$type<string[]>(),
   // Deliverable snapshot - populated on worker completion
@@ -371,7 +375,7 @@ export const tasks = pgTable('tasks', {
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
-  objectiveIdx: index('tasks_objective_idx').on(t.objectiveId),
+  missionIdx: index('tasks_mission_idx').on(t.missionId),
 }));
 
 export const workers = pgTable('workers', {
@@ -417,6 +421,14 @@ export const workers = pgTable('workers', {
   }>>(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
+  // MCP tool call log - appended by runner during execution
+  mcpCalls: jsonb('mcp_calls').default([]).$type<Array<{
+    server: string;
+    tool: string;
+    ts: number;
+    ok: boolean;
+    durationMs?: number;
+  }>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -429,8 +441,9 @@ export const workers = pgTable('workers', {
 
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   key: text('key'),
   type: text('type').notNull(),
   title: text('title'),
@@ -445,6 +458,28 @@ export const artifacts = pgTable('artifacts', {
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
+  missionIdx: index('artifacts_mission_idx').on(t.missionId),
+}));
+
+// Mission notes — lightweight append-only feed for agent↔user communication
+export const missionNotes = pgTable('mission_notes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
+  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance'>(),
+  title: text('title').notNull(),
+  body: text('body'),
+  replyTo: uuid('reply_to'),
+  defaultChoice: text('default_choice'),
+  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  missionIdx: index('mission_notes_mission_idx').on(t.missionId),
+  replyToIdx: index('mission_notes_reply_to_idx').on(t.replyTo),
+  typeIdx: index('mission_notes_type_idx').on(t.type),
+  statusIdx: index('mission_notes_status_idx').on(t.status),
 }));
 
 // observations table removed — memory is now stored in external memory service
@@ -483,7 +518,7 @@ export type RecipeStep = {
 // Task schedules - cron-based automated task creation
 export const taskSchedules = pgTable('task_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   cronExpression: text('cron_expression').notNull(),
   timezone: text('timezone').default('UTC').notNull(),
@@ -501,6 +536,14 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
+  pendingSuggestion: jsonb('pending_suggestion').$type<{
+    cronExpression?: string;
+    enabled?: boolean;
+    reason: string;
+    suggestedAt: string;
+    suggestedByTaskId?: string;
+    suggestedByWorkerId?: string;
+  }>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -566,10 +609,11 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
-// Workspace-scoped skills — per-project bindings, discovered locally or manually registered
+// Workspace-scoped skills (roles) — per-project bindings, discovered locally or manually registered
 export const workspaceSkills = pgTable('workspace_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   slug: text('slug').notNull(),
   name: text('name').notNull(),
   description: text('description'),
@@ -579,11 +623,26 @@ export const workspaceSkills = pgTable('workspace_skills', {
   enabled: boolean('enabled').default(true).notNull(),
   origin: text('origin').default('manual').notNull().$type<'scan' | 'manual'>(),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
+  // Role config
+  model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
+  allowedTools: jsonb('allowed_tools').notNull().default([]).$type<string[]>(), // empty = all tools
+  canDelegateTo: jsonb('can_delegate_to').notNull().default([]).$type<string[]>(), // slugs of other skills
+  background: boolean('background').notNull().default(false),
+  maxTurns: integer('max_turns'), // null = unlimited
+  color: text('color').notNull().default('#8A8478'), // avatar color hex
+  mcpServers: jsonb('mcp_servers').notNull().default({}).$type<Record<string, unknown> | string[]>(), // MCP server configs or legacy name array
+  requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
+  // Role-specific fields
+  isRole: boolean('is_role').notNull().default(false), // distinguishes roles (Team page) from skills
+  configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
+  configStorageKey: text('config_storage_key'), // R2 object key for role config tarball
+  repoUrl: text('repo_url'), // for builder roles (git clone target)
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
+  accountIdx: index('workspace_skills_account_idx').on(t.accountId),
 }));
 
 // Team invitations for multi-tenancy
@@ -609,30 +668,16 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: index('secrets_team_idx').on(t.teamId),
-  accountPurposeIdx: uniqueIndex('secrets_account_purpose_idx').on(t.accountId, t.purpose),
+  accountPurposeLabelIdx: uniqueIndex('secrets_account_purpose_label_idx').on(t.accountId, t.purpose, t.label),
 }));
 
-// Single-use secret references for worker credential delivery
-export const secretRefs = pgTable('secret_refs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  ref: text('ref').notNull().unique(),
-  secretId: uuid('secret_id').references(() => secrets.id, { onDelete: 'cascade' }).notNull(),
-  scopedToWorkerId: text('scoped_to_worker_id').notNull(),
-  redeemed: boolean('redeemed').default(false).notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  refIdx: uniqueIndex('secret_refs_ref_idx').on(t.ref),
-  secretIdx: index('secret_refs_secret_idx').on(t.secretId),
-  expiresIdx: index('secret_refs_expires_idx').on(t.expiresAt),
-}));
 
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
@@ -658,7 +703,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   members: many(teamMembers),
   accounts: many(accounts),
   workspaces: many(workspaces),
-  objectives: many(objectives),
+  missions: many(missions),
   invitations: many(teamInvitations),
 }));
 
@@ -691,14 +736,16 @@ export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one })
   workspace: one(workspaces, { fields: [accountWorkspaces.workspaceId], references: [workspaces.id] }),
 }));
 
-export const objectivesRelations = relations(objectives, ({ one, many }) => ({
-  team: one(teams, { fields: [objectives.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [objectives.workspaceId], references: [workspaces.id] }),
-  createdByUser: one(users, { fields: [objectives.createdByUserId], references: [users.id] }),
-  parentObjective: one(objectives, { fields: [objectives.parentObjectiveId], references: [objectives.id], relationName: 'subObjectives' }),
-  subObjectives: many(objectives, { relationName: 'subObjectives' }),
+export const missionsRelations = relations(missions, ({ one, many }) => ({
+  team: one(teams, { fields: [missions.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [missions.workspaceId], references: [workspaces.id] }),
+  createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
+  parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
+  subMissions: many(missions, { relationName: 'subMissions' }),
   tasks: many(tasks),
-  schedule: one(taskSchedules, { fields: [objectives.scheduleId], references: [taskSchedules.id] }),
+  schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
+  artifacts: many(artifacts),
+  notes: many(missionNotes),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
@@ -711,7 +758,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   taskSchedules: many(taskSchedules),
   taskRecipes: many(taskRecipes),
   workspaceSkills: many(workspaceSkills),
-  objectives: many(objectives),
+  missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
 }));
@@ -719,7 +766,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id], relationName: 'claimedTasks' }),
-  objective: one(objectives, { fields: [tasks.objectiveId], references: [objectives.id] }),
+  mission: one(missions, { fields: [tasks.missionId], references: [missions.id] }),
   workers: many(workers, { relationName: 'taskWorkers' }),
 
   // Creator tracking relations
@@ -741,6 +788,11 @@ export const workersRelations = relations(workers, ({ one, many }) => ({
 export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
   workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
+  mission: one(missions, { fields: [artifacts.missionId], references: [missions.id] }),
+}));
+
+export const missionNotesRelations = relations(missionNotes, ({ one }) => ({
+  mission: one(missions, { fields: [missionNotes.missionId], references: [missions.id] }),
 }));
 
 
@@ -769,21 +821,17 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
 
 export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
   workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
+  account: one(accounts, { fields: [workspaceSkills.accountId], references: [accounts.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
   user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
 }));
 
-export const secretsRelations = relations(secrets, ({ one, many }) => ({
+export const secretsRelations = relations(secrets, ({ one }) => ({
   team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
-  refs: many(secretRefs),
-}));
-
-export const secretRefsRelations = relations(secretRefs, ({ one }) => ({
-  secret: one(secrets, { fields: [secretRefs.secretId], references: [secrets.id] }),
 }));
 
 // Advisory file reservations — prevents concurrent workers from editing the same files

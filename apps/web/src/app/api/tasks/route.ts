@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, objectives } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, eq, and, or, inArray, notInArray, gte } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
             category: true,
             project: true,
             outputRequirement: true,
-            objectiveId: true,
+            missionId: true,
             dependsOn: true,
             createdAt: true,
             updatedAt: true,
@@ -164,10 +164,14 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Project scoping
       project,
-      // Objective linking
-      objectiveId,
+      // Mission linking
+      missionId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
+      // Role routing — only runners with this skill can claim the task
+      roleSlug,
+      // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
+      context: incomingContext,
     } = body;
 
     if (!title) {
@@ -215,6 +219,22 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           { error: `Account "${apiAccount.name}" does not have permission to create tasks in this workspace.` },
           { status: 403 }
+        );
+      }
+    }
+
+    // Validate dependsOn references exist in the same workspace
+    if (Array.isArray(dependsOn) && dependsOn.length > 0) {
+      const depTasks = await db.query.tasks.findMany({
+        where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)),
+        columns: { id: true },
+      });
+      const foundIds = new Set(depTasks.map(t => t.id));
+      const missing = dependsOn.filter((id: string) => !foundIds.has(id));
+      if (missing.length > 0) {
+        return NextResponse.json(
+          { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
+          { status: 400 }
         );
       }
     }
@@ -294,14 +314,14 @@ export async function POST(req: NextRequest) {
       ? rawOutputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto'
       : undefined;
 
-    // Inherit outputRequirement from objective if not explicitly set
+    // Inherit outputRequirement from mission if not explicitly set
     let outputRequirement = explicitOutputRequirement;
-    if (!outputRequirement && objectiveId) {
-      const objective = await db.query.objectives.findFirst({
-        where: eq(objectives.id, objectiveId),
+    if (!outputRequirement && missionId) {
+      const mission = await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
         columns: { defaultOutputRequirement: true },
       });
-      outputRequirement = objective?.defaultOutputRequirement ?? 'auto';
+      outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
     }
 
     const [task] = await db
@@ -316,6 +336,9 @@ export async function POST(req: NextRequest) {
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {
+          // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
+          ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
+          // Route-computed fields take precedence
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -324,8 +347,9 @@ export async function POST(req: NextRequest) {
         ...(category ? { category } : {}),
         ...(outputRequirement ? { outputRequirement } : {}),
         ...(outputSchema ? { outputSchema } : {}),
-        ...(objectiveId ? { objectiveId } : {}),
+        ...(missionId ? { missionId } : {}),
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
+        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { Select } from '@/components/ui/Select';
 
 interface Workspace {
   id: string;
@@ -73,9 +74,9 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
   if (workspaces.length === 0) {
     return (
       <section>
-        <h2 className="text-lg font-semibold mb-4">Discord</h2>
-        <div className="border border-dashed border-border-default rounded-lg p-6 text-center">
-          <p className="text-text-secondary text-sm">Create a workspace first to configure Discord integration</p>
+        <h2 className="section-label mb-4">Discord</h2>
+        <div className="card p-6 text-center">
+          <p className="text-text-muted text-sm">Create a workspace first to configure Discord integration</p>
         </div>
       </section>
     );
@@ -83,7 +84,7 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
 
   return (
     <section>
-      <h2 className="text-lg font-semibold mb-4">Discord</h2>
+      <h2 className="section-label mb-4">Discord</h2>
 
       {message && (
         <div className={`mb-4 p-3 rounded-lg text-sm ${
@@ -99,24 +100,18 @@ export default function DiscordSection({ workspaces }: { workspaces: Workspace[]
       {workspaces.length > 1 && (
         <div className="mb-4">
           <label className="block text-sm text-text-secondary mb-1">Workspace</label>
-          <select
+          <Select
             value={selectedWorkspaceId}
-            onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-            className="w-full px-3 py-2 bg-surface-2 border border-border-default rounded-md text-sm text-text-primary"
-          >
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>
-                {ws.name}{ws.repo ? ` (${ws.repo})` : ''}
-              </option>
-            ))}
-          </select>
+            onChange={setSelectedWorkspaceId}
+            options={workspaces.map((ws) => ({ value: ws.id, label: ws.name + (ws.repo ? ` (${ws.repo})` : '') }))}
+          />
         </div>
       )}
 
       {loading ? (
         <div className="text-text-secondary text-sm">Loading...</div>
       ) : (
-        <div className="border border-border-default rounded-lg p-4 space-y-4">
+        <div className="card p-4 space-y-4">
           {/* Enable toggle */}
           <div className="flex items-center justify-between">
             <div>
