@@ -120,6 +120,7 @@ mock.module('../../src/session-logger', () => ({
 
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
+  checkMcpPreFlight: () => ({ warnings: [] }),
 }));
 
 const { WorkerManager, isEphemeralTestBranch } = await import('../../src/workers');
