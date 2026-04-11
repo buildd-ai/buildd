@@ -57,7 +57,9 @@ jobs:
             echo "Running web tests..."
             bun test --only-failures apps/web/src
             echo "Running runner tests..."
-            bun test --only-failures apps/runner/__tests__/unit
+            timeout 120 bun test --only-failures apps/runner/__tests__/unit || {
+              rc=$?; [ $rc -eq 124 ] && echo "::warning::Runner tests timed out (likely hung process)" && exit 1; exit $rc
+            }
           else
             echo "Running affected tests: $TESTS"
             bun test --only-failures $TESTS
