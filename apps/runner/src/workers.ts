@@ -15,7 +15,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
-import { extractTenantContext, decryptTenantSecret } from '../../../packages/core/tenant-crypto';
+import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import type { WorkerEnvironment } from '@buildd/shared';
 import {
   resolveBypassPermissions,
