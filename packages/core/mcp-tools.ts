@@ -54,6 +54,7 @@ export const workerActions = [
   'emit_event', 'query_events',
   'list_artifact_templates',
   'suggest_schedule_update',
+  'post_note',
 ] as const;
 
 export const adminActions = [
@@ -112,6 +113,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
+    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
   };
 
@@ -920,6 +922,55 @@ export async function handleBuilddAction(
       }
 
       return text('Unknown action');
+    }
+
+    case 'post_note': {
+      if (!params.type || !params.title) throw new Error('type and title are required');
+
+      const validNoteTypes = ['decision', 'question', 'warning', 'suggestion', 'update'];
+      if (!validNoteTypes.includes(params.type as string)) {
+        throw new Error(`Invalid type. Must be one of: ${validNoteTypes.join(', ')}`);
+      }
+
+      // Resolve missionId from task context if not provided
+      let missionId = params.missionId as string | undefined;
+      if (!missionId) {
+        // Get missionId from the current worker's task
+        const workerId = resolveWorkerId(params.workerId, ctx);
+        const workerData = await api(`/api/workers/${workerId}`);
+        if (workerData.task?.missionId) {
+          missionId = workerData.task.missionId;
+        }
+      }
+      if (!missionId) throw new Error('Could not resolve missionId — pass it explicitly or ensure this task is linked to a mission');
+
+      const workerId = ctx.workerId || (params.workerId as string) || undefined;
+
+      const noteBody: Record<string, unknown> = {
+        type: params.type,
+        title: params.title,
+        authorType: 'agent',
+        taskId: undefined as string | undefined,
+        workerId,
+        status: params.type === 'question' ? 'open' : 'answered',
+      };
+      if (params.body) noteBody.bodyText = params.body;
+      if (params.defaultChoice) noteBody.defaultChoice = params.defaultChoice;
+
+      // Resolve taskId from worker context
+      if (workerId) {
+        try {
+          const workerData = await api(`/api/workers/${workerId}`);
+          if (workerData.taskId) noteBody.taskId = workerData.taskId;
+        } catch { /* ignore — taskId is optional */ }
+      }
+
+      const note = await api(`/api/missions/${missionId}/notes`, {
+        method: 'POST',
+        body: JSON.stringify(noteBody),
+      });
+
+      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered on your next update_progress call.` : ''}`);
     }
 
     case 'create_artifact': {
