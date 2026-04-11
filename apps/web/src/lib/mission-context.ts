@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts, workspaces } from '@buildd/core/db/schema';
+import { tasks, missions, taskRecipes, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 
@@ -34,6 +34,54 @@ function timeAgo(date: Date | string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+/**
+ * Query recent mission notes and build context sections for planning prompts.
+ */
+async function buildNotesContext(missionId: string): Promise<string[]> {
+  const recentNotes = await db.query.missionNotes.findMany({
+    where: eq(missionNotes.missionId, missionId),
+    orderBy: [desc(missionNotes.createdAt)],
+    limit: 20,
+  });
+
+  if (recentNotes.length === 0) return [];
+
+  const parts: string[] = [];
+
+  const userGuidance = recentNotes.filter(n => n.type === 'guidance');
+  const openQuestions = recentNotes.filter(n => n.type === 'question' && n.status === 'open');
+  const answeredQuestions = recentNotes.filter(n => n.type === 'question' && n.status === 'answered');
+  const replies = recentNotes.filter(n => n.type === 'reply' && n.authorType === 'user');
+  const decisions = recentNotes.filter(n => n.type === 'decision');
+
+  if (userGuidance.length > 0) {
+    parts.push('\n## User Guidance');
+    for (const g of userGuidance) {
+      parts.push(`- ${g.title}${g.body ? `: ${g.body}` : ''} (${timeAgo(g.createdAt)})`);
+    }
+  }
+
+  if (answeredQuestions.length > 0 || openQuestions.length > 0) {
+    parts.push('\n## Questions & Answers');
+    for (const q of answeredQuestions) {
+      const reply = replies.find(r => r.replyTo === q.id);
+      parts.push(`- Re: "${q.title}" → User: ${reply?.title || 'answered'} (${timeAgo(q.createdAt)})`);
+    }
+    for (const q of openQuestions) {
+      parts.push(`- "${q.title}" — ${q.defaultChoice ? `agent default: ${q.defaultChoice}` : 'no default'} (${timeAgo(q.createdAt)}, still open)`);
+    }
+  }
+
+  if (decisions.length > 0) {
+    parts.push('\n## Recent Agent Decisions');
+    for (const d of decisions.slice(0, 5)) {
+      parts.push(`- ${d.title}${d.body ? `: ${d.body}` : ''} (${timeAgo(d.createdAt)})`);
+    }
+  }
+
+  return parts;
 }
 
 /**
@@ -580,6 +628,10 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
   }
 
+  // Mission feed notes (user guidance, questions, decisions)
+  const notesParts = await buildNotesContext(missionId);
+  descParts.push(...notesParts);
+
   // Dynamic orchestrator hints (static instructions are in the Organizer role content)
   descParts.push('\n## Situational Guidance');
 
@@ -789,6 +841,10 @@ async function buildHeartbeatContext(mission: {
   // Checklist (user-configured or default)
   descParts.push('\n## Checklist');
   descParts.push(mission.heartbeatChecklist || '(no checklist configured)');
+
+  // Mission feed notes (user guidance, questions, decisions)
+  const notesParts = await buildNotesContext(mission.id);
+  descParts.push(...notesParts);
 
   // Protocol — action-oriented, not passive
   descParts.push('\n## Protocol');

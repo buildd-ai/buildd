@@ -461,6 +461,27 @@ export const artifacts = pgTable('artifacts', {
   missionIdx: index('artifacts_mission_idx').on(t.missionId),
 }));
 
+// Mission notes — lightweight append-only feed for agent↔user communication
+export const missionNotes = pgTable('mission_notes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
+  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance'>(),
+  title: text('title').notNull(),
+  body: text('body'),
+  replyTo: uuid('reply_to'),
+  defaultChoice: text('default_choice'),
+  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  missionIdx: index('mission_notes_mission_idx').on(t.missionId),
+  replyToIdx: index('mission_notes_reply_to_idx').on(t.replyTo),
+  typeIdx: index('mission_notes_type_idx').on(t.type),
+  statusIdx: index('mission_notes_status_idx').on(t.status),
+}));
+
 // observations table removed — memory is now stored in external memory service
 
 // Worker heartbeats - tracks runner instance availability independent of worker records
@@ -724,6 +745,7 @@ export const missionsRelations = relations(missions, ({ one, many }) => ({
   tasks: many(tasks),
   schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
   artifacts: many(artifacts),
+  notes: many(missionNotes),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
@@ -767,6 +789,10 @@ export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
   workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [artifacts.missionId], references: [missions.id] }),
+}));
+
+export const missionNotesRelations = relations(missionNotes, ({ one }) => ({
+  mission: one(missions, { fields: [missionNotes.missionId], references: [missions.id] }),
 }));
 
 

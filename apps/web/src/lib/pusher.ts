@@ -81,4 +81,6 @@ export const events = {
   MISSION_LOOP_STALLED: 'mission:loop_stalled',
   // Failure loop prevention
   TASK_RETRY_CAP: 'task:retry_cap',
+  // Mission feed events
+  MISSION_NOTE_POSTED: 'mission:note_posted',
 } as const;

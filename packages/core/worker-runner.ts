@@ -140,6 +140,19 @@ export class WorkerRunner extends EventEmitter {
           },
           summary: { type: 'string' },
           missionComplete: { type: 'boolean' },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string' },
+                question: { type: 'string' },
+                context: { type: 'string' },
+                defaultChoice: { type: 'string' },
+              },
+              required: ['ref', 'question'],
+            },
+          },
         },
         required: ['plan', 'summary', 'missionComplete'],
       };

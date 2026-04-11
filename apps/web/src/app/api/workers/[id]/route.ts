@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -592,10 +592,75 @@ export async function PATCH(
     }
   }
 
+  // Deliver unread mission note replies/guidance to this worker
+  let noteInstructions = '';
+  if (status !== 'completed' && status !== 'failed' && worker.taskId) {
+    try {
+      const taskForNotes = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true },
+      });
+      if (taskForNotes?.missionId) {
+        // Find this worker's open questions that have replies
+        const workerQuestions = await db.query.missionNotes.findMany({
+          where: and(
+            eq(missionNotes.missionId, taskForNotes.missionId),
+            eq(missionNotes.workerId, id),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'answered'),
+          ),
+          columns: { id: true, title: true },
+        });
+
+        if (workerQuestions.length > 0) {
+          // Fetch replies to those questions
+          const questionIds = workerQuestions.map(q => q.id);
+          const replies = await db.query.missionNotes.findMany({
+            where: and(
+              eq(missionNotes.missionId, taskForNotes.missionId),
+              eq(missionNotes.type, 'reply'),
+              eq(missionNotes.authorType, 'user'),
+              inArray(missionNotes.replyTo, questionIds),
+            ),
+            orderBy: [desc(missionNotes.createdAt)],
+          });
+
+          if (replies.length > 0) {
+            const replyLines = replies.map(r => {
+              const q = workerQuestions.find(wq => wq.id === r.replyTo);
+              return `- Re: "${q?.title || 'question'}": ${r.title}${r.body ? ` — ${r.body}` : ''}`;
+            });
+            noteInstructions += `\n\n**USER REPLIES:**\n${replyLines.join('\n')}`;
+          }
+        }
+
+        // Also deliver mission-wide guidance notes
+        const guidance = await db.query.missionNotes.findMany({
+          where: and(
+            eq(missionNotes.missionId, taskForNotes.missionId),
+            eq(missionNotes.type, 'guidance'),
+            eq(missionNotes.status, 'open'),
+          ),
+          orderBy: [desc(missionNotes.createdAt)],
+          limit: 5,
+        });
+
+        if (guidance.length > 0) {
+          const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
+          noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
+        }
+      }
+    } catch (err) {
+      console.error(`[Worker ${id}] Note delivery failed:`, err);
+    }
+  }
+
+  const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
+
   // Return worker with any pending instructions and output warnings
   return jsonResponse({
     ...updated,
-    instructions: pendingInstructions || undefined,
+    instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
   });
 }
