@@ -19,6 +19,8 @@ interface Account {
   totalCost: string | null;
   activeSessions: number | null;
   maxConcurrentSessions: number | null;
+  budgetExhaustedAt: string | null;
+  budgetResetsAt: string | null;
   hasOauthToken?: boolean;
   team: { name: string } | null;
   accountWorkspaces?: { workspaceId: string }[];
@@ -188,6 +190,9 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
                         )}
                         {account.authType === 'oauth' && (
                           <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '\u221E'}</span></>
+                        )}
+                        {account.budgetExhaustedAt && (
+                          <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
                         )}
                       </div>
 

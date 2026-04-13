@@ -209,6 +209,7 @@ export default async function TaskDetailPage({
   // Dependency resolution checks
   const unresolvedDeps = depTasks.filter(d => d.status !== 'completed');
   const isBlocked = task.status === 'pending' && unresolvedDeps.length > 0;
+  const isBudgetPaused = task.status === 'pending' && !!(task.context as any)?.budgetExhausted;
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
@@ -370,6 +371,18 @@ export default async function TaskDetailPage({
                   </span>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
+        {isBudgetPaused && !isBlocked && (
+          <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+            <div className="flex items-center gap-2 text-status-warning font-medium text-sm">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Paused — OAuth budget exhausted. Will auto-retry when budget resets.
             </div>
           </div>
         )}

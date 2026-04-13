@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -275,12 +275,95 @@ export async function PATCH(
     }
   }
 
+  // Budget exhaustion detection: check if this is a budget-related failure
+  const isBudgetError = status === 'failed' && (
+    body.budgetExhausted === true ||
+    isBudgetExhaustionError(error)
+  );
+  let isBudgetReset = false;
+
+  if (isBudgetError && worker.taskId) {
+    // Parse reset time from error message, default to 5 hours from now
+    const defaultResetMs = 5 * 60 * 60 * 1000;
+    let budgetResetsAt = new Date(Date.now() + defaultResetMs);
+    if (typeof error === 'string') {
+      const resetMatch = error.match(/resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
+      if (resetMatch) {
+        const parsed = parseResetTime(resetMatch[1]);
+        if (parsed) budgetResetsAt = parsed;
+      }
+    }
+
+    // Fetch the task to get tenant context and workspace teamId
+    const taskForBudget = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+      columns: { context: true, workspaceId: true },
+      with: { workspace: { columns: { teamId: true } } },
+    });
+    const budgetTaskCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
+    const tenantCtx = budgetTaskCtx.tenantContext as { tenantId?: string } | undefined;
+    const teamId = (taskForBudget?.workspace as any)?.teamId as string | undefined;
+
+    if (tenantCtx?.tenantId && teamId) {
+      // Tenant-level budget exhaustion: upsert into tenantBudgets
+      await db
+        .insert(tenantBudgets)
+        .values({
+          tenantId: tenantCtx.tenantId,
+          teamId,
+          budgetExhaustedAt: new Date(),
+          budgetResetsAt,
+        })
+        .onConflictDoUpdate({
+          target: [tenantBudgets.tenantId, tenantBudgets.teamId],
+          set: {
+            budgetExhaustedAt: new Date(),
+            budgetResetsAt,
+            updatedAt: new Date(),
+          },
+        });
+    } else if (account.authType === 'oauth') {
+      // Account-level budget exhaustion: set flag (first-writer wins)
+      await db
+        .update(accounts)
+        .set({
+          budgetExhaustedAt: new Date(),
+          budgetResetsAt,
+        })
+        .where(and(
+          eq(accounts.id, account.id),
+          isNull(accounts.budgetExhaustedAt),
+        ));
+    }
+
+    // Reset task to pending (not failed) — will be retried when budget resets
+    const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
+    await db
+      .update(tasks)
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        updatedAt: new Date(),
+        context: {
+          ...existingCtx,
+          budgetExhausted: true,
+          previousWorkerId: id,
+        },
+      })
+      .where(eq(tasks.id, worker.taskId));
+
+    isBudgetReset = true;
+  }
+
   let shouldAutoRetry = false;
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();
 
     // Update task status + snapshot deliverables
-    if (worker.taskId) {
+    // Skip task update for budget errors — already handled above
+    if (worker.taskId && !isBudgetReset) {
       // Auto-retry: mission tasks get 1 automatic retry before permanently failing
       let taskCtxForRetry: Record<string, unknown> = {};
       if (status === 'failed') {
@@ -535,9 +618,18 @@ export async function PATCH(
     );
   }
 
+  // Broadcast budget-reset task back to pending (so dashboard updates)
+  if (isBudgetReset && worker.taskId) {
+    await triggerEvent(
+      channels.workspace(worker.workspaceId),
+      events.TASK_ASSIGNED,
+      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+    );
+  }
+
   // Send Slack/Discord notifications and webhook callback on completion/failure
-  // Smart suppression: skip notifications for heartbeat tasks with status "ok" or auto-retried failures
-  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry) {
+  // Smart suppression: skip notifications for heartbeat tasks with status "ok", auto-retried failures, or budget resets
+  if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry && !isBudgetReset) {
     try {
       const taskForNotify = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
@@ -663,4 +755,38 @@ export async function PATCH(
     instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
   });
+}
+
+// Helper: detect budget exhaustion errors from runner error messages
+function isBudgetExhaustionError(error?: string): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return lower.includes('budget limit exceeded') ||
+    lower.includes('out of extra usage') ||
+    lower.includes('error_max_budget_usd') ||
+    lower.includes('max budget');
+}
+
+// Helper: parse a reset time like "5pm" (UTC) into a Date
+function parseResetTime(timeStr: string): Date | null {
+  const match = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
+  if (!match) return null;
+
+  let hour = parseInt(match[1], 10);
+  const ampm = match[2]?.toLowerCase();
+  if (ampm === 'pm' && hour < 12) hour += 12;
+  if (ampm === 'am' && hour === 12) hour = 0;
+
+  const now = new Date();
+  const reset = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    hour, 0, 0, 0,
+  ));
+  // If the reset time is in the past today, it means tomorrow
+  if (reset.getTime() <= now.getTime()) {
+    reset.setUTCDate(reset.getUTCDate() + 1);
+  }
+  return reset;
 }
