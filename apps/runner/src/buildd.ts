@@ -117,6 +117,8 @@ export class BuilddClient {
     resultMeta?: Record<string, unknown>;
     // Completion summary (from SDK Stop hook last_assistant_message)
     summary?: string;
+    // Budget exhaustion signal
+    budgetExhausted?: boolean;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
