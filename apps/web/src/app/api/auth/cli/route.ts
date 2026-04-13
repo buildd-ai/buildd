@@ -87,7 +87,7 @@ export async function GET(req: NextRequest) {
     const plaintextKey = generateApiKey();
 
     if (!account) {
-      const teamId = await getUserDefaultTeamId(session.user.id);
+      const teamId = teamIds[0] || await getUserDefaultTeamId(session.user.id);
       if (!teamId) {
         const errorUrl = new URL(callback);
         errorUrl.searchParams.set('error', 'No team found');
