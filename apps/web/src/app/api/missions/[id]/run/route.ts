@@ -9,13 +9,13 @@ import { eq, and } from 'drizzle-orm';
 
 async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
   if (apiAccount) {
-    // Resolve all teams the account owner belongs to (not just the API key's team)
-    const ownerMembership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+    // Resolve all teams the account's user belongs to (not just the API key's team)
+    const membership = await db.query.teamMembers.findFirst({
+      where: eq(teamMembers.teamId, apiAccount.teamId),
       columns: { userId: true },
     });
-    if (ownerMembership?.userId) {
-      return getUserTeamIds(ownerMembership.userId);
+    if (membership?.userId) {
+      return getUserTeamIds(membership.userId);
     }
     return [apiAccount.teamId];
   }
