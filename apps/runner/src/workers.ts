@@ -686,8 +686,19 @@ export class WorkerManager {
         if (worker) started.push(worker);
       }
       return started;
-    } catch (err) {
-      console.error('Failed to claim pending tasks:', err);
+    } catch (err: any) {
+      const errMsg = err?.message || '';
+      // Server-side budget exhaustion — sync circuit breaker with server's knowledge
+      if (errMsg.includes('429') && (errMsg.includes('budget exhausted') || errMsg.includes('Budget exhausted'))) {
+        if (!this.claimsPaused) {
+          this.claimsPaused = true;
+          this.claimsPausedUntil = Date.now() + 60 * 60 * 1000; // 1 hour default
+          console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing claims ~60 min');
+          this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: 'Server: OAuth budget exhausted' });
+        }
+      } else {
+        console.error('Failed to claim pending tasks:', err);
+      }
       return [];
     }
   }
@@ -1558,6 +1569,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: 'Budget limit exceeded (maxBudgetUsd)',
+          budgetExhausted: true,
           milestones: worker.milestones,
           ...gitStats,
         });
@@ -1687,9 +1699,12 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        const errLower = errMsg.toLowerCase();
+        const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') || errLower.includes('max budget');
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
-          error: worker.error
+          error: worker.error,
+          ...(isBudgetError && { budgetExhausted: true }),
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
