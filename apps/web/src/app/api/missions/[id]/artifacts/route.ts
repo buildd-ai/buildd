@@ -41,13 +41,13 @@ export async function POST(
   // Verify mission exists and belongs to user's team
   let teamIds: string[] = [];
   if (apiAccount) {
-    // Resolve all teams the account owner belongs to (not just the API key's team)
-    const ownerMembership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+    // Resolve all teams the account's user belongs to (not just the API key's team)
+    const membership = await db.query.teamMembers.findFirst({
+      where: eq(teamMembers.teamId, apiAccount.teamId),
       columns: { userId: true },
     });
-    if (ownerMembership?.userId) {
-      teamIds = await getUserTeamIds(ownerMembership.userId);
+    if (membership?.userId) {
+      teamIds = await getUserTeamIds(membership.userId);
     } else {
       teamIds = [apiAccount.teamId];
     }
@@ -175,12 +175,12 @@ export async function GET(
 
   let teamIds: string[] = [];
   if (apiAccount) {
-    const ownerMembership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+    const membership = await db.query.teamMembers.findFirst({
+      where: eq(teamMembers.teamId, apiAccount.teamId),
       columns: { userId: true },
     });
-    if (ownerMembership?.userId) {
-      teamIds = await getUserTeamIds(ownerMembership.userId);
+    if (membership?.userId) {
+      teamIds = await getUserTeamIds(membership.userId);
     } else {
       teamIds = [apiAccount.teamId];
     }
