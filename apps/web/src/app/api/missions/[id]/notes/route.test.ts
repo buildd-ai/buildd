@@ -45,6 +45,7 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
+  resolveAccountTeamIds: mockGetUserTeamIds,
 }));
 
 mock.module('@/lib/pusher', () => ({
