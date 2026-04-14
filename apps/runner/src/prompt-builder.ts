@@ -174,6 +174,7 @@ export interface PromptContext {
   inputPolicy: string;
   hasApiKey: boolean;
   inputAsRetry?: boolean;
+  resolvedContextProviders?: string[];
 }
 
 /**
@@ -257,6 +258,13 @@ export function buildPrompt(ctx: PromptContext): string {
 
     memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
     promptParts.push(memoryContext.join('\n'));
+  }
+
+  // Add resolved context from providers (fetched at claim time)
+  if (ctx.resolvedContextProviders?.length) {
+    for (const block of ctx.resolvedContextProviders) {
+      promptParts.push(block);
+    }
   }
 
   // Add task description
