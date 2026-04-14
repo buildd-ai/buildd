@@ -1,142 +1,184 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-04-06
-**Previous scan**: 2026-03-30
-**Current SDK version in Buildd**: `^0.2.91` (latest: `0.2.92`)
-**Claude Code CLI**: v2.1.88 through v2.1.92 released since last scan
+**Last updated**: 2026-04-13
+**Previous scan**: 2026-04-06
+**Current SDK version in Buildd**: `^0.2.101` (latest: `0.2.104`)
+**Claude Code CLI**: v2.1.93 through v2.1.101 released since last scan
 
 ---
 
-## SDK Releases (v0.2.88 - v0.2.92)
+## SDK Releases (v0.2.94 - v0.2.104)
 
-### v0.2.92 (April 4, 2026)
-- Parity with Claude Code v2.1.92
-- No SDK-specific changes noted
+### v0.2.104 (April 13, 2026)
+- Changelog update only — no SDK-specific changes noted
 
-### v0.2.91 (April 2, 2026)
-- **`terminal_reason` field** on result messages — exposes why the query loop terminated (`completed`, `aborted_tools`, `max_turns`, `blocking_limit`, etc.)
-- **`'auto'` permission mode** added to public `PermissionMode` type
-- **Breaking**: `sandbox.failIfUnavailable` now defaults to `true` when `enabled: true` — query will error if sandbox deps missing instead of silently running unsandboxed
+### v0.2.101 (April 10, 2026)
+- **Security**: Bumped `@anthropic-ai/sdk` to `^0.81.0` and `@modelcontextprotocol/sdk` to `^1.29.0` to resolve GHSA-5474-4w2j-mq4c and transitive hono advisories
+- **Fixed**: Resume-session temp directory leaking on Windows/macOS APFS when `await using` disposal raced cleanup
+- **Fixed**: `MaxListenersExceededWarning` when running 11+ concurrent `query()` calls
 
-### v0.2.90 (April 1, 2026)
-- Parity with Claude Code v2.1.90
+### v0.2.98 (April 9, 2026)
+- Parity with Claude Code v2.1.98
 
-### v0.2.89 (April 1, 2026)
-- **`startup()` pre-warm** — pre-warms CLI subprocess before `query()`, making first query ~20x faster when startup cost can be paid upfront
-- **`includeSystemMessages`** option for `getSessionMessages()`
-- **`listSubagents()` / `getSubagentMessages()`** — retrieve subagent conversation history from sessions
-- **`includeHookEvents`** — enable hook lifecycle messages (`hook_started`, `hook_progress`, `hook_response`)
-- Fixed `ERR_STREAM_WRITE_AFTER_END` errors in single-turn queries with SDK MCP servers
-- Fixed Zod v4 `.describe()` metadata dropped from `createSdkMcpServer` tool schemas
-- Fixed MCP servers getting permanently stuck after connection race — now retry on next message
-- Fixed error result messages to correctly set `is_error: true`
+### v0.2.97 (April 8, 2026)
+- Parity with Claude Code v2.1.97
 
-### v0.2.88
-- Skipped in changelog (likely minor/internal)
+### v0.2.96 (April 8, 2026)
+- Parity with Claude Code v2.1.96
+
+### v0.2.94 (April 7, 2026)
+- **Fixed**: `getContextUsage()` to include agents passed via `options.agents` in the `agents` breakdown
+- **Fixed**: CJK/multibyte text corrupted with U+FFFD in stream-json when chunk boundaries split UTF-8 sequences
+- **Fixed**: MCP server child processes not cleaned up when SDK `query()` session ends
+- **Fixed**: Failed error-report write crashing SDK process with `unhandledRejection`
 
 ---
 
-## Claude Code CLI Releases (v2.1.88 - v2.1.92)
+## Claude Code CLI Releases (v2.1.93 - v2.1.101)
 
-### v2.1.92 Highlights (April 4)
-- `forceRemoteSettingsRefresh` policy — fail-closed startup until managed settings fetched
-- Interactive **Bedrock setup wizard** from login screen
-- Per-model and cache-hit breakdown in `/cost`
-- `/release-notes` interactive version picker
-- Remote Control session names use hostname as default prefix
-- **Write tool 60% faster** on large files with tabs/`&`/`$`
-- Removed `/tag` and `/vim` commands
+### v2.1.101 Highlights (April 10)
+- **`/team-onboarding`** command — generates teammate ramp-up guide from local Claude Code usage
+- **OS CA certificate trust** by default — enterprise TLS proxies work without extra setup
+- **`/ultraplan`** and remote sessions auto-create default cloud environment
+- **Security**: Command injection fix in POSIX `which` fallback for LSP binary detection
+- **Fixed**: Memory leak where long sessions retained dozens of historical message list copies
+- **Fixed**: `--resume`/`--continue` losing conversation context on large sessions
+- **Fixed**: Subagents not inheriting MCP tools from dynamically-injected servers
+- **Fixed**: Sub-agents in isolated worktrees denied Read/Edit access to own worktree files
+- SDK `query()` cleaning up subprocess and temp files on `break`/`await using`
 
-### v2.1.91 Highlights (April 2)
-- **MCP tool result persistence** up to 500K chars via `_meta["anthropic/maxResultSizeChars"]`
-- `disableSkillShellExecution` setting
-- Plugins can ship **executables under `bin/`**
-- Edit tool uses shorter `old_string` anchors (fewer output tokens)
-- Faster `stripAnsi` on Bun
+### v2.1.98 Highlights (April 9)
+- **Interactive Vertex AI setup wizard** from login screen
+- **Monitor tool** for streaming events from background scripts
+- **Subprocess sandbox** with PID namespace isolation on Linux
+- **`CLAUDE_CODE_SCRIPT_CAPS`** — limit per-session script invocations
+- **Security**: Bash tool permission bypass (backslash-escaped flags) fixed
+- **Security**: Compound Bash commands bypassing forced permission prompts fixed
+- **Fixed**: MCP HTTP/SSE connections accumulating ~50 MB/hr unreleased buffers on reconnect
+- **Fixed**: 429 retries burning all attempts in ~13s — exponential backoff now applies as minimum
+- `/agents` with tabbed layout (Running/Library tabs)
 
-### v2.1.90 Highlights (April 1)
-- **`/powerup`** — 18 interactive lessons with animated demos
-- `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE` for offline environments
-- `.husky` added to protected directories
-- Fixed `--resume` prompt-cache miss regression (since v2.1.69)
-- Fixed auto mode not respecting explicit user boundaries
-- **SSE transport linear-time** fix (was quadratic)
-- **SDK transcript writes** no longer slow down quadratically
-- Removed `Get-DnsClientCache` from auto-allow (DNS cache privacy)
+### v2.1.97 Highlights (April 8)
+- **Focus view toggle** (`Ctrl+O`) in NO_FLICKER mode — shows prompt, one-line tool summary with edit diffstats, and final response
+- **`refreshInterval`** status line setting to re-run command every N seconds
+- **Fixed**: NO_FLICKER mode memory leak from API retries leaving stale streaming state
+- **Fixed**: MCP HTTP/SSE connections accumulating ~50 MB/hr unreleased buffers
+- Bridge sessions showing local git repo, branch, working directory on claude.ai card
 
-### v2.1.89 Highlights (April 1)
-- **`"defer"` permission decision** for PreToolUse hooks — headless sessions can pause and resume
-- `CLAUDE_CODE_NO_FLICKER=1` for flicker-free alt-screen rendering
-- `PermissionDenied` hook with `{retry: true}` support
-- Named subagents in `@` mention typeahead
-- `MCP_CONNECTION_NONBLOCKING=true` for `-p` mode (5s bounded connections)
-- Auto mode: denied commands now show in `/permissions` with retry
-- Fixed autocompact thrash loop detection
-- Fixed nested CLAUDE.md re-injected dozens of times in long sessions
+### v2.1.96 (April 8)
+- **Fixed**: Bedrock requests failing with 403 when using `AWS_BEARER_TOKEN_BEDROCK` (regression in v2.1.94)
 
-### v2.1.88 (April 1)
-- Fixed Cowork Dispatch message delivery
+### v2.1.94 Highlights (April 7)
+- **Amazon Bedrock via Mantle** support (`CLAUDE_CODE_USE_MANTLE=1`)
+- **Plugin skills** via `"skills": ["./"]` using frontmatter `name` for stable invocation
+- **Changed**: Default effort level from medium to **high** for API-key, Bedrock/Vertex/Foundry, Team, and Enterprise users
+- **Fixed**: Agents appearing stuck after 429 with long Retry-After — error now surfaces immediately
+- **Fixed**: CJK/multibyte text corrupted with U+FFFD in stream-json on UTF-8 chunk boundaries
+
+---
+
+## Major Ecosystem Development: Claude Managed Agents (April 8, 2026)
+
+Anthropic launched **Claude Managed Agents** in public beta — a hosted agent execution environment.
+
+### What It Is
+- Fully managed agent runtime: sandboxed code execution, checkpointing, credential management, scoped permissions, end-to-end tracing
+- Developers define model, system prompt, tools, MCP servers, and skills — Anthropic handles orchestration
+- Architecture decouples the "brain" (Claude + harness) from the "hands" (sandboxes + tools) from the "session" (event log)
+- Long-running sessions that persist through disconnections
+
+### Pricing
+- Standard Claude token rates + **$0.08 per session-hour** for active agent runtime
+- No flat monthly fee — scales with usage
+
+### Multi-Agent Coordination (Research Preview)
+- Agents can spin up and direct other agents for parallel work
+- Requires separate access request (not in public beta yet)
+
+### Launch Integrations
+- Day-one: ClickUp, Slack, Notion
+- Coming soon: Google Workspace (Gmail, Drive, Calendar), Microsoft 365, GitHub
+
+### Early Adopters
+- **Notion**: Teams delegate coding, slides, spreadsheets to Claude
+- **Rakuten**: Specialist agents across departments, live in under a week
+- **Asana**: AI Teammates that pick up assigned tasks inside projects
+- **Sentry**: Agent goes from flagged bug to open PR, fully autonomous
+
+### Competitive Positioning
+- Competes directly with AWS Bedrock Agents and Google Vertex AI Agents
+- Performance: up to 10-point task success improvement over standard prompting loops
 
 ---
 
 ## Community & Ecosystem
 
 ### GitHub Stars & Adoption
-- Claude Code: **82K+ GitHub stars** (up from ~81.6K last scan)
-- **10,913 repos** indexed in plugin adoption metrics (up from 9,600+)
-- **2,300+ skills**, **770+ MCP servers**, **95+ curated plugin repos**
-- Plugin marketplace: "Anthropic Verified" badge for quality/safety review
+- Claude Code: **55K+ GitHub stars** (official repo)
+- **claw-code** (Rust rewrite from source leak): hit 50K stars in 2 hours — all-time GitHub record
+- Claude Code now authors **~4% of all GitHub commits** — a structural shift in software development
+- **340+ community resources** across 20+ categories
+- **awesome-claude-code** list: 2,300+ skills, 770+ MCP servers, 95+ curated plugin repos
 
-### GitHub Agent HQ (New)
-- GitHub launched **Agent HQ** — multi-agent orchestration platform in GitHub
-- Supports **Claude, Codex, and Copilot** side-by-side in PRs
-- Available to Copilot Pro+ and Enterprise subscribers
-- `@Claude` mention in PR comments for complex debugging and architectural review
-- Agent activity logged and reviewable in PR history
+### Trending Community Projects (New Since Last Scan)
+- **Auto-Claude** — Autonomous multi-agent coding framework with kanban UI and full SDLC integration
+- **Claude Squad** (smtg-ai) — Terminal app managing multiple Claude Code, Codex, and local agents in separate workspaces
+- **ccpm** (6K stars) — Project management for Claude Code using GitHub Issues + Git worktrees for parallel agent execution
+- **VoltAgent/awesome-claude-code-subagents** — Collection of 100+ specialized subagents
+- **claudekit** — CLI toolkit with auto-save checkpointing, code quality hooks, and 20+ specialized subagents
+- **CCHub** — Desktop app (Tauri v2 + React + Rust) for managing MCP marketplace, config profiles, skills, workflow templates
 
-### Trending Community Projects
-- **everything-claude-code** (140K stars) — agent harness performance optimization with skills, instincts, memory, security for Claude Code, Codex, Opencode, Cursor
-- **claude-mem** (43.4K+ stars) — auto-capture session memory across sessions
-- **agent-orchestrator** (ComposioHQ) — parallel coding agent spawning with CI fixes, merge conflicts, code reviews
-- **ruflo** — multi-agent swarm platform with enterprise architecture, RAG integration, native Claude Code/Codex support
-- **awesome-claude-plugins** — automated adoption metrics via n8n workflows
-- **awesome-claude-code** — curated skills, hooks, slash commands, orchestrators directory
+### Notable MCP Server Trends
+- **Context7** (Upstash) — Live, version-specific library documentation injection into sessions
+- **context-mode** — Process large outputs in sandboxed subprocesses, 98% context savings across 21 benchmarks
+- **codebase-graph** — Knowledge graphs from source code with 42-language tree-sitter AST parsing
+- **maestro-orchestrate** — Multi-agent orchestration with 22 specialized subagents and 4-phase workflows
+- **gstack** (Y Combinator CEO Garry Tan) — Six skills bundling planning, review, and shipping
 
-### Notable Plugin Ecosystem Trends
-- Top MCP servers: Figma, Playwright, Vercel, PostgreSQL, GitHub
-- Plugin `bin/` executables — new in v2.1.91, expanding toolchain capabilities
-- MCP result persistence (500K chars) enables richer tool responses (DB schemas, large indexes)
-- `disableSkillShellExecution` for enterprise security hardening
+### Microsoft Agent Framework Integration
+- Microsoft published official guide for building Claude agents with Microsoft Agent Framework
+- Supports sequential, concurrent, handoff, and group chat workflows
+- A2A protocol support for cross-framework agent communication
 
 ---
 
 ## Key Patterns & Developments
 
-### 1. Subagent Observability
-The SDK now provides deep subagent introspection:
-- `listSubagents()` / `getSubagentMessages()` for conversation history
-- `agentProgressSummaries` for periodic AI-generated progress on running subagents
-- `supportedAgents()` to query available subagents
-- `terminal_reason` to understand why agents stopped
+### 1. Claude Managed Agents — The Platform Play
+Anthropic's biggest strategic move since Claude Code. Shifts from "SDK you host" to "platform we run." Key implications for Buildd:
+- Potential competition: Managed Agents provides task lifecycle, sandboxing, and multi-agent coordination out of the box
+- Opportunity: Buildd's orchestration layer adds workspace-level coordination, team roles, and mission tracking that Managed Agents doesn't provide
+- Watch: Multi-agent coordination moving from research preview to GA
 
-### 2. Session Lifecycle Control
-- `startup()` pre-warm for **~20x faster** first query
-- `"defer"` hook permission for pause/resume workflows
-- `MCP_CONNECTION_NONBLOCKING=true` for faster headless startup
-- Autocompact thrash loop detection prevents runaway sessions
+### 2. Security Hardening Cycle
+This week saw aggressive security fixes:
+- Bash tool permission bypass via backslash-escaped flags
+- Compound Bash commands bypassing forced permission prompts
+- Subprocess PID namespace isolation on Linux
+- `CLAUDE_CODE_SCRIPT_CAPS` to limit script invocations
+- Command injection in POSIX `which` fallback
+- These fixes reinforce the importance of sandboxing in worker execution
 
-### 3. Enterprise Hardening
-- `forceRemoteSettingsRefresh` — fail-closed managed settings
-- `sandbox.failIfUnavailable` defaults to `true` (breaking change)
-- `disableSkillShellExecution` for controlled environments
-- DNS cache privacy (removed auto-allow for cache inspection)
-- Plugin `bin/` executables with proper sandboxing
+### 3. Enterprise & Multi-Cloud Maturation
+- Interactive Vertex AI setup wizard (alongside existing Bedrock wizard)
+- Amazon Bedrock via Mantle support
+- OS CA certificate trust for enterprise TLS proxies
+- `forceRemoteSettingsRefresh` for fail-closed managed settings
+- Default effort level raised to **high** for paid users
 
-### 4. Multi-Agent Orchestration Maturation
-- GitHub Agent HQ: official multi-model agent coordination
-- ComposioHQ agent-orchestrator: task planning → parallel agent spawning → CI fix
-- Named subagents with `@` mention typeahead for better discoverability
-- Auto mode boundary enforcement improvements
+### 4. Observability & Developer Experience
+- Focus view (`Ctrl+O`) for distraction-free output
+- `/team-onboarding` for team ramp-up guide generation
+- Monitor tool for background script event streaming
+- Status line `refreshInterval` for live data
+- `/agents` tabbed layout with Running/Library tabs
+- Bridge sessions showing git context on claude.ai
+
+### 5. MCP Ecosystem: Context Efficiency as Key Differentiator
+- Tool Search (lazy loading) reduces context usage by up to 95%
+- context-mode plugin: 98% context savings
+- MCP result persistence (500K chars) enables richer tool responses
+- MCP HTTP/SSE memory leak fix (50 MB/hr) — critical for long-running workers
 
 ---
 
@@ -144,29 +186,31 @@ The SDK now provides deep subagent introspection:
 
 ### High Priority
 
-1. **Bump SDK to `^0.2.92`** — picks up `terminal_reason` field (useful for worker failure diagnosis) and sandbox hardening
+1. **Bump SDK to `^0.2.104`** — picks up security fix (GHSA-5474-4w2j-mq4c), concurrent query fix (11+ sessions), and temp directory cleanup. Current `^0.2.101` already gets v0.2.101 fixes but not v0.2.104.
 
-2. **Adopt `startup()` pre-warm** — workers can pre-warm the CLI subprocess, making the first query ~20x faster. This is a significant latency improvement for task execution.
+2. **Monitor Managed Agents GA timeline** — Managed Agents is the biggest competitive signal. Buildd's value-add is workspace-level orchestration (missions, roles, team coordination, memory) that Managed Agents doesn't provide. Position Buildd as the orchestration layer *on top of* Managed Agents rather than competing with it.
 
-3. **Use `terminal_reason` for worker status** — surface why a worker's session ended (`max_turns`, `max_budget_usd`, `aborted_tools`, etc.) in the dashboard. Better diagnostics than generic "completed" or "failed".
+3. **Apply security learnings to worker execution** — The Bash permission bypass fixes highlight risks in worker sandboxing. Ensure workers can't use backslash-escaped flags or compound commands to escape restrictions. Consider PID namespace isolation (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
 
-4. **Adopt MCP result persistence (500K chars)** — our MCP server can return larger results (full task context, workspace schemas) without truncation using `_meta["anthropic/maxResultSizeChars"]`.
+4. **Leverage default effort=high change** — v2.1.94 changed default effort from medium to high for API-key users. Buildd workers may see higher quality but also higher costs. Consider exposing effort level as a task/role configuration.
 
 ### Medium Priority
 
-5. **Implement `"defer"` hook pattern** — for tasks needing human approval mid-execution, workers could pause at a tool call and resume when approved. Maps well to "waiting_input" state.
+5. **Explore Managed Agents as an alternative worker runtime** — Instead of self-hosted runners, tasks could execute on Managed Agents infrastructure. Benefits: sandboxing, checkpointing, credential management built-in. Cost: $0.08/session-hour + tokens.
 
-6. **Surface subagent observability** — use `listSubagents()` and `agentProgressSummaries` to show sub-task progress in the dashboard when workers spawn subagents.
+6. **Adopt Focus view pattern for dashboard** — The `Ctrl+O` Focus view (prompt → one-line tool summary → response) is a validated UX for showing agent work. Apply similar distillation in task detail views.
 
-7. **Leverage `MCP_CONNECTION_NONBLOCKING=true`** — for worker startup in `-p` mode, bound MCP connection wait to 5s. Prevents hangs when MCP servers are slow.
+7. **Implement `/team-onboarding` equivalent** — Auto-generate workspace ramp-up guides from existing task history, role definitions, and memory. Reduces onboarding friction for new team agents.
 
-8. **Add `/powerup`-style onboarding** — the interactive lesson system is a validated UX pattern. Consider something similar for new Buildd users.
+8. **Use Context7 pattern for workspace context** — Context7's approach of injecting version-specific documentation could apply to workspace-specific context (schemas, conventions, patterns) injected into worker sessions.
 
 ### Lower Priority
 
-9. **GitHub Agent HQ integration** — as Agent HQ matures, Buildd could position as the orchestration layer that coordinates tasks across Claude, Codex, and Copilot agents via `@` mentions.
+9. **Evaluate Microsoft Agent Framework integration** — The A2A protocol enables cross-framework agent communication. Buildd could coordinate Claude agents alongside Azure OpenAI or GitHub Copilot agents.
 
-10. **Plugin bin/ executables** — explore shipping custom CLI tools as part of role configs, now that plugins support executables under `bin/`.
+10. **Investigate context-mode pattern** — 98% context savings from sandboxed output processing could significantly extend worker session lifetimes on complex tasks.
+
+11. **Consider Managed Agents for burst capacity** — When self-hosted runners are at capacity, overflow tasks could route to Managed Agents. Hybrid execution model.
 
 ---
 
@@ -174,6 +218,7 @@ The SDK now provides deep subagent introspection:
 
 | Date | SDK Versions | CLI Versions | Key Changes |
 |------|-------------|-------------|-------------|
+| 2026-04-13 | 0.2.94-0.2.104 | 2.1.93-2.1.101 | Managed Agents launch, security hardening cycle, Vertex AI wizard, Focus view, /team-onboarding, subprocess sandbox |
 | 2026-04-06 | 0.2.88-0.2.92 | 2.1.88-2.1.92 | startup() pre-warm, terminal_reason, MCP 500K persistence, /powerup, Agent HQ |
 | 2026-03-30 | 0.2.80-0.2.87 | 2.1.80-2.1.87 | getContextUsage(), taskBudget, --bare, seed_read_state, conditional hooks |
 | 2026-03-24 | Pre-0.2.80 | Pre-2.1.80 | Agent Teams, Plugin system, V2 TS interface, Worktree support |
