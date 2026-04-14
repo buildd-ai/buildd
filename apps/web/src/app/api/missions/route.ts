@@ -26,10 +26,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
-  }
-
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
