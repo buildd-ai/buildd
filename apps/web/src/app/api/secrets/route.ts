@@ -76,7 +76,8 @@ export async function POST(req: NextRequest) {
     const provider = getSecretsProvider();
     const id = await provider.set(null, value, {
       teamId: targetTeamId,
-      accountId: accountId || auth.accountId,
+      // MCP credentials are team-wide (shared with all runners), so don't scope to account
+      accountId: purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId),
       workspaceId,
       purpose,
       label,
