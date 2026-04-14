@@ -30,11 +30,14 @@ function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
 }
 
+const ALLOWED_PROVIDERS = ['google', 'github'];
+
 export async function GET(req: NextRequest) {
   const callback = req.nextUrl.searchParams.get('callback');
   const client = req.nextUrl.searchParams.get('client') || 'cli';
   const accountName = req.nextUrl.searchParams.get('account_name');
   const levelParam = req.nextUrl.searchParams.get('level') as 'admin' | 'worker' | null;
+  const provider = req.nextUrl.searchParams.get('provider');
 
   if (!callback) {
     return NextResponse.json({ error: 'callback parameter required' }, { status: 400 });
@@ -48,6 +51,23 @@ export async function GET(req: NextRequest) {
     }
   } catch {
     return NextResponse.json({ error: 'Invalid callback URL' }, { status: 400 });
+  }
+
+  // When a specific provider is requested (e.g., from iOS "Continue with GitHub"),
+  // always redirect through that provider's OAuth flow. This ensures the token is
+  // created for the correct account even if Safari has a cached session for a
+  // different provider.
+  if (provider && ALLOWED_PROVIDERS.includes(provider)) {
+    // Build return URL WITHOUT provider to avoid redirect loop
+    const params = new URLSearchParams();
+    params.set('callback', callback);
+    if (client) params.set('client', client);
+    if (accountName) params.set('account_name', accountName);
+    if (levelParam) params.set('level', levelParam);
+
+    const returnUrl = `/api/auth/cli?${params.toString()}`;
+    const loginUrl = `/app/auth/signin?provider=${provider}&callbackUrl=${encodeURIComponent(returnUrl)}`;
+    return NextResponse.redirect(new URL(loginUrl, req.url));
   }
 
   // Check if user is authenticated
