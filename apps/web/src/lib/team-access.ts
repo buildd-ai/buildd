@@ -135,6 +135,41 @@ export async function getUserTeamIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * Resolve all team IDs accessible to an API account or session user.
+ * Handles personal teams (no teamMembers rows) by extracting userId from
+ * the team slug and resolving through teamMembers.
+ */
+export async function resolveAccountTeamIds(
+  user: { id: string } | null | undefined,
+  apiAccount: { teamId: string } | null
+): Promise<string[]> {
+  if (apiAccount) {
+    // Try to find a user via teamMembers on the account's team
+    const membership = await db.query.teamMembers.findFirst({
+      where: eq(teamMembers.teamId, apiAccount.teamId),
+      columns: { userId: true },
+    });
+    if (membership?.userId) {
+      return getUserTeamIds(membership.userId);
+    }
+    // Fallback: if the account is on a personal team (slug = personal-{userId}),
+    // extract the userId and resolve their real teams
+    const team = await db.query.teams.findFirst({
+      where: eq(teams.id, apiAccount.teamId),
+      columns: { slug: true },
+    });
+    if (team?.slug?.startsWith('personal-')) {
+      const userId = team.slug.replace('personal-', '');
+      const teamIds = await getUserTeamIds(userId);
+      if (teamIds.length > 0) return teamIds;
+    }
+    return [apiAccount.teamId];
+  }
+  if (user) return getUserTeamIds(user.id);
+  return [];
+}
+
+/**
  * Get the user's default (personal) team ID.
  * This is the team with slug 'personal-{userId}'.
  */
