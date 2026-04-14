@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'task-new' } } as any));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
@@ -24,7 +25,7 @@ mock.module('@/lib/api-auth', () => ({
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
-  resolveAccountTeamIds: mockGetUserTeamIds,
+  resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
 // Mock mission-run
@@ -74,6 +75,8 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockRunMission.mockReset();
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();

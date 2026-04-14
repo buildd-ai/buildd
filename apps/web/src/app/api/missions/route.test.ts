@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
+const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'organizer-task-1' } }));
@@ -46,7 +47,7 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
-  resolveAccountTeamIds: mockGetUserTeamIds,
+  resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
 mock.module('@/lib/schedule-helpers', () => ({
@@ -92,6 +93,8 @@ describe('POST /api/missions', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsInsert.mockReset();
     mockSchedulesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
