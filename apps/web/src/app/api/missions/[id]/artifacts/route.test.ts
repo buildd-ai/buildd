@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -45,6 +46,7 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
+  resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -111,6 +113,8 @@ describe('POST /api/missions/[id]/artifacts', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
@@ -245,6 +249,8 @@ describe('GET /api/missions/[id]/artifacts', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
