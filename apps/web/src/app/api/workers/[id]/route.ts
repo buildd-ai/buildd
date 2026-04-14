@@ -124,6 +124,8 @@ export async function PATCH(
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
+  // Infer turns from resultMeta.numTurns when not explicitly provided (external runners send resultMeta but not turns)
+  else if (resultMeta && typeof resultMeta.numTurns === 'number' && resultMeta.numTurns > 0) updates.turns = resultMeta.numTurns;
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   if (currentAction !== undefined) updates.currentAction = currentAction;
   if (milestones !== undefined) updates.milestones = milestones;
