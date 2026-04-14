@@ -625,6 +625,44 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Resolve context providers — fetch external context at claim time for prompt injection
+  for (const cw of claimedWorkers) {
+    const task = filteredTasks.find(t => t.id === cw.taskId);
+    const ctx = (task as any)?.context as { contextProviders?: Array<{ url: string; headers?: Record<string, string>; label?: string }> } | undefined;
+    if (!ctx?.contextProviders?.length) continue;
+
+    const results = await Promise.allSettled(
+      ctx.contextProviders.map(async (provider) => {
+        const res = await fetch(provider.url, {
+          headers: { ...provider.headers, "Accept": "text/markdown, text/plain" },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) throw new Error(`Context provider ${provider.url} returned ${res.status}`);
+        const body = await res.text();
+        return provider.label ? `## ${provider.label}\n\n${body}` : body;
+      }),
+    );
+    const resolved = results
+      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
+      .map(r => r.value);
+
+    if (resolved.length > 0) {
+      (cw as any).resolvedContextProviders = resolved;
+      // Also merge into task context so runner can read it from task.context
+      const taskObj = cw.task as any;
+      if (taskObj?.context) {
+        taskObj.context.resolvedContextProviders = resolved;
+      }
+    }
+
+    // Log failures for debugging
+    for (const r of results) {
+      if (r.status === "rejected") {
+        console.warn("[claim] context provider failed:", r.reason?.message || r.reason);
+      }
+    }
+  }
+
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {
     const task = filteredTasks.find(t => t.id === cw.taskId);
