@@ -1,27 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces, teamMembers } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { missions, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 
-async function resolveTeamIds(user: any, apiAccount: any): Promise<string[]> {
-  if (apiAccount) {
-    // Resolve all teams the account's user belongs to (not just the API key's team)
-    const membership = await db.query.teamMembers.findFirst({
-      where: eq(teamMembers.teamId, apiAccount.teamId),
-      columns: { userId: true },
-    });
-    if (membership?.userId) {
-      return getUserTeamIds(membership.userId);
-    }
-    return [apiAccount.teamId];
-  }
-  if (user) return getUserTeamIds(user.id);
-  return [];
-}
+const resolveTeamIds = resolveAccountTeamIds;
 
 /** Check if a mission is accessible: team match OR open-access workspace */
 async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {

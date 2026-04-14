@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, workspaces, taskSchedules, teamMembers } from '@buildd/core/db/schema';
+import { missions, workspaces, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
@@ -31,21 +31,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    let teamIds: string[] = [];
-    if (apiAccount) {
-      // Resolve all teams the account's user belongs to (not just the API key's team)
-      const membership = await db.query.teamMembers.findFirst({
-        where: eq(teamMembers.teamId, apiAccount.teamId),
-        columns: { userId: true },
-      });
-      if (membership?.userId) {
-        teamIds = await getUserTeamIds(membership.userId);
-      } else {
-        teamIds = [apiAccount.teamId];
-      }
-    } else {
-      teamIds = await getUserTeamIds(user!.id);
-    }
+    const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     if (teamIds.length === 0) {
       return NextResponse.json({ missions: [] });

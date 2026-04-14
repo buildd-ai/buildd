@@ -21,9 +21,9 @@ const TIMEOUT = 30_000;
 
 const { server, apiKey } = requireTestEnv();
 const { api, apiRaw } = createTestApi(server, apiKey);
-const cleanup = createCleanup(api);
 
 describe('Artifact Lifecycle', () => {
+  const cleanup = createCleanup(api);
   let workspaceId: string;
   let workerId: string;
   let taskId: string;
@@ -164,6 +164,7 @@ describe('Artifact Lifecycle', () => {
 });
 
 describe('PR-or-Artifact Enforcement', () => {
+  const cleanup = createCleanup(api);
   let workspaceId: string;
   let workerId: string;
 
