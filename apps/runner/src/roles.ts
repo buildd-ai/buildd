@@ -69,6 +69,15 @@ export async function syncRoleToLocal(roleConfig: RoleConfig): Promise<{ cwd: st
 
   // Write .mcp.json only if it contains valid server configs (not empty)
   if (bundle.mcpConfig && typeof bundle.mcpConfig === 'object' && Object.keys(bundle.mcpConfig).length > 0) {
+    // Auto-add type: "http" to any server that has a url field (defensive)
+    const servers = (bundle.mcpConfig as { mcpServers?: Record<string, Record<string, unknown>> }).mcpServers;
+    if (servers) {
+      for (const config of Object.values(servers)) {
+        if (config && typeof config === 'object' && 'url' in config && !config.type) {
+          config.type = 'http';
+        }
+      }
+    }
     await writeFile(join(roleDir, '.mcp.json'), JSON.stringify(bundle.mcpConfig, null, 2));
   }
 

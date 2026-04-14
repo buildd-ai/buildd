@@ -20,7 +20,14 @@ function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
         return { mcpServers: servers };
     }
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        return { mcpServers: raw };
+        // Auto-add type: "http" to any server that has a url field
+        const servers = raw as Record<string, Record<string, unknown>>;
+        for (const config of Object.values(servers)) {
+            if (config && typeof config === 'object' && 'url' in config && !config.type) {
+                config.type = 'http';
+            }
+        }
+        return { mcpServers: servers };
     }
     return {};
 }

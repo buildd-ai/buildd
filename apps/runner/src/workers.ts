@@ -1093,6 +1093,7 @@ export class WorkerManager {
         inputPolicy,
         hasApiKey: !!this.config.apiKey,
         inputAsRetry: this.config.inputAsRetry,
+        resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
       });
 
       // Add tenant context to prompt (Dispatch multi-tenant mode)

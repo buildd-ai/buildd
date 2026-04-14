@@ -120,6 +120,7 @@ export async function POST(req: NextRequest) {
             || (worker.task?.context as Record<string, unknown> | null)?.baseBranch as string
             || (worker.task?.context as Record<string, unknown> | null)?.targetBranch as string
             || workspace.gitConfig?.targetBranch
+            || workspace.gitConfig?.defaultBranch
             || repo.defaultBranch
             || 'main',
           draft: draft || false,
