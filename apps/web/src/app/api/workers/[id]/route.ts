@@ -13,6 +13,8 @@ import { notifySlack } from '@/lib/slack-notify';
 import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
+import { extractTenantContext } from '@buildd/core/tenant-crypto';
+import { fetchClaudeBudgetUsage, type BudgetUsage } from '@/lib/claude-budget';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -680,6 +682,15 @@ export async function PATCH(
         const durationMs = startedAt && completedAt
           ? new Date(completedAt as any).getTime() - new Date(startedAt as any).getTime()
           : null;
+
+        // Check Claude OAuth budget usage (fire-and-forget — null on failure)
+        let budgetUsage: BudgetUsage | null = null;
+        const taskCtx = (taskForNotify as any)?.context as Record<string, unknown> | null;
+        const tenantCtx = extractTenantContext(taskCtx);
+        if (tenantCtx?.encryptedOauthToken) {
+          budgetUsage = await fetchClaudeBudgetUsage(tenantCtx.encryptedOauthToken).catch(() => null);
+        }
+
         sendTaskCallback(taskForNotify as any, {
           status,
           summary: result?.summary,
@@ -695,7 +706,7 @@ export async function PATCH(
           filesChanged: updates.filesChanged ?? worker.filesChanged,
           linesAdded: updates.linesAdded ?? worker.linesAdded,
           linesRemoved: updates.linesRemoved ?? worker.linesRemoved,
-        }).catch((err) => console.error('Task callback error:', err));
+        }, budgetUsage).catch((err) => console.error('Task callback error:', err));
       }
     } catch (err) {
       // Non-fatal — don't block the response

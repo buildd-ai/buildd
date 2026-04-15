@@ -195,4 +195,52 @@ describe('sendTaskCallback', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('includes budgetUsage in payload when provided', async () => {
+    const task = {
+      id: 'task-budget',
+      context: {
+        callback: { url: 'https://example.com/webhook', token: 'tok' },
+      },
+    };
+
+    const budgetUsage = {
+      session: { percent: 27, resets_at: '2026-04-15T17:00:00Z' },
+      weekly: { percent: 7, resets_at: '2026-04-21T00:00:00Z' },
+    };
+
+    await sendTaskCallback(
+      task,
+      { status: 'completed', summary: 'Done' },
+      { turns: 5 },
+      budgetUsage
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(options.body as string);
+    expect(body.budgetUsage).toEqual(budgetUsage);
+    expect(body.turns).toBe(5);
+  });
+
+  it('omits budgetUsage when null', async () => {
+    const task = {
+      id: 'task-no-budget',
+      context: {
+        callback: { url: 'https://example.com/webhook' },
+      },
+    };
+
+    await sendTaskCallback(
+      task,
+      { status: 'completed' },
+      undefined,
+      null
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(options.body as string);
+    expect(body).not.toHaveProperty('budgetUsage');
+  });
 });

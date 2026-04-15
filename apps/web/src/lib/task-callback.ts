@@ -31,7 +31,11 @@ export async function sendTaskCallback(
     filesChanged?: number | null;
     linesAdded?: number | null;
     linesRemoved?: number | null;
-  }
+  },
+  budgetUsage?: {
+    session: { percent: number; resets_at: string };
+    weekly: { percent: number; resets_at: string };
+  } | null
 ): Promise<void> {
   try {
     const callback = (task.context as any)?.callback;
@@ -66,6 +70,7 @@ export async function sendTaskCallback(
         ...(workerStats?.filesChanged != null && { filesChanged: workerStats.filesChanged }),
         ...(workerStats?.linesAdded != null && { linesAdded: workerStats.linesAdded }),
         ...(workerStats?.linesRemoved != null && { linesRemoved: workerStats.linesRemoved }),
+        ...(budgetUsage && { budgetUsage }),
       }),
       signal: AbortSignal.timeout(5000),
     });
