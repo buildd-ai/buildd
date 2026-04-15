@@ -105,14 +105,37 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
-  it('skips for heartbeat missions', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date() };
+  it('skips retrigger for heartbeat missions (no missionComplete)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
       taskTemplate: { context: { heartbeat: true } },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { missionComplete: false, summary: 'Still working' } },
     };
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('completes heartbeat mission directly when missionComplete is true (no evaluation)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
+    scheduleFindFirstResult = {
+      taskTemplate: { context: { heartbeat: true } },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 5, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { missionComplete: true, summary: 'All done' } },
+    };
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockSpawnEvaluationTask).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalled();
   });
 
   it('does not skip non-heartbeat scheduled missions', async () => {
