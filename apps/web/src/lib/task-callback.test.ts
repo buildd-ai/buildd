@@ -53,6 +53,88 @@ describe('sendTaskCallback', () => {
     });
   });
 
+  it('includes worker stats in payload when provided', async () => {
+    const task = {
+      id: 'task-200',
+      context: {
+        callback: { url: 'https://example.com/webhook', token: 'tok' },
+      },
+    };
+
+    await sendTaskCallback(
+      task,
+      { status: 'completed', summary: 'Done' },
+      {
+        turns: 42,
+        inputTokens: 10000,
+        outputTokens: 5000,
+        costUsd: '0.1234',
+        durationMs: 60000,
+        commitCount: 3,
+        filesChanged: 5,
+        linesAdded: 120,
+        linesRemoved: 30,
+      }
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(options.body as string);
+    expect(body).toEqual({
+      taskId: 'task-200',
+      status: 'completed',
+      summary: 'Done',
+      dashboardUrl: 'https://buildd.dev/app/tasks/task-200',
+      turns: 42,
+      inputTokens: 10000,
+      outputTokens: 5000,
+      costUsd: 0.1234,
+      durationMs: 60000,
+      commitCount: 3,
+      filesChanged: 5,
+      linesAdded: 120,
+      linesRemoved: 30,
+    });
+  });
+
+  it('omits null/undefined worker stats fields', async () => {
+    const task = {
+      id: 'task-201',
+      context: {
+        callback: { url: 'https://example.com/webhook' },
+      },
+    };
+
+    await sendTaskCallback(
+      task,
+      { status: 'completed' },
+      {
+        turns: 10,
+        inputTokens: null,
+        outputTokens: undefined as any,
+        costUsd: null,
+        durationMs: null,
+        commitCount: 0,
+        filesChanged: null,
+        linesAdded: null,
+        linesRemoved: null,
+      }
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(options.body as string);
+    expect(body.turns).toBe(10);
+    expect(body.commitCount).toBe(0);
+    expect(body).not.toHaveProperty('inputTokens');
+    expect(body).not.toHaveProperty('outputTokens');
+    expect(body).not.toHaveProperty('costUsd');
+    expect(body).not.toHaveProperty('durationMs');
+    expect(body).not.toHaveProperty('filesChanged');
+    expect(body).not.toHaveProperty('linesAdded');
+    expect(body).not.toHaveProperty('linesRemoved');
+  });
+
   it('skips when no callback URL', async () => {
     await sendTaskCallback(
       { id: 'task-1', context: null },

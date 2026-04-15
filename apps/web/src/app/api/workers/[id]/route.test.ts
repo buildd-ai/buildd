@@ -1472,6 +1472,45 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.turns).toBe(25);
   });
 
+  it('auto-increments turns when no explicit turns or resultMeta.numTurns provided', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      turns: 5,
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        currentAction: 'Processing emails',
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // turns should be a SQL expression for auto-increment (not a literal number)
+    expect(capturedSet.turns).toBeDefined();
+    expect(capturedSet.turns.type).toBe('sql');
+  });
+
   it('does not override explicit turns with resultMeta.numTurns', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({
