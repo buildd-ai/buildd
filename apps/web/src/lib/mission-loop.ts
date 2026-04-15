@@ -42,16 +42,15 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // 2. Heartbeat skip — heartbeat missions stay cron-driven
+  // 2. Detect heartbeat — skip retrigger later, but still allow completion
+  let isHeartbeat = false;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
       where: eq(taskSchedules.id, mission.scheduleId),
       columns: { taskTemplate: true },
     });
     const ctx = (schedule?.taskTemplate as any)?.context as Record<string, unknown> | undefined;
-    if (ctx?.heartbeat === true) {
-      return { action: 'skipped' };
-    }
+    isHeartbeat = ctx?.heartbeat === true;
   }
 
   // 3. Idempotency — atomic debounce via updatedAt timestamp
@@ -89,7 +88,30 @@ export async function maybeRetriggerMission(
     taskResult.missionComplete === true ||
     structuredOutput?.missionComplete === true
   ) {
-    // Fast-path: if all work tasks are terminal, auto-complete without evaluation
+    // Heartbeat missions skip evaluation — the heartbeat IS the evaluation.
+    // Trust it and auto-complete directly.
+    if (isHeartbeat) {
+      await db
+        .update(missions)
+        .set({ status: 'completed', updatedAt: new Date() })
+        .where(eq(missions.id, missionId));
+
+      if (mission.scheduleId) {
+        await db
+          .update(taskSchedules)
+          .set({ enabled: false, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, mission.scheduleId));
+      }
+
+      await triggerEvent(
+        channels.mission(missionId),
+        events.MISSION_LOOP_COMPLETED,
+        { missionId, reason: 'heartbeat_complete' }
+      );
+      return { action: 'completed' };
+    }
+
+    // Non-heartbeat: check if all work tasks are terminal → auto-complete
     const allMissionTasks = await db.query.tasks.findMany({
       where: eq(tasks.missionId, missionId),
       columns: { status: true, title: true },
@@ -105,13 +127,11 @@ export async function maybeRetriggerMission(
     const hasDeliverables = workTasks.some(t => t.status === 'completed');
 
     if (allDone && hasDeliverables) {
-      // All work tasks are terminal — auto-complete
       await db
         .update(missions)
         .set({ status: 'completed', updatedAt: new Date() })
         .where(eq(missions.id, missionId));
 
-      // Disable schedule if present
       const m = await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
         columns: { scheduleId: true },
@@ -148,7 +168,12 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // 5. Depth guard — max cycles per trigger chain
+  // 5. Heartbeat missions don't self-retrigger — cron handles next cycle
+  if (isHeartbeat) {
+    return { action: 'skipped' };
+  }
+
+  // 6. Depth guard — max cycles per trigger chain
   const chainTaskCount = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(tasks)
@@ -169,7 +194,7 @@ export async function maybeRetriggerMission(
     return { action: 'depth_exceeded' };
   }
 
-  // 5.5. Stuck-planning detection — zero tasks with no completion signal
+  // 6.5. Stuck-planning detection — zero tasks with no completion signal
   // If the organizer reported an empty plan and triageOutcome !== 'conflict',
   // inject corrective feedback into the next cycle
   let stuckPlanningFeedback: string | null = null;
@@ -197,7 +222,7 @@ export async function maybeRetriggerMission(
     }
   }
 
-  // 6. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
+  // 7. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
   //    (Failed tasks are infrastructure issues, not planning stalls — handled separately)
   const recentPlanningTasks = await db.query.tasks.findMany({
     where: and(
@@ -235,7 +260,7 @@ export async function maybeRetriggerMission(
     return { action: 'stalled' };
   }
 
-  // 7. All guards pass — retrigger
+  // 8. All guards pass — retrigger
   const nextCycle: CycleContext = {
     cycleNumber: currentCycle + 1,
     triggerChainId,
