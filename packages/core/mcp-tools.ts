@@ -423,8 +423,9 @@ export async function handleBuilddAction(
         return text(`Task marked as failed: ${params.error}`);
       }
 
+      let result: any;
       try {
-        await api(`/api/workers/${workerId}`, {
+        result = await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
@@ -454,7 +455,14 @@ export async function handleBuilddAction(
         throw err;
       }
 
-      return text(`Task completed successfully!${params.summary ? `\n\nSummary: ${params.summary}` : ''}`);
+      // Surface effort metrics from the completed worker
+      const effortParts: string[] = [];
+      if (result?.turns) effortParts.push(`${result.turns} turns`);
+      const mcpCallCount = Array.isArray(result?.mcpCalls) ? result.mcpCalls.length : 0;
+      if (mcpCallCount > 0) effortParts.push(`${mcpCallCount} tool calls`);
+      const effortSuffix = effortParts.length > 0 ? ` (${effortParts.join(', ')})` : '';
+
+      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}`);
     }
 
     case 'create_pr': {
