@@ -672,12 +672,27 @@ export async function PATCH(
           url: `https://buildd.dev/app/tasks/${taskForNotify.id}`,
         }).catch((err) => console.error('Discord notify error:', err));
 
-        // Webhook callback
+        // Webhook callback (enriched with worker performance data)
+        const completedAt = updates.completedAt ?? worker.completedAt;
+        const startedAt = updates.startedAt ?? worker.startedAt;
+        const durationMs = startedAt && completedAt
+          ? new Date(completedAt as any).getTime() - new Date(startedAt as any).getTime()
+          : null;
         sendTaskCallback(taskForNotify as any, {
           status,
           summary: result?.summary,
           prUrl: result?.prUrl,
           structuredOutput: (result as any)?.structuredOutput,
+        }, {
+          turns: updates.turns ?? worker.turns,
+          inputTokens: updates.inputTokens ?? worker.inputTokens,
+          outputTokens: updates.outputTokens ?? worker.outputTokens,
+          costUsd: updates.costUsd ?? worker.costUsd,
+          durationMs,
+          commitCount: updates.commitCount ?? worker.commitCount,
+          filesChanged: updates.filesChanged ?? worker.filesChanged,
+          linesAdded: updates.linesAdded ?? worker.linesAdded,
+          linesRemoved: updates.linesRemoved ?? worker.linesRemoved,
         }).catch((err) => console.error('Task callback error:', err));
       }
     } catch (err) {
