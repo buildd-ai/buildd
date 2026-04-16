@@ -201,6 +201,8 @@ export interface Account {
   seatId: string | null;
   maxConcurrentSessions: number | null;
   activeSessions: number;
+  budgetExhaustedAt: string | null;
+  budgetResetsAt: string | null;
   /** Single-use ref for retrieving the encrypted OAuth token (set during claim). */
   oauthSecretRef?: string;
 
@@ -745,7 +747,8 @@ export type ClaimDiagnosticReason =
   | 'capability_mismatch'
   | 'race_lost'
   | 'deps_blocked'
-  | 'repo_busy';
+  | 'repo_busy'
+  | 'budget_exhausted';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;

@@ -117,6 +117,8 @@ export class BuilddClient {
     resultMeta?: Record<string, unknown>;
     // Completion summary (from SDK Stop hook last_assistant_message)
     summary?: string;
+    // Budget exhaustion signal
+    budgetExhausted?: boolean;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
@@ -418,6 +420,22 @@ export class BuilddClient {
     await this.fetch(`/api/workspaces/${workspaceId}/skills/${skillId}`, {
       method: 'DELETE',
     });
+  }
+
+  async searchFeedbackMemories(workspaceId: string): Promise<Array<{ id: string; title: string; content: string }>> {
+    try {
+      // Search for memories created by the feedback-digest pipeline
+      const data = await this.fetch(
+        `/api/workspaces/${workspaceId}/memory?search=${encodeURIComponent('user feedback preference')}&type=decision&limit=10`
+      );
+      const memories = (data.memories || []) as Array<{ id: string; title: string; content: string; tags?: string[] }>;
+      // Filter to only feedback-digest tagged memories
+      return memories
+        .filter((m) => m.tags?.includes('feedback-digest') || m.tags?.includes('user-preference') || m.title.toLowerCase().includes('user feedback'))
+        .map((m) => ({ id: m.id, title: m.title, content: m.content }));
+    } catch {
+      return [];
+    }
   }
 
   async matchRepos(repos: Array<{ path: string; remoteUrl: string | null; owner: string | null; repo: string | null; provider: string | null }>): Promise<{

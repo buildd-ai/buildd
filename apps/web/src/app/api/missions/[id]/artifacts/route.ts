@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, artifacts, workspaces, teamMembers } from '@buildd/core/db/schema';
+import { missions, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ArtifactType } from '@buildd/shared';
 
 const VALID_TYPES = new Set([
@@ -39,21 +39,7 @@ export async function POST(
   }
 
   // Verify mission exists and belongs to user's team
-  let teamIds: string[] = [];
-  if (apiAccount) {
-    // Resolve all teams the account owner belongs to (not just the API key's team)
-    const ownerMembership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
-      columns: { userId: true },
-    });
-    if (ownerMembership?.userId) {
-      teamIds = await getUserTeamIds(ownerMembership.userId);
-    } else {
-      teamIds = [apiAccount.teamId];
-    }
-  } else {
-    teamIds = await getUserTeamIds(user!.id);
-  }
+  const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
@@ -173,20 +159,7 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let teamIds: string[] = [];
-  if (apiAccount) {
-    const ownerMembership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
-      columns: { userId: true },
-    });
-    if (ownerMembership?.userId) {
-      teamIds = await getUserTeamIds(ownerMembership.userId);
-    } else {
-      teamIds = [apiAccount.teamId];
-    }
-  } else {
-    teamIds = await getUserTeamIds(user!.id);
-  }
+  const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),

@@ -50,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findMany: mockTasksFindMany },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
+      tenantBudgets: { findFirst: mock(() => null as any) },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -58,6 +59,7 @@ mock.module('@buildd/core/db', () => ({
       return mockTasksUpdate();
     },
     insert: (table: any) => mockWorkersInsert(),
+    delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
     execute: mockDbExecute,
   },
 }));
@@ -82,6 +84,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
+  tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -256,6 +259,93 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(429);
     const data = await res.json();
     expect(data.error).toBe('Max concurrent sessions limit reached');
+  });
+
+  it('returns 429 when OAuth budget is exhausted', async () => {
+    const futureReset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: futureReset,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(429);
+    const data = await res.json();
+    expect(data.error).toBe('OAuth budget exhausted');
+    expect(data.budgetResetsAt).toBe(futureReset);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  it('auto-clears budget exhaustion when reset time has passed', async () => {
+    const pastReset = new Date(Date.now() - 60 * 1000).toISOString();
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+      budgetExhaustedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+      budgetResetsAt: pastReset,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    // Should proceed past budget check (auto-cleared) and reach no_pending_tasks
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  it('budget exhaustion check only applies to OAuth accounts', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+      maxCostPerDay: '100',
+      totalCost: '10',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    // API accounts bypass budget check — should reach no_pending_tasks
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.diagnostics?.reason).toBe('no_pending_tasks');
   });
 
   it('returns empty workers when no accessible workspaces', async () => {

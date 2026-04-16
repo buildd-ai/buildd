@@ -400,48 +400,56 @@ describe.skipIf(!RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
     expect(aborted?.status).toBe('error');
   }, TEST_TIMEOUT);
 
-  test('two workers can run concurrently and both complete', async () => {
+  test('two tasks both complete when run back-to-back on the same workspace', async () => {
+    // The single-writer-per-repo constraint prevents concurrent workers on the same
+    // repo workspace. Tasks are claimed and run sequentially here.
     const [task1, task2] = await Promise.all([
       server.createTask({
         workspaceId: testWorkspaceId,
-        title: '[E2E-TEST] Concurrent 1',
-        description: 'Reply with exactly: "CONCURRENT_1". Nothing else.',
+        title: '[E2E-TEST] Sequential 1',
+        description: 'Reply with exactly: "SEQUENTIAL_1". Nothing else.',
         creationSource: 'api',
       }),
       server.createTask({
         workspaceId: testWorkspaceId,
-        title: '[E2E-TEST] Concurrent 2',
-        description: 'Reply with exactly: "CONCURRENT_2". Nothing else.',
+        title: '[E2E-TEST] Sequential 2',
+        description: 'Reply with exactly: "SEQUENTIAL_2". Nothing else.',
         creationSource: 'api',
       }),
     ]);
     createdTaskIds.push(task1.id, task2.id);
 
-    const [claim1, claim2] = await Promise.all([
-      localUI.claimTask(task1.id),
-      localUI.claimTask(task2.id),
-    ]);
-    createdWorkerIds.push(claim1.worker.id, claim2.worker.id);
+    // Claim and run task1 first
+    const claim1 = await localUI.claimTask(task1.id);
+    createdWorkerIds.push(claim1.worker.id);
 
-    const bothDone = await pollUntil(
+    const done1 = await pollUntil(
       async () => {
         const { workers } = await localUI.listWorkers();
-        const w1 = workers.find((w: any) => w.id === claim1.worker.id);
-        const w2 = workers.find((w: any) => w.id === claim2.worker.id);
-        const done1 = w1?.status === 'done' || w1?.status === 'error';
-        const done2 = w2?.status === 'done' || w2?.status === 'error';
-        if (done1 && done2) return { w1, w2 };
+        const w = workers.find((w: any) => w.id === claim1.worker.id);
+        if (w?.status === 'done' || w?.status === 'error') return w;
         return null;
       },
-      { timeout: TEST_TIMEOUT, interval: 3_000, label: 'both workers completion' },
+      { timeout: TEST_TIMEOUT, interval: 3_000, label: 'first worker completion' },
     );
 
-    const statuses = [bothDone.w1.status, bothDone.w2.status];
-    expect(statuses).toContain('done');
-    for (const s of statuses) {
-      expect(['done', 'error']).toContain(s);
-    }
-  }, TEST_TIMEOUT);
+    // Once task1 is done, claim and run task2
+    const claim2 = await localUI.claimTask(task2.id);
+    createdWorkerIds.push(claim2.worker.id);
+
+    const done2 = await pollUntil(
+      async () => {
+        const { workers } = await localUI.listWorkers();
+        const w = workers.find((w: any) => w.id === claim2.worker.id);
+        if (w?.status === 'done' || w?.status === 'error') return w;
+        return null;
+      },
+      { timeout: TEST_TIMEOUT, interval: 3_000, label: 'second worker completion' },
+    );
+
+    expect(done1.status).toBe('done');
+    expect(done2.status).toBe('done');
+  }, TEST_TIMEOUT * 2);
 
   test('mission-linked task completes and mission progress updates', async () => {
     const marker = `MISSION_${Date.now()}`;

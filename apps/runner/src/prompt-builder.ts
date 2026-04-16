@@ -174,6 +174,8 @@ export interface PromptContext {
   inputPolicy: string;
   hasApiKey: boolean;
   inputAsRetry?: boolean;
+  resolvedContextProviders?: string[];
+  feedbackMemories?: Array<{ id: string; title: string; content: string }>;
 }
 
 /**
@@ -257,6 +259,22 @@ export function buildPrompt(ctx: PromptContext): string {
 
     memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
     promptParts.push(memoryContext.join('\n'));
+  }
+
+  // Add user preferences derived from feedback signals
+  if (ctx.feedbackMemories && ctx.feedbackMemories.length > 0) {
+    const feedbackParts: string[] = ['## User Preferences (from feedback)'];
+    for (const mem of ctx.feedbackMemories) {
+      feedbackParts.push(`- **${mem.title}**: ${mem.content.length > 300 ? mem.content.slice(0, 300) + '...' : mem.content}`);
+    }
+    promptParts.push(feedbackParts.join('\n'));
+  }
+
+  // Add resolved context from providers (fetched at claim time)
+  if (ctx.resolvedContextProviders?.length) {
+    for (const block of ctx.resolvedContextProviders) {
+      promptParts.push(block);
+    }
   }
 
   // Add task description

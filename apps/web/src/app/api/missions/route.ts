@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, workspaces, taskSchedules, teamMembers } from '@buildd/core/db/schema';
+import { missions, workspaces, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
@@ -26,26 +26,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
-  }
-
   try {
-    let teamIds: string[] = [];
-    if (apiAccount) {
-      // Resolve all teams the account owner belongs to (not just the API key's team)
-      const ownerMembership = await db.query.teamMembers.findFirst({
-        where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
-        columns: { userId: true },
-      });
-      if (ownerMembership?.userId) {
-        teamIds = await getUserTeamIds(ownerMembership.userId);
-      } else {
-        teamIds = [apiAccount.teamId];
-      }
-    } else {
-      teamIds = await getUserTeamIds(user!.id);
-    }
+    const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     if (teamIds.length === 0) {
       return NextResponse.json({ missions: [] });

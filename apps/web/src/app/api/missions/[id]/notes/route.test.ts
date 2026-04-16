@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockMissionNotesFindFirst = mock(() => null as any);
 const mockMissionNotesFindMany = mock(() => [] as any[]);
@@ -45,6 +46,7 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
+  resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -104,6 +106,8 @@ describe('GET /api/missions/[id]/notes', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockMissionNotesFindMany.mockReset();
     mockWorkspacesFindFirst.mockReset();
@@ -164,6 +168,8 @@ describe('POST /api/missions/[id]/notes', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockTriggerEvent.mockReset();
     mockInsert.mockReset();

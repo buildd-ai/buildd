@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to 0.2.97 (focus view toggle, status line refresh interval, git worktree support, MCP HTTP/SSE buffer leak fix, hardened Bash tool permissions, Cedar syntax highlighting)
+- Bump @anthropic-ai/claude-agent-sdk to 0.2.107
 
 ### Fixed
 

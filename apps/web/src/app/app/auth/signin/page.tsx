@@ -2,12 +2,35 @@
 
 import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
+
+const ALLOWED_PROVIDERS = ['google', 'github'];
 
 function SignInContent() {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/app/home';
+  const provider = searchParams.get('provider');
   const error = searchParams.get('error');
+  const autoTriggered = useRef(false);
+
+  // Auto-trigger OAuth when a specific provider is requested (e.g., from iOS app)
+  useEffect(() => {
+    if (provider && ALLOWED_PROVIDERS.includes(provider) && !autoTriggered.current) {
+      autoTriggered.current = true;
+      signIn(provider, { callbackUrl });
+    }
+  }, [provider, callbackUrl]);
+
+  if (provider && ALLOWED_PROVIDERS.includes(provider) && !error) {
+    return (
+      <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">
+        <div className="text-center text-white">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4" />
+          <p>Redirecting to {provider === 'github' ? 'GitHub' : 'Google'}...</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">

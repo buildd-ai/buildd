@@ -52,13 +52,31 @@ mock.module('@buildd/core/db', () => ({
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
+      if (table === 'accounts') return mockAccountsUpdate();
       return mockWorkersUpdate();
     },
+    insert: (table: any) => mockTenantBudgetsInsert(),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+}));
+
+const mockAccountsUpdate = mock(() => ({
+  set: mock(() => ({
+    where: mock(() => Promise.resolve()),
+  })),
+}));
+const mockTenantBudgetsInsert = mock(() => ({
+  values: mock(() => ({
+    onConflictDoUpdate: mock(() => Promise.resolve()),
+  })),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -67,6 +85,9 @@ mock.module('@buildd/core/db/schema', () => ({
   artifacts: 'artifacts',
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
+  accounts: 'accounts',
+  tenantBudgets: { tenantId: 'tenantId', teamId: 'teamId' },
+  missionNotes: 'missionNotes',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -87,6 +108,34 @@ const mockFormatStructuredOutput = mock((structuredOutput?: any, summary?: strin
 mock.module('@/lib/artifact-helpers', () => ({
   upsertAutoArtifact: mockUpsertAutoArtifact,
   formatStructuredOutput: mockFormatStructuredOutput,
+}));
+
+mock.module('@/lib/api-response', () => ({
+  jsonResponse: (data: any, init?: any) => {
+    const body = JSON.stringify(data);
+    return new Response(body, { ...init, headers: { 'content-type': 'application/json' } });
+  },
+}));
+
+mock.module('@/lib/worker-deliverables', () => ({
+  checkWorkerDeliverables: mock(() => ({ hasAny: false })),
+  getWorkerArtifactCount: mock(() => Promise.resolve(0)),
+}));
+
+mock.module('@/lib/pushover', () => ({
+  notify: mock(() => Promise.resolve()),
+}));
+
+mock.module('@/lib/slack-notify', () => ({
+  notifySlack: mock(() => Promise.resolve()),
+}));
+
+mock.module('@/lib/discord-notify', () => ({
+  notifyDiscord: mock(() => Promise.resolve()),
+}));
+
+mock.module('@/lib/task-callback', () => ({
+  sendTaskCallback: mock(() => Promise.resolve()),
 }));
 
 import { GET, PATCH } from './route';
@@ -1381,6 +1430,313 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
+    });
+  });
+
+  it('infers turns from resultMeta.numTurns when turns not explicitly sent', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      turns: 0,
+      pendingInstructions: null,
+      milestones: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'completed',
+        resultMeta: { numTurns: 25, stopReason: 'end_turn', durationMs: 60000 },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.turns).toBe(25);
+  });
+
+  it('auto-increments turns when no explicit turns or resultMeta.numTurns provided', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      turns: 5,
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        currentAction: 'Processing emails',
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // turns should be a SQL expression for auto-increment (not a literal number)
+    expect(capturedSet.turns).toBeDefined();
+    expect(capturedSet.turns.type).toBe('sql');
+  });
+
+  it('does not override explicit turns with resultMeta.numTurns', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        turns: 10,
+        resultMeta: { numTurns: 25 },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.turns).toBe(10);
+  });
+
+  describe('budget exhaustion detection', () => {
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockReset();
+      mockWorkersFindFirst.mockReset();
+      mockTasksUpdate.mockReset();
+      mockTasksFindFirst.mockReset();
+      mockTriggerEvent.mockReset();
+      mockWorkersUpdate.mockClear();
+      mockAccountsUpdate.mockClear();
+      mockTenantBudgetsInsert.mockClear();
+
+      // Reset task update mock with tracking
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock(() => ({
+          where: mock(() => Promise.resolve()),
+        })),
+      }));
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1',
+              taskId: 'task-1',
+              workspaceId: 'ws-1',
+              accountId: 'account-1',
+              status: 'failed',
+            }]),
+          })),
+        })),
+      }));
+    });
+
+    it('detects budget error from budgetExhausted flag and resets task to pending', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      // Task query for budget detection
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {},
+        workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Budget limit exceeded (maxBudgetUsd)',
+          budgetExhausted: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Task should have been updated twice: first by budget reset (to pending), then by worker update (to failed)
+      // But budget reset should have set status to 'pending'
+      expect(mockTasksUpdate).toHaveBeenCalled();
+
+      // Account should have budgetExhaustedAt set
+      expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    it('detects budget error from error message string (fallback)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {},
+        workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'out of extra usage · resets 5pm (UTC)',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Account should have been updated (budget flag set)
+      expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    it('upserts tenant budget when task has tenant context', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {
+          tenantContext: { tenantId: 'tenant-abc' },
+        },
+        workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Budget limit exceeded',
+          budgetExhausted: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Tenant budgets should have been inserted (not account update)
+      expect(mockTenantBudgetsInsert).toHaveBeenCalled();
+      // Account should NOT have been updated (tenant takes precedence)
+      expect(mockAccountsUpdate).not.toHaveBeenCalled();
+    });
+
+    it('does not detect budget error for non-budget failures', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {},
+        missionId: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Some random error',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Account should NOT have been updated for non-budget errors
+      expect(mockAccountsUpdate).not.toHaveBeenCalled();
+      expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
     });
   });
 });

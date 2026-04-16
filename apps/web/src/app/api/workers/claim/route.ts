@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -92,6 +92,26 @@ export async function POST(req: NextRequest) {
         },
         { status: 429 }
       );
+    }
+
+    // Budget exhaustion check: block claims when OAuth budget is known-exhausted
+    if (account.budgetExhaustedAt) {
+      if (account.budgetResetsAt && new Date() >= new Date(account.budgetResetsAt)) {
+        // Budget has reset — auto-clear the flag
+        await db
+          .update(accounts)
+          .set({ budgetExhaustedAt: null, budgetResetsAt: null })
+          .where(eq(accounts.id, account.id));
+      } else {
+        return NextResponse.json(
+          {
+            error: 'OAuth budget exhausted',
+            budgetResetsAt: account.budgetResetsAt,
+            diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+          },
+          { status: 429 }
+        );
+      }
     }
   }
 
@@ -270,6 +290,30 @@ export async function POST(req: NextRequest) {
   for (const task of filteredTasks) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
+
+    // Tenant budget check: skip tasks whose tenant's budget is exhausted
+    const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
+    if (tenantCtx?.tenantId) {
+      const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (workspaceTeamId) {
+        const tenantBudget = await db.query.tenantBudgets.findFirst({
+          where: and(
+            eq(tenantBudgets.tenantId, tenantCtx.tenantId),
+            eq(tenantBudgets.teamId, workspaceTeamId),
+          ),
+        });
+        if (tenantBudget) {
+          if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
+            // Budget has reset — clean up the record
+            await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
+          } else {
+            // Budget still exhausted — skip this task
+            continue;
+          }
+        }
+      }
+    }
+
     const timeoutMinutes = Math.min(
       typeof taskContext?.timeoutMinutes === 'number' ? taskContext.timeoutMinutes : 15,
       240,
@@ -577,6 +621,44 @@ export async function POST(req: NextRequest) {
           background: role.background ?? false,
           maxTurns: role.maxTurns ?? null,
         };
+      }
+    }
+  }
+
+  // Resolve context providers — fetch external context at claim time for prompt injection
+  for (const cw of claimedWorkers) {
+    const task = filteredTasks.find(t => t.id === cw.taskId);
+    const ctx = (task as any)?.context as { contextProviders?: Array<{ url: string; headers?: Record<string, string>; label?: string }> } | undefined;
+    if (!ctx?.contextProviders?.length) continue;
+
+    const results = await Promise.allSettled(
+      ctx.contextProviders.map(async (provider) => {
+        const res = await fetch(provider.url, {
+          headers: { ...provider.headers, "Accept": "text/markdown, text/plain" },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) throw new Error(`Context provider ${provider.url} returned ${res.status}`);
+        const body = await res.text();
+        return provider.label ? `## ${provider.label}\n\n${body}` : body;
+      }),
+    );
+    const resolved = results
+      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
+      .map(r => r.value);
+
+    if (resolved.length > 0) {
+      (cw as any).resolvedContextProviders = resolved;
+      // Also merge into task context so runner can read it from task.context
+      const taskObj = cw.task as any;
+      if (taskObj?.context) {
+        taskObj.context.resolvedContextProviders = resolved;
+      }
+    }
+
+    // Log failures for debugging
+    for (const r of results) {
+      if (r.status === "rejected") {
+        console.warn("[claim] context provider failed:", r.reason?.message || r.reason);
       }
     }
   }

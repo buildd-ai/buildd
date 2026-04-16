@@ -70,6 +70,10 @@ export const accounts = pgTable('accounts', {
   maxConcurrentSessions: integer('max_concurrent_sessions'),
   activeSessions: integer('active_sessions').default(0).notNull(),
 
+  // Budget exhaustion tracking (OAuth accounts)
+  budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }),
+  budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
@@ -882,3 +886,20 @@ export const systemCache = pgTable('system_cache', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
 });
+
+// Tenant budget exhaustion tracking (Dispatch multi-tenant mode)
+export const tenantBudgets = pgTable('tenant_budgets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: text('tenant_id').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }).notNull(),
+  budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  tenantTeamIdx: uniqueIndex('tenant_budgets_tenant_team_idx').on(t.tenantId, t.teamId),
+}));
+
+export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
+  team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
+}));

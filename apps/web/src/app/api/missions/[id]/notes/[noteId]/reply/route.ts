@@ -4,7 +4,7 @@ import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 // POST /api/missions/[id]/notes/[noteId]/reply — reply to a specific note
@@ -27,13 +27,7 @@ export async function POST(
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
-  // Resolve team access
-  let teamIds: string[] = [];
-  if (apiAccount) {
-    teamIds = [apiAccount.teamId];
-  } else if (user) {
-    teamIds = await getUserTeamIds(user.id);
-  }
+  const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),

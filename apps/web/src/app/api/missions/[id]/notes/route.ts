@@ -4,7 +4,7 @@ import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
 import { eq, desc, and, lt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 
@@ -22,13 +22,7 @@ async function resolveMissionAccess(req: NextRequest, missionId: string) {
 
   if (apiAccount && apiAccount.level !== 'admin') return null;
 
-  // Resolve team IDs
-  let teamIds: string[] = [];
-  if (apiAccount) {
-    teamIds = [apiAccount.teamId];
-  } else if (user) {
-    teamIds = await getUserTeamIds(user.id);
-  }
+  const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),

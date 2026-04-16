@@ -20,6 +20,17 @@ export async function sendTaskCallback(
     summary?: string;
     prUrl?: string;
     structuredOutput?: unknown;
+  },
+  workerStats?: {
+    turns?: number | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    costUsd?: string | null;
+    durationMs?: number | null;
+    commitCount?: number | null;
+    filesChanged?: number | null;
+    linesAdded?: number | null;
+    linesRemoved?: number | null;
   }
 ): Promise<void> {
   try {
@@ -45,6 +56,16 @@ export async function sendTaskCallback(
         prUrl: result.prUrl,
         structuredOutput: result.structuredOutput,
         dashboardUrl: `https://buildd.dev/app/tasks/${task.id}`,
+        // Worker performance data
+        ...(workerStats?.turns != null && { turns: workerStats.turns }),
+        ...(workerStats?.inputTokens != null && { inputTokens: workerStats.inputTokens }),
+        ...(workerStats?.outputTokens != null && { outputTokens: workerStats.outputTokens }),
+        ...(workerStats?.costUsd != null && { costUsd: parseFloat(workerStats.costUsd) }),
+        ...(workerStats?.durationMs != null && { durationMs: workerStats.durationMs }),
+        ...(workerStats?.commitCount != null && { commitCount: workerStats.commitCount }),
+        ...(workerStats?.filesChanged != null && { filesChanged: workerStats.filesChanged }),
+        ...(workerStats?.linesAdded != null && { linesAdded: workerStats.linesAdded }),
+        ...(workerStats?.linesRemoved != null && { linesRemoved: workerStats.linesRemoved }),
       }),
       signal: AbortSignal.timeout(5000),
     });
