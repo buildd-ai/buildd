@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
   try {
     const conditions = [
       eq(userFeedback.userId, user.id),
-      eq(userFeedback.entityType, entityType),
+      eq(userFeedback.entityType, entityType as typeof VALID_ENTITY_TYPES[number]),
     ];
 
     const results = await db.query.userFeedback.findMany({
