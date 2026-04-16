@@ -17,6 +17,7 @@ import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
+import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -649,6 +650,9 @@ export default async function TaskDetailPage({
                 {!hasCodeDeliverables && result.summary && (
                   <div className="p-5 bg-surface-2 border border-border-default rounded-[10px] mb-4">
                     <MarkdownContent content={result.summary} />
+                    <div className="mt-3 pt-2 border-t border-border-default/50 flex justify-end">
+                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
+                    </div>
                   </div>
                 )}
 
@@ -692,6 +696,9 @@ export default async function TaskDetailPage({
                     {result.summary && (
                       <div className="text-sm text-text-secondary mt-2">
                         <MarkdownContent content={result.summary} />
+                        <div className="mt-2 flex justify-end">
+                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -767,6 +774,9 @@ export default async function TaskDetailPage({
                         {art.content.length > 500 ? art.content.slice(0, 500) + '...' : art.content}
                       </pre>
                     )}
+                    <div className="mt-2 pt-2 border-t border-border-default/50 flex justify-end">
+                      <AiFeedback entityType="artifact" entityId={art.id} showDismiss compact />
+                    </div>
                   </div>
                 );
               })}

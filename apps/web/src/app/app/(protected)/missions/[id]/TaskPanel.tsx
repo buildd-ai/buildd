@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import AiFeedback from '@/components/AiFeedback';
 
 interface TaskPanelData {
   id: string;
@@ -250,15 +251,21 @@ export default function TaskPanel({
                 <p className="text-[13px] text-text-secondary leading-relaxed mt-1">
                   {data.result.summary}
                 </p>
+                <div className="mt-1.5 flex justify-end">
+                  <AiFeedback entityType="summary" entityId={`task-${data.id}-summary`} compact />
+                </div>
               </div>
             )}
 
             {/* Next suggestion */}
             {data.result?.nextSuggestion && (
-              <p className="text-[12px] text-text-muted italic">
-                <span className="text-text-secondary">Suggested:</span>{' '}
-                &ldquo;{data.result.nextSuggestion}&rdquo;
-              </p>
+              <div className="flex items-start gap-2">
+                <p className="text-[12px] text-text-muted italic flex-1">
+                  <span className="text-text-secondary">Suggested:</span>{' '}
+                  &ldquo;{data.result.nextSuggestion}&rdquo;
+                </p>
+                <AiFeedback entityType="summary" entityId={`task-${data.id}-suggestion`} compact />
+              </div>
             )}
           </div>
         )}
