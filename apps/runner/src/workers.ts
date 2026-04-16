@@ -1047,10 +1047,11 @@ export class WorkerManager {
         }
       }
 
-      // Fetch workspace memory context in parallel: full digest + task-specific matches
-      const [compactResult, taskSearchResults] = await Promise.all([
+      // Fetch workspace memory context in parallel: full digest + task-specific matches + feedback memories
+      const [compactResult, taskSearchResults, feedbackMemories] = await Promise.all([
         this.buildd.getCompactObservations(task.workspaceId),
         this.buildd.searchObservations(task.workspaceId, task.title, 5),
+        this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
 
       // Fetch full content for task-specific memory matches
@@ -1094,6 +1095,7 @@ export class WorkerManager {
         hasApiKey: !!this.config.apiKey,
         inputAsRetry: this.config.inputAsRetry,
         resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
+        feedbackMemories,
       });
 
       // Add tenant context to prompt (Dispatch multi-tenant mode)
