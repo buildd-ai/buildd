@@ -18,6 +18,7 @@ import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import ActiveHoursConfig from './ActiveHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
+import AiFeedback from '@/components/AiFeedback';
 import PrioritySelector from './PrioritySelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
@@ -531,9 +532,15 @@ export default async function MissionDetailPage({
                         )}
 
                         {evalResult?.summary && (
-                          triageOutcome === 'conflict'
-                            ? <p className="text-[12px] text-text-secondary mt-1.5 leading-relaxed">{evalResult.summary}</p>
-                            : <ExpandableText text={evalResult.summary} />
+                          <>
+                            {triageOutcome === 'conflict'
+                              ? <p className="text-[12px] text-text-secondary mt-1.5 leading-relaxed">{evalResult.summary}</p>
+                              : <ExpandableText text={evalResult.summary} />
+                            }
+                            <div className="mt-1">
+                              <AiFeedback entityType="orchestration" entityId={`eval-${cycle.evaluation?.id}`} compact />
+                            </div>
+                          </>
                         )}
                       </div>
                     )}
