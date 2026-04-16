@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import AiFeedback from '@/components/AiFeedback';
 import type { MissionNote, MissionNoteType } from '@buildd/shared';
 
 const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: string; icon: string }> = {
@@ -200,6 +201,18 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
 
                   {note.body && (
                     <p className="text-[12px] text-text-secondary mt-1 leading-relaxed line-clamp-3">{note.body}</p>
+                  )}
+
+                  {/* Feedback for agent-authored notes */}
+                  {note.authorType === 'agent' && (
+                    <div className="mt-1.5">
+                      <AiFeedback
+                        entityType="note"
+                        entityId={note.id}
+                        showDismiss
+                        compact
+                      />
+                    </div>
                   )}
 
                   {/* Default choice hint for open questions */}
