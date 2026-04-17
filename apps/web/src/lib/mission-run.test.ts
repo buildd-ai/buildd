@@ -7,6 +7,7 @@ const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'o
 
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
@@ -23,6 +24,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: mockInsert,
@@ -35,6 +37,8 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
   not: (arg: any) => ({ arg, type: 'not' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {
     raw: (s: string) => s,
   }),
@@ -42,7 +46,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt' },
   workspaces: { id: 'id' },
 }));
 
@@ -57,6 +61,7 @@ const deps = {
 describe('runMission', () => {
   beforeEach(() => {
     mockMissionsFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
     mockInsertValues.mockReset();
@@ -68,6 +73,8 @@ describe('runMission', () => {
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+    // Default: no in-flight planning task (dedupe miss)
+    mockTasksFindFirst.mockResolvedValue(null);
   });
 
   it('throws when mission not found', async () => {
@@ -235,6 +242,37 @@ describe('runMission', () => {
     expect(ctx.cycleNumber).toBe(3);
     expect(ctx.triggerChainId).toBe('chain-abc');
     expect(ctx.triggerSource).toBe('retrigger');
+  });
+
+  it('returns existing in-flight planning task when one exists (dedupe)', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    const existing = {
+      id: 'task-existing',
+      title: 'Mission: Mission',
+      workspaceId: 'ws-1',
+      status: 'in_progress',
+      mode: 'planning',
+      missionId: 'obj-1',
+    };
+    mockTasksFindFirst.mockResolvedValue(existing);
+
+    const result = await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task.id).toBe('task-existing');
+    // Must not create a new task
+    expect(mockInsert).not.toHaveBeenCalled();
+    // Must not dispatch
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 
   it('auto-creates coordination workspace when mission has no workspaceId', async () => {
