@@ -210,6 +210,23 @@ export interface PollOptions {
 }
 
 /**
+ * Detect Claude OAuth quota exhaustion in a worker's error field.
+ * If detected, print a CI-recognizable notice and exit 75 (EX_TEMPFAIL)
+ * so the workflow can treat it as skipped rather than red.
+ */
+export function bailIfQuotaExhausted(worker: { status?: string; error?: string } | null | undefined): void {
+  if (!worker || worker.status !== 'error') return;
+  const err = String(worker.error || '').toLowerCase();
+  const isQuota =
+    err.includes('out of extra usage') ||
+    err.includes('budget limit exceeded') ||
+    err.includes('error_max_budget_usd');
+  if (!isQuota) return;
+  console.log(`::notice::QUOTA_EXHAUSTED — CI Claude OAuth quota hit; skipping E2E. Error: ${worker.error}`);
+  process.exit(75);
+}
+
+/**
  * Poll `fn` until it returns a truthy value or times out.
  */
 export async function pollUntil<T>(

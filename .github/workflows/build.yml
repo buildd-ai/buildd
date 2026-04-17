@@ -315,7 +315,15 @@ jobs:
           LOCAL_UI_URL: http://100.82.109.19:8767
 
       - name: E2E tests
-        run: bun test tests/e2e/server-worker-flow.test.ts
+        run: |
+          set +e
+          bun test tests/e2e/server-worker-flow.test.ts
+          code=$?
+          if [ $code -eq 75 ]; then
+            echo "::warning::E2E skipped — CI Claude OAuth quota exhausted (exit 75, EX_TEMPFAIL)"
+            exit 0
+          fi
+          exit $code
         timeout-minutes: 10
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333

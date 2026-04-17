@@ -28,6 +28,7 @@ import {
   pollUntil,
   startLocalUI,
   stopLocalUI,
+  bailIfQuotaExhausted,
 } from './helpers';
 
 // ---------------------------------------------------------------------------
@@ -365,6 +366,7 @@ describe.skipIf(!RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
       { timeout: TEST_TIMEOUT, interval: 3_000, label: 'worker completion' },
     );
 
+    bailIfQuotaExhausted(finalWorker);
     expect(finalWorker.status).toBe('done');
 
     if (finalWorker.output) {
@@ -447,6 +449,8 @@ describe.skipIf(!RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
       { timeout: TEST_TIMEOUT, interval: 3_000, label: 'second worker completion' },
     );
 
+    bailIfQuotaExhausted(done1);
+    bailIfQuotaExhausted(done2);
     expect(done1.status).toBe('done');
     expect(done2.status).toBe('done');
   }, TEST_TIMEOUT * 2);
@@ -485,6 +489,7 @@ describe.skipIf(!RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
       },
       { timeout: TEST_TIMEOUT, interval: 3_000, label: 'mission worker completion' },
     );
+    bailIfQuotaExhausted(finalWorker);
     expect(finalWorker.status).toBe('done');
 
     const updatedMission = await server.getMission(mission.id);
