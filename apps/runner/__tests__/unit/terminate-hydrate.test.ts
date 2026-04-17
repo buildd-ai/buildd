@@ -79,6 +79,8 @@ const mockCreateObservation = mock(async () => ({}));
 const mockListWorkspaces = mock(async () => []);
 const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
+const mockSearchFeedbackMemories = mock(async () => []);
+const mockGetWorkerRemote = mock(async () => null);
 
 mock.module('../../src/buildd', () => ({
   BuilddClient: class {
@@ -92,6 +94,8 @@ mock.module('../../src/buildd', () => ({
     listWorkspaces = mockListWorkspaces;
     sendHeartbeat = mockSendHeartbeat;
     runCleanup = mockRunCleanup;
+    searchFeedbackMemories = mockSearchFeedbackMemories;
+    getWorkerRemote = mockGetWorkerRemote;
   },
 }));
 

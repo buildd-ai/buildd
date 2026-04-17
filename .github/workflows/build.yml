@@ -53,17 +53,22 @@ jobs:
         timeout-minutes: 5
         run: |
           TESTS="${{ steps.affected.outputs.tests }}"
+          # Some tests hang due to Bun mock.module + SDK interaction — exclude them
+          SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging|terminate-hydrate"
           if [ "$TESTS" = "ALL" ]; then
             echo "Running web tests..."
             bun test --only-failures apps/web/src
             echo "Running runner tests..."
-            # Some tests hang due to Bun mock.module + SDK interaction — exclude them
-            SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging|terminate-hydrate"
             SAFE_TESTS=$(ls apps/runner/__tests__/unit/*.test.ts | grep -vE "$SKIP")
             bun test --only-failures $SAFE_TESTS
           else
-            echo "Running affected tests: $TESTS"
-            bun test --only-failures $TESTS
+            SAFE_AFFECTED=$(echo $TESTS | tr ' ' '\n' | grep -vE "$SKIP" | tr '\n' ' ')
+            if [ -z "$(echo $SAFE_AFFECTED | tr -d ' ')" ]; then
+              echo "All affected tests are on the SKIP list — nothing to run"
+              exit 0
+            fi
+            echo "Running affected tests: $SAFE_AFFECTED"
+            bun test --only-failures $SAFE_AFFECTED
           fi
 
       - name: Build
@@ -315,7 +320,15 @@ jobs:
           LOCAL_UI_URL: http://100.82.109.19:8767
 
       - name: E2E tests
-        run: bun test tests/e2e/server-worker-flow.test.ts
+        run: |
+          set +e
+          bun test tests/e2e/server-worker-flow.test.ts
+          code=$?
+          if [ $code -eq 75 ]; then
+            echo "::warning::E2E skipped — CI Claude OAuth quota exhausted (exit 75, EX_TEMPFAIL)"
+            exit 0
+          fi
+          exit $code
         timeout-minutes: 10
         env:
           BUILDD_TEST_SERVER: http://100.82.109.19:3333

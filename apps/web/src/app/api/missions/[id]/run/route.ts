@@ -63,6 +63,9 @@ export async function POST(
     }
 
     const result = await runMission(id, { manualRun: true });
+    if (result.deduped) {
+      return NextResponse.json({ task: result.task, deduped: true }, { status: 200 });
+    }
     return NextResponse.json({ task: result.task }, { status: 201 });
   } catch (error: any) {
     if (error.message?.includes('Cannot run mission with status')) {

@@ -1334,4 +1334,43 @@ describe('POST /api/workers/claim', () => {
       delete process.env.ENCRYPTION_KEY;
     }
   });
+
+  // Regression: on 2026-04-16, a runner claimed the same task ~12x in 52s after
+  // an OAuth budget exhaustion. Each failed worker released the task back to
+  // pending, Pusher re-dispatched, and the claim route had no gate against
+  // the same runner re-claiming. The per-runner cooldown is a server-side
+  // defense-in-depth to complement the client-side breaker (#683).
+  it('includes a per-runner cooldown SQL predicate referencing workers.runner + status + updated_at', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    await POST(req);
+
+    // Inspect the where-clause assembled for tasks.findMany
+    const call = mockTasksFindMany.mock.calls[0]?.[0] as any;
+    const whereArgs = call?.where?.args ?? [];
+    const sqlClauses = whereArgs.filter((a: any) => a?.type === 'sql');
+    const joined = sqlClauses
+      .map((s: any) => (s.strings ? s.strings.join(' ') : ''))
+      .join('|');
+
+    // The predicate must reference the workers table, the runner column,
+    // the error status, and updated_at (the cooldown cutoff comparison).
+    expect(joined).toMatch(/runner/);
+    expect(joined).toMatch(/status/);
+    expect(joined).toMatch(/updated_at/);
+  });
 });

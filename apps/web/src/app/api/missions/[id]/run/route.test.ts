@@ -184,6 +184,30 @@ describe('POST /api/missions/[id]/run', () => {
     expect(response.status).toBe(201);
   });
 
+  it('returns 200 with deduped:true when an in-flight planning task already exists', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-123',
+      teamId: 'team-1',
+    });
+
+    const existing = {
+      id: 'task-existing',
+      title: 'Mission: Test',
+      mode: 'planning',
+      status: 'in_progress',
+      missionId: 'obj-123',
+    };
+    mockRunMission.mockResolvedValue({ task: existing, deduped: true });
+
+    const response = await callHandler(createMockRequest(), 'obj-123');
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.deduped).toBe(true);
+    expect(data.task.id).toBe('task-existing');
+  });
+
   it('returns 403 for non-admin API key', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });
