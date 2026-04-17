@@ -437,6 +437,8 @@ export default async function MissionDetailPage({
             model={configModel}
             outputSchema={outputSchema}
             workspaces={teamWorkspaces}
+            maxConcurrentTasks={mission.maxConcurrentTasks}
+            activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
           />
         </div>
       )}

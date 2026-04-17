@@ -225,6 +225,13 @@
       "when": 1776385821923,
       "tag": "0031_wakeful_inhumans",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "5",
+      "when": 1776470400000,
+      "tag": "0032_chemical_titania",
+      "breakpoints": true
     }
   ]
 }

@@ -365,6 +365,54 @@ describe('POST /api/missions', () => {
     expect(body.organizerTask.id).toBe('organizer-task-1');
   });
 
+  it('stores maxConcurrentTasks in mission insert', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Capped Mission', maxConcurrentTasks: 3 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.maxConcurrentTasks).toBe(3);
+  });
+
+  it('stores maxConcurrentTasks as null when omitted', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Uncapped Mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.maxConcurrentTasks).toBeNull();
+  });
+
+  it('rejects maxConcurrentTasks < 1', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad Cap', maxConcurrentTasks: 0 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
+  it('rejects non-integer maxConcurrentTasks', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad Cap', maxConcurrentTasks: 2.5 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
   it('still succeeds when auto-start organizer fails', async () => {
     mockRunMission.mockRejectedValue(new Error('dispatch failed'));
 

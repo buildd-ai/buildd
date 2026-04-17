@@ -104,7 +104,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
@@ -1319,6 +1319,7 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
+          if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -1333,7 +1334,8 @@ export async function handleBuilddAction(
           ).join('\n');
           const schedCtx = data.schedule?.taskTemplate?.context;
           const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
-          return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
+          return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${concurrentInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -1356,6 +1358,7 @@ export async function handleBuilddAction(
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
+          if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',

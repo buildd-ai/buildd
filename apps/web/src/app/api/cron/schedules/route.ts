@@ -284,8 +284,33 @@ export async function GET(req: NextRequest) {
             status: true,
             workspaceId: true,
             teamId: true,
+            maxConcurrentTasks: true,
           },
         });
+
+        // Check mission-level maxConcurrentTasks cap
+        if (linkedMission && linkedMission.maxConcurrentTasks != null && linkedMission.maxConcurrentTasks > 0) {
+          const activeStatuses = ['pending', 'assigned', 'in_progress'];
+          const [missionActiveCount] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(tasks)
+            .where(and(
+              eq(tasks.missionId, linkedMission.id),
+              inArray(tasks.status, activeStatuses),
+            ));
+
+          if ((missionActiveCount?.count ?? 0) >= linkedMission.maxConcurrentTasks) {
+            const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
+            const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            await db
+              .update(taskSchedules)
+              .set({ nextRunAt, updatedAt: now })
+              .where(eq(taskSchedules.id, schedule.id));
+            skipped++;
+            continue;
+          }
+        }
 
         // Skip if linked mission is no longer active
         if (linkedMission && linkedMission.status !== 'active') {
