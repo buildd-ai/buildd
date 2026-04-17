@@ -1,12 +1,14 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and, not, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, not, isNotNull, inArray, sql } from 'drizzle-orm';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect;
+  /** True when an in-flight planning task was returned instead of creating a new one */
+  deduped?: boolean;
 }
 
 export interface CycleContext {
@@ -56,6 +58,24 @@ export async function runMission(
 
   if (mission.status !== 'active') {
     throw new Error(`Cannot run mission with status: ${mission.status}. Only active missions can be run.`);
+  }
+
+  // Dedupe: if a planning task for this mission is already in-flight, return it
+  // instead of creating another. Prevents double-runs from stale client state (e.g.
+  // iOS Pusher missing a cron-fired run, user taps Run, two parallel planners start).
+  // Safe for other callers: cron path creates tasks directly (not via runMission),
+  // retrigger runs only after the prior planner is in a terminal state, and mission
+  // auto-start happens at creation when no tasks exist yet.
+  const inFlight = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.missionId, missionId),
+      eq(tasks.mode, 'planning'),
+      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+    ),
+    orderBy: (t, { desc }) => [desc(t.createdAt)],
+  });
+  if (inFlight) {
+    return { task: inFlight, deduped: true };
   }
 
   // Resolve workspace: use mission's workspace or auto-create an orchestrator workspace
