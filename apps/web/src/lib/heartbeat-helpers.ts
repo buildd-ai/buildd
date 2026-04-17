@@ -11,9 +11,6 @@ export const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat Checklist
 - Check pending tasks for blockers`;
 
 export const DEFAULT_HEARTBEAT_CRON = '*/30 * * * *';
-export const DEFAULT_ACTIVE_HOURS_START = 8;
-export const DEFAULT_ACTIVE_HOURS_END = 22;
-export const DEFAULT_ACTIVE_HOURS_TIMEZONE = 'America/New_York';
 
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: are we planning, building, reviewing, or stalled?
 - [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
