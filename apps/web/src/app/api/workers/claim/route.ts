@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets } from '@buildd/core/db/schema';
-import { eq, and, or, not, isNull, sql, inArray, lt } from 'drizzle-orm';
+import { eq, and, or, not, isNull, sql, inArray, lt, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -11,6 +11,7 @@ import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
+import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -94,7 +95,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Budget exhaustion check: block claims when OAuth budget is known-exhausted
+    // Budget exhaustion check: soft flag instead of hard 429.
+    // Tenant tasks (with their own API keys) should still be claimable,
+    // so we filter non-tenant tasks in the claim loop below.
     if (account.budgetExhaustedAt) {
       if (account.budgetResetsAt && new Date() >= new Date(account.budgetResetsAt)) {
         // Budget has reset — auto-clear the flag
@@ -102,18 +105,14 @@ export async function POST(req: NextRequest) {
           .update(accounts)
           .set({ budgetExhaustedAt: null, budgetResetsAt: null })
           .where(eq(accounts.id, account.id));
-      } else {
-        return NextResponse.json(
-          {
-            error: 'OAuth budget exhausted',
-            budgetResetsAt: account.budgetResetsAt,
-            diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
-          },
-          { status: 429 }
-        );
       }
     }
   }
+
+  // Track whether account's own OAuth budget is exhausted (tenant tasks can still proceed)
+  const accountBudgetExhausted = account.authType === 'oauth'
+    && !!account.budgetExhaustedAt
+    && (!account.budgetResetsAt || new Date() < new Date(account.budgetResetsAt));
 
   const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
 
@@ -281,6 +280,47 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Compute router inputs once per claim request. The router is pure; the
+  // signals below feed its budget-pressure and spike-detection gates.
+  const dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
+    ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
+    : 0;
+
+  const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
+  const recentClaims = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(and(eq(tasks.claimedBy, account.id), gte(tasks.claimedAt, tenMinAgo)));
+  const recentClaimCount = recentClaims[0]?.count ?? 0;
+
+  // Pre-fetch role floors for every unique roleSlug referenced by the filtered tasks.
+  // We look up workspace-level roles first, then fall back to account-level; matches
+  // the later roleConfig enrichment pattern but deduped up front.
+  const uniqueRoleSlugs = [...new Set(
+    filteredTasks.map(t => (t as any).roleSlug as string | null).filter(Boolean) as string[],
+  )];
+  const roleFloorMap = new Map<string, Tier | 'inherit'>();
+  if (uniqueRoleSlugs.length > 0) {
+    const wsRoles = await db.query.workspaceSkills.findMany({
+      where: and(
+        inArray(workspaceSkills.slug, uniqueRoleSlugs),
+        eq(workspaceSkills.isRole, true),
+        eq(workspaceSkills.enabled, true),
+        or(
+          inArray(workspaceSkills.workspaceId, workspaceIds),
+          eq(workspaceSkills.accountId, account.id),
+        ),
+      ),
+      columns: { slug: true, model: true, workspaceId: true },
+    });
+    for (const r of wsRoles) {
+      // Prefer the most-specific (workspace-scoped) entry if both exist.
+      if (!roleFloorMap.has(r.slug) || r.workspaceId) {
+        roleFloorMap.set(r.slug, r.model as Tier | 'inherit');
+      }
+    }
+  }
+
   // Claim tasks and create workers with optimistic locking to prevent double-assignment.
   // Note: neon-http driver does not support interactive transactions (where intermediate
   // results inform subsequent queries). Instead, we use atomic UPDATE...WHERE status='pending'
@@ -291,8 +331,13 @@ export async function POST(req: NextRequest) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
 
-    // Tenant budget check: skip tasks whose tenant's budget is exhausted
+    // Account budget exhausted: skip non-tenant tasks (they'd use the account's own OAuth token)
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
+    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
+      continue;
+    }
+
+    // Tenant budget check: skip tasks whose tenant's budget is exhausted
     if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
@@ -320,6 +365,34 @@ export async function POST(req: NextRequest) {
     );
     const expiresAt = new Date(Date.now() + timeoutMinutes * 60 * 1000);
 
+    // Smart-routing decision — maps task kind/complexity + budget pressure +
+    // spike signal + role floor → effective model (haiku/sonnet/opus) or
+    // 'paused'. The resulting model is written to task.predictedModel and
+    // injected into task.context.model so worker-runner picks it up.
+    const roleSlug = (task as any).roleSlug as string | null;
+    const explicit = (taskContext?.model as string | undefined) || null;
+    const routingDecision = resolveEffectiveModel({
+      explicitModel: explicit,
+      kind: (task as any).kind || null,
+      complexity: (task as any).complexity || null,
+      roleFloor: roleSlug ? roleFloorMap.get(roleSlug) || null : null,
+      dailyBudgetPct,
+      recentClaimCount,
+      priority: task.priority ?? 0,
+    });
+
+    if (routingDecision.model === 'paused') {
+      // Budget-pressure pause — leave the task pending for next cycle.
+      continue;
+    }
+
+    // Persist the routing decision in task context so the runner consumes it
+    // without extra lookups. We also write predictedModel for analytics.
+    const patchedContext = {
+      ...(taskContext || {}),
+      model: routingDecision.model,
+    };
+
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     const updated = await db
       .update(tasks)
@@ -328,11 +401,18 @@ export async function POST(req: NextRequest) {
         claimedAt: now,
         expiresAt,
         status: 'assigned',
+        predictedModel: routingDecision.model,
+        context: patchedContext,
       })
       .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
       .returning({ id: tasks.id });
 
     if (updated.length === 0) continue; // Already claimed by another request
+
+    // Keep the in-memory task copy in sync so downstream enrichment and the
+    // returned worker payload see the patched context.
+    (task as any).context = patchedContext;
+    (task as any).predictedModel = routingDecision.model;
 
     // Generate branch name based on workspace gitConfig
     const gitConfig = task.workspace?.gitConfig as {
@@ -758,5 +838,11 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return jsonResponse({ workers: claimedWorkers });
+  return jsonResponse({
+    workers: claimedWorkers,
+    ...(accountBudgetExhausted && {
+      budgetResetsAt: account.budgetResetsAt,
+      diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
+    }),
+  });
 }

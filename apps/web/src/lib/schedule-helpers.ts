@@ -116,6 +116,88 @@ export function describeSchedule(expr: string): string {
   return expr;
 }
 
+export type CadenceClass = {
+  kind: 'observation' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'coordination';
+  complexity: 'simple' | 'normal' | 'complex';
+  /** Who decided — 'user' when template overrides, 'default' when inferred. */
+  classifiedBy: 'user' | 'default';
+};
+
+/**
+ * Infer task kind/complexity from a schedule's cadence.
+ *
+ * Rationale: frequent pollers (every minute, every 5 min) are effectively
+ * observation heartbeats — they rarely need more than Haiku. Hourly checks
+ * skew toward simple engineering. Daily or less-frequent runs stay on the
+ * engineering/normal baseline (Sonnet).
+ *
+ * Template-level overrides (kind / complexity set by the user in the UI)
+ * always win — this helper only fills blanks.
+ */
+export function classifyScheduleCadence(args: {
+  cronExpression: string;
+  isHeartbeat?: boolean;
+  userKind?: CadenceClass['kind'] | null;
+  userComplexity?: CadenceClass['complexity'] | null;
+}): CadenceClass {
+  const { cronExpression, isHeartbeat, userKind, userComplexity } = args;
+
+  // User-supplied values always win.
+  if (userKind && userComplexity) {
+    return { kind: userKind, complexity: userComplexity, classifiedBy: 'user' };
+  }
+
+  // Heartbeat schedules are observation-only by contract (no fan-out work).
+  if (isHeartbeat) {
+    return {
+      kind: userKind ?? 'observation',
+      complexity: userComplexity ?? 'simple',
+      classifiedBy: userKind || userComplexity ? 'user' : 'default',
+    };
+  }
+
+  // Measure the cadence by asking croner for the next two runs.
+  const intervalMin = measureCadenceMinutes(cronExpression);
+
+  let kind: CadenceClass['kind'] = 'engineering';
+  let complexity: CadenceClass['complexity'] = 'normal';
+
+  if (intervalMin != null) {
+    if (intervalMin <= 15) {
+      // High-frequency polling — treat as observation heartbeat.
+      kind = 'observation';
+      complexity = 'simple';
+    } else if (intervalMin <= 60) {
+      // Hourly or finer — usually a simple check/sync.
+      complexity = 'simple';
+    }
+    // Else: leave engineering/normal.
+  }
+
+  return {
+    kind: userKind ?? kind,
+    complexity: userComplexity ?? complexity,
+    classifiedBy: userKind || userComplexity ? 'user' : 'default',
+  };
+}
+
+/**
+ * Return the gap in minutes between the next two runs of a cron expression,
+ * or null if croner can't evaluate it.
+ */
+function measureCadenceMinutes(expr: string): number | null {
+  try {
+    const cron = new Cron(expr);
+    const first = cron.nextRun();
+    if (!first) return null;
+    const second = cron.nextRun(new Date(first.getTime() + 1000));
+    if (!second) return null;
+    return Math.round((second.getTime() - first.getTime()) / 60000);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Convert a date string (YYYY-MM-DD) and time string (HH:MM) into a
  * one-shot cron expression: `minute hour day month *`

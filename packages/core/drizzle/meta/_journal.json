@@ -211,6 +211,20 @@
       "when": 1776114356086,
       "tag": "0029_tiny_hitman",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1776355515238,
+      "tag": "0030_wealthy_betty_brant",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1776385821923,
+      "tag": "0031_wakeful_inhumans",
+      "breakpoints": true
     }
   ]
 }

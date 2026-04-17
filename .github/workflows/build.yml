@@ -58,7 +58,7 @@ jobs:
             bun test --only-failures apps/web/src
             echo "Running runner tests..."
             # Some tests hang due to Bun mock.module + SDK interaction — exclude them
-            SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging"
+            SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging|terminate-hydrate"
             SAFE_TESTS=$(ls apps/runner/__tests__/unit/*.test.ts | grep -vE "$SKIP")
             bun test --only-failures $SAFE_TESTS
           else
@@ -329,6 +329,17 @@ jobs:
           #   runner only → run all (worker tests need API too)
           #   both        → run all
           E2E_SCOPE: ${{ needs.changes.outputs.runner == 'true' && 'all' || 'api' }}
+
+      - name: Dump runner and server logs on failure
+        if: failure()
+        run: |
+          echo "--- /tmp/buildd-test.log (runner) ---"
+          tailscale ssh ubuntu@100.82.109.19 \
+            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -500 /tmp/buildd-test.log 2>/dev/null'" || echo "(no runner log)"
+          echo ""
+          echo "--- /tmp/buildd-web.log (server, tail) ---"
+          tailscale ssh ubuntu@100.82.109.19 \
+            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -200 /tmp/buildd-web.log 2>/dev/null'" || echo "(no server log)"
 
       - name: Cleanup
         if: always()

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.83.1",
+  "version": "0.84.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -15,6 +15,10 @@
     "./buildd-mcp-server": "./buildd-mcp-server.ts",
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
+    "./model-aliases": "./model-aliases.ts",
+    "./model-router": "./model-router.ts",
+    "./task-classifier": "./task-classifier.ts",
+    "./routing-analytics": "./routing-analytics.ts",
     "./secrets": "./secrets/index.ts",
     "./file-reservations": "./file-reservations.ts",
     "./memory-client": "./memory-client.ts",

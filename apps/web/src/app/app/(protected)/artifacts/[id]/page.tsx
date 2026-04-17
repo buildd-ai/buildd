@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import MarkdownContent from '@/components/MarkdownContent';
+import AiFeedback from '@/components/AiFeedback';
 
 export const dynamic = 'force-dynamic';
 
@@ -201,6 +202,11 @@ export default async function ArtifactDetailPage({
           {!artifact.content && !artifact.storageKey && artifact.type !== 'link' && (
             <p className="text-text-muted text-sm">No content</p>
           )}
+
+          {/* Feedback */}
+          <div className="mt-4 pt-3 border-t border-border-default/50 flex justify-end">
+            <AiFeedback entityType="artifact" entityId={artifact.id} />
+          </div>
         </div>
       </div>
     </main>

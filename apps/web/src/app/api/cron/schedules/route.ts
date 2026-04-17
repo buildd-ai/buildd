@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
-import { computeNextRunAt, computeStaggerOffset } from '@/lib/schedule-helpers';
+import { computeNextRunAt, computeStaggerOffset, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
@@ -368,6 +368,15 @@ export async function GET(req: NextRequest) {
         // Promote outputSchema from context to top-level column so the runner can read it
         const outputSchema = taskContext.outputSchema as Record<string, unknown> | undefined;
 
+        // Classify this task so the claim-time router can pick the right tier.
+        // Template overrides win; otherwise we infer from cadence + heartbeat flag.
+        const cadence = classifyScheduleCadence({
+          cronExpression: schedule.cronExpression,
+          isHeartbeat,
+          userKind: template.kind ?? null,
+          userComplexity: template.complexity ?? null,
+        });
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -382,6 +391,9 @@ export async function GET(req: NextRequest) {
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
             creationSource: linkedMission ? 'orchestrator' : 'schedule',
+            kind: cadence.kind,
+            complexity: cadence.complexity,
+            classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
             ...(outputSchema ? { outputSchema } : {}),
