@@ -71,6 +71,7 @@ export const events = {
   WORKER_COMMAND: 'worker:command',
   // Schedule events
   SCHEDULE_TRIGGERED: 'schedule:triggered',
+  SCHEDULE_DEFERRED: 'schedule:deferred',
   // Task dependency events
   CHILDREN_COMPLETED: 'task:children_completed',
   TASK_UNBLOCKED: 'task:unblocked',

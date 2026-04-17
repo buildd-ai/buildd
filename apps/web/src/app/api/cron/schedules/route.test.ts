@@ -8,9 +8,13 @@ process.env.CRON_SECRET = 'test-secret';
 
 const mockTaskSchedulesFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
+const mockMissionsFindMany = mock(() => [] as any[]);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1', name: 'Test Workspace' }) as any);
 const mockWorkerHeartbeatsFindMany = mock(() => [] as any[]);
+const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
+const mockAccountsFindMany = mock(() => [] as any[]);
+const mockWorkersFindMany = mock(() => [] as any[]);
 
 let taskSchedulesUpdateCalls: any[] = [];
 let tasksInsertValues: any = null;
@@ -35,11 +39,13 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       taskSchedules: { findMany: mockTaskSchedulesFindMany },
-      missions: { findFirst: mockMissionsFindFirst },
+      missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
-      workers: { findMany: mock(() => []) },
+      workers: { findMany: mockWorkersFindMany },
       workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany },
+      accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
+      accounts: { findMany: mockAccountsFindMany },
     },
     insert: mock((_table: any) => ({
       values: mock((vals: any) => {
@@ -80,11 +86,14 @@ mock.module('@buildd/core/db/schema', () => ({
   missions: 'missions',
   workers: 'workers',
   workerHeartbeats: 'workerHeartbeats',
+  accounts: 'accounts',
+  accountWorkspaces: 'accountWorkspaces',
 }));
 
 mock.module('@/lib/schedule-helpers', () => ({
   computeNextRunAt: () => new Date('2026-01-01'),
   computeStaggerOffset: () => 0,
+  classifyScheduleCadence: () => ({ kind: 'standard', complexity: 'medium', classifiedBy: 'default' }),
 }));
 
 mock.module('@/lib/task-dispatch', () => ({
@@ -94,7 +103,7 @@ mock.module('@/lib/task-dispatch', () => ({
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
   channels: { workspace: (id: string) => `workspace-${id}` },
-  events: { SCHEDULE_TRIGGERED: 'schedule-triggered' },
+  events: { SCHEDULE_TRIGGERED: 'schedule-triggered', SCHEDULE_DEFERRED: 'schedule:deferred' },
 }));
 
 mock.module('@/lib/mission-context', () => ({
@@ -147,9 +156,13 @@ describe('GET /api/cron/schedules', () => {
   beforeEach(() => {
     mockTaskSchedulesFindMany.mockReset();
     mockMissionsFindFirst.mockReset();
+    mockMissionsFindMany.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkerHeartbeatsFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountsFindMany.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     taskSchedulesUpdateCalls = [];
@@ -158,9 +171,13 @@ describe('GET /api/cron/schedules', () => {
 
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockMissionsFindMany.mockResolvedValue([]);
     mockTasksFindFirst.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace' });
     mockWorkerHeartbeatsFindMany.mockResolvedValue([]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockAccountsFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockResolvedValue([]);
   });
 
   it('should resolve workspace from mission when schedule.workspaceId is null', async () => {
@@ -299,6 +316,113 @@ describe('GET /api/cron/schedules', () => {
     const body = await res.json();
     expect(body.created).toBe(1);
     expect(tasksInsertValues).not.toBeNull();
+  });
+
+  // --- Seat-aware priority scheduling ---
+
+  it('should process high-priority mission before low-priority within same account', async () => {
+    const schedHigh = makeSchedule({
+      id: 'sched-high',
+      workspaceId: 'ws-1',
+      name: 'High Priority',
+      taskTemplate: { title: 'High Priority Task', mode: 'execution', priority: 0 },
+    });
+    const schedLow = makeSchedule({
+      id: 'sched-low',
+      workspaceId: 'ws-1',
+      name: 'Low Priority',
+      taskTemplate: { title: 'Low Priority Task', mode: 'execution', priority: 0 },
+    });
+
+    // Return low first to verify sorting works
+    mockTaskSchedulesFindMany.mockResolvedValue([schedLow, schedHigh]);
+
+    // Batch missions: high priority for sched-high, low for sched-low
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'mission-high', scheduleId: 'sched-high', priority: 10 },
+      { id: 'mission-low', scheduleId: 'sched-low', priority: 1 },
+    ]);
+
+    // Workspace → account mapping
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { accountId: 'acct-1', workspaceId: 'ws-1' },
+    ]);
+
+    // Account with only 1 seat
+    mockAccountsFindMany.mockResolvedValue([
+      { id: 'acct-1', authType: 'api', maxConcurrentSessions: null, maxConcurrentWorkers: 1 },
+    ]);
+
+    // No active workers
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.created).toBe(1);
+    expect(body.deferred).toBe(1);
+    // The created task should be the high-priority one
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.title).toBe('High Priority Task');
+  });
+
+  it('should emit schedule_deferred event with seats_full reason', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindMany.mockResolvedValue([]);
+
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { accountId: 'acct-1', workspaceId: 'ws-1' },
+    ]);
+    mockAccountsFindMany.mockResolvedValue([
+      { id: 'acct-1', authType: 'api', maxConcurrentSessions: null, maxConcurrentWorkers: 1 },
+    ]);
+
+    // 1 active worker = already at capacity
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'worker-1', accountId: 'acct-1' },
+    ]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    const { triggerEvent } = await import('@/lib/pusher');
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.created).toBe(0);
+    expect(body.deferred).toBe(1);
+
+    expect(triggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'schedule:deferred',
+      {
+        schedule: { id: 'sched-1', name: 'Test Schedule' },
+        reason: 'seats_full',
+      }
+    );
+  });
+
+  it('should create all tasks when seats are plentiful', async () => {
+    const sched1 = makeSchedule({ id: 'sched-1', workspaceId: 'ws-1', name: 'Schedule 1' });
+    const sched2 = makeSchedule({ id: 'sched-2', workspaceId: 'ws-1', name: 'Schedule 2' });
+    mockTaskSchedulesFindMany.mockResolvedValue([sched1, sched2]);
+    mockMissionsFindMany.mockResolvedValue([]);
+
+    mockAccountWorkspacesFindMany.mockResolvedValue([
+      { accountId: 'acct-1', workspaceId: 'ws-1' },
+    ]);
+    mockAccountsFindMany.mockResolvedValue([
+      { id: 'acct-1', authType: 'api', maxConcurrentSessions: null, maxConcurrentWorkers: 10 },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.created).toBe(2);
+    expect(body.deferred).toBe(0);
   });
 
   it('should promote outputSchema from mission context to top-level task column', async () => {

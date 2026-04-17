@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset, classifyScheduleCadence } from '@/lib/schedule-helpers';
@@ -116,6 +116,7 @@ export async function GET(req: NextRequest) {
   let processed = 0;
   let created = 0;
   let skipped = 0;
+  let deferred = 0;
   let errors = 0;
   let triggerChecks = 0;
 
@@ -129,7 +130,79 @@ export async function GET(req: NextRequest) {
       limit: MAX_SCHEDULES_PER_RUN,
     });
 
-    for (const schedule of dueSchedules) {
+    // --- Seat-aware priority scheduling ---
+    // Batch-fetch missions linked to due schedules for priority sorting
+    const scheduleIds = dueSchedules.map(s => s.id);
+    const linkedMissionsBatch = scheduleIds.length > 0
+      ? await db.query.missions.findMany({
+          where: inArray(missions.scheduleId, scheduleIds),
+          columns: { id: true, scheduleId: true, priority: true },
+        })
+      : [];
+    const missionPriorityByScheduleId = new Map(
+      linkedMissionsBatch.map(m => [m.scheduleId, m.priority])
+    );
+
+    // Fetch workspace → account mappings for seat checks
+    const scheduleWorkspaceIds = [...new Set(
+      dueSchedules.map(s => s.workspaceId).filter(Boolean)
+    )] as string[];
+    const wsAccountLinks = scheduleWorkspaceIds.length > 0
+      ? await db.query.accountWorkspaces.findMany({
+          where: and(
+            inArray(accountWorkspaces.workspaceId, scheduleWorkspaceIds),
+            eq(accountWorkspaces.canClaim, true),
+          ),
+          columns: { accountId: true, workspaceId: true },
+        })
+      : [];
+    const workspaceToAccount = new Map<string, string>();
+    for (const link of wsAccountLinks) {
+      if (!workspaceToAccount.has(link.workspaceId)) {
+        workspaceToAccount.set(link.workspaceId, link.accountId);
+      }
+    }
+
+    // Fetch account concurrency limits
+    const uniqueAccountIds = [...new Set(wsAccountLinks.map(l => l.accountId))];
+    const accountRecords = uniqueAccountIds.length > 0
+      ? await db.query.accounts.findMany({
+          where: inArray(accounts.id, uniqueAccountIds),
+          columns: { id: true, authType: true, maxConcurrentSessions: true, maxConcurrentWorkers: true },
+        })
+      : [];
+    const accountById = new Map(accountRecords.map(a => [a.id, a]));
+
+    // Count active workers per account
+    const activeWorkerCounts = new Map<string, number>();
+    if (uniqueAccountIds.length > 0) {
+      const activeWorkerRows = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.accountId, uniqueAccountIds),
+          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
+        ),
+        columns: { id: true, accountId: true },
+      });
+      for (const w of activeWorkerRows) {
+        if (!w.accountId) continue;
+        activeWorkerCounts.set(w.accountId, (activeWorkerCounts.get(w.accountId) ?? 0) + 1);
+      }
+    }
+
+    // Sort: group by account, then by mission priority descending
+    // Higher-priority missions get seats first when there's contention
+    const sortedSchedules = [...dueSchedules].sort((a, b) => {
+      const acctA = a.workspaceId ? (workspaceToAccount.get(a.workspaceId) ?? '') : '';
+      const acctB = b.workspaceId ? (workspaceToAccount.get(b.workspaceId) ?? '') : '';
+      if (acctA !== acctB) return acctA.localeCompare(acctB);
+      const priA = missionPriorityByScheduleId.get(a.id) ?? 0;
+      const priB = missionPriorityByScheduleId.get(b.id) ?? 0;
+      return priB - priA;
+    });
+
+    const seatsConsumedThisRun = new Map<string, number>();
+
+    for (const schedule of sortedSchedules) {
       processed++;
 
       try {
@@ -189,6 +262,46 @@ export async function GET(req: NextRequest) {
               .where(eq(taskSchedules.id, schedule.id));
             skipped++;
             continue;
+          }
+        }
+
+        // Seat-aware check: skip if account has no available seats
+        if (schedule.workspaceId) {
+          const seatAccountId = workspaceToAccount.get(schedule.workspaceId);
+          if (seatAccountId) {
+            const seatAccount = accountById.get(seatAccountId);
+            if (seatAccount) {
+              const seatLimit = seatAccount.authType === 'oauth'
+                ? (seatAccount.maxConcurrentSessions ?? seatAccount.maxConcurrentWorkers)
+                : seatAccount.maxConcurrentWorkers;
+              const currentActive = (activeWorkerCounts.get(seatAccountId) ?? 0)
+                + (seatsConsumedThisRun.get(seatAccountId) ?? 0);
+
+              if (currentActive >= seatLimit) {
+                const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+                const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
+                const deferredNext = rawNext && staggerSec > 0
+                  ? new Date(rawNext.getTime() + staggerSec * 1000)
+                  : rawNext;
+                await db
+                  .update(taskSchedules)
+                  .set({ nextRunAt: deferredNext, updatedAt: now })
+                  .where(eq(taskSchedules.id, schedule.id));
+
+                await triggerEvent(
+                  channels.workspace(schedule.workspaceId),
+                  events.SCHEDULE_DEFERRED,
+                  {
+                    schedule: { id: schedule.id, name: schedule.name },
+                    reason: 'seats_full',
+                  }
+                );
+
+                deferred++;
+                skipped++;
+                continue;
+              }
+            }
           }
         }
 
@@ -425,6 +538,14 @@ export async function GET(req: NextRequest) {
           })
           .returning();
 
+        // Track seat consumption for this cron run
+        if (schedule.workspaceId) {
+          const seatAccountId = workspaceToAccount.get(schedule.workspaceId);
+          if (seatAccountId) {
+            seatsConsumedThisRun.set(seatAccountId, (seatsConsumedThisRun.get(seatAccountId) ?? 0) + 1);
+          }
+        }
+
         // Update lastTaskId
         await db
           .update(taskSchedules)
@@ -525,6 +646,7 @@ export async function GET(req: NextRequest) {
       processed,
       created,
       skipped,
+      deferred,
       errors,
       triggerChecks,
       heartbeatOrphans,
