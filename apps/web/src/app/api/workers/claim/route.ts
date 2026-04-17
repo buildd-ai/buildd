@@ -13,6 +13,12 @@ import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 
+// Per-runner claim cooldown after a worker error. Matches the typical
+// client-side breaker minimum (5m for generic errors, 60s default here since
+// the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
+// <1s). Scoped per-runner so healthy runners keep picking up tasks.
+const CLAIM_COOLDOWN_MS = 60_000;
+
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -232,6 +238,21 @@ export async function POST(req: NextRequest) {
         WHERE ws.id = t3.workspace_id
         AND ws.repo IS NOT NULL
       )
+    )`
+  );
+
+  // Per-runner cooldown: skip tasks where this runner recently had a worker
+  // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
+  // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
+  // Scoped by runner so a healthy runner can still pick up the task.
+  const cooldownCutoff = new Date(Date.now() - CLAIM_COOLDOWN_MS);
+  claimableConditions.push(
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${workers} w_cd
+      WHERE w_cd.task_id = ${tasks.id}
+      AND w_cd.runner = ${runner}
+      AND w_cd.status = 'error'
+      AND w_cd.updated_at > ${cooldownCutoff}
     )`
   );
 
