@@ -330,6 +330,17 @@ jobs:
           #   both        → run all
           E2E_SCOPE: ${{ needs.changes.outputs.runner == 'true' && 'all' || 'api' }}
 
+      - name: Dump runner and server logs on failure
+        if: failure()
+        run: |
+          echo "--- /tmp/buildd-test.log (runner) ---"
+          tailscale ssh ubuntu@100.82.109.19 \
+            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -500 /tmp/buildd-test.log 2>/dev/null'" || echo "(no runner log)"
+          echo ""
+          echo "--- /tmp/buildd-web.log (server, tail) ---"
+          tailscale ssh ubuntu@100.82.109.19 \
+            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -200 /tmp/buildd-web.log 2>/dev/null'" || echo "(no server log)"
+
       - name: Cleanup
         if: always()
         run: |
