@@ -27,6 +27,7 @@ const mockGetWorkerRemote = mock(async (_id: string) => null as any);
 const mockListWorkspaces = mock(async () => []);
 const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
+const mockSearchFeedbackMemories = mock(async () => []);
 const mockClaimTask = mock(async () => ({ workers: [] }));
 const mockGetWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
 const mockGetCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
@@ -47,6 +48,7 @@ mock.module('../../src/buildd', () => ({
     listWorkspaces = mockListWorkspaces;
     sendHeartbeat = mockSendHeartbeat;
     runCleanup = mockRunCleanup;
+    searchFeedbackMemories = mockSearchFeedbackMemories;
     setOutbox() {}
   },
 }));
