@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to 0.2.107
+- Bump @anthropic-ai/claude-agent-sdk to ^0.2.109
 
 ### Fixed
 
+- Heartbeat missions now complete instead of looping forever (#673)
 - Mark ALL working workers as error on startup, not just zero-activity ones (#623)
 - Scope secrets by workspace team to prevent cross-team leakage (#529)
 - Claim pending tasks on runner startup (#527)

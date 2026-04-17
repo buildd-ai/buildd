@@ -1,6 +1,7 @@
 'use client';
 
 import { timeAgo } from '@/lib/mission-helpers';
+import AiFeedback from '@/components/AiFeedback';
 
 interface HeartbeatTimelineProps {
   tasks: Array<{
@@ -85,6 +86,9 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
               {icon}
               <span className="text-[11px] text-text-muted shrink-0 w-16">{timeAgo(task.createdAt)}</span>
               <span className={`flex-1 truncate ${textClass}`}>{summary}</span>
+              <span onClick={(e) => e.stopPropagation()}>
+                <AiFeedback entityType="heartbeat" entityId={task.id} showDismiss compact />
+              </span>
               <svg className="w-3.5 h-3.5 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>

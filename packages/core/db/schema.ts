@@ -881,6 +881,27 @@ export const secretsRelations = relations(secrets, ({ one }) => ({
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
 }));
 
+// User feedback on AI-generated content (thumbs up/down + dismiss)
+export const userFeedback = pgTable('user_feedback', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  entityType: text('entity_type').notNull().$type<'note' | 'artifact' | 'summary' | 'orchestration' | 'heartbeat'>(),
+  entityId: text('entity_id').notNull(),
+  signal: text('signal').notNull().$type<'up' | 'down' | 'dismiss'>(),
+  comment: text('comment'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userEntityIdx: uniqueIndex('user_feedback_user_entity_idx').on(t.userId, t.entityType, t.entityId),
+  entityIdx: index('user_feedback_entity_idx').on(t.entityType, t.entityId),
+  teamIdx: index('user_feedback_team_idx').on(t.teamId),
+}));
+
+export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
+  user: one(users, { fields: [userFeedback.userId], references: [users.id] }),
+  team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
+}));
+
 // Advisory file reservations — prevents concurrent workers from editing the same files
 export const fileReservations = pgTable('file_reservations', {
   id: uuid('id').primaryKey().defaultRandom(),

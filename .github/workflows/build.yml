@@ -58,7 +58,7 @@ jobs:
             bun test --only-failures apps/web/src
             echo "Running runner tests..."
             # Some tests hang due to Bun mock.module + SDK interaction — exclude them
-            SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging"
+            SKIP="agent-teams-integration|agent-teams|error-handling|team-tracking-hook|worker-manager-state|worker-manager-lifecycle|worker-manager-messaging|terminate-hydrate"
             SAFE_TESTS=$(ls apps/runner/__tests__/unit/*.test.ts | grep -vE "$SKIP")
             bun test --only-failures $SAFE_TESTS
           else
