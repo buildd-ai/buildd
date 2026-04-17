@@ -14,6 +14,7 @@ const mockWorkerHeartbeatsFindMany = mock(() => [] as any[]);
 
 let taskSchedulesUpdateCalls: any[] = [];
 let tasksInsertValues: any = null;
+let mockSelectCount = 0;
 
 const makeUpdateChain = (calls: any[]) => ({
   set: mock((vals: any) => {
@@ -51,7 +52,7 @@ mock.module('@buildd/core/db', () => ({
     update: mock((_table: any) => makeUpdateChain(taskSchedulesUpdateCalls)),
     select: mock(() => ({
       from: mock(() => ({
-        where: mock(() => [{ count: 0 }]),
+        where: mock(() => [{ count: mockSelectCount }]),
       })),
     })),
     delete: mock((_table: any) => ({
@@ -153,6 +154,7 @@ describe('GET /api/cron/schedules', () => {
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     taskSchedulesUpdateCalls = [];
     tasksInsertValues = null;
+    mockSelectCount = 0;
 
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -243,6 +245,60 @@ describe('GET /api/cron/schedules', () => {
       triggerSource: 'cron',
       heartbeat: true,
     }));
+  });
+
+  it('should skip task creation when mission maxConcurrentTasks cap is reached', async () => {
+    mockSelectCount = 3;
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      maxConcurrentTasks: 3,
+    });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped).toBe(1);
+    expect(body.created).toBe(0);
+    expect(tasksInsertValues).toBeNull();
+  });
+
+  it('should create task when mission maxConcurrentTasks cap is not reached', async () => {
+    mockSelectCount = 1;
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      maxConcurrentTasks: 3,
+    });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created).toBe(1);
+    expect(tasksInsertValues).not.toBeNull();
+  });
+
+  it('should not enforce cap when maxConcurrentTasks is null', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      maxConcurrentTasks: null,
+    });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created).toBe(1);
+    expect(tasksInsertValues).not.toBeNull();
   });
 
   it('should promote outputSchema from mission context to top-level task column', async () => {

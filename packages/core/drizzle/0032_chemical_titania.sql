@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "max_concurrent_tasks" integer;

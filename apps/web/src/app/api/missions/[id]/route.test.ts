@@ -299,6 +299,52 @@ describe('PATCH /api/missions/[id]', () => {
     expect(updatedSetData.status).toBe('archived');
   });
 
+  it('updates maxConcurrentTasks', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: 5 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.maxConcurrentTasks).toBe(5);
+  });
+
+  it('clears maxConcurrentTasks with null', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: null }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.maxConcurrentTasks).toBeNull();
+  });
+
+  it('rejects maxConcurrentTasks < 1', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: 0 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
+  it('rejects non-integer maxConcurrentTasks', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: 1.5 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
   it('rejects invalid status', async () => {
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
