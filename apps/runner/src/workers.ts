@@ -11,6 +11,7 @@ import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
+import { authContextOf, classifyClaimError, ContextBreaker } from './claim-breaker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
@@ -178,63 +179,11 @@ export class WorkerManager {
   private consecutiveQuickFailures = 0;
   private claimsPaused = false;
   private claimsPausedUntil = 0;
-
-  /**
-   * Classify an error as a systemic issue that should trip the circuit breaker.
-   * Returns pause config if the error affects all workers, null if worker-specific.
-   */
-  private classifyErrorForCircuitBreaker(err: string): { label: string; pauseMs: number } | null {
-    // Quota exhaustion: "out of extra usage · resets 5pm (UTC)"
-    const quotaMatch = err.match(/out of extra usage.*resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
-    if (quotaMatch) {
-      return { label: `Quota exhausted (resets ${quotaMatch[1]} ${quotaMatch[2]})`, pauseMs: this.parseResetDelay(quotaMatch[1]) };
-    }
-
-    // Usage limit / rate limit patterns from Claude API
-    if (err.includes('rate limit') || err.includes('rate_limit') || err.includes('too many requests')) {
-      return { label: 'Rate limited', pauseMs: 5 * 60 * 1000 };
-    }
-    if (err.includes('overloaded') || err.includes('529') || err.includes('service unavailable')) {
-      return { label: 'API overloaded', pauseMs: 2 * 60 * 1000 };
-    }
-
-    // Billing / credits
-    if (err.includes('billing') || err.includes('insufficient credits') || err.includes('payment') || err.includes('out_of_credits')) {
-      return { label: 'Billing error', pauseMs: 60 * 60 * 1000 };
-    }
-
-    // Auth failures (affect all workers using same key)
-    if (err.includes('invalid api key') || err.includes('authentication failed') || err.includes('401 unauthorized') || err.includes('api key is required')) {
-      return { label: 'Auth failure', pauseMs: 30 * 60 * 1000 };
-    }
-
-    // SDK budget limit (maxBudgetUsd) — worker-level, but if configured globally it hits everyone
-    if (err.includes('max budget') || err.includes('maxbudgetusd') || err.includes('budget exceeded')) {
-      return { label: 'Budget limit reached', pauseMs: 60 * 60 * 1000 };
-    }
-
-    return null; // Worker-specific error, no circuit breaker
-  }
-
-  /** Parse a reset time like "5pm" into ms delay from now (assumes UTC) */
-  private parseResetDelay(timeStr: string): number {
-    const hourMatch = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
-    if (!hourMatch) return 60 * 60 * 1000;
-
-    let hour = parseInt(hourMatch[1], 10);
-    const ampm = hourMatch[2]?.toLowerCase();
-    if (ampm === 'pm' && hour < 12) hour += 12;
-    if (ampm === 'am' && hour === 12) hour = 0;
-
-    const now = new Date();
-    const target = new Date(now);
-    target.setUTCHours(hour, 0, 0, 0);
-    if (target.getTime() <= now.getTime()) {
-      target.setUTCDate(target.getUTCDate() + 1);
-    }
-
-    return Math.max(5 * 60 * 1000, Math.min(target.getTime() - now.getTime(), 24 * 60 * 60 * 1000));
-  }
+  // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
+  // the affected account or tenant so other contexts keep claiming.
+  private contextBreaker = new ContextBreaker();
+  // workerId → auth context the worker was started under, for breaker routing on error.
+  private workerAuthContexts = new Map<string, string>();
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
   private hookFactory: HookFactory;
@@ -508,6 +457,7 @@ export class WorkerManager {
       if (worker.status === 'done' || worker.status === 'error') {
         this.workers.delete(id);
         this.sessions.delete(id);
+        this.workerAuthContexts.delete(id);
         storeDeleteWorker(id);
         count++;
       }
@@ -691,20 +641,21 @@ export class WorkerManager {
             await overlayRoleFiles(roleDir, workspacePath);
           }
         }
+        this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
         const worker = await this.startFromClaim(claimedWorker, task, resolvedPath);
         if (worker) started.push(worker);
       }
       return started;
     } catch (err: any) {
       const errMsg = err?.message || '';
-      // Server-side budget exhaustion — sync circuit breaker with server's knowledge
+      // Server-side account OAuth budget exhaustion — pause only the account
+      // context so tenant tasks can still be claimed on later polls.
       if (errMsg.includes('429') && (errMsg.includes('budget exhausted') || errMsg.includes('Budget exhausted'))) {
-        if (!this.claimsPaused) {
-          this.claimsPaused = true;
-          this.claimsPausedUntil = Date.now() + 60 * 60 * 1000; // 1 hour default
-          console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing claims ~60 min');
-          this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: 'Server: OAuth budget exhausted' });
-        }
+        const pauseMs = 60 * 60 * 1000;
+        const untilMs = Date.now() + pauseMs;
+        this.contextBreaker.pause('account', untilMs);
+        console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing account claims ~60 min');
+        this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: 'Server: OAuth budget exhausted (account)' });
       } else {
         console.error('Failed to claim pending tasks:', err);
       }
@@ -713,6 +664,16 @@ export class WorkerManager {
   }
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
+    // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
+    // quota exhausted), skip without re-claiming — tenant tasks can still run.
+    const ctx = authContextOf(task);
+    if (this.contextBreaker.isPaused(ctx)) {
+      const until = this.contextBreaker.pausedUntil(ctx);
+      console.log(`[WorkerManager] Context ${ctx} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
+      claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, taskId: task.id, diagnosticReason: 'context_paused' });
+      return null;
+    }
+
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
       console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
@@ -759,6 +720,7 @@ export class WorkerManager {
         await overlayRoleFiles(roleDir, workspacePath);
       }
     }
+    this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
     return this.startFromClaim(claimedWorker, fullTask, resolvedPath);
   }
 
@@ -1754,16 +1716,25 @@ If something is missing or incomplete, describe what and fix it now.`;
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
         const err = worker.error.toLowerCase();
-        const pauseReason = this.classifyErrorForCircuitBreaker(err);
+        const pauseReason = classifyClaimError(err);
 
         if (pauseReason) {
           const pauseMs = pauseReason.pauseMs;
-          this.claimsPaused = true;
-          this.claimsPausedUntil = Date.now() + pauseMs;
-          this.consecutiveQuickFailures = 0;
-          console.warn(`[WorkerManager] ${pauseReason.label} — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
-          sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
-          this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: pauseReason.label });
+          const untilMs = Date.now() + pauseMs;
+          if (pauseReason.scope === 'context') {
+            const ctx = this.workerAuthContexts.get(worker.id) ?? 'account';
+            this.contextBreaker.pause(ctx, untilMs);
+            console.warn(`[WorkerManager] ${pauseReason.label} [${ctx}] — pausing ${ctx} claims ~${Math.round(pauseMs / 60_000)} min`);
+            sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label} [${ctx}]: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+            this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${pauseReason.label} (${ctx})` });
+          } else {
+            this.claimsPaused = true;
+            this.claimsPausedUntil = untilMs;
+            this.consecutiveQuickFailures = 0;
+            console.warn(`[WorkerManager] ${pauseReason.label} — pausing all claims ~${Math.round(pauseMs / 60_000)} min`);
+            sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
+            this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: pauseReason.label });
+          }
         } else {
           // Generic rapid failure detection (non-classified errors)
           const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : 0;

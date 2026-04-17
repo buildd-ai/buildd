@@ -748,7 +748,8 @@ export type ClaimDiagnosticReason =
   | 'race_lost'
   | 'deps_blocked'
   | 'repo_busy'
-  | 'budget_exhausted';
+  | 'budget_exhausted'
+  | 'context_paused';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
