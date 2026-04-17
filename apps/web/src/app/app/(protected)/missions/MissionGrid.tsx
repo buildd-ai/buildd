@@ -13,7 +13,14 @@ import {
   FILTER_TO_GROUPS,
   healthToGroup,
   formatNextRun,
+  timeAgo,
 } from '@/lib/mission-helpers';
+
+const DEFERRAL_LABELS: Record<string, string> = {
+  concurrent_cap: 'Deferred: seats full',
+  active_hours: 'Deferred: quiet hours',
+  trigger_unchanged: 'Deferred: no change',
+};
 
 export interface MissionItem {
   id: string;
@@ -28,6 +35,8 @@ export interface MissionItem {
   nextScanMins: number | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
+  lastDeferralReason: string | null;
+  lastDeferredAt: string | null;
   teamName: string | null;
   role: { name: string; color: string } | null;
   latestFinding: { title: string; time: string } | null;
@@ -204,7 +213,18 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             </span>
           </>
         )}
-        {mission.latestFinding && (
+        {mission.lastDeferralReason && (
+          <>
+            <span className="mx-0.5">&middot;</span>
+            <span
+              className="text-status-warning"
+              title={mission.lastDeferredAt ? `Last deferred ${timeAgo(mission.lastDeferredAt)}` : undefined}
+            >
+              {DEFERRAL_LABELS[mission.lastDeferralReason] ?? 'Deferred'}
+            </span>
+          </>
+        )}
+        {mission.latestFinding && !mission.lastDeferralReason && (
           <>
             <span className="mx-0.5">&middot;</span>
             <span className="text-accent-text truncate max-w-[180px]">

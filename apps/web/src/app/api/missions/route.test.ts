@@ -86,7 +86,7 @@ mock.module('@buildd/core/db/schema', () => ({
   taskSchedules: 'taskSchedules',
 }));
 
-import { POST } from './route';
+import { GET, POST } from './route';
 
 describe('POST /api/missions', () => {
   beforeEach(() => {
@@ -428,5 +428,72 @@ describe('POST /api/missions', () => {
     // Mission created, but organizerTask is null
     expect(body.title).toBe('Resilient Mission');
     expect(body.organizerTask).toBeNull();
+  });
+});
+
+describe('GET /api/missions', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockMissionsFindMany.mockReset();
+
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindMany.mockResolvedValue([]);
+  });
+
+  it('includes lastDeferralReason and lastDeferredAt in response', async () => {
+    const deferredAt = new Date('2026-04-17T10:00:00Z');
+    mockMissionsFindMany.mockResolvedValue([
+      {
+        id: 'mission-1',
+        title: 'Deferred mission',
+        status: 'active',
+        tasks: [],
+        schedule: {
+          cronExpression: '*/30 * * * *',
+          nextRunAt: new Date('2026-04-17T11:00:00Z'),
+          lastRunAt: new Date('2026-04-17T09:00:00Z'),
+          lastDeferralReason: 'concurrent_cap',
+          lastDeferredAt: deferredAt,
+        },
+      },
+    ]);
+
+    const req = new NextRequest('http://localhost/api/missions');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.missions).toHaveLength(1);
+    expect(body.missions[0].lastDeferralReason).toBe('concurrent_cap');
+    expect(body.missions[0].lastDeferredAt).toBeTruthy();
+  });
+
+  it('returns null deferral fields when schedule has no deferral', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      {
+        id: 'mission-2',
+        title: 'Normal mission',
+        status: 'active',
+        tasks: [],
+        schedule: {
+          cronExpression: '*/30 * * * *',
+          nextRunAt: new Date(),
+          lastRunAt: new Date(),
+          lastDeferralReason: null,
+          lastDeferredAt: null,
+        },
+      },
+    ]);
+
+    const req = new NextRequest('http://localhost/api/missions');
+    const res = await GET(req);
+    const body = await res.json();
+
+    expect(body.missions[0].lastDeferralReason).toBeNull();
+    expect(body.missions[0].lastDeferredAt).toBeNull();
   });
 });

@@ -180,13 +180,12 @@ export async function GET(req: NextRequest) {
             .where(and(...concurrentConditions));
 
           if ((activeCount?.count ?? 0) >= schedule.maxConcurrentFromSchedule) {
-            // Too many active tasks from this schedule, skip but advance nextRunAt
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
             const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
             const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
             await db
               .update(taskSchedules)
-              .set({ nextRunAt, updatedAt: now })
+              .set({ nextRunAt, lastDeferralReason: 'concurrent_cap', lastDeferredAt: now, updatedAt: now })
               .where(eq(taskSchedules.id, schedule.id));
             skipped++;
             continue;
@@ -211,6 +210,8 @@ export async function GET(req: NextRequest) {
             totalRuns: sql`${taskSchedules.totalRuns} + 1`,
             consecutiveFailures: 0,
             lastError: null,
+            lastDeferralReason: null,
+            lastDeferredAt: null,
             updatedAt: now,
           })
           .where(
@@ -365,13 +366,12 @@ export async function GET(req: NextRequest) {
           const currentHour = parseInt(currentHourStr, 10);
 
           if (!isWithinActiveHours(currentHour, activeHoursStart, activeHoursEnd)) {
-            // Outside active hours — advance nextRunAt, skip task creation
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
             const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
             const advancedNextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
             await db
               .update(taskSchedules)
-              .set({ nextRunAt: advancedNextRunAt, updatedAt: now })
+              .set({ nextRunAt: advancedNextRunAt, lastDeferralReason: 'active_hours', lastDeferredAt: now, updatedAt: now })
               .where(eq(taskSchedules.id, schedule.id));
             skipped++;
             continue;

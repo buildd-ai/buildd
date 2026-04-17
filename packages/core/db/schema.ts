@@ -553,6 +553,8 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged'>(),
+  lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   pendingSuggestion: jsonb('pending_suggestion').$type<{
     cronExpression?: string;
     enabled?: boolean;
