@@ -155,7 +155,11 @@ export async function PATCH(
 
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks } = body;
+
+    if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
+      return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
       return NextResponse.json({ error: 'activeHoursStart must be between 0 and 23' }, { status: 400 });
@@ -191,6 +195,7 @@ export async function PATCH(
       }
     }
     if (priority !== undefined) updateData.priority = priority;
+    if (maxConcurrentTasks !== undefined) updateData.maxConcurrentTasks = maxConcurrentTasks;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
 
     // Handle schedule updates

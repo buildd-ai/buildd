@@ -1,14 +1,18 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and, not, isNotNull, inArray, sql } from 'drizzle-orm';
+import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
+import { githubApi } from '@/lib/github';
+import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 
 export interface RunMissionResult {
-  task: typeof tasks.$inferSelect;
+  task: typeof tasks.$inferSelect | null;
   /** True when an in-flight planning task was returned instead of creating a new one */
   deduped?: boolean;
+  /** True when planning was skipped because the mission's primary PR is awaiting review/CI */
+  skippedPrOpen?: boolean;
 }
 
 export interface CycleContext {
@@ -82,6 +86,53 @@ export async function runMission(
   const workspaceId = mission.workspaceId
     || (await getOrCreateCoordinationWorkspace(mission.teamId)).id;
 
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+  });
+
+  // If the mission has an open primary PR, don't fan out more planning work —
+  // a human (or auto-merge) needs to act on the PR first. Ping via push.
+  if (mission.primaryPrNumber && mission.primaryPrUrl) {
+    const prState = await getMissionPrState(missionId, githubApi);
+    if (prState && prState.state === 'open' && !prState.merged) {
+      await notifyMissionPrReady(missionId, {
+        title: `Mission PR awaiting review`,
+        prUrl: prState.prUrl,
+        prNumber: prState.prNumber,
+        headSha: prState.headSha,
+        reason: 'awaiting_review',
+        message: `${mission.title} — PR #${prState.prNumber} is open. Planning paused until it merges.`,
+      });
+      return { task: null, skippedPrOpen: true };
+    }
+  }
+
+  // Generate a shared mission working branch on first task. All mission tasks
+  // push commits to this branch so a single PR tracks the entire mission.
+  let workingBranch = mission.workingBranch;
+  if (!workingBranch && workspace?.repo) {
+    const slug = mission.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'mission';
+    const shortId = mission.id.slice(0, 8);
+    const candidate = `mission/${slug}-${shortId}`;
+    const [updated] = await db
+      .update(missions)
+      .set({ workingBranch: candidate, updatedAt: new Date() })
+      .where(and(eq(missions.id, missionId), isNull(missions.workingBranch)))
+      .returning({ workingBranch: missions.workingBranch });
+    workingBranch = updated?.workingBranch
+      ?? (await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
+        columns: { workingBranch: true },
+      }))?.workingBranch
+      ?? candidate;
+  }
+
+  const baseBranch = workspace?.gitConfig?.defaultBranch || 'main';
+
   // Get template context from schedule if available
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
 
@@ -112,6 +163,7 @@ export async function runMission(
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
+    ...(workingBranch ? { headBranch: workingBranch, baseBranch } : {}),
   };
 
   // Get template config for mode/priority from schedule if available
@@ -155,11 +207,6 @@ export async function runMission(
       missionId: mission.id,
     })
     .returning();
-
-  // Dispatch the task
-  const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
-  });
 
   if (workspace) {
     await dispatchNewTask(task, workspace);

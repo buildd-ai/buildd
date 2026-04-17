@@ -449,8 +449,14 @@ export async function POST(req: NextRequest) {
       .substring(0, 30);
     const taskIdShort = task.id.substring(0, 8);
 
+    // Shared mission branch (set by runMission) takes precedence — all mission
+    // tasks push to the same branch so a single PR tracks the mission's work.
+    const sharedHeadBranch = (patchedContext as Record<string, unknown> | null)?.headBranch;
+
     let branch: string;
-    if (gitConfig?.branchingStrategy === 'none') {
+    if (typeof sharedHeadBranch === 'string' && sharedHeadBranch.length > 0) {
+      branch = sharedHeadBranch;
+    } else if (gitConfig?.branchingStrategy === 'none') {
       branch = `task-${taskIdShort}`;
     } else if (gitConfig?.useBuildBranch) {
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;

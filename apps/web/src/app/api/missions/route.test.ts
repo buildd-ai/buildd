@@ -86,7 +86,7 @@ mock.module('@buildd/core/db/schema', () => ({
   taskSchedules: 'taskSchedules',
 }));
 
-import { POST } from './route';
+import { GET, POST } from './route';
 
 describe('POST /api/missions', () => {
   beforeEach(() => {
@@ -175,7 +175,7 @@ describe('POST /api/missions', () => {
     expect(insertedScheduleValues).toBeNull();
   });
 
-  it('API-created mission auto-enables heartbeat with defaults (backward compat)', async () => {
+  it('API-created mission auto-enables heartbeat without default active hours (opt-in)', async () => {
     mockGetCurrentUser.mockReturnValue(null as any);
     mockAuthenticateApiKey.mockReturnValue({ id: 'api-1', level: 'admin', teamId: 'team-1' } as any);
 
@@ -188,15 +188,15 @@ describe('POST /api/missions', () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    // Schedule auto-created with heartbeat defaults
+    // Schedule auto-created with heartbeat but no default active hours
     expect(insertedScheduleValues).not.toBeNull();
     expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.heartbeatChecklist).toBeDefined();
-    expect(ctx.activeHoursStart).toBe(8);
-    expect(ctx.activeHoursEnd).toBe(22);
-    expect(ctx.activeHoursTimezone).toBe('America/New_York');
+    expect(ctx.activeHoursStart).toBeUndefined();
+    expect(ctx.activeHoursEnd).toBeUndefined();
+    expect(ctx.activeHoursTimezone).toBeUndefined();
   });
 
   it('UI-created mission with explicit cronExpression creates schedule', async () => {
@@ -240,7 +240,7 @@ describe('POST /api/missions', () => {
     expect(insertedScheduleValues).toBeNull();
   });
 
-  it('user overrides take precedence over heartbeat defaults', async () => {
+  it('only includes explicitly provided active hours (no defaults injected)', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
@@ -259,9 +259,9 @@ describe('POST /api/missions', () => {
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.activeHoursStart).toBe(10);
-    // Other fields get defaults
-    expect(ctx.activeHoursEnd).toBe(22);
-    expect(ctx.activeHoursTimezone).toBe('America/New_York');
+    // No defaults injected for fields not provided
+    expect(ctx.activeHoursEnd).toBeUndefined();
+    expect(ctx.activeHoursTimezone).toBeUndefined();
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {
@@ -365,6 +365,54 @@ describe('POST /api/missions', () => {
     expect(body.organizerTask.id).toBe('organizer-task-1');
   });
 
+  it('stores maxConcurrentTasks in mission insert', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Capped Mission', maxConcurrentTasks: 3 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.maxConcurrentTasks).toBe(3);
+  });
+
+  it('stores maxConcurrentTasks as null when omitted', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Uncapped Mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.maxConcurrentTasks).toBeNull();
+  });
+
+  it('rejects maxConcurrentTasks < 1', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad Cap', maxConcurrentTasks: 0 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
+  it('rejects non-integer maxConcurrentTasks', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad Cap', maxConcurrentTasks: 2.5 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
   it('still succeeds when auto-start organizer fails', async () => {
     mockRunMission.mockRejectedValue(new Error('dispatch failed'));
 
@@ -380,5 +428,72 @@ describe('POST /api/missions', () => {
     // Mission created, but organizerTask is null
     expect(body.title).toBe('Resilient Mission');
     expect(body.organizerTask).toBeNull();
+  });
+});
+
+describe('GET /api/missions', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockMissionsFindMany.mockReset();
+
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindMany.mockResolvedValue([]);
+  });
+
+  it('includes lastDeferralReason and lastDeferredAt in response', async () => {
+    const deferredAt = new Date('2026-04-17T10:00:00Z');
+    mockMissionsFindMany.mockResolvedValue([
+      {
+        id: 'mission-1',
+        title: 'Deferred mission',
+        status: 'active',
+        tasks: [],
+        schedule: {
+          cronExpression: '*/30 * * * *',
+          nextRunAt: new Date('2026-04-17T11:00:00Z'),
+          lastRunAt: new Date('2026-04-17T09:00:00Z'),
+          lastDeferralReason: 'concurrent_cap',
+          lastDeferredAt: deferredAt,
+        },
+      },
+    ]);
+
+    const req = new NextRequest('http://localhost/api/missions');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.missions).toHaveLength(1);
+    expect(body.missions[0].lastDeferralReason).toBe('concurrent_cap');
+    expect(body.missions[0].lastDeferredAt).toBeTruthy();
+  });
+
+  it('returns null deferral fields when schedule has no deferral', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      {
+        id: 'mission-2',
+        title: 'Normal mission',
+        status: 'active',
+        tasks: [],
+        schedule: {
+          cronExpression: '*/30 * * * *',
+          nextRunAt: new Date(),
+          lastRunAt: new Date(),
+          lastDeferralReason: null,
+          lastDeferredAt: null,
+        },
+      },
+    ]);
+
+    const req = new NextRequest('http://localhost/api/missions');
+    const res = await GET(req);
+    const body = await res.json();
+
+    expect(body.missions[0].lastDeferralReason).toBeNull();
+    expect(body.missions[0].lastDeferredAt).toBeNull();
   });
 });

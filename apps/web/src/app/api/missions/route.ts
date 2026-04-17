@@ -9,9 +9,6 @@ import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
   DEFAULT_HEARTBEAT_CRON,
-  DEFAULT_ACTIVE_HOURS_START,
-  DEFAULT_ACTIVE_HOURS_END,
-  DEFAULT_ACTIVE_HOURS_TIMEZONE,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
 } from '@/lib/heartbeat-helpers';
 
@@ -54,7 +51,7 @@ export async function GET(req: NextRequest) {
           columns: { id: true, status: true },
           with: { workers: { columns: { id: true, status: true } } },
         },
-        schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true } },
+        schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
       },
     });
 
@@ -67,6 +64,8 @@ export async function GET(req: NextRequest) {
       const cronExpression = (mission as any).schedule?.cronExpression ?? null;
       const lastRunAt = (mission as any).schedule?.lastRunAt ?? null;
       const nextRunAt = (mission as any).schedule?.nextRunAt ?? null;
+      const lastDeferralReason = (mission as any).schedule?.lastDeferralReason ?? null;
+      const lastDeferredAt = (mission as any).schedule?.lastDeferredAt ?? null;
       return {
         ...mission,
         totalTasks,
@@ -76,6 +75,8 @@ export async function GET(req: NextRequest) {
         cronExpression,
         lastRunAt,
         nextRunAt,
+        lastDeferralReason,
+        lastDeferredAt,
       };
     });
 
@@ -104,10 +105,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
+    }
+
+    if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
+      return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
     }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -165,6 +170,7 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
         contextArtifactIds: contextArtifactIds || [],
+        maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
       })
       .returning();
@@ -185,15 +191,10 @@ export async function POST(req: NextRequest) {
       if (effectiveHeartbeat) {
         templateContext.heartbeat = true;
         templateContext.heartbeatChecklist = heartbeatChecklist || DEFAULT_MISSION_HEARTBEAT_CHECKLIST;
-        templateContext.activeHoursStart = activeHoursStart ?? DEFAULT_ACTIVE_HOURS_START;
-        templateContext.activeHoursEnd = activeHoursEnd ?? DEFAULT_ACTIVE_HOURS_END;
-        templateContext.activeHoursTimezone = activeHoursTimezone || DEFAULT_ACTIVE_HOURS_TIMEZONE;
-      } else {
-        // Explicit cron without heartbeat — just pass through what was provided
-        if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
-        if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
-        if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
       }
+      if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
+      if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
+      if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
 
       const [schedule] = await db
         .insert(taskSchedules)
@@ -226,7 +227,7 @@ export async function POST(req: NextRequest) {
     let organizerTask: { id: string } | null = null;
     try {
       const result = await runMission(mission.id, { manualRun: true });
-      organizerTask = { id: result.task.id };
+      if (result.task) organizerTask = { id: result.task.id };
     } catch (err) {
       console.error('Auto-start organizer failed (mission still created):', err);
     }

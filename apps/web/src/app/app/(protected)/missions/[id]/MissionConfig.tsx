@@ -18,6 +18,8 @@ interface MissionConfigProps {
   model: string | null;
   outputSchema: unknown | null;
   workspaces: WorkspaceOption[];
+  maxConcurrentTasks: number | null;
+  activeTasks: number;
 }
 
 export default function MissionConfig({
@@ -28,6 +30,8 @@ export default function MissionConfig({
   model: initialModel,
   outputSchema: initialOutputSchema,
   workspaces,
+  maxConcurrentTasks: initialMaxConcurrent,
+  activeTasks,
 }: MissionConfigProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -56,6 +60,9 @@ export default function MissionConfig({
 
   // Workspace state
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(workspaceId || '');
+
+  // Max concurrent tasks state
+  const [maxConcurrent, setMaxConcurrent] = useState<string>(initialMaxConcurrent != null ? String(initialMaxConcurrent) : '');
 
   const disabled = saving !== null || isPending;
 
@@ -130,6 +137,14 @@ export default function MissionConfig({
     patchMission({ workspaceId: value || null }, 'workspace');
   }
 
+  function handleMaxConcurrentBlur() {
+    const trimmed = maxConcurrent.trim();
+    const parsed = trimmed ? parseInt(trimmed, 10) : null;
+    if (trimmed && (isNaN(parsed!) || parsed! < 1)) return;
+    if (parsed === initialMaxConcurrent) return;
+    patchMission({ maxConcurrentTasks: parsed }, 'maxConcurrentTasks');
+  }
+
   const workspaceOptions = [
     { value: '', label: 'No workspace' },
     ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
@@ -139,6 +154,7 @@ export default function MissionConfig({
   const configSummary = [
     model && MODEL_OPTIONS.find(m => m.value === model)?.label,
     skillSlugs.length > 0 && `${skillSlugs.length} skill${skillSlugs.length > 1 ? 's' : ''}`,
+    initialMaxConcurrent != null && `Max ${initialMaxConcurrent} concurrent`,
     initialRecipeId && 'Recipe',
     initialOutputSchema && 'Schema',
   ].filter(Boolean);
@@ -180,6 +196,43 @@ export default function MissionConfig({
                 Changing workspace will update where scheduled tasks run.
               </p>
             )}
+          </div>
+
+          {/* Max Concurrent Tasks */}
+          <div>
+            <label className="block text-[11px] text-text-muted mb-1.5">Max concurrent tasks</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={maxConcurrent}
+                onChange={e => setMaxConcurrent(e.target.value)}
+                onBlur={handleMaxConcurrentBlur}
+                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                placeholder="No limit"
+                disabled={disabled}
+                className="w-24 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
+              />
+              {initialMaxConcurrent != null && (
+                <>
+                  <span className="text-[11px] text-text-muted tabular-nums">
+                    {activeTasks} / {initialMaxConcurrent} active
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setMaxConcurrent(''); patchMission({ maxConcurrentTasks: null }, 'maxConcurrentTasks'); }}
+                    disabled={disabled}
+                    className="text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50"
+                  >
+                    Remove limit
+                  </button>
+                </>
+              )}
+            </div>
+            <p className="text-[11px] text-text-muted mt-1">
+              Cap how many tasks this mission can run at once.
+            </p>
           </div>
 
           {/* Model */}
