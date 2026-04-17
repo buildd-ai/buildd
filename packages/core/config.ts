@@ -20,7 +20,10 @@ export const config = {
 
   // LLM configuration
   anthropicApiKey: required('ANTHROPIC_API_KEY'),
-  anthropicModel: optional('ANTHROPIC_MODEL', 'claude-opus-4-6'),
+  // Use the `opus` / `sonnet` / `haiku` alias so new model versions pick up
+  // automatically via the system_cache.model_aliases DB entry — no redeploy
+  // required when a new Claude version ships.
+  anthropicModel: optional('ANTHROPIC_MODEL', 'opus'),
   // Custom LLM provider (e.g., 'openrouter')
   llmProvider: optional('LLM_PROVIDER', 'anthropic'),
   // Custom base URL for OpenRouter or other providers

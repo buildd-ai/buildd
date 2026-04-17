@@ -148,6 +148,16 @@ export class WorkerRunner extends EventEmitter {
                 roleSlug: { type: 'string' },
                 outputRequirement: { type: 'string' },
                 priority: { type: 'integer' },
+                // Smart-routing hints. Optional — router falls back to defaults
+                // when absent. See plans/buildd/smart-model-routing.md.
+                kind: {
+                  type: 'string',
+                  enum: ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'],
+                },
+                complexity: {
+                  type: 'string',
+                  enum: ['simple', 'normal', 'complex'],
+                },
               },
               required: ['ref', 'title', 'description'],
             },
@@ -175,9 +185,11 @@ export class WorkerRunner extends EventEmitter {
         : null);
 
       // Resolve primary model: task-level override > runner default
-      // Accepts short names (haiku, sonnet, opus) or full model IDs
+      // Accepts short names (haiku, sonnet, opus) or full model IDs; both paths
+      // flow through resolveModelNameSync so the runner default can itself be
+      // an alias (default ANTHROPIC_MODEL is 'opus').
       const taskModel = (worker.task as any)?.context?.model as string | undefined;
-      const effectiveModel = taskModel ? resolveModelNameSync(taskModel) : config.anthropicModel;
+      const effectiveModel = resolveModelNameSync(taskModel || config.anthropicModel);
 
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (worker.task as any)?.context?.fallbackModel as string | undefined;

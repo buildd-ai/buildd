@@ -208,10 +208,8 @@ export class WorkerManager {
       return { label: 'Auth failure', pauseMs: 30 * 60 * 1000 };
     }
 
-    // SDK budget limit (maxBudgetUsd) — worker-level, but if configured globally it hits everyone
-    if (err.includes('max budget') || err.includes('maxbudgetusd') || err.includes('budget exceeded')) {
-      return { label: 'Budget limit reached', pauseMs: 60 * 60 * 1000 };
-    }
+    // SDK budget limit (maxBudgetUsd) is per-worker — don't circuit-break.
+    // The server handles account-level budget exhaustion by filtering tasks.
 
     return null; // Worker-specific error, no circuit breaker
   }
@@ -647,10 +645,21 @@ export class WorkerManager {
     if (slots <= 0) return [];
 
     try {
-      const { workers: claimed, diagnostics } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
+      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
+
+      // Server reports account budget exhausted but still served tenant tasks.
+      // Emit an informational event for the UI — no circuit breaker needed since
+      // the server filters non-tenant tasks correctly.
+      if (budgetResetsAt) {
+        const resetMs = new Date(budgetResetsAt).getTime();
+        const delayMs = Math.max(0, resetMs - Date.now());
+        console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
+        this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
+      }
+
       if (claimed.length === 0) {
         // Skip logging no_pending_tasks during polling — that's the normal idle state
-        if (diagnostics && diagnostics.reason !== 'no_pending_tasks') {
+        if (diagnostics && diagnostics.reason !== 'no_pending_tasks' && diagnostics.reason !== 'budget_exhausted_partial') {
           claimLog({ event: 'claim_empty', slotsRequested: slots, workersClaimed: 0, diagnosticReason: diagnostics.reason });
         }
         return [];
@@ -696,18 +705,7 @@ export class WorkerManager {
       }
       return started;
     } catch (err: any) {
-      const errMsg = err?.message || '';
-      // Server-side budget exhaustion — sync circuit breaker with server's knowledge
-      if (errMsg.includes('429') && (errMsg.includes('budget exhausted') || errMsg.includes('Budget exhausted'))) {
-        if (!this.claimsPaused) {
-          this.claimsPaused = true;
-          this.claimsPausedUntil = Date.now() + 60 * 60 * 1000; // 1 hour default
-          console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing claims ~60 min');
-          this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: 'Server: OAuth budget exhausted' });
-        }
-      } else {
-        console.error('Failed to claim pending tasks:', err);
-      }
+      console.error('Failed to claim pending tasks:', err);
       return [];
     }
   }
