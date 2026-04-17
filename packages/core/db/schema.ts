@@ -183,6 +183,11 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
+  // Safety rails for autoMergePR — if set, PRs that violate these are NOT auto-merged
+  // even when CI is green. A mission notification is sent instead.
+  autoMergeDenyPaths?: string[];      // e.g. ["drizzle/", "src/lib/auth/"] — any touched path starting with these blocks auto-merge
+  autoMergeMaxLines?: number;         // total additions+deletions threshold (default 800)
+
   // Default runner preference for new tasks created in this workspace
   // Controls which type of runner (user/service/action) can claim tasks by default
   // Can be overridden per-task at creation time
@@ -327,6 +332,13 @@ export const missions = pgTable('missions', {
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
+  // Shared feature branch for this mission. All mission tasks push commits here;
+  // a single PR tracks all mission work. Generated lazily on first task creation.
+  workingBranch: text('working_branch'),
+  primaryPrNumber: integer('primary_pr_number'),
+  primaryPrUrl: text('primary_pr_url'),
+  // Dedup key for PR-ready push notifications — set to PR head SHA after each notify.
+  lastNotifiedSha: text('last_notified_sha'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

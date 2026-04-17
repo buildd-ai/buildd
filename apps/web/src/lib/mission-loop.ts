@@ -2,6 +2,8 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, sql, desc, gt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { githubApi } from '@/lib/github';
+import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
@@ -258,6 +260,33 @@ export async function maybeRetriggerMission(
       { missionId, reason: 'stalled', consecutiveEmptyCycles: stallCount }
     );
     return { action: 'stalled' };
+  }
+
+  // 7.5. Open-PR guard — if the mission has an unmerged primary PR, stop
+  //      fanning out more planning cycles. Notify instead so a human (or
+  //      auto-merge) can resolve the PR before we pile on more work.
+  const missionWithPr = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { title: true, primaryPrNumber: true, primaryPrUrl: true },
+  });
+  if (missionWithPr?.primaryPrNumber && missionWithPr.primaryPrUrl) {
+    const prState = await getMissionPrState(missionId, githubApi);
+    if (prState && prState.state === 'open' && !prState.merged) {
+      await notifyMissionPrReady(missionId, {
+        title: 'Mission PR awaiting review',
+        prUrl: prState.prUrl,
+        prNumber: prState.prNumber,
+        headSha: prState.headSha,
+        reason: 'awaiting_review',
+        message: `${missionWithPr.title} — PR #${prState.prNumber} is open. Retrigger paused.`,
+      });
+      await triggerEvent(
+        channels.mission(missionId),
+        events.MISSION_LOOP_STALLED,
+        { missionId, reason: 'pr_awaiting_review', prNumber: prState.prNumber }
+      );
+      return { action: 'skipped' };
+    }
   }
 
   // 8. All guards pass — retrigger
