@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to ^0.2.109
+- Bump @anthropic-ai/claude-agent-sdk to ^0.2.112
 
 ### Fixed
 
