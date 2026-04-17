@@ -4,6 +4,7 @@ import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@b
 import { and, eq, sql } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { notifyMissionPrReady } from '@/lib/mission-notifications';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -276,6 +277,32 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           continue;
         }
 
+        // Safety rails: deny paths + line budget. If violated, notify instead of merge.
+        const safetyCheck = await evaluateAutoMergeSafety(
+          installation.id,
+          repository.full_name,
+          pr.number,
+          workspace.gitConfig,
+        );
+        if (!safetyCheck.ok) {
+          console.log(`Auto-merge blocked for ${repository.full_name}#${pr.number}: ${safetyCheck.reason}`);
+          const task = await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId!),
+            columns: { missionId: true, title: true },
+          });
+          if (task?.missionId) {
+            await notifyMissionPrReady(task.missionId, {
+              title: 'Auto-merge blocked — review needed',
+              prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
+              prNumber: pr.number,
+              headSha,
+              reason: 'auto_merge_blocked',
+              message: `${task.title} — ${safetyCheck.reason}`,
+            });
+          }
+          continue;
+        }
+
         // Merge the PR
         const result = await mergePullRequest(
           installation.id,
@@ -347,4 +374,40 @@ async function handlePullRequestEvent(event: {
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
     }
   }
+}
+
+const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
+
+async function evaluateAutoMergeSafety(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+  gitConfig: { autoMergeDenyPaths?: string[]; autoMergeMaxLines?: number } | null | undefined,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const denyPaths = gitConfig?.autoMergeDenyPaths ?? [];
+  const maxLines = gitConfig?.autoMergeMaxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
+
+  let files: Array<{ filename: string; additions: number; deletions: number }> = [];
+  try {
+    files = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
+  } catch (err) {
+    return { ok: false, reason: `could not fetch PR files: ${err instanceof Error ? err.message : 'unknown'}` };
+  }
+  if (!Array.isArray(files)) {
+    return { ok: false, reason: 'malformed PR files response' };
+  }
+
+  if (denyPaths.length > 0) {
+    const hit = files.find((f) => denyPaths.some((p) => f.filename.startsWith(p)));
+    if (hit) {
+      return { ok: false, reason: `touches protected path (${hit.filename})` };
+    }
+  }
+
+  const totalLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
+  if (totalLines > maxLines) {
+    return { ok: false, reason: `diff size ${totalLines} lines > limit ${maxLines}` };
+  }
+
+  return { ok: true };
 }

@@ -227,7 +227,7 @@ export async function POST(req: NextRequest) {
     let organizerTask: { id: string } | null = null;
     try {
       const result = await runMission(mission.id, { manualRun: true });
-      organizerTask = { id: result.task.id };
+      if (result.task) organizerTask = { id: result.task.id };
     } catch (err) {
       console.error('Auto-start organizer failed (mission still created):', err);
     }

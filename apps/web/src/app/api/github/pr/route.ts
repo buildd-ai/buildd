@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { workers, githubRepos, missions } from '@buildd/core/db/schema';
+import { eq, and, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 
@@ -89,6 +89,8 @@ export async function POST(req: NextRequest) {
           })
           .where(eq(workers.id, workerId));
 
+        await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
+
         return NextResponse.json({
           ok: true,
           pr: {
@@ -138,6 +140,8 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(workers.id, workerId));
 
+    await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
+
     // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
     const autoMergeEnabled = !!workspace.gitConfig?.autoMergePR;
 
@@ -156,4 +160,16 @@ export async function POST(req: NextRequest) {
     const message = error instanceof Error ? error.message : 'Failed to create PR';
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+async function persistMissionPrIfFirst(
+  missionId: string | null | undefined,
+  prNumber: number,
+  prUrl: string,
+): Promise<void> {
+  if (!missionId) return;
+  await db
+    .update(missions)
+    .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })
+    .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
 }

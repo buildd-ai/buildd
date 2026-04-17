@@ -1764,8 +1764,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         }
       } else if (worker.status === 'done') {
         this.consecutiveQuickFailures = 0;
-        // A slot freed up — check for pending tasks
-        this.claimPendingTasks().catch(() => {});
+        // A slot freed up — check for pending tasks. Skip in serverless (no
+        // claim endpoint/mock can return an unbounded stream of tasks).
+        if (!this.config.serverless) {
+          this.claimPendingTasks().catch(() => {});
+        }
       }
     }
   }

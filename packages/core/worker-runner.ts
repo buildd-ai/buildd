@@ -952,19 +952,19 @@ export class WorkerRunner extends EventEmitter {
     if (gitConfig && gitConfig.branchingStrategy !== 'none') {
       const gitContext: string[] = ['\n## Git Workflow'];
       gitContext.push(`- Default branch: \`${gitConfig.defaultBranch || 'main'}\``);
-      // For stacked plan phases: target the predecessor's branch so the PR diff
-      // shows only this phase's changes (Graphite-style stacked PRs).
       const taskContext = worker.task?.context as Record<string, unknown> | undefined;
+      const headBranch = taskContext?.headBranch as string | undefined;
       const baseBranch = taskContext?.baseBranch as string | undefined;
       const prTarget = baseBranch || gitConfig.targetBranch || gitConfig.defaultBranch || 'main';
-      if (baseBranch) {
+      if (headBranch) {
+        gitContext.push(`- **Shared mission branch**: check out \`${headBranch}\` (create from \`${prTarget}\` if it doesn't exist yet, otherwise pull). Push commits to \`${headBranch}\`. All mission tasks share this branch so one PR covers the whole mission.`);
+      } else if (baseBranch) {
         gitContext.push(`- This task is part of a sequential plan chain. Your PR MUST target \`${baseBranch}\` (the previous phase's branch), NOT the default branch. This keeps the diff clean and allows phases to be merged in order.`);
       }
       if (gitConfig.requiresPR) {
         gitContext.push(`- Changes require PR to \`${prTarget}\``);
-        // If buildd MCP is available, prefer create_pr action to avoid double PR creation
         if (config.builddApiKey) {
-          gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
+          gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically). If a PR already exists for this mission branch, just push — the existing PR will pick up your commits.`);
         } else {
           gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
         }
@@ -972,6 +972,28 @@ export class WorkerRunner extends EventEmitter {
         gitContext.push(`- If creating a PR, always use \`--base ${prTarget}\` to target the correct branch`);
       }
       parts.push(gitContext.join('\n'));
+    }
+
+    // Mission continuity — prior completions and touched files for downstream tasks
+    const execTaskCtx = worker.task?.context as Record<string, unknown> | undefined;
+    const priorMissionTasks = execTaskCtx?.priorMissionTasks as Array<{
+      title: string;
+      summary?: string | null;
+      prUrl?: string | null;
+      filesTouched?: string[] | null;
+    }> | undefined;
+    if (worker.task?.missionId && Array.isArray(priorMissionTasks) && priorMissionTasks.length > 0) {
+      const missionBlock: string[] = ['\n## Prior Mission Work'];
+      missionBlock.push('These tasks already completed on this mission — build on their work, don\'t duplicate:');
+      for (const pt of priorMissionTasks.slice(0, 8)) {
+        missionBlock.push(`- **${pt.title}**`);
+        if (pt.summary) missionBlock.push(`  ${pt.summary}`);
+        if (pt.prUrl) missionBlock.push(`  PR: ${pt.prUrl}`);
+        if (Array.isArray(pt.filesTouched) && pt.filesTouched.length > 0) {
+          missionBlock.push(`  Files: ${pt.filesTouched.slice(0, 10).join(', ')}${pt.filesTouched.length > 10 ? '…' : ''}`);
+        }
+      }
+      parts.push(missionBlock.join('\n'));
     }
 
     // Add output requirement context
