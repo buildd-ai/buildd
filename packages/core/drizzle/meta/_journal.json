@@ -232,6 +232,13 @@
       "when": 1776470400000,
       "tag": "0032_chemical_titania",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1776438159210,
+      "tag": "0033_red_toxin",
+      "breakpoints": true
     }
   ]
 }

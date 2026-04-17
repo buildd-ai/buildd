@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
           columns: { id: true, status: true },
           with: { workers: { columns: { id: true, status: true } } },
         },
-        schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true } },
+        schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
       },
     });
 
@@ -64,6 +64,8 @@ export async function GET(req: NextRequest) {
       const cronExpression = (mission as any).schedule?.cronExpression ?? null;
       const lastRunAt = (mission as any).schedule?.lastRunAt ?? null;
       const nextRunAt = (mission as any).schedule?.nextRunAt ?? null;
+      const lastDeferralReason = (mission as any).schedule?.lastDeferralReason ?? null;
+      const lastDeferredAt = (mission as any).schedule?.lastDeferredAt ?? null;
       return {
         ...mission,
         totalTasks,
@@ -73,6 +75,8 @@ export async function GET(req: NextRequest) {
         cronExpression,
         lastRunAt,
         nextRunAt,
+        lastDeferralReason,
+        lastDeferredAt,
       };
     });
 

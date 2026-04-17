@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills } from '@buildd/core/db/schema';
-import { inArray, desc, and, eq } from 'drizzle-orm';
+import { missions, teams, workspaceSkills, accounts, workers } from '@buildd/core/db/schema';
+import { inArray, desc, and, eq, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -28,6 +28,25 @@ export default async function MissionsPage() {
         </div>
       </div>
     );
+  }
+
+  // Query seat utilization across team accounts
+  const teamAccounts = await db.query.accounts.findMany({
+    where: inArray(accounts.teamId, teamIds),
+    columns: { id: true, maxConcurrentWorkers: true },
+  });
+  const maxSeats = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
+  let activeSeats = 0;
+  if (teamAccounts.length > 0) {
+    const accountIds = teamAccounts.map(a => a.id);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(workers)
+      .where(and(
+        inArray(workers.accountId, accountIds),
+        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
+      ));
+    activeSeats = row?.count ?? 0;
   }
 
   // Build team name map for display (only when user has multiple teams)
@@ -71,7 +90,7 @@ export default async function MissionsPage() {
           },
         },
       },
-      schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
+      schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
     },
   });
 
@@ -96,6 +115,8 @@ export default async function MissionsPage() {
       : null;
 
     const scheduleCron = (obj.schedule as any)?.cronExpression || null;
+    const lastDeferralReason = (obj.schedule as any)?.lastDeferralReason || null;
+    const lastDeferredAt = (obj.schedule as any)?.lastDeferredAt ? String((obj.schedule as any).lastDeferredAt) : null;
 
     const health = deriveMissionHealth({
       status: obj.status,
@@ -120,6 +141,8 @@ export default async function MissionsPage() {
       lastRunAt: lastRunAt ? String(lastRunAt) : null,
       teamName: teamNameMap.get(obj.teamId) || null,
       role: null as { name: string; color: string } | null,
+      lastDeferralReason,
+      lastDeferredAt,
       latestFinding: latestFinding
         ? {
             title: (latestFinding.result as any)?.summary?.slice(0, 120) || 'Finding',
@@ -141,6 +164,18 @@ export default async function MissionsPage() {
           <span className="text-xs text-text-secondary font-light">
             {activeCount} active
           </span>
+          {maxSeats > 0 && (
+            <span
+              className={`text-[11px] font-mono px-2 py-0.5 rounded-full ${
+                activeSeats >= maxSeats
+                  ? 'bg-status-warning/15 text-status-warning'
+                  : 'bg-[rgba(122,172,202,0.12)] text-status-info'
+              }`}
+              title={`${activeSeats} of ${maxSeats} concurrent worker seats in use`}
+            >
+              Seats: {activeSeats}/{maxSeats}
+            </span>
+          )}
         </div>
         <Link
           href="/app/missions/new"

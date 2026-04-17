@@ -342,4 +342,66 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues).not.toBeNull();
     expect(tasksInsertValues.outputSchema).toEqual(heartbeatSchema);
   });
+
+  it('should record lastDeferralReason=concurrent_cap when maxConcurrentFromSchedule is hit', async () => {
+    const schedule = makeSchedule({ maxConcurrentFromSchedule: 1 });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockSelectCount = 1;
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped).toBe(1);
+    expect(body.created).toBe(0);
+
+    const updateCall = taskSchedulesUpdateCalls.find(c =>
+      c.set?.lastDeferralReason === 'concurrent_cap'
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.lastDeferredAt).toBeInstanceOf(Date);
+  });
+
+  it('should clear lastDeferralReason when schedule fires successfully', async () => {
+    const schedule = makeSchedule();
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created).toBe(1);
+
+    const updateCall = taskSchedulesUpdateCalls.find(c =>
+      c.set?.lastDeferralReason === null && c.set?.lastDeferredAt === null
+    );
+    expect(updateCall).toBeDefined();
+  });
+
+  it('should record lastDeferralReason=active_hours when outside quiet hours', async () => {
+    const { isWithinActiveHours } = await import('@/lib/mission-context');
+    (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(false);
+
+    const schedule = makeSchedule({
+      taskTemplate: {
+        title: 'Heartbeat check',
+        mode: 'execution',
+        priority: 0,
+        context: { heartbeat: true, activeHoursStart: 8, activeHoursEnd: 22 },
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped).toBe(1);
+
+    const updateCall = taskSchedulesUpdateCalls.find(c =>
+      c.set?.lastDeferralReason === 'active_hours'
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.lastDeferredAt).toBeInstanceOf(Date);
+
+    // Restore mock
+    (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(true);
+  });
 });
