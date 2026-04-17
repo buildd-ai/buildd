@@ -211,6 +211,20 @@
       "when": 1776114356086,
       "tag": "0029_tiny_hitman",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1776375837100,
+      "tag": "0030_jazzy_menace",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1776376544093,
+      "tag": "0031_wealthy_roulette",
+      "breakpoints": true
     }
   ]
 }

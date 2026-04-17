@@ -84,7 +84,7 @@ export class BuilddClient {
     }
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[]): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[]): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = { maxTasks, workspaceId, taskId, runner: runner || 'runner' };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;
@@ -93,7 +93,7 @@ export class BuilddClient {
       method: 'POST',
       body: JSON.stringify(body),
     });
-    return { workers: data.workers || [], diagnostics: data.diagnostics };
+    return { workers: data.workers || [], diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt };
   }
 
   async updateWorker(workerId: string, update: {

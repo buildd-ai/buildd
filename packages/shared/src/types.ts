@@ -748,7 +748,8 @@ export type ClaimDiagnosticReason =
   | 'race_lost'
   | 'deps_blocked'
   | 'repo_busy'
-  | 'budget_exhausted';
+  | 'budget_exhausted'
+  | 'budget_exhausted_partial';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
@@ -777,6 +778,8 @@ export interface ClaimTasksResponse {
     roleConfig?: RoleConfig;
   }>;
   diagnostics?: ClaimDiagnostics;
+  /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */
+  budgetResetsAt?: string | null;
 }
 
 /** @deprecated Use Memory service types instead. Kept for backward compat. */

@@ -13,6 +13,7 @@ import { notifySlack } from '@/lib/slack-notify';
 import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
+import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -450,6 +451,25 @@ export async function PATCH(
         .update(tasks)
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
+
+      // Record routing outcome for analytics/calibration. Skipped on retry
+      // (we only want one row per terminal outcome). Fire-and-forget.
+      if (!shouldAutoRetry) {
+        const durationMs = worker.startedAt
+          ? Date.now() - new Date(worker.startedAt).getTime()
+          : null;
+        const retryCount =
+          ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
+        recordTaskOutcome({
+          taskId: worker.taskId,
+          accountId: worker.accountId,
+          outcome: status,
+          totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
+          totalTurns: updates.turns ?? worker.turns ?? null,
+          durationMs,
+          wasRetried: retryCount > 0,
+        }).catch(() => {});
+      }
 
       // Post-completion side effects (non-fatal — must not block worker update)
       try {

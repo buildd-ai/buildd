@@ -11,11 +11,16 @@ import { eq } from 'drizzle-orm';
 const CACHE_KEY = 'model_aliases';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-/** Hardcoded fallbacks — updated on new releases. */
-const DEFAULT_ALIASES: Record<string, string> = {
+/**
+ * Hardcoded fallbacks — only used when the DB cache is cold (e.g. first-ever deploy).
+ * The DB cache (system_cache.model_aliases) is the source of truth and is refreshed
+ * automatically by workers via supportedModels(), or manually via
+ * POST /api/admin/refresh-model-aliases.
+ */
+export const DEFAULT_ALIASES: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-7',
 };
 
 /** In-memory cache to avoid DB reads on every call. */

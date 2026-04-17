@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { validateCronExpression, computeNextRunAt, computeNextRuns, describeSchedule, computeStaggerOffset, dateTimeToCron } from './schedule-helpers';
+import { validateCronExpression, computeNextRunAt, computeNextRuns, describeSchedule, computeStaggerOffset, dateTimeToCron, classifyScheduleCadence } from './schedule-helpers';
 
 describe('schedule-helpers', () => {
   describe('validateCronExpression', () => {
@@ -214,6 +214,69 @@ describe('schedule-helpers', () => {
       expect(cron).not.toBeNull();
       // The result should be parseable by our validator
       expect(validateCronExpression(cron!)).toBeNull();
+    });
+  });
+
+  describe('classifyScheduleCadence', () => {
+    it('every minute → observation/simple', () => {
+      const r = classifyScheduleCadence({ cronExpression: '* * * * *' });
+      expect(r.kind).toBe('observation');
+      expect(r.complexity).toBe('simple');
+      expect(r.classifiedBy).toBe('default');
+    });
+
+    it('every 5 minutes → observation/simple', () => {
+      const r = classifyScheduleCadence({ cronExpression: '*/5 * * * *' });
+      expect(r.kind).toBe('observation');
+      expect(r.complexity).toBe('simple');
+    });
+
+    it('every 30 minutes → engineering/simple', () => {
+      const r = classifyScheduleCadence({ cronExpression: '*/30 * * * *' });
+      expect(r.kind).toBe('engineering');
+      expect(r.complexity).toBe('simple');
+    });
+
+    it('daily → engineering/normal', () => {
+      const r = classifyScheduleCadence({ cronExpression: '0 9 * * *' });
+      expect(r.kind).toBe('engineering');
+      expect(r.complexity).toBe('normal');
+    });
+
+    it('heartbeat flag forces observation/simple regardless of cadence', () => {
+      const r = classifyScheduleCadence({
+        cronExpression: '0 0 * * *', // daily
+        isHeartbeat: true,
+      });
+      expect(r.kind).toBe('observation');
+      expect(r.complexity).toBe('simple');
+    });
+
+    it('user overrides both fields → classifiedBy=user', () => {
+      const r = classifyScheduleCadence({
+        cronExpression: '* * * * *',
+        userKind: 'coordination',
+        userComplexity: 'complex',
+      });
+      expect(r.kind).toBe('coordination');
+      expect(r.complexity).toBe('complex');
+      expect(r.classifiedBy).toBe('user');
+    });
+
+    it('user overrides only kind, cadence fills complexity', () => {
+      const r = classifyScheduleCadence({
+        cronExpression: '* * * * *',
+        userKind: 'research',
+      });
+      expect(r.kind).toBe('research');
+      expect(r.complexity).toBe('simple'); // from cadence
+      expect(r.classifiedBy).toBe('user');
+    });
+
+    it('invalid cron falls back to engineering/normal', () => {
+      const r = classifyScheduleCadence({ cronExpression: 'not a cron' });
+      expect(r.kind).toBe('engineering');
+      expect(r.complexity).toBe('normal');
     });
   });
 });

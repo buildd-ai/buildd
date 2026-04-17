@@ -222,6 +222,11 @@ export interface TaskScheduleTemplate {
   requiredCapabilities?: string[];
   context?: Record<string, unknown>;
   trigger?: ScheduleTrigger;
+  // Optional classification overrides. When unset, the cron-schedules route
+  // infers them from cadence (`classifyScheduleCadence`). Routing at claim
+  // time consumes these via tasks.kind / tasks.complexity.
+  kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+  complexity?: 'simple' | 'normal' | 'complex';
 }
 
 // Task result/deliverable snapshot - populated when worker completes
@@ -368,6 +373,12 @@ export const tasks = pgTable('tasks', {
   dependsOn: jsonb('depends_on').default([]).$type<string[]>(),
   // Deliverable snapshot - populated on worker completion
   result: jsonb('result').$type<TaskResult | null>(),
+  // Smart model routing — populated at task creation, consumed at claim time.
+  // See plans/buildd/smart-model-routing.md for the taxonomy + routing logic.
+  kind: text('kind').$type<'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation'>(),
+  complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
+  predictedModel: text('predicted_model'),   // model chosen by router at claim
+  classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -380,6 +391,7 @@ export const tasks = pgTable('tasks', {
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
   missionIdx: index('tasks_mission_idx').on(t.missionId),
+  kindIdx: index('tasks_kind_idx').on(t.kind),
 }));
 
 export const workers = pgTable('workers', {
@@ -647,6 +659,37 @@ export const workspaceSkills = pgTable('workspace_skills', {
   workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
   accountIdx: index('workspace_skills_account_idx').on(t.accountId),
+}));
+
+// Per-task routing outcome — captured on completion/failure so the calibration
+// cron can quantify whether the router's model pick matched reality.
+// See plans/buildd/smart-model-routing.md — feedback loop requires this table.
+export const taskOutcomes = pgTable('task_outcomes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // Taxonomy at the time the task ran — copied from tasks.kind / tasks.complexity.
+  kind: text('kind'),
+  complexity: text('complexity'),
+  classifiedBy: text('classified_by'),
+  // Router output: the model the claim route chose (alias or full ID).
+  predictedModel: text('predicted_model'),
+  // What the worker actually ran on (full ID resolved by worker-runner).
+  actualModel: text('actual_model'),
+  // True if the router downshifted away from the baseline for this task.
+  downshifted: boolean('downshifted').default(false).notNull(),
+  outcome: text('outcome').notNull().$type<'completed' | 'failed'>(),
+  // Numeric-as-text to match accounts.totalCost convention (Postgres numeric).
+  totalCostUsd: text('total_cost_usd'),
+  totalTurns: integer('total_turns'),
+  durationMs: integer('duration_ms'),
+  // Retried at least once before terminal outcome (mission auto-retry path).
+  wasRetried: boolean('was_retried').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: index('task_outcomes_task_idx').on(t.taskId),
+  createdIdx: index('task_outcomes_created_idx').on(t.createdAt),
+  kindIdx: index('task_outcomes_kind_idx').on(t.kind),
 }));
 
 // Team invitations for multi-tenancy

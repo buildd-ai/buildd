@@ -1,7 +1,11 @@
 /**
  * Default roles seeded into new workspaces.
  *
- * Tier 1: Organizer + Builder + Researcher — useful immediately for any workspace.
+ * Roles: Organizer (Opus), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
+ * Analyst (Sonnet). Model choices feed the claim-time router — Organizer/Builder
+ * default to Opus and downshift via task complexity; the others start at Sonnet
+ * and can downshift to Haiku under budget pressure.
+ *
  * MCP configs use ${VAR} interpolation; users store secrets via /api/secrets
  * with purpose='mcp_credential' and matching labels.
  */
@@ -30,7 +34,7 @@ interface DefaultRole {
   requiredEnvVars: Record<string, string>;
 }
 
-const DEFAULT_ROLES: DefaultRole[] = [
+export const DEFAULT_ROLES: DefaultRole[] = [
   {
     slug: 'organizer',
     name: 'Organizer',
@@ -76,11 +80,25 @@ Your plan is a JSON array in your structured output. Each item has:
 - \`ref\` — unique ID within the plan (e.g. "step-1", "step-2")
 - \`title\` — concise task title
 - \`description\` — detailed instructions for the worker
-- \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis)
+- \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis, \`writer\` for docs/PR descriptions, \`analyst\` for data/metrics)
 - \`dependsOn\` — array of refs this task must wait for (e.g. ["step-1"])
 - \`baseBranch\` — ref of the predecessor task to chain git branches from (prevents parallel branch conflicts)
 - \`outputRequirement\` — "pr_required", "artifact_required", or "none"
 - \`priority\` — integer, higher = more urgent
+- \`kind\` — what shape of work this is (drives model routing). One of:
+  - \`engineering\` — code edits, refactors, bug fixes, tests
+  - \`research\` — reading docs/repos, summarisation, competitive intel
+  - \`writing\` — PR descriptions, release notes, user docs, changelogs
+  - \`design\` — Pencil/UI work, visual generation
+  - \`analysis\` — SQL pulls, metrics interpretation, reports
+  - \`observation\` — pure-observation heartbeats, health checks (no fan-out)
+  - \`coordination\` — planning, delegation, mission decomposition (rare in a plan — that's your own job)
+- \`complexity\` — \`simple\`, \`normal\`, or \`complex\`. Guide:
+  - \`simple\`: typo fix, dependency bump, one-file doc edit, trivial rename, short lookup
+  - \`normal\`: bounded feature, fix-with-clear-repro, single-component refactor, structured research
+  - \`complex\`: architecture change, ambiguous bug, multi-file refactor, open-ended research
+
+Always set \`kind\` and \`complexity\` — they drive how much Claude-horsepower the task gets. Underestimating complexity routes the task to a weaker model and it may loop; overestimating wastes Opus budget. Favour \`normal\` when unsure.
 
 ### Sequencing Rules (CRITICAL)
 - Tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`
@@ -91,8 +109,8 @@ Your plan is a JSON array in your structured output. Each item has:
 Example plan for a code mission:
 \`\`\`json
 [
-  { "ref": "step-1", "title": "Add API endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3 },
-  { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2 }
+  { "ref": "step-1", "title": "Add API endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
+  { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
 ]
 \`\`\`
 
@@ -112,10 +130,13 @@ Example plan for a code mission:
 - Summarize your assessment in the \`summary\` field
 `,
     color: '#6366F1',
-    model: 'inherit',
+    // Organizer plans the work — coordination tier. Opus by default because a
+    // bad plan cascades to N wasted Builder tasks; a better plan saves more
+    // than the Opus premium many times over.
+    model: 'opus',
     isRole: true,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent', 'WebSearch', 'WebFetch', 'NotebookEdit'],
-    canDelegateTo: ['builder', 'researcher'],
+    canDelegateTo: ['builder', 'researcher', 'writer', 'analyst'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
   },
@@ -141,7 +162,10 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
 `,
     color: '#D4724A',
-    model: 'inherit',
+    // Builder defaults to Opus. Overrides flow downward via task.complexity
+    // (simple→Haiku, normal→Sonnet) in the claim-time router; overriding upward
+    // to Opus is never needed.
+    model: 'opus',
     isRole: true,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent', 'WebSearch', 'WebFetch', 'NotebookEdit'],
     canDelegateTo: ['researcher'],
@@ -170,10 +194,70 @@ You are the Researcher — responsible for gathering intelligence, analyzing eco
 - Use the buildd MCP to report progress and create artifacts
 `,
     color: '#D97706',
-    model: 'inherit',
+    // Researcher reads and summarises — Sonnet is the sweet spot for this shape
+    // of work. Router downshifts to Haiku under budget pressure.
+    model: 'sonnet',
     isRole: true,
     allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Agent'],
     canDelegateTo: ['builder'],
+    mcpServers: { buildd: BUILDD_MCP },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+  },
+  {
+    slug: 'writer',
+    name: 'Writer',
+    description: 'Docs, PR descriptions, release notes, changelogs, comms',
+    content: `# Writer
+
+You are the Writer — responsible for producing clear, concise written output: PR descriptions, release notes, user-facing documentation, changelogs, and internal comms.
+
+## Responsibilities
+- Draft PR descriptions that focus on *why*, not *what* — the diff shows the what
+- Write release notes and changelogs grouped by impact (new, changed, fixed)
+- Produce user-facing documentation with examples, not just API reference
+- Keep tone consistent: direct, specific, no marketing fluff
+
+## Approach
+- Lead with the most important thing — one-sentence summaries before details
+- Use concrete examples; avoid hypotheticals
+- Cut qualifiers and filler. If a sentence works without "basically" or "essentially", delete them
+- Prefer tables for comparisons and checklists for procedures
+- Link to source code, issues, and prior docs instead of restating
+`,
+    color: '#0EA5E9',
+    model: 'sonnet',
+    isRole: true,
+    allowedTools: ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'WebSearch', 'WebFetch'],
+    canDelegateTo: ['researcher'],
+    mcpServers: { buildd: BUILDD_MCP },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+  },
+  {
+    slug: 'analyst',
+    name: 'Analyst',
+    description: 'Data pulls, metrics interpretation, reports, dashboards',
+    content: `# Analyst
+
+You are the Analyst — responsible for querying data, interpreting metrics, and producing reports that support decisions.
+
+## Responsibilities
+- Pull data via SQL or API; summarise findings with concrete numbers
+- Interpret trends, flag anomalies, separate signal from noise
+- Produce reports structured as: TL;DR → key numbers → caveats → recommendations
+- Build dashboards or one-off artifacts when the same question will be asked again
+
+## Approach
+- Always cite the source query or endpoint — future-you needs to rerun it
+- Include sample size and time range with every stat
+- Lead with the answer; structure rationale afterward
+- Flag assumptions explicitly ("assumes X workspace filter")
+- Use the buildd MCP to create artifacts for recurring reports
+`,
+    color: '#A855F7',
+    model: 'sonnet',
+    isRole: true,
+    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch'],
+    canDelegateTo: ['researcher', 'writer'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
   },

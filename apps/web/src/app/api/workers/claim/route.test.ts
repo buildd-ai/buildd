@@ -31,6 +31,13 @@ const mockAccountsUpdate = mock(() => ({
 }));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
+const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
+const mockDbSelect = mock(() => ({
+  from: mock(() => ({
+    where: mock(() => Promise.resolve([{ count: 0 }])),
+  })),
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -51,6 +58,10 @@ mock.module('@buildd/core/db', () => ({
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
       tenantBudgets: { findFirst: mock(() => null as any) },
+      workspaceSkills: {
+        findMany: mockWorkspaceSkillsFindMany,
+        findFirst: mockWorkspaceSkillsFindFirst,
+      },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -60,6 +71,7 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: (table: any) => mockWorkersInsert(),
     delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
+    select: mockDbSelect,
     execute: mockDbExecute,
   },
 }));
@@ -70,19 +82,24 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ args, type: 'or' }),
   not: (value: any) => ({ value, type: 'not' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
-  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
+    { raw: (s: string) => ({ raw: s, type: 'sql' }) },
+  ),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
+  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
 }));
@@ -157,6 +174,15 @@ describe('POST /api/workers/claim', () => {
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
     // Default: no workspace permissions
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    // Default: no role overrides
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    // Default: zero recent claims (router spike-detection input)
+    mockDbSelect.mockReturnValue({
+      from: mock(() => ({
+        where: mock(() => Promise.resolve([{ count: 0 }])),
+      })),
+    });
   });
 
   it('returns 401 when no API key', async () => {
@@ -261,7 +287,7 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('Max concurrent sessions limit reached');
   });
 
-  it('returns 429 when OAuth budget is exhausted', async () => {
+  it('skips non-tenant tasks when OAuth budget is exhausted', async () => {
     const futureReset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
@@ -275,6 +301,9 @@ describe('POST /api/workers/claim', () => {
     });
 
     mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -282,11 +311,10 @@ describe('POST /api/workers/claim', () => {
     });
     const res = await POST(req);
 
-    expect(res.status).toBe(429);
+    // Should proceed past budget check — server filters non-tenant tasks in the loop
     const data = await res.json();
-    expect(data.error).toBe('OAuth budget exhausted');
-    expect(data.budgetResetsAt).toBe(futureReset);
-    expect(data.diagnostics.reason).toBe('budget_exhausted');
+    expect(res.status).toBe(200);
+    expect(data.diagnostics?.reason).toBe('no_pending_tasks');
   });
 
   it('auto-clears budget exhaustion when reset time has passed', async () => {
@@ -981,6 +1009,267 @@ describe('POST /api/workers/claim', () => {
     } else {
       delete process.env.ENCRYPTION_KEY;
     }
+  });
+
+  // --- Smart routing tests (see packages/core/model-router.ts) ---
+
+  describe('smart model routing', () => {
+    // Capture the payload written on the claim UPDATE so we can assert
+    // predictedModel + patched context without reaching into the DB layer.
+    let lastTaskSetPayload: any = null;
+
+    function mockClaimSuccess() {
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((payload: any) => {
+          lastTaskSetPayload = payload;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'task-1' }]),
+            })),
+          };
+        }),
+      }));
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    beforeEach(() => {
+      lastTaskSetPayload = null;
+    });
+
+    it('writes predictedModel and injects model into task.context on successful claim', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '5',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'simple doc edit',
+        kind: 'engineering',
+        complexity: 'simple',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+
+      // engineering/simple → haiku (baseline matrix)
+      expect(lastTaskSetPayload.predictedModel).toBe('haiku');
+      expect(lastTaskSetPayload.context?.model).toBe('haiku');
+    });
+
+    it('downshifts engineering/complex to sonnet when daily budget > 70%', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '75', // 75% budget pressure
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'big refactor',
+        kind: 'engineering',
+        complexity: 'complex',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      await POST(req);
+
+      // baseline=opus, but 70–90% band downshifts engineering → sonnet
+      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+    });
+
+    it('skips the task when the router returns paused (budget >= 95%, priority 0)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '50', // daily-cost hard limit not hit yet (50% < 100%)…
+      });
+      // …but the *router* input uses this ratio. Force 96% by tweaking cost.
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '96', // 96% → paused for priority 0
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'normal task',
+        kind: 'engineering',
+        complexity: 'normal',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      // Router returned paused — no claim UPDATE should have fired.
+      expect(lastTaskSetPayload).toBeNull();
+      const data = await res.json();
+      expect(data.workers).toEqual([]);
+    });
+
+    it('explicit context.model bypasses router gates', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '92', // would normally downshift, but override wins
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'user-pinned',
+        kind: 'engineering',
+        complexity: 'simple',
+        priority: 0,
+        dependsOn: [],
+        context: { model: 'claude-opus-4-7' },
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      await POST(req);
+
+      expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-7');
+      expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-7');
+    });
+
+    it('spike-detection downshifts when recent claim count exceeds threshold', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '10', // budget-gate won't fire
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'engineering in a spike',
+        kind: 'engineering',
+        complexity: 'complex',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      // 25 recent claims > default threshold of 20 → spike fires
+      mockDbSelect.mockReturnValue({
+        from: mock(() => ({
+          where: mock(() => Promise.resolve([{ count: 25 }])),
+        })),
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      await POST(req);
+
+      // engineering/complex baseline=opus, spike downshifts → sonnet
+      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+    });
+
+    it('role floor clamps a simple engineering task up from haiku', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '5',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'builder-owned simple task',
+        kind: 'engineering',
+        complexity: 'simple',
+        roleSlug: 'builder',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+
+      // Workspace role configures builder with a sonnet floor.
+      mockWorkspaceSkillsFindMany.mockResolvedValue([
+        { slug: 'builder', model: 'sonnet', workspaceId: 'ws-1' },
+      ]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      await POST(req);
+
+      // baseline=haiku, role floor=sonnet → clamped up to sonnet
+      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+    });
   });
 
   it('skips secrets when workspace has no teamId', async () => {
