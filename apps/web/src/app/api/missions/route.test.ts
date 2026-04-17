@@ -175,7 +175,7 @@ describe('POST /api/missions', () => {
     expect(insertedScheduleValues).toBeNull();
   });
 
-  it('API-created mission auto-enables heartbeat with defaults (backward compat)', async () => {
+  it('API-created mission auto-enables heartbeat without default active hours (opt-in)', async () => {
     mockGetCurrentUser.mockReturnValue(null as any);
     mockAuthenticateApiKey.mockReturnValue({ id: 'api-1', level: 'admin', teamId: 'team-1' } as any);
 
@@ -188,15 +188,15 @@ describe('POST /api/missions', () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    // Schedule auto-created with heartbeat defaults
+    // Schedule auto-created with heartbeat but no default active hours
     expect(insertedScheduleValues).not.toBeNull();
     expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.heartbeatChecklist).toBeDefined();
-    expect(ctx.activeHoursStart).toBe(8);
-    expect(ctx.activeHoursEnd).toBe(22);
-    expect(ctx.activeHoursTimezone).toBe('America/New_York');
+    expect(ctx.activeHoursStart).toBeUndefined();
+    expect(ctx.activeHoursEnd).toBeUndefined();
+    expect(ctx.activeHoursTimezone).toBeUndefined();
   });
 
   it('UI-created mission with explicit cronExpression creates schedule', async () => {
@@ -240,7 +240,7 @@ describe('POST /api/missions', () => {
     expect(insertedScheduleValues).toBeNull();
   });
 
-  it('user overrides take precedence over heartbeat defaults', async () => {
+  it('only includes explicitly provided active hours (no defaults injected)', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
@@ -259,9 +259,9 @@ describe('POST /api/missions', () => {
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.activeHoursStart).toBe(10);
-    // Other fields get defaults
-    expect(ctx.activeHoursEnd).toBe(22);
-    expect(ctx.activeHoursTimezone).toBe('America/New_York');
+    // No defaults injected for fields not provided
+    expect(ctx.activeHoursEnd).toBeUndefined();
+    expect(ctx.activeHoursTimezone).toBeUndefined();
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {

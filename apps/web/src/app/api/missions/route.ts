@@ -9,9 +9,6 @@ import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
   DEFAULT_HEARTBEAT_CRON,
-  DEFAULT_ACTIVE_HOURS_START,
-  DEFAULT_ACTIVE_HOURS_END,
-  DEFAULT_ACTIVE_HOURS_TIMEZONE,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
 } from '@/lib/heartbeat-helpers';
 
@@ -185,15 +182,10 @@ export async function POST(req: NextRequest) {
       if (effectiveHeartbeat) {
         templateContext.heartbeat = true;
         templateContext.heartbeatChecklist = heartbeatChecklist || DEFAULT_MISSION_HEARTBEAT_CHECKLIST;
-        templateContext.activeHoursStart = activeHoursStart ?? DEFAULT_ACTIVE_HOURS_START;
-        templateContext.activeHoursEnd = activeHoursEnd ?? DEFAULT_ACTIVE_HOURS_END;
-        templateContext.activeHoursTimezone = activeHoursTimezone || DEFAULT_ACTIVE_HOURS_TIMEZONE;
-      } else {
-        // Explicit cron without heartbeat — just pass through what was provided
-        if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
-        if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
-        if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
       }
+      if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
+      if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
+      if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
 
       const [schedule] = await db
         .insert(taskSchedules)

@@ -16,7 +16,7 @@ import ExpandableText from './ExpandableText';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
-import ActiveHoursConfig from './ActiveHoursConfig';
+import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import AiFeedback from '@/components/AiFeedback';
 import PrioritySelector from './PrioritySelector';
@@ -406,7 +406,7 @@ export default async function MissionDetailPage({
             missionId={id}
             checklist={heartbeatChecklist}
           />
-          <ActiveHoursConfig
+          <QuietHoursConfig
             missionId={id}
             activeHoursStart={activeHoursStart}
             activeHoursEnd={activeHoursEnd}
