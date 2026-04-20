@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Share a single branch + PR across mission tasks (#698)
+- Per-mission maxConcurrentTasks to cap seat consumption (#695)
+- Surface seat utilization and deferral reasons in missions UI (#694)
+- Seat-aware priority scheduling for cron scheduler (#693)
+- Make active hours opt-in and rename to Quiet Hours (#692)
+- Smart model routing + release-free model upgrades (#684)
+- AI feedback buttons with memory integration (#681)
 - Team badges on mission cards + remember last team (#528)
 
 ### Changed
@@ -17,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)
+- Per-runner cooldown in claim route prevents burn-loop dispatch (#686)
+- Scoped claim circuit breaker prevents Pusher-driven burn loop
 - Heartbeat missions now complete instead of looping forever (#673)
 - Mark ALL working workers as error on startup, not just zero-activity ones (#623)
 - Scope secrets by workspace team to prevent cross-team leakage (#529)
@@ -26,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add New Mission CTA to home page, simplify no-agents text
 - Restore "Create a task" CTA on home page
 - Simplify "no agents running" message on home page
+
+### CI
+
+- Distinguish Claude quota exhaustion from real E2E failures (#688)
+- Dump runner/server logs on E2E failure for diagnosis
 
 ### Docs
 
