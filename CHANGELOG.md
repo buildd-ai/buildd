@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add missionId filter to list_artifacts MCP action (#696)
 - Share a single branch + PR across mission tasks (#698)
 - Per-mission maxConcurrentTasks to cap seat consumption (#695)
 - Surface seat utilization and deferral reasons in missions UI (#694)
@@ -20,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to ^0.2.112
+- Bump @anthropic-ai/claude-agent-sdk to ^0.2.114
 
 ### Fixed
 
+- Fix update_schedule 500 caused by raw workspaceId in PATCH body (#700)
+- Ensure bun is on PATH in launcher script for non-interactive shells (#701)
 - Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)
 - Per-runner cooldown in claim route prevents burn-loop dispatch (#686)
 - Scoped claim circuit breaker prevents Pusher-driven burn loop
