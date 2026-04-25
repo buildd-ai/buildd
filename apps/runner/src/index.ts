@@ -2521,3 +2521,11 @@ setInterval(async () => {
     console.error('[self-heal] Doctor check failed:', err.message);
   }
 }, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes
+
+// Liveness heartbeat: a positive log signal so host-level monitors that watch
+// stdout staleness can distinguish "runner idle" from "runner wedged". Worker
+// activity / pusher reconnects / update checks aren't guaranteed during quiet
+// periods, so without this the log can stay silent for hours on a healthy runner.
+setInterval(() => {
+  console.log(`[heartbeat] ${new Date().toISOString()} runner alive`);
+}, 60_000);
