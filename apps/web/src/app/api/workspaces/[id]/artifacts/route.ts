@@ -48,12 +48,14 @@ export async function GET(
   }
 
   const url = new URL(req.url);
+  const missionId = url.searchParams.get('missionId');
   const key = url.searchParams.get('key');
   const type = url.searchParams.get('type');
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '10'), 1), 50);
 
   // Build conditions
   const conditions = [eq(artifacts.workspaceId, id)];
+  if (missionId) conditions.push(eq(artifacts.missionId, missionId));
   if (key) conditions.push(eq(artifacts.key, key));
   if (type) conditions.push(eq(artifacts.type, type));
 

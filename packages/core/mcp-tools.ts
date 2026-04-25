@@ -58,7 +58,7 @@ export const workerActions = [
 ] as const;
 
 export const adminActions = [
-  'create_schedule', 'update_schedule', 'list_schedules',
+  'create_schedule', 'update_schedule', 'delete_schedule', 'list_schedules',
   'register_skill', 'list_skills', 'update_skill', 'delete_skill',
   'manage_secrets',
   'approve_plan', 'reject_plan',
@@ -91,11 +91,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
     create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
-    list_artifacts: '{ workspaceId?, key?, type?, limit? }',
+    list_artifacts: '{ workspaceId?, missionId?, key?, type?, limit? }',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
+    delete_schedule: '{ scheduleId (required), workspaceId? } — permanently remove a schedule [admin]',
     list_schedules: '{ workspaceId? } [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
@@ -668,7 +669,6 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
       if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
-      if (params.workspaceId !== undefined) updateBody.workspaceId = params.workspaceId;
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
         const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
@@ -693,6 +693,22 @@ export async function handleBuilddAction(
 
       const updSched = updated.schedule;
       return text(`Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}`);
+    }
+
+    case 'delete_schedule': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.scheduleId) throw new Error('scheduleId is required');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace.');
+
+      const result = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {
+        method: 'DELETE',
+      });
+
+      if (!result.success) throw new Error(result.error || 'Failed to delete schedule');
+      return text(`Schedule ${params.scheduleId} deleted successfully.`);
     }
 
     case 'list_schedules': {
@@ -1064,6 +1080,7 @@ export async function handleBuilddAction(
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
       const searchParams = new URLSearchParams();
+      if (params.missionId) searchParams.set('missionId', params.missionId as string);
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
       if (params.limit) searchParams.set('limit', String(params.limit));

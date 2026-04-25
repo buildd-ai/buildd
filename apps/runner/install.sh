@@ -106,6 +106,10 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #   PORT            - Local server port (default: 8766)
 # =============================================================================
 
+# Ensure bun is on PATH (non-interactive shells like Docker CMD, nohup, systemd
+# don't source .bashrc, so bun may not be found after auto-update restart)
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
   ROOTS=""
