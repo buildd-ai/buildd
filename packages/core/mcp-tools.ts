@@ -59,6 +59,7 @@ export const workerActions = [
 
 export const adminActions = [
   'create_schedule', 'update_schedule', 'delete_schedule', 'list_schedules',
+  'pause_schedules',
   'register_skill', 'list_skills', 'update_skill', 'delete_skill',
   'manage_secrets',
   'approve_plan', 'reject_plan',
@@ -98,6 +99,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — permanently remove a schedule [admin]',
     list_schedules: '{ workspaceId? } [admin]',
+    pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled? } — update skill by slug [admin]',
@@ -751,6 +753,88 @@ export async function handleBuilddAction(
       ).join('\n\n');
 
       return text(`${allSchedules.length} schedule(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'pause_schedules': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const desiredEnabled = params.enabled === true; // default false = pause
+      const scheduleIds = Array.isArray(params.scheduleIds)
+        ? (params.scheduleIds as string[])
+        : null;
+      const namePattern = typeof params.namePattern === 'string' ? params.namePattern.toLowerCase() : null;
+
+      // Resolve target schedule IDs
+      let targets: Array<{ id: string; name: string; enabled: boolean }> = [];
+      if (scheduleIds) {
+        // Caller gave exact IDs — fetch the workspace list once to get names for the summary
+        const data = await api(`/api/workspaces/${wsId}/schedules`);
+        const all = (data.schedules || []) as Array<{ id: string; name: string; enabled: boolean }>;
+        const idSet = new Set(scheduleIds);
+        targets = all.filter((s) => idSet.has(s.id));
+        const missing = scheduleIds.filter((id) => !targets.some((t) => t.id === id));
+        if (missing.length) {
+          return errorResult(`Schedule(s) not found in this workspace: ${missing.join(', ')}`);
+        }
+      } else {
+        const data = await api(`/api/workspaces/${wsId}/schedules`);
+        const all = (data.schedules || []) as Array<{ id: string; name: string; enabled: boolean }>;
+        targets = namePattern
+          ? all.filter((s) => s.name.toLowerCase().includes(namePattern))
+          : all;
+      }
+
+      if (targets.length === 0) {
+        return text(
+          namePattern
+            ? `No schedules matching "${params.namePattern}" in this workspace.`
+            : 'No schedules in this workspace.',
+        );
+      }
+
+      // Skip schedules already in the desired state — avoid noise + needless writes
+      const toFlip = targets.filter((s) => s.enabled !== desiredEnabled);
+      const skipped = targets.length - toFlip.length;
+
+      if (toFlip.length === 0) {
+        return text(
+          `All ${targets.length} matched schedule(s) already ${desiredEnabled ? 'enabled' : 'paused'}. No changes.`,
+        );
+      }
+
+      const results: Array<{ id: string; name: string; ok: boolean; error?: string }> = [];
+      for (const sched of toFlip) {
+        try {
+          await api(`/api/workspaces/${wsId}/schedules/${sched.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ enabled: desiredEnabled }),
+          });
+          results.push({ id: sched.id, name: sched.name, ok: true });
+        } catch (err) {
+          results.push({
+            id: sched.id,
+            name: sched.name,
+            ok: false,
+            error: err instanceof Error ? err.message : 'unknown',
+          });
+        }
+      }
+
+      const succeeded = results.filter((r) => r.ok);
+      const failed = results.filter((r) => !r.ok);
+      const lines = [
+        `${desiredEnabled ? 'Resumed' : 'Paused'} ${succeeded.length}/${toFlip.length} schedule(s)${skipped ? ` (skipped ${skipped} already in target state)` : ''}.`,
+        '',
+        ...succeeded.map((r) => `  ✓ ${r.name} [${r.id}]`),
+        ...failed.map((r) => `  ✗ ${r.name} [${r.id}] — ${r.error}`),
+        failed.length ? '\nNote: in-flight tasks already claimed by workers continue running. Cancel them via update_task if needed.' : '',
+      ].filter((l) => l !== '');
+
+      return failed.length > 0 ? errorResult(lines.join('\n')) : text(lines.join('\n'));
     }
 
     case 'register_skill': {
