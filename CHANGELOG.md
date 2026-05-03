@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Emit per-minute liveness heartbeat to runner stdout (#709)
 - Add missionId filter to list_artifacts MCP action (#696)
 - Share a single branch + PR across mission tasks (#698)
 - Per-mission maxConcurrentTasks to cap seat consumption (#695)
@@ -21,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to ^0.2.114
+- Bump @anthropic-ai/claude-agent-sdk to ^0.2.119 (#708)
 
 ### Fixed
 
