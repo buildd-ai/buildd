@@ -6,13 +6,14 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
 import { join } from 'path';
 
-const installScript = readFileSync(
+// Use Bun.file (not fs.readFileSync) so the read isn't intercepted by
+// other tests' `mock.module('fs', ...)` calls — which Bun applies process-wide
+// at collection time, regardless of file order under a directory glob.
+const installScript = await Bun.file(
   join(import.meta.dir, '../../install.sh'),
-  'utf-8',
-);
+).text();
 
 // Extract the launcher script between the LAUNCHER heredoc markers
 const launcherMatch = installScript.match(
