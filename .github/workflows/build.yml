@@ -220,6 +220,36 @@ jobs:
             "
           SCRIPT
 
+      - name: Verify SDK native binary (post-build)
+        # The integration tests have repeatedly failed with
+        # "Claude Code native binary not found at /tmp/buildd-ci/node_modules/.bun/
+        # @anthropic-ai+claude-agent-sdk-linux-arm64-musl@<ver>/.../claude" even
+        # though manual reproduction shows the binary lands fine. This step
+        # captures the state of the SDK's platform packages right after install
+        # so we can tell whether the binary went missing, was never installed,
+        # or has the wrong executable bit. Compare with the on-failure dump below.
+        run: |
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            docker exec coder-ai-run-my-claude-workspace bash <<'INNER'
+              set +e
+              echo "::group::SDK binary state (post-build)"
+              echo "--- arch + bun version ---"
+              uname -m
+              /home/coder/.bun/bin/bun --version
+              echo "--- expected platform variant present? ---"
+              ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -5
+              echo "--- parent SDK's symlink to platform variant ---"
+              ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk@*/node_modules/@anthropic-ai/ 2>&1 | head -10
+              echo "--- top-level @anthropic-ai (should NOT exist with isolated linker) ---"
+              ls -la /tmp/buildd-ci/node_modules/@anthropic-ai/ 2>&1 | head -10
+              echo "--- all .bun anthropic-ai entries ---"
+              ls /tmp/buildd-ci/node_modules/.bun/ 2>&1 | grep '@anthropic-ai' | head -10
+              echo "--- bun pm ls (claude-agent-sdk only) ---"
+              cd /tmp/buildd-ci && /home/coder/.bun/bin/bun pm ls 2>&1 | grep -i 'claude-agent-sdk' | head -10
+              echo "::endgroup::"
+          INNER
+          SCRIPT
+
       - name: Run migrations on Neon preview branch
         run: cd packages/core && bun db:migrate
         env:
@@ -274,6 +304,21 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+
+      - name: Verify SDK native binary (pre-runner)
+        if: needs.changes.outputs.runner == 'true'
+        # Same probe as post-build, but right before the runner spawns. If the
+        # binary is here then but the runner reports it missing, the issue is
+        # in how the runner process resolves the path, not in the install.
+        run: |
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
+            docker exec coder-ai-run-my-claude-workspace bash <<'INNER'
+              echo "::group::SDK binary state (pre-runner)"
+              ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
+              ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl 2>&1 | head -3
+              echo "::endgroup::"
+          INNER
+          SCRIPT
 
       - name: Start preview runner
         if: needs.changes.outputs.runner == 'true'
@@ -334,6 +379,31 @@ jobs:
           #   runner only → run all (worker tests need API too)
           #   both        → run all
           E2E_SCOPE: ${{ needs.changes.outputs.runner == 'true' && 'all' || 'api' }}
+
+      - name: Dump SDK binary state on failure
+        if: failure()
+        # Compare with the post-build/pre-runner probes — if the binary was
+        # there earlier and isn't now, something between those checkpoints
+        # mutated /tmp/buildd-ci. Also captures inode/mtime so we can tell
+        # whether the file was overwritten vs deleted vs never installed.
+        run: |
+          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT' || true
+            docker exec coder-ai-run-my-claude-workspace bash <<'INNER'
+              echo "::group::SDK binary state (on failure)"
+              echo "--- expected platform variant ---"
+              ls -lai /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
+              echo "--- parent SDK's symlink ---"
+              ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk@*/node_modules/@anthropic-ai/ 2>&1 | head -10
+              echo "--- exact path from error message ---"
+              find /tmp/buildd-ci/node_modules -path '*claude-agent-sdk-linux-arm64-musl*' -maxdepth 6 2>/dev/null | head -10
+              echo "--- bun pm ls (claude-agent-sdk only) ---"
+              cd /tmp/buildd-ci && /home/coder/.bun/bin/bun pm ls 2>&1 | grep -i 'claude-agent-sdk' | head -10
+              echo "--- /tmp/buildd-ci size + free space ---"
+              du -sh /tmp/buildd-ci 2>&1 | head -1
+              df -h /tmp 2>&1 | tail -1
+              echo "::endgroup::"
+          INNER
+          SCRIPT
 
       - name: Dump runner and server logs on failure
         if: failure()
