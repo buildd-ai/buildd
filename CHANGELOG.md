@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bulk pause/resume schedules via MCP action (#713)
 - Emit per-minute liveness heartbeat to runner stdout (#709)
 - Add missionId filter to list_artifacts MCP action (#696)
 - Share a single branch + PR across mission tasks (#698)
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Use Bun.file in launcher-path test so fs mock doesn't leak (#714)
 - Fix update_schedule 500 caused by raw workspaceId in PATCH body (#700)
 - Ensure bun is on PATH in launcher script for non-interactive shells (#701)
 - Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)
@@ -43,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Use docker exec -i with bash -s instead of nested heredoc (#718)
+- Add SDK binary diagnostics to integration job (#716)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)
 - Dump runner/server logs on E2E failure for diagnosis
 
