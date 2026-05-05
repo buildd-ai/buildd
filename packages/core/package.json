@@ -25,7 +25,7 @@
     "./tenant-crypto": "./tenant-crypto.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.128",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^0.9.0",
     "dotenv": "^16.4.5",
