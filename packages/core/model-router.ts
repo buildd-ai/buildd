@@ -63,7 +63,7 @@ export interface RouterDecision {
  * `coordination` and `observation` ignore complexity.
  */
 const BASELINE: Record<TaskKind, Record<TaskComplexity, Tier>> = {
-  coordination: { simple: 'opus', normal: 'opus', complex: 'opus' },
+  coordination: { simple: 'sonnet', normal: 'sonnet', complex: 'opus' },
   engineering:  { simple: 'haiku', normal: 'sonnet', complex: 'opus' },
   research:     { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },
   writing:      { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },

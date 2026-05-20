@@ -22,6 +22,20 @@ let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
 let mockQueryError: Error | null = null; // Set to throw during query iteration
 
+// Mock pusher-js — real Pusher tries to open a network connection on
+// construction, which fails under CI sandbox (no outbound). The test
+// suite only exercises construction + presence checks, not actual events.
+mock.module('pusher-js', () => {
+  return {
+    default: class MockPusher {
+      connection = { bind: () => {} };
+      subscribe = () => ({ bind: () => {}, unbind_all: () => {}, unbind: () => {} });
+      unsubscribe = () => {};
+      disconnect = () => {};
+    },
+  };
+});
+
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     const msgs = [...mockMessages];
@@ -999,11 +1013,11 @@ describe('Error Handling', () => {
         throw new Error('ECONNREFUSED');
       });
 
-      // Manager should create successfully despite workspace subscription failure
-      manager = new WorkerManager(makeConfig({
-        pusherKey: 'test-key',
-        pusherCluster: 'us2',
-      }));
+      // Manager should create successfully despite workspace subscription failure.
+      // Don't pass pusherKey/pusherCluster — that would trigger a real Pusher
+      // connection attempt which fails under CI sandbox (no outbound network).
+      // The listWorkspaces throw is the actual subject-under-test here.
+      manager = new WorkerManager(makeConfig());
 
       expect(manager).toBeDefined();
       await new Promise(r => setTimeout(r, 100));
