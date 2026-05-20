@@ -22,6 +22,20 @@ let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
 let mockQueryError: Error | null = null; // Set to throw during query iteration
 
+// Mock pusher-js — real Pusher tries to open a network connection on
+// construction, which fails under CI sandbox (no outbound). The test
+// suite only exercises construction + presence checks, not actual events.
+mock.module('pusher-js', () => {
+  return {
+    default: class MockPusher {
+      connection = { bind: () => {} };
+      subscribe = () => ({ bind: () => {}, unbind_all: () => {}, unbind: () => {} });
+      unsubscribe = () => {};
+      disconnect = () => {};
+    },
+  };
+});
+
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     const msgs = [...mockMessages];
