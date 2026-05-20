@@ -1013,11 +1013,11 @@ describe('Error Handling', () => {
         throw new Error('ECONNREFUSED');
       });
 
-      // Manager should create successfully despite workspace subscription failure
-      manager = new WorkerManager(makeConfig({
-        pusherKey: 'test-key',
-        pusherCluster: 'us2',
-      }));
+      // Manager should create successfully despite workspace subscription failure.
+      // Don't pass pusherKey/pusherCluster — that would trigger a real Pusher
+      // connection attempt which fails under CI sandbox (no outbound network).
+      // The listWorkspaces throw is the actual subject-under-test here.
+      manager = new WorkerManager(makeConfig());
 
       expect(manager).toBeDefined();
       await new Promise(r => setTimeout(r, 100));
