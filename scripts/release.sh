@@ -86,6 +86,56 @@ if [ "${1:-}" = "--tag" ]; then
   exit 0
 fi
 
+# Finalize: reset dev to main after the release PR has been merged. Use after
+# `bun run release` → PR merge → `bun run release:finalize`. Keeps dev's history
+# identical to main so future release PRs aren't cluttered with prior releases'
+# individual commits (which linger because each release squashes to main).
+#
+# Destructive: force-pushes dev. Aborts if dev has commits not yet on main
+# (something landed on dev between the release merge and finalize).
+if [ "${1:-}" = "--finalize" ]; then
+  git fetch origin --prune
+
+  # Compare file contents (not commit history). Each release squashes to main
+  # so the individual commits live on in dev with different SHAs — looking at
+  # commit messages would always trip. The only thing we care about is whether
+  # dev contains file changes that didn't make it into main.
+  #
+  # Exclude package.json version bumps (transiently differ between version-bump
+  # commit on dev and the squashed release on main).
+  DIFF=$(git diff --name-only origin/main..origin/dev -- . \
+    ':(exclude)apps/*/package.json' \
+    ':(exclude)packages/*/package.json' \
+    ':(exclude)package.json' 2>/dev/null || true)
+
+  if [ -n "$DIFF" ]; then
+    echo "❌ dev has file changes that aren't on main yet:"
+    echo "$DIFF" | sed 's/^/   /'
+    echo ""
+    echo "Merge or stash them before finalizing. Re-run with --finalize-force to override."
+    exit 1
+  fi
+
+  echo "Resetting origin/dev to origin/main..."
+  git checkout dev
+  git reset --hard origin/main
+  git push --force-with-lease origin dev
+  echo "  ✅ dev is now identical to main"
+  exit 0
+fi
+
+# Same as --finalize but skips the "dev has unreleased commits" check.
+# Use only when you've inspected the diff and know what you're discarding.
+if [ "${1:-}" = "--finalize-force" ]; then
+  git fetch origin --prune
+  echo "⚠️  Force-resetting dev to main (skipping unreleased-commit check)..."
+  git checkout dev
+  git reset --hard origin/main
+  git push --force-with-lease origin dev
+  echo "  ✅ dev is now identical to main"
+  exit 0
+fi
+
 # Post-release cleanup: delete branches already in main
 if [ "${1:-}" = "--cleanup" ]; then
   echo "🧹 Cleaning up stale branches..."
@@ -218,6 +268,10 @@ if [ -n "$EXISTING_PR" ]; then
 else
   gh pr create --base main --head dev --title "Release ${NEW_VERSION}" --body "$BODY"
 fi
+
+echo ""
+echo "👉 After merging the release PR, run: bun run release:finalize"
+echo "   (resets dev to main so future release PRs stay clean)"
 
 # Note: release-tag.yml auto-creates the git tag when this PR merges (title must match "Release v...").
 # If the automated flow was bypassed, run: bun run release -- --tag
