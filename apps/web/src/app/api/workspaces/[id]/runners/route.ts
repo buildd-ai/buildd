@@ -5,7 +5,7 @@ import { eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
-const HEARTBEAT_STALE_MS = 25 * 60 * 1000; // heartbeat ~10 min + 2.5x buffer
+const HEARTBEAT_STALE_MS = 150 * 60 * 1000; // heartbeat ~60 min (aligned) + 2.5× buffer
 
 /**
  * GET /api/workspaces/[id]/runners
