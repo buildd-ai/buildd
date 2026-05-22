@@ -8,7 +8,9 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 
-const HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 minutes (heartbeat every 5 min + buffer)
+// Heartbeat default is every 10 min (BUILDD_RUNNER_HEARTBEAT_MIN) — give 2.5x buffer
+// so a single missed beat doesn't mark the runner stale.
+const HEARTBEAT_STALE_MS = 25 * 60 * 1000;
 
 /**
  * GET /api/workers/active
