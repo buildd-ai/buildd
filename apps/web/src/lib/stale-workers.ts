@@ -163,9 +163,10 @@ export async function cleanupStaleWorkers(accountId: string) {
   }
 
   // 2. Fail active workers when their runner's heartbeat is stale (machine went offline).
-  // Heartbeat cadence is ~10 min (BUILDD_RUNNER_HEARTBEAT_MIN) — use 2.5x as the cutoff
-  // so one dropped beat doesn't fail in-flight workers.
-  const HEARTBEAT_STALE_MS = 25 * 60 * 1000;
+  // Heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min) so the
+  // DB can stay idle long enough for Neon to suspend — use 2.5× as the cutoff so one
+  // dropped beat doesn't fail in-flight workers.
+  const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
   const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
