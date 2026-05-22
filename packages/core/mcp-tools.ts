@@ -60,7 +60,7 @@ export const workerActions = [
 export const adminActions = [
   'create_schedule', 'update_schedule', 'delete_schedule', 'list_schedules',
   'pause_schedules',
-  'register_skill', 'list_skills', 'update_skill', 'delete_skill',
+  'register_skill', 'list_skills', 'get_skill', 'update_skill', 'delete_skill',
   'manage_secrets',
   'approve_plan', 'reject_plan',
   'manage_missions',
@@ -102,6 +102,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
+    get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled? } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
@@ -937,6 +938,41 @@ export async function handleBuilddAction(
       }).join('\n');
 
       return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'get_skill': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.slug) throw new Error('slug is required to identify the skill to fetch');
+
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      const skillId = await resolveSkillId(api, wsId, params.slug as string);
+      const data = await api(`/api/workspaces/${wsId}/skills/${skillId}`);
+      const s = data.skill;
+      if (!s) throw new Error(`Skill with slug "${params.slug}" not found`);
+
+      const payload = {
+        slug: s.slug,
+        name: s.name,
+        description: s.description ?? null,
+        content: s.content ?? '',
+        model: s.model,
+        allowedTools: s.allowedTools ?? [],
+        canDelegateTo: s.canDelegateTo ?? [],
+        background: s.background ?? false,
+        maxTurns: s.maxTurns ?? null,
+        color: s.color ?? null,
+        mcpServers: s.mcpServers ?? {},
+        requiredEnvVars: s.requiredEnvVars ?? {},
+        isRole: s.isRole ?? false,
+        enabled: s.enabled,
+        repoUrl: s.repoUrl ?? null,
+        source: s.source ?? null,
+      };
+
+      return text(JSON.stringify(payload, null, 2));
     }
 
     case 'update_skill': {
