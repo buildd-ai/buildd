@@ -16,6 +16,7 @@
     "test:cleanup": "BUILDD_TEST_SERVER=${BUILDD_TEST_SERVER:-http://localhost:3000} bun run tests/cleanup.ts",
     "release": "bash scripts/release.sh",
     "release:hotfix": "bash scripts/release.sh --hotfix",
+    "release:finalize": "bash scripts/release.sh --finalize",
     "cleanup-branches": "bash scripts/release.sh --cleanup",
     "sync-dev": "bash scripts/sync-dev.sh",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
