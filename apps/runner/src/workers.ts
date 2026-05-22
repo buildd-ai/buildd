@@ -37,13 +37,12 @@ export { isEphemeralTestBranch };
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
-// Polling cadences (minutes). Defaults are tuned to let serverless Postgres
-// (e.g. Neon) suspend its compute — keep all DB-touching cadences > the
-// provider's suspend timeout (Neon default = 5 min). Override via env when
-// you need faster fallback for missed Pusher events.
-const CLAIM_POLL_MIN = Number(process.env.BUILDD_RUNNER_CLAIM_POLL_MIN ?? 15);
-const HEARTBEAT_MIN = Number(process.env.BUILDD_RUNNER_HEARTBEAT_MIN ?? 10);
-const RECONCILE_MIN = Number(process.env.BUILDD_RUNNER_RECONCILE_MIN ?? 30);
+// Master polling cadence (minutes). Heartbeat, reconcile, and claim-fallback
+// all fire on a single aligned interval so the DB sees ONE short burst per
+// tick and a long quiet stretch in between — long enough for serverless
+// Postgres (Neon, default 5-min suspend) to actually scale to zero.
+// Pusher handles real-time delivery; these timers are pure safety nets.
+const POLL_MIN = Number(process.env.BUILDD_RUNNER_POLL_MIN ?? 60);
 
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
@@ -178,8 +177,6 @@ export class WorkerManager {
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
-  private reconcileInterval?: Timer;
-  private claimPollInterval?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -302,30 +299,28 @@ export class WorkerManager {
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
+      // Startup hits (one-time, before the aligned loop kicks in).
       this.sendHeartbeat();
-      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), HEARTBEAT_MIN * 60_000);
-
-      // Reconcile local workers against remote state on startup and periodically.
-      // Prevents ghost workers (e.g. 23 stale files across 12 tasks) from accumulating.
       this.reconcileLocalWorkers().catch(err => {
         console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
       });
-      this.reconcileInterval = setInterval(() => {
+
+      // Single aligned tick — heartbeat, reconcile, and claim-fallback all
+      // fire together so the DB sees one burst per cycle and a long quiet
+      // stretch in between (lets Neon suspend). Pusher delivers tasks in
+      // realtime; the claim poll here only matters if Pusher silently fails.
+      this.heartbeatInterval = setInterval(() => {
+        this.sendHeartbeat();
         this.reconcileLocalWorkers().catch(err => {
           console.warn('[Reconcile] Periodic reconciliation failed:', err instanceof Error ? err.message : err);
         });
-      }, RECONCILE_MIN * 60_000);
-
-      // Fallback poll: catch tasks whose Pusher events were missed (crash, reconnect race).
-      // Pusher is the primary path — this is a safety net, so the cadence can be loose.
-      this.claimPollInterval = setInterval(() => {
         const active = Array.from(this.workers.values()).filter(
           w => w.status === 'working' || w.status === 'stale'
         ).length;
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
         }
-      }, CLAIM_POLL_MIN * 60_000);
+      }, POLL_MIN * 60_000);
     }
 
     // Initialize Pusher if configured
@@ -2488,12 +2483,6 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);
-    }
-    if (this.reconcileInterval) {
-      clearInterval(this.reconcileInterval);
-    }
-    if (this.claimPollInterval) {
-      clearInterval(this.claimPollInterval);
     }
     // Unsubscribe from all Pusher channels and disconnect
     this.pusherManager.destroy();
