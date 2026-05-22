@@ -410,7 +410,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || 'claude-opus-4-6',
+  model: process.env.MODEL || savedConfig.model || 'claude-sonnet-4-6',
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
   // Serverless only if no API key configured

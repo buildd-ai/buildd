@@ -29,12 +29,16 @@ describe('resolveEffectiveModel', () => {
     expect(d.model).toBe('opus');
   });
 
-  it('coordination always → opus regardless of complexity', () => {
-    for (const complexity of ['simple', 'normal', 'complex'] as const) {
-      expect(
-        resolveEffectiveModel({ kind: 'coordination', complexity }).model,
-      ).toBe('opus');
-    }
+  it('coordination simple/normal → sonnet, complex → opus', () => {
+    expect(
+      resolveEffectiveModel({ kind: 'coordination', complexity: 'simple' }).model,
+    ).toBe('sonnet');
+    expect(
+      resolveEffectiveModel({ kind: 'coordination', complexity: 'normal' }).model,
+    ).toBe('sonnet');
+    expect(
+      resolveEffectiveModel({ kind: 'coordination', complexity: 'complex' }).model,
+    ).toBe('opus');
   });
 
   it('observation stays at haiku even at complex', () => {
@@ -65,11 +69,11 @@ describe('resolveEffectiveModel', () => {
       expect(w.model).toBe('haiku');
     });
 
-    it('70–90% does NOT downshift coordination', () => {
+    it('70–90% does NOT downshift coordination (already at sonnet baseline)', () => {
       const d = resolveEffectiveModel({
         kind: 'coordination', dailyBudgetPct: 0.8,
       });
-      expect(d.model).toBe('opus');
+      expect(d.model).toBe('sonnet');
       expect(d.downshifted).toBe(false);
     });
 
@@ -84,12 +88,12 @@ describe('resolveEffectiveModel', () => {
       });
       expect(design.model).toBe('sonnet');
 
-      // coordination stays at baseline Opus in the 90–95% band; it only drops
-      // to Sonnet at 95%+ (see next test).
+      // coordination baseline is now sonnet (was opus); the 90-95% band leaves
+      // it alone and 95%+ pins it at sonnet (see next test).
       const coord = resolveEffectiveModel({
         kind: 'coordination', dailyBudgetPct: 0.92,
       });
-      expect(coord.model).toBe('opus');
+      expect(coord.model).toBe('sonnet');
       expect(coord.downshifted).toBe(false);
     });
 
@@ -133,7 +137,7 @@ describe('resolveEffectiveModel', () => {
         kind: 'coordination',
         dailyBudgetPct: 0.3, recentClaimCount: 50,
       });
-      expect(d.model).toBe('opus');
+      expect(d.model).toBe('sonnet');
     });
 
     it('does not double-downshift with budget gate', () => {

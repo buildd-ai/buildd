@@ -130,10 +130,10 @@ Example plan for a code mission:
 - Summarize your assessment in the \`summary\` field
 `,
     color: '#6366F1',
-    // Organizer plans the work — coordination tier. Opus by default because a
-    // bad plan cascades to N wasted Builder tasks; a better plan saves more
-    // than the Opus premium many times over.
-    model: 'opus',
+    // Organizer plans the work — coordination tier. Sonnet handles planning
+    // well; the router upshifts to Opus for complex coordination via the
+    // BASELINE matrix when needed.
+    model: 'sonnet',
     isRole: true,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent', 'WebSearch', 'WebFetch', 'NotebookEdit'],
     canDelegateTo: ['builder', 'researcher', 'writer', 'analyst'],

@@ -10,8 +10,8 @@ describe('DEFAULT_ROLES', () => {
     ]);
   });
 
-  it('Organizer defaults to Opus (coordination tier)', () => {
-    expect(bySlug.organizer.model).toBe('opus');
+  it('Organizer defaults to Sonnet (router upshifts to Opus for complex coordination)', () => {
+    expect(bySlug.organizer.model).toBe('sonnet');
   });
 
   it('Builder defaults to Opus (router downshifts via complexity)', () => {
