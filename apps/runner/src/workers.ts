@@ -37,6 +37,14 @@ export { isEphemeralTestBranch };
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
+// Polling cadences (minutes). Defaults are tuned to let serverless Postgres
+// (e.g. Neon) suspend its compute — keep all DB-touching cadences > the
+// provider's suspend timeout (Neon default = 5 min). Override via env when
+// you need faster fallback for missed Pusher events.
+const CLAIM_POLL_MIN = Number(process.env.BUILDD_RUNNER_CLAIM_POLL_MIN ?? 15);
+const HEARTBEAT_MIN = Number(process.env.BUILDD_RUNNER_HEARTBEAT_MIN ?? 10);
+const RECONCILE_MIN = Number(process.env.BUILDD_RUNNER_RECONCILE_MIN ?? 30);
+
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = [];
@@ -295,9 +303,9 @@ export class WorkerManager {
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
       this.sendHeartbeat();
-      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 5 * 60_000); // Every 5 minutes
+      this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), HEARTBEAT_MIN * 60_000);
 
-      // Reconcile local workers against remote state on startup and every 10 minutes.
+      // Reconcile local workers against remote state on startup and periodically.
       // Prevents ghost workers (e.g. 23 stale files across 12 tasks) from accumulating.
       this.reconcileLocalWorkers().catch(err => {
         console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
@@ -306,9 +314,10 @@ export class WorkerManager {
         this.reconcileLocalWorkers().catch(err => {
           console.warn('[Reconcile] Periodic reconciliation failed:', err instanceof Error ? err.message : err);
         });
-      }, 10 * 60_000); // Every 10 minutes
+      }, RECONCILE_MIN * 60_000);
 
-      // Fallback poll: catch tasks whose Pusher events were missed (crash, reconnect race)
+      // Fallback poll: catch tasks whose Pusher events were missed (crash, reconnect race).
+      // Pusher is the primary path — this is a safety net, so the cadence can be loose.
       this.claimPollInterval = setInterval(() => {
         const active = Array.from(this.workers.values()).filter(
           w => w.status === 'working' || w.status === 'stale'
@@ -316,7 +325,7 @@ export class WorkerManager {
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
         }
-      }, 2 * 60_000); // Every 2 min, only when idle slots exist
+      }, CLAIM_POLL_MIN * 60_000);
     }
 
     // Initialize Pusher if configured
