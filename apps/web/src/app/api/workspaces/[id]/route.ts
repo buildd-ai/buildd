@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { workspaces, githubRepos } from '@buildd/core/db/schema';
+import { eq, ilike } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
@@ -106,7 +106,20 @@ export async function PATCH(
     if (name !== undefined) updates.name = name;
     // Accept both "repo" and "repoUrl" for convenience
     const repoValue = repo ?? repoUrl;
-    if (repoValue !== undefined) updates.repo = repoValue;
+    if (repoValue !== undefined) {
+      updates.repo = repoValue;
+      // Auto-link GitHub repo: parse fullName from URL and look up in githubRepos table
+      const fullName = extractGithubFullName(repoValue);
+      if (fullName) {
+        const ghRepo = await db.query.githubRepos.findFirst({
+          where: ilike(githubRepos.fullName, fullName),
+        });
+        if (ghRepo) {
+          updates.githubRepoId = ghRepo.id;
+          updates.githubInstallationId = ghRepo.installationId;
+        }
+      }
+    }
     // Accept both "localPath" and "defaultBranch" (localPath column stores the default branch)
     const branchValue = localPath ?? defaultBranch;
     if (branchValue !== undefined) updates.localPath = branchValue;
@@ -120,6 +133,18 @@ export async function PATCH(
     console.error('Update workspace error:', error);
     return NextResponse.json({ error: 'Failed to update workspace' }, { status: 500 });
   }
+}
+
+function extractGithubFullName(repoUrl: string): string | null {
+  const cleaned = repoUrl
+    .replace(/\.git$/, '')
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/^git@[^:]+:/, '');
+  const parts = cleaned.split('/');
+  if (parts.length >= 2 && parts[parts.length - 2] && parts[parts.length - 1]) {
+    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+  }
+  return null;
 }
 
 export async function DELETE(
