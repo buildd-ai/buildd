@@ -204,6 +204,27 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(data.error).toContain('not waiting for input');
   });
 
+  // Regression: the /respond endpoint MUST be status-agnostic — it gates on
+  // waitingFor presence, not worker.status. The runner's inputAsRetry mode
+  // aborts the SDK session when AskUserQuestion fires, leaving the worker in
+  // status='error' with waitingFor populated. The /tasks/[id]/respond landing
+  // page and the in-page banner both rely on this contract.
+  it.each([['error'], ['failed'], ['waiting_input']] as const)(
+    'accepts the answer when worker status=%s and waitingFor is set',
+    async ([status]) => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, status });
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.taskId).toBe('new-task-1');
+    },
+  );
+
   it('returns 400 when message is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
