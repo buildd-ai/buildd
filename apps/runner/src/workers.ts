@@ -28,6 +28,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
+import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { RecoveryManager } from './recovery';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
@@ -1272,12 +1273,17 @@ export class WorkerManager {
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
+      // Resolve SDK native binary explicitly — Bun's isolated linker layout
+      // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
+      const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
+
       // Build query options
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
         cwd,
         model: this.config.model,
         ...(fallbackModel ? { fallbackModel } : {}),
+        ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
