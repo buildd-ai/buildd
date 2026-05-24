@@ -114,6 +114,9 @@ export async function PATCH(
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
     taskProgress,
+    // Self-reported PR (for runners that create PRs outside the create_pr action)
+    prUrl: selfReportedPrUrl,
+    prNumber: selfReportedPrNumber,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -168,6 +171,9 @@ export async function PATCH(
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
   if (resultMeta !== undefined) updates.resultMeta = resultMeta;
+  // Self-reported PR (for runners that open PRs outside the create_pr MCP action)
+  if (typeof selfReportedPrUrl === 'string' && selfReportedPrUrl) updates.prUrl = selfReportedPrUrl;
+  if (typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0) updates.prNumber = selfReportedPrNumber;
 
   // Status audit trail: record terminal transitions in milestones for debugging
   if (status === 'completed' || status === 'failed') {
