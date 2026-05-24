@@ -10,6 +10,7 @@ import { isSystemWorkspace } from '@buildd/shared';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
 import ApiKeysSection from './ApiKeysSection';
+import ConnectClaudeSection from './ConnectClaudeSection';
 import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
@@ -97,6 +98,11 @@ export default async function SettingsPage() {
         {/* API Keys — compact view */}
         <ApiKeysSection
           accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
+          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+        />
+
+        {/* Connect Claude (MCP connector for claude.ai + Claude Code) */}
+        <ConnectClaudeSection
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
         />
 
