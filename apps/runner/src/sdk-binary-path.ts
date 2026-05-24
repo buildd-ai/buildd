@@ -33,12 +33,22 @@ export function resolveClaudeBinaryPath(): string | undefined {
 
     const candidates: string[] = [];
     if (platform === 'linux') {
-      // Both variants may be installed; prefer musl since that's what the SDK
-      // tends to pick on Alpine-derived/musl Bun runtimes.
-      candidates.push(
-        `claude-agent-sdk-linux-${arch}-musl`,
-        `claude-agent-sdk-linux-${arch}`,
-      );
+      // Prefer the variant that matches the system's libc. musl systems have
+      // /lib/ld-musl-* as the dynamic linker; glibc systems (Ubuntu, Debian,
+      // GitHub Actions) do not. Using the wrong variant fails at exec time with
+      // "cannot execute: required file not found".
+      const isMusl = existsSync('/lib/ld-musl-x86_64.so.1') || existsSync('/lib/ld-musl-aarch64.so.1');
+      if (isMusl) {
+        candidates.push(
+          `claude-agent-sdk-linux-${arch}-musl`,
+          `claude-agent-sdk-linux-${arch}`,
+        );
+      } else {
+        candidates.push(
+          `claude-agent-sdk-linux-${arch}`,
+          `claude-agent-sdk-linux-${arch}-musl`,
+        );
+      }
     } else if (platform === 'darwin') {
       candidates.push(`claude-agent-sdk-darwin-${arch}`);
     } else if (platform === 'win32') {
