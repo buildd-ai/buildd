@@ -172,9 +172,14 @@ export default async function TaskDetailPage({
   }
 
   // Get the active worker (if any)
-  const activeWorker = taskWorkers.find(w =>
-    ['running', 'starting', 'waiting_input'].includes(w.status)
-  );
+  // Prefer a truly active worker; otherwise fall back to any worker that
+  // still has an unanswered question. The runner's inputAsRetry mode aborts
+  // the session when AskUserQuestion fires, leaving the worker in
+  // status=error with waitingFor populated — without this fallback the
+  // task page renders no worker and the user has nothing to click.
+  const activeWorker =
+    taskWorkers.find(w => ['running', 'starting', 'waiting_input'].includes(w.status)) ||
+    taskWorkers.find(w => w.waitingFor);
 
   // Override task status for UI if worker is waiting
   // Don't override if task is already in a terminal state (completed/failed)
