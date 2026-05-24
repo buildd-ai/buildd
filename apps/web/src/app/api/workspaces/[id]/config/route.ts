@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -31,6 +31,7 @@ export async function GET(
                 name: true,
                 gitConfig: true,
                 configStatus: true,
+                releaseConfig: true,
             },
         });
 
@@ -41,6 +42,7 @@ export async function GET(
         return NextResponse.json({
             gitConfig: workspace.gitConfig,
             configStatus: workspace.configStatus,
+            releaseConfig: workspace.releaseConfig ?? null,
         });
     } catch (error) {
         console.error('Get workspace config error:', error);
@@ -67,6 +69,33 @@ export async function POST(
         }
 
         const body = await req.json();
+
+        // Handle releaseConfig update if provided (separate from gitConfig)
+        if (body.releaseConfig !== undefined) {
+            const rc = body.releaseConfig;
+            let releaseConfig: WorkspaceReleaseConfig | null = null;
+            if (rc && typeof rc === 'object' && typeof rc.prodBranch === 'string') {
+                releaseConfig = {
+                    enabled: Boolean(rc.enabled ?? true),
+                    prodBranch: rc.prodBranch,
+                    ...(rc.deployTarget && rc.deployTarget.type === 'vercel'
+                        ? { deployTarget: { type: 'vercel', projectId: rc.deployTarget.projectId, teamId: rc.deployTarget.teamId } }
+                        : {}),
+                    ...(Array.isArray(rc.postDeployHooks) ? { postDeployHooks: rc.postDeployHooks } : {}),
+                    ...(typeof rc.verificationUrl === 'string' ? { verificationUrl: rc.verificationUrl } : {}),
+                };
+            }
+            await db
+                .update(workspaces)
+                .set({ releaseConfig, updatedAt: new Date() })
+                .where(eq(workspaces.id, id));
+
+            // If only releaseConfig was provided, return early
+            if (!body.defaultBranch && !body.branchingStrategy && !body.commitStyle && !body.requiresPR) {
+                return NextResponse.json({ success: true, releaseConfig });
+            }
+        }
+
         const gitConfig: WorkspaceGitConfig = {
             // Branching (required)
             defaultBranch: body.defaultBranch || 'main',

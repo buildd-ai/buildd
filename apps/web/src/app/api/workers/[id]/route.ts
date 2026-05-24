@@ -14,6 +14,7 @@ import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
+import { executeRelease } from '@/lib/release-executor';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -451,6 +452,28 @@ export async function PATCH(
         .update(tasks)
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
+
+      // Run release sequence on successful completion (non-fatal — must not block worker update)
+      if (status === 'completed' && !shouldAutoRetry) {
+        try {
+          const releaseResult = await executeRelease({
+            taskId: worker.taskId,
+            workerId: id,
+            workspaceId: worker.workspaceId,
+          });
+          const resultWithRelease = {
+            ...((taskUpdate.result ?? {}) as Record<string, unknown>),
+            releaseSummary: releaseResult.message,
+          };
+          await db
+            .update(tasks)
+            .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
+            .where(eq(tasks.id, worker.taskId));
+          taskUpdate.result = resultWithRelease;
+        } catch (releaseErr) {
+          console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
+        }
+      }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
       // (we only want one row per terminal outcome). Fire-and-forget.
