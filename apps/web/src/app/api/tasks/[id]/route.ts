@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { tasks, workers, artifacts } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -57,7 +57,32 @@ export async function GET(
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    return NextResponse.json(task);
+    // Enrich with active worker + artifact IDs for API clients (get_task MCP action)
+    const activeWorker = await db.query.workers.findFirst({
+      where: eq(workers.taskId, id),
+      orderBy: desc(workers.createdAt),
+      columns: {
+        id: true,
+        status: true,
+        branch: true,
+        currentAction: true,
+        prUrl: true,
+        prNumber: true,
+      },
+    });
+
+    const workerArtifacts = activeWorker
+      ? await db.query.artifacts.findMany({
+          where: eq(artifacts.workerId, activeWorker.id),
+          columns: { id: true },
+        })
+      : [];
+
+    return NextResponse.json({
+      ...task,
+      activeWorker: activeWorker ?? null,
+      artifactIds: workerArtifacts.map(a => a.id),
+    });
   } catch (error) {
     console.error('Get task error:', error);
     return NextResponse.json({ error: 'Failed to get task' }, { status: 500 });

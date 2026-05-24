@@ -91,6 +91,16 @@ Roles are skills with `isRole: true` on the `workspaceSkills` table. They define
 - **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
 - **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
 
+## Issues & Friction
+
+When you encounter pain points, blockers, or broken tooling while working a task, report them — don't silently work around them.
+
+**What to report:** API actions that return unexpected errors (404, 401, 409), MCP tool limitations that forced a detour, missing actions that would have made the task easier, confusing behaviour that cost time.
+
+**How to report:** Create a task in the same workspace with title `[friction] <short description>` and description explaining what broke, what you expected, and what you actually had to do instead. Use `create_task` (MCP or API). Low priority is fine; this is background signal, not a blocker.
+
+**Why:** These reports feed directly into platform improvements (like the `get_task` / `send_agent_message` actions added after observing the create→observe→confirm loop was broken). Friction that goes unreported stays broken.
+
 ## When Modifying
 
 - **Schema changes** → run `bun db:generate` and commit migration files (see Database section)
