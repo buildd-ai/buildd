@@ -9,10 +9,18 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 
 /**
  * Authenticate via session or API key.
- * For API keys, requires admin-level account (schedules are admin-only).
+ *
+ * Mutating ops (POST/PATCH/DELETE) require admin-level account.
+ * Read ops (GET) accept any authenticated account in the workspace —
+ * worker and trigger tokens need visibility for routine discovery via MCP.
+ *
  * Returns { userId?, accountId? } or null.
  */
-async function resolveAuth(req: NextRequest, workspaceId: string) {
+async function resolveAuth(
+  req: NextRequest,
+  workspaceId: string,
+  { requireAdmin = true }: { requireAdmin?: boolean } = {}
+) {
   // Try session auth first (session users have full access)
   const user = await getCurrentUser();
   if (user) {
@@ -20,11 +28,11 @@ async function resolveAuth(req: NextRequest, workspaceId: string) {
     if (access) return { userId: user.id };
   }
 
-  // Try API key auth — require admin level for schedule management
+  // Try API key auth
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
   if (account) {
-    if (account.level !== 'admin') return null; // Workers cannot manage schedules
+    if (requireAdmin && account.level !== 'admin') return null;
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { accountId: account.id };
   }
@@ -38,7 +46,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const authResult = await resolveAuth(req, id);
+  const authResult = await resolveAuth(req, id, { requireAdmin: false });
   if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

@@ -370,6 +370,9 @@ export const tasks = pgTable('tasks', {
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator'>(),
+  // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
+  // Enables reverse lookup: given a stray task, find the schedule that created it.
+  scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
@@ -404,6 +407,7 @@ export const tasks = pgTable('tasks', {
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
   missionIdx: index('tasks_mission_idx').on(t.missionId),
+  scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
 }));
 
@@ -829,6 +833,7 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id], relationName: 'claimedTasks' }),
   mission: one(missions, { fields: [tasks.missionId], references: [missions.id] }),
+  schedule: one(taskSchedules, { fields: [tasks.scheduleId], references: [taskSchedules.id] }),
   workers: many(workers, { relationName: 'taskWorkers' }),
 
   // Creator tracking relations
@@ -862,9 +867,10 @@ export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) =
   account: one(accounts, { fields: [workerHeartbeats.accountId], references: [accounts.id] }),
 }));
 
-export const taskSchedulesRelations = relations(taskSchedules, ({ one }) => ({
+export const taskSchedulesRelations = relations(taskSchedules, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [taskSchedules.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [taskSchedules.createdByUserId], references: [users.id] }),
+  tasks: many(tasks),
 }));
 
 export const taskRecipesRelations = relations(taskRecipes, ({ one }) => ({

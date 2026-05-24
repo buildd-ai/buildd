@@ -529,6 +529,7 @@ export async function GET(req: NextRequest) {
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
             creationSource: linkedMission ? 'orchestrator' : 'schedule',
+            scheduleId: schedule.id,
             kind: cadence.kind,
             complexity: cadence.complexity,
             classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',

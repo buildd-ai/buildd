@@ -10,9 +10,17 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
 /**
- * Authenticate via session or admin-level API key.
+ * Authenticate via session or API key.
+ *
+ * Mutating ops (PATCH/DELETE) require admin-level account.
+ * Read (GET) accepts any account in the workspace — worker and trigger tokens
+ * need visibility for routine discovery via MCP.
  */
-async function resolveAuth(req: NextRequest, workspaceId: string) {
+async function resolveAuth(
+  req: NextRequest,
+  workspaceId: string,
+  { requireAdmin = true }: { requireAdmin?: boolean } = {}
+) {
   const user = await getCurrentUser();
   if (user) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
@@ -22,7 +30,7 @@ async function resolveAuth(req: NextRequest, workspaceId: string) {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
   if (account) {
-    if (account.level !== 'admin') return null;
+    if (requireAdmin && account.level !== 'admin') return null;
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { accountId: account.id };
   }
@@ -33,7 +41,7 @@ async function resolveAuth(req: NextRequest, workspaceId: string) {
 // GET /api/workspaces/[id]/schedules/[scheduleId] - Get a single schedule
 export async function GET(req: NextRequest, { params }: RouteParams) {
   const { id, scheduleId } = await params;
-  const authResult = await resolveAuth(req, id);
+  const authResult = await resolveAuth(req, id, { requireAdmin: false });
   if (!authResult) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
