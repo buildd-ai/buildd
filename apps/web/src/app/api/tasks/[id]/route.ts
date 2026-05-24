@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { tasks, workers, artifacts } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
-// GET /api/tasks/[id] - Get a single task
+// GET /api/tasks/[id] - Get a single task.
+// Query params:
+//   include=workers,artifacts — opt-in expansion. `workers` returns all worker
+//     attempts (latest first) with PR refs, summary, error, status, branch,
+//     completedAt. `artifacts` returns artifacts attached to those workers,
+//     each with a shareUrl.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -57,7 +62,59 @@ export async function GET(
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    return NextResponse.json(task);
+    const includeRaw = req.nextUrl.searchParams.get('include') || '';
+    const include = new Set(includeRaw.split(',').map(s => s.trim()).filter(Boolean));
+
+    let taskWorkers: any[] | undefined;
+    let taskArtifacts: any[] | undefined;
+
+    if (include.has('workers') || include.has('artifacts')) {
+      taskWorkers = await db.query.workers.findMany({
+        where: eq(workers.taskId, id),
+        orderBy: [desc(workers.createdAt)],
+        columns: {
+          id: true,
+          status: true,
+          branch: true,
+          prUrl: true,
+          prNumber: true,
+          error: true,
+          currentAction: true,
+          startedAt: true,
+          completedAt: true,
+          lastCommitSha: true,
+          commitCount: true,
+          filesChanged: true,
+          linesAdded: true,
+          linesRemoved: true,
+          turns: true,
+          inputTokens: true,
+          outputTokens: true,
+          costUsd: true,
+          createdAt: true,
+        },
+      });
+    }
+
+    if (include.has('artifacts') && taskWorkers && taskWorkers.length > 0) {
+      const workerIds = taskWorkers.map(w => w.id);
+      const rows = await db.query.artifacts.findMany({
+        where: inArray(artifacts.workerId, workerIds),
+        orderBy: [desc(artifacts.updatedAt)],
+      });
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+        || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://buildd.dev');
+      taskArtifacts = rows.map(a => ({
+        ...a,
+        shareUrl: a.shareToken ? `${baseUrl}/share/${a.shareToken}` : null,
+      }));
+    }
+
+    const response: Record<string, unknown> = { ...task };
+    if (taskWorkers !== undefined) response.workers = taskWorkers;
+    if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error('Get task error:', error);
     return NextResponse.json({ error: 'Failed to get task' }, { status: 500 });

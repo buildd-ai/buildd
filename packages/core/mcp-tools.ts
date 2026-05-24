@@ -44,14 +44,14 @@ export type ToolResult = {
 // Read-only schedule discovery is allowed at this level so any caller can
 // trace "what fired this notification?" without needing an admin token.
 export const triggerActions = [
-  'list_tasks', 'create_task', 'create_artifact',
+  'list_tasks', 'get_task', 'create_task', 'create_artifact',
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
   'list_schedules', 'trace_schedule',
 ] as const;
 
 export const workerActions = [
-  'list_tasks', 'claim_task', 'update_progress', 'complete_task',
+  'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events',
@@ -90,6 +90,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
@@ -344,6 +345,80 @@ export async function handleBuilddAction(
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
+    }
+
+    case 'get_task': {
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const includeParam = params.include;
+      const includes = Array.isArray(includeParam)
+        ? (includeParam as string[])
+        : ['workers', 'artifacts'];
+      const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
+
+      const task = await api(`/api/tasks/${encodeURIComponent(params.taskId as string)}${qs}`);
+
+      const lines: string[] = [];
+      lines.push(`**Task:** ${task.title} (${task.id})`);
+      lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
+      if (task.workspace?.name || task.workspace?.repo) {
+        lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
+      }
+      if (task.mission) {
+        lines.push(`**Mission:** ${task.mission.title} (${task.mission.id}) — ${task.mission.status}`);
+      }
+      if (task.description) {
+        const desc = task.description.length > 400 ? task.description.slice(0, 400) + '…' : task.description;
+        lines.push('', '## Description', desc);
+      }
+
+      const result = task.result;
+      if (result && (result.summary || result.prUrl || result.prNumber || result.sha)) {
+        lines.push('', '## Result');
+        if (result.summary) lines.push(`**Summary:** ${result.summary}`);
+        if (result.prUrl || result.prNumber) {
+          lines.push(`**PR:** ${result.prUrl || `#${result.prNumber}`}`);
+        }
+        if (result.branch) lines.push(`**Branch:** ${result.branch}`);
+        if (result.sha) {
+          const shortSha = String(result.sha).slice(0, 7);
+          const commitCount = result.commits ? ` (${result.commits} commit${result.commits === 1 ? '' : 's'})` : '';
+          lines.push(`**Last commit:** ${shortSha}${commitCount}`);
+        }
+        if (typeof result.files === 'number' || typeof result.added === 'number' || typeof result.removed === 'number') {
+          const stats: string[] = [];
+          if (typeof result.files === 'number') stats.push(`${result.files} files`);
+          if (typeof result.added === 'number') stats.push(`+${result.added}`);
+          if (typeof result.removed === 'number') stats.push(`-${result.removed}`);
+          if (stats.length > 0) lines.push(`**Diff:** ${stats.join(' / ')}`);
+        }
+      }
+
+      const workers = Array.isArray(task.workers) ? task.workers : [];
+      if (workers.length > 0) {
+        lines.push('', `## Workers (${workers.length})`);
+        for (const w of workers) {
+          const wlines: string[] = [];
+          wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
+          if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
+          if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
+          if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
+          if (w.error) wlines.push(`  Error: ${w.error}`);
+          lines.push(wlines.join('\n'));
+        }
+      }
+
+      const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+      if (artifacts.length > 0) {
+        lines.push('', `## Artifacts (${artifacts.length})`);
+        for (const a of artifacts) {
+          const meta = a.key ? `, key: ${a.key}` : '';
+          const share = a.shareUrl ? `\n  Share: ${a.shareUrl}` : '';
+          lines.push(`- **${a.title}** (${a.type}${meta})\n  ID: ${a.id}${share}`);
+        }
+      }
+
+      return text(lines.join('\n'));
     }
 
     case 'claim_task': {
