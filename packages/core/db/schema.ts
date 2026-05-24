@@ -967,3 +967,48 @@ export const tenantBudgets = pgTable('tenant_budgets', {
 export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
 }));
+
+// ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
+// Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
+// JWT carries the workspaceId the user picked during /authorize, and the
+// /api/mcp-oauth/[workspace] route rejects tokens whose claim doesn't match
+// the URL path. Refresh tokens rotate on use.
+
+export const oauthClients = pgTable('oauth_clients', {
+  clientId: text('client_id').primaryKey(),
+  clientName: text('client_name'),
+  redirectUris: jsonb('redirect_uris').$type<string[]>().notNull(),
+  grantTypes: jsonb('grant_types').$type<string[]>().notNull().default(['authorization_code', 'refresh_token']),
+  tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull().default('none'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const oauthCodes = pgTable('oauth_codes', {
+  code: text('code').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  codeChallenge: text('code_challenge').notNull(),
+  codeChallengeMethod: text('code_challenge_method').notNull().default('S256'),
+  scope: text('scope'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  expiresIdx: index('oauth_codes_expires_at_idx').on(t.expiresAt),
+}));
+
+export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
+  token: text('token').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  scope: text('scope'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  expiresIdx: index('oauth_refresh_tokens_expires_at_idx').on(t.expiresAt),
+  userWorkspaceIdx: index('oauth_refresh_tokens_user_workspace_idx').on(t.userId, t.workspaceId),
+}));
