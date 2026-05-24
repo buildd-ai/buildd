@@ -5,6 +5,8 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
+const mockArtifactsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTasksUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksDelete = mock(() => ({ where: mock(() => Promise.resolve()) }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
@@ -37,6 +39,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
+      workers: { findMany: mockWorkersFindMany },
+      artifacts: { findMany: mockArtifactsFindMany },
     },
     update: mockTasksUpdate,
     delete: mockTasksDelete,
@@ -46,12 +50,17 @@ mock.module('@buildd/core/db', () => ({
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ type: 'and', args }),
+  inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey' },
   tasks: { id: 'id' },
+  workers: { taskId: 'taskId', createdAt: 'createdAt' },
+  artifacts: { workerId: 'workerId', updatedAt: 'updatedAt' },
   workspaces: {},
 }));
 
@@ -63,10 +72,11 @@ function createMockRequest(options: {
   method?: string;
   headers?: Record<string, string>;
   body?: any;
+  search?: string;
 } = {}): NextRequest {
-  const { method = 'GET', headers = {}, body } = options;
+  const { method = 'GET', headers = {}, body, search = '' } = options;
 
-  const url = 'http://localhost:3000/api/tasks/test-task-id';
+  const url = `http://localhost:3000/api/tasks/test-task-id${search}`;
   const init: RequestInit = {
     method,
     headers: new Headers(headers),
@@ -214,6 +224,62 @@ describe('GET /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.id).toBe('task-123');
+  });
+
+  it('returns workers and artifacts when include=workers,artifacts', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-1', status: 'completed', branch: 'feat/x', prUrl: 'https://github.com/o/r/pull/1' },
+    ] as any);
+    mockArtifactsFindMany.mockResolvedValue([
+      { id: 'a-1', title: 'Summary', type: 'summary', shareToken: 'tok1', workerId: 'w-1' },
+    ] as any);
+
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer bld_xxx' },
+      search: '?include=workers,artifacts',
+    });
+    const response = await callHandler(GET, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(Array.isArray(data.workers)).toBe(true);
+    expect(data.workers[0].id).toBe('w-1');
+    expect(Array.isArray(data.artifacts)).toBe(true);
+    expect(data.artifacts[0].id).toBe('a-1');
+    expect(data.artifacts[0].shareUrl).toContain('/share/tok1');
+  });
+
+  it('omits workers/artifacts when include is not requested', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindMany.mockReset();
+
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer bld_xxx' },
+    });
+    const response = await callHandler(GET, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.workers).toBeUndefined();
+    expect(data.artifacts).toBeUndefined();
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
   });
 
   it('prefers API key auth over session auth when both present', async () => {
