@@ -1,8 +1,9 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { accounts, users, teamMembers } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { TTLCache } from './cache';
+import { verifyAccessTokenAnyAudience, looksLikeJwt } from './oauth/tokens';
 
 /**
  * Cache API key hash → account record.
@@ -52,14 +53,65 @@ async function dbLookupAccount(hashedKey: string) {
 }
 
 /**
+ * OAuth JWT path — verify, resolve to the user's primary account, override
+ * the level to 'admin' since the token represents a real human authorising
+ * claude.ai (or any MCP client) against their own resources.
+ *
+ * Cached by the JWT itself (full token string) so we don't re-verify on every
+ * call within the 5-minute TTL. Tokens have a 1-hour lifetime so the cache
+ * never outlives the token.
+ */
+async function authenticateOauthJwt(jwt: string) {
+  const claims = await verifyAccessTokenAnyAudience(jwt);
+  if (!claims) return null;
+
+  const userId = claims.sub;
+  // Find the user's primary 'user'-type account via team membership.
+  const membership = await db.query.teamMembers.findFirst({
+    where: eq(teamMembers.userId, userId),
+    columns: { teamId: true },
+  });
+  if (!membership) return null;
+
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.teamId, membership.teamId), eq(accounts.type, 'user')),
+  });
+  if (!account) return null;
+
+  // Force admin level for OAuth-authenticated humans.
+  return { ...account, level: 'admin' as const };
+}
+
+/**
  * Authenticate an incoming API key by hashing it and looking up the hash.
  * Returns the account if found, null otherwise.
+ *
+ * Two paths:
+ *  - OAuth JWT (looks like `eyJ...`): verify signature, resolve user → account,
+ *    force admin level. The MCP-OAuth route additionally enforces workspace.
+ *  - Regular `bld_*` key: hash + DB lookup (cached).
  *
  * Uses an in-memory TTL cache to avoid hitting the DB on every request.
  * Cache is invalidated on key regeneration and account deletion.
  */
 export async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
+
+  // OAuth bearer path — verify the JWT before any DB work.
+  if (looksLikeJwt(apiKey)) {
+    const hashed = hashApiKey(apiKey);
+    if (negativeCache.get(hashed)) return null;
+    const cached = accountCache.get(hashed);
+    if (cached) return cached;
+
+    const account = await authenticateOauthJwt(apiKey);
+    if (account) {
+      accountCache.set(hashed, account);
+    } else {
+      negativeCache.set(hashed, true);
+    }
+    return account;
+  }
 
   const hashed = hashApiKey(apiKey);
 

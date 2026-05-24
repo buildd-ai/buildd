@@ -11,6 +11,7 @@ import { checkReservation, acquireReservation, releaseWorkerReservations } from 
 import { resolveModelNameSync, updateModelAliases } from './model-aliases';
 import { artifactTemplates } from './artifact-templates';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
+import { resolveClaudeBinaryPath } from './sdk-binary-path';
 
 export class WorkerRunner extends EventEmitter {
   private workerId: string;
@@ -225,6 +226,10 @@ export class WorkerRunner extends EventEmitter {
         allowedTools.push('mcp__buildd__buildd', 'mcp__buildd__buildd_memory');
       }
 
+      // Resolve SDK native binary explicitly — Bun's isolated linker layout
+      // breaks the SDK's own resolver. See packages/core/sdk-binary-path.ts.
+      const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
+
       // Create query instance first (without effort/thinking) to discover model capabilities
       const queryInstance = query({
         prompt: fullPrompt,
@@ -233,6 +238,7 @@ export class WorkerRunner extends EventEmitter {
           cwd: worker.workspace?.localPath || process.cwd(),
           model: effectiveModel,
           ...(fallbackModel ? { fallbackModel } : {}),
+          ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
           abortController: this.abortController,
           permissionMode: 'acceptEdits',
           maxTurns: config.maxTurns,

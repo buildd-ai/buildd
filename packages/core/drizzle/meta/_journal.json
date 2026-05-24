@@ -253,6 +253,13 @@
       "when": 1779631048981,
       "tag": "0035_round_hellfire_club",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1779634666549,
+      "tag": "0036_aspiring_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }
