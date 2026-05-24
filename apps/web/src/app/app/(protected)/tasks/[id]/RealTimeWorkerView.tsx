@@ -297,8 +297,12 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
-      {/* Waiting for input banner */}
-      {worker.status === 'waiting_input' && worker.waitingFor && (
+      {/* Waiting for input banner — render whenever waitingFor is set, even
+          if the worker was marked failed/error (inputAsRetry mode aborts the
+          session after AskUserQuestion, leaving waitingFor populated). The
+          inner answerSent branch renders a success message until the server
+          clears waitingFor on the next poll. */}
+      {worker.waitingFor && (
         <div
           data-testid="worker-needs-input-banner"
           className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3"
@@ -343,13 +347,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
-      {/* Last question context (visible on completed/failed workers) */}
-      {!isActive && worker.waitingFor && (
-        <div className="mb-3 border border-border-default bg-surface-3 rounded-md p-3">
-          <p className="font-mono text-[10px] font-medium text-text-muted uppercase tracking-[2.5px] mb-1">Last question before {worker.status === 'completed' ? 'completion' : 'failure'}</p>
-          <p className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
-        </div>
-      )}
 
       {/* Activity Timeline */}
       <WorkerActivityTimeline
