@@ -40,11 +40,14 @@ export type ToolResult = {
 
 // ── Action Lists ─────────────────────────────────────────────────────────────
 
-// Trigger level: can create tasks and artifacts, but cannot claim or execute
+// Trigger level: can create tasks and artifacts, but cannot claim or execute.
+// Read-only schedule discovery is allowed at this level so any caller can
+// trace "what fired this notification?" without needing an admin token.
 export const triggerActions = [
   'list_tasks', 'create_task', 'create_artifact',
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
+  'list_schedules', 'trace_schedule',
 ] as const;
 
 export const workerActions = [
@@ -55,10 +58,13 @@ export const workerActions = [
   'list_artifact_templates',
   'suggest_schedule_update',
   'post_note',
+  'list_schedules', 'trace_schedule',
 ] as const;
 
+// list_schedules and trace_schedule live in worker/trigger sets above;
+// admins inherit them via allActions = [...workerActions, ...adminActions].
 export const adminActions = [
-  'create_schedule', 'update_schedule', 'delete_schedule', 'list_schedules',
+  'create_schedule', 'update_schedule', 'delete_schedule',
   'pause_schedules',
   'register_skill', 'list_skills', 'get_skill', 'update_skill', 'delete_skill',
   'manage_secrets',
@@ -98,7 +104,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — permanently remove a schedule [admin]',
-    list_schedules: '{ workspaceId? } [admin]',
+    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
+    trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
@@ -150,6 +157,42 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+/**
+ * Heuristic hint for what a scheduled task actually *does* (where its output lands).
+ * Surfaced in list_schedules + trace_schedule output so a caller can identify the
+ * schedule behind a stray notification without reading the task template.
+ *
+ * Looks at task template skillSlugs and description/title for known notification
+ * patterns. Returns null when nothing recognisable matches.
+ */
+function describeOutputChannel(taskTemplate: unknown): string | null {
+  if (!taskTemplate || typeof taskTemplate !== 'object') return null;
+  const tpl = taskTemplate as Record<string, unknown>;
+  const ctx = (tpl.context as Record<string, unknown> | undefined) ?? {};
+  const slugs = Array.isArray(ctx.skillSlugs) ? (ctx.skillSlugs as string[]) : [];
+  const haystack = [
+    String(tpl.title ?? ''),
+    String(tpl.description ?? ''),
+    ...slugs,
+  ].join(' ').toLowerCase();
+
+  const hints: string[] = [];
+  if (/pushover|send_pushover|send_notification|mcp__dispatch|mcp__moa-ops|moa_ops__send_pushover/.test(haystack)) {
+    hints.push('pushover');
+  }
+  if (/dispatch|cue\.buildd\.dev/.test(haystack)) hints.push('dispatch');
+  if (/slack/.test(haystack)) hints.push('slack');
+  if (/email|gmail|mailgun/.test(haystack)) hints.push('email');
+  if (/digest|morning|daily summary|good morning/.test(haystack)) hints.push('daily digest');
+  for (const slug of slugs) {
+    if (/digest|notif|morning|finance/i.test(slug)) hints.push(`skill:${slug}`);
+  }
+
+  if (hints.length === 0) return null;
+  // Dedupe while preserving order.
+  return Array.from(new Set(hints)).join(', ');
+}
 
 // UUID pattern for workspace IDs
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -715,22 +758,44 @@ export async function handleBuilddAction(
     }
 
     case 'list_schedules': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      // Read-only — any authenticated level (trigger/worker/admin) can list.
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      const minutesAgo = typeof params.minutesAgo === 'number' ? params.minutesAgo : null;
+      const nameContains = typeof params.nameContains === 'string' ? params.nameContains.toLowerCase() : null;
+      const filterCutoff = minutesAgo !== null ? Date.now() - minutesAgo * 60_000 : null;
+
+      const matchesFilters = (s: any): boolean => {
+        if (filterCutoff !== null) {
+          const last = s.lastRunAt ? Date.parse(s.lastRunAt) : NaN;
+          if (!Number.isFinite(last) || last < filterCutoff) return false;
+        }
+        if (nameContains && !s.name.toLowerCase().includes(nameContains)) return false;
+        return true;
+      };
+
+      const renderLine = (s: any, workspace?: string): string => {
+        const wsTag = workspace ? ` [${workspace}]` : '';
+        const status = s.enabled ? '' : ' (PAUSED)';
+        const last = s.lastRunAt ? `Last: ${s.lastRunAt}` : 'Last: never';
+        const failures = s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : '';
+        const err = s.lastError ? `\n  ⚠ Last error: ${String(s.lastError).slice(0, 200)}` : '';
+        const channel = describeOutputChannel(s.taskTemplate);
+        const channelLine = channel ? `\n  Sends: ${channel}` : '';
+        return `- **${s.name}**${status}${wsTag}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | ${last} | Runs: ${s.totalRuns}${failures}\n  Task: ${s.taskTemplate.title}${channelLine}${err}\n  ID: ${s.id}`;
+      };
 
       // If workspace specified, list its schedules; otherwise aggregate across all workspaces
       if (wsId) {
         const data = await api(`/api/workspaces/${wsId}/schedules`);
-        const schedules = data.schedules || [];
+        const schedules = (data.schedules || []).filter(matchesFilters);
 
-        if (schedules.length === 0) return text('No schedules configured for this workspace.');
+        if (schedules.length === 0) {
+          if (minutesAgo !== null || nameContains) return text('No schedules matched the filter.');
+          return text('No schedules configured for this workspace.');
+        }
 
-        const summary = schedules.map((s: any) =>
-          `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
-        ).join('\n\n');
-
+        const summary = schedules.map((s: any) => renderLine(s)).join('\n\n');
         return text(`${schedules.length} schedule(s):\n\n${summary}`);
       }
 
@@ -743,17 +808,113 @@ export async function handleBuilddAction(
       for (const ws of workspaces) {
         const data = await api(`/api/workspaces/${ws.id}/schedules`);
         for (const s of (data.schedules || [])) {
-          allSchedules.push({ workspace: ws.name, schedule: s });
+          if (matchesFilters(s)) allSchedules.push({ workspace: ws.name, schedule: s });
         }
       }
 
-      if (allSchedules.length === 0) return text('No schedules configured across any workspace.');
+      if (allSchedules.length === 0) {
+        if (minutesAgo !== null || nameContains) return text('No schedules matched the filter across any workspace.');
+        return text('No schedules configured across any workspace.');
+      }
 
-      const summary = allSchedules.map(({ workspace, schedule: s }) =>
-        `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'} [${workspace}]\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | Runs: ${s.totalRuns}${s.consecutiveFailures > 0 ? ` | Failures: ${s.consecutiveFailures}` : ''}\n  Task: ${s.taskTemplate.title}\n  ID: ${s.id}`
-      ).join('\n\n');
-
+      const summary = allSchedules.map(({ workspace, schedule: s }) => renderLine(s, workspace)).join('\n\n');
       return text(`${allSchedules.length} schedule(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+    }
+
+    case 'trace_schedule': {
+      // Read-only — given a task or a recent-fire window, find the schedule(s) responsible.
+      const taskId = typeof params.taskId === 'string' ? params.taskId : null;
+      const taskTitleContains = typeof params.taskTitleContains === 'string' ? params.taskTitleContains.toLowerCase() : null;
+      const minutesAgo = typeof params.minutesAgo === 'number' ? params.minutesAgo : null;
+
+      if (!taskId && !taskTitleContains && minutesAgo === null) {
+        return errorResult('Provide one of: taskId, taskTitleContains, or minutesAgo.');
+      }
+
+      // Path 1: task ID — direct FK lookup, highest confidence.
+      if (taskId) {
+        const task = await api(`/api/tasks/${taskId}`).catch(() => null);
+        if (!task) return errorResult(`Task ${taskId} not found.`);
+
+        const scheduleId = task.scheduleId || task.task?.scheduleId;
+        const wsId = task.workspaceId || task.task?.workspaceId;
+
+        if (!scheduleId) {
+          return text(
+            `Task ${taskId} has no scheduleId. creationSource=${task.creationSource ?? task.task?.creationSource ?? 'unknown'}.\n` +
+              `It was not created by a schedule (or pre-dates the schedule_id column).`
+          );
+        }
+
+        const sched = await api(`/api/workspaces/${wsId}/schedules/${scheduleId}`).catch(() => null);
+        if (!sched?.schedule) {
+          return text(`Task ${taskId} references schedule ${scheduleId}, but that schedule no longer exists.`);
+        }
+        const s = sched.schedule;
+        const channel = describeOutputChannel(s.taskTemplate);
+        return text(
+          `Task ${taskId} was created by schedule:\n` +
+            `- **${s.name}** ${s.enabled ? '' : '(PAUSED)'}\n` +
+            `  Cron: ${s.cronExpression} (${s.timezone})\n` +
+            `  Last run: ${s.lastRunAt || 'never'} | Total runs: ${s.totalRuns}\n` +
+            (channel ? `  Sends: ${channel}\n` : '') +
+            `  ID: ${s.id}\n\n` +
+            `To pause: pause_schedules { scheduleIds: ["${s.id}"], workspaceId: "${wsId}" }`
+        );
+      }
+
+      // Paths 2/3: search by recency + title across workspaces.
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      const workspaceList = wsId
+        ? [{ id: wsId, name: '' }]
+        : ((await api('/api/workspaces')).workspaces || []) as Array<{ id: string; name: string }>;
+
+      const filterCutoff = minutesAgo !== null ? Date.now() - minutesAgo * 60_000 : null;
+      const candidates: Array<{ workspace: string; schedule: any; reasons: string[] }> = [];
+
+      for (const ws of workspaceList) {
+        const data = await api(`/api/workspaces/${ws.id}/schedules`).catch(() => null);
+        if (!data) continue;
+        for (const s of (data.schedules || [])) {
+          const reasons: string[] = [];
+          if (filterCutoff !== null) {
+            const last = s.lastRunAt ? Date.parse(s.lastRunAt) : NaN;
+            if (Number.isFinite(last) && last >= filterCutoff) {
+              reasons.push(`fired ${Math.round((Date.now() - last) / 60_000)}m ago`);
+            }
+          }
+          if (taskTitleContains) {
+            const t = String(s.taskTemplate?.title || '').toLowerCase();
+            if (t.includes(taskTitleContains)) reasons.push(`title matches "${taskTitleContains}"`);
+          }
+          if (reasons.length > 0) candidates.push({ workspace: ws.name, schedule: s, reasons });
+        }
+      }
+
+      if (candidates.length === 0) {
+        return text('No schedules matched. Widen the window with a larger minutesAgo, or check the task ID directly.');
+      }
+
+      // Rank: more reasons first, then most-recently fired.
+      candidates.sort((a, b) => {
+        if (a.reasons.length !== b.reasons.length) return b.reasons.length - a.reasons.length;
+        const aLast = a.schedule.lastRunAt ? Date.parse(a.schedule.lastRunAt) : 0;
+        const bLast = b.schedule.lastRunAt ? Date.parse(b.schedule.lastRunAt) : 0;
+        return bLast - aLast;
+      });
+
+      const lines = candidates.map(({ workspace, schedule: s, reasons }) => {
+        const channel = describeOutputChannel(s.taskTemplate);
+        const wsTag = workspace ? ` [${workspace}]` : '';
+        return (
+          `- **${s.name}**${wsTag} — ${reasons.join(', ')}\n` +
+          `  Cron: ${s.cronExpression} (${s.timezone}) | Last: ${s.lastRunAt || 'never'}\n` +
+          (channel ? `  Sends: ${channel}\n` : '') +
+          `  ID: ${s.id}`
+        );
+      });
+
+      return text(`${candidates.length} candidate schedule(s), best match first:\n\n${lines.join('\n\n')}`);
     }
 
     case 'pause_schedules': {
