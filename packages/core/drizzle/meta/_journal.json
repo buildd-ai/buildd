@@ -236,29 +236,8 @@
     {
       "idx": 33,
       "version": "5",
-      "when": 1776438159210,
-      "tag": "0033_red_toxin",
-      "breakpoints": true
-    },
-    {
-      "idx": 34,
-      "version": "5",
-      "when": 1776447071379,
-      "tag": "0034_spicy_tombstone",
-      "breakpoints": true
-    },
-    {
-      "idx": 35,
-      "version": "5",
-      "when": 1779631048981,
-      "tag": "0035_round_hellfire_club",
-      "breakpoints": true
-    },
-    {
-      "idx": 36,
-      "version": "5",
-      "when": 1779634666549,
-      "tag": "0036_aspiring_shinobi_shaw",
+      "when": 1748131200000,
+      "tag": "0033_release_config",
       "breakpoints": true
     },
     {
