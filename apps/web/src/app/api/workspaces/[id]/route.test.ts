@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockGithubReposFindFirst = mock(() => null as any);
 const mockWorkspacesUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -14,6 +15,8 @@ const mockWorkspacesDelete = mock(() => ({
 }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+
+let capturedUpdates: Record<string, unknown> = {};
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -32,6 +35,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockWorkspacesUpdate(),
     delete: () => mockWorkspacesDelete(),
@@ -41,10 +45,12 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
+  ilike: (field: any, value: any) => ({ field, value, type: 'ilike' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id', teamId: 'teamId' },
+  githubRepos: { fullName: 'fullName' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -125,17 +131,21 @@ describe('PATCH /api/workspaces/[id]', () => {
     mockAuthenticateApiKey.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubReposFindFirst.mockResolvedValue(null);
     mockWorkspacesUpdate.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockGetUserTeamIds.mockReset();
     mockGetUserTeamIds.mockResolvedValue([]);
+    capturedUpdates = {};
     process.env.NODE_ENV = 'production';
 
     mockWorkspacesUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => Promise.resolve()),
-      })),
+      set: mock((updates: Record<string, unknown>) => {
+        capturedUpdates = updates;
+        return { where: mock(() => Promise.resolve()) };
+      }),
     });
   });
 
@@ -260,6 +270,42 @@ describe('PATCH /api/workspaces/[id]', () => {
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(404);
+  });
+
+  it('auto-links githubRepoId when repoUrl matches a known GitHub repo', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'github-repo-uuid',
+      installationId: 'installation-uuid',
+      fullName: 'buildd-ai/dispatch',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { repoUrl: 'https://github.com/buildd-ai/dispatch' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.repo).toBe('https://github.com/buildd-ai/dispatch');
+    expect(capturedUpdates.githubRepoId).toBe('github-repo-uuid');
+    expect(capturedUpdates.githubInstallationId).toBe('installation-uuid');
+  });
+
+  it('sets repo without githubRepoId when no matching GitHub repo found', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { repoUrl: 'https://github.com/some-org/unknown-repo' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.repo).toBe('https://github.com/some-org/unknown-repo');
+    expect(capturedUpdates.githubRepoId).toBeUndefined();
+    expect(capturedUpdates.githubInstallationId).toBeUndefined();
   });
 });
 
