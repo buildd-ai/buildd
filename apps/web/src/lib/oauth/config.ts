@@ -14,6 +14,12 @@ export function getIssuer(): string {
   if (explicit) return explicit.replace(/\/$/, '');
   const nextAuthUrl = process.env.NEXTAUTH_URL || process.env.AUTH_URL;
   if (nextAuthUrl) return nextAuthUrl.replace(/\/$/, '');
+  // On Vercel production, advertise the canonical custom domain — not the
+  // per-deploy VERCEL_URL hostname. OAuth clients (claude.ai) cache the
+  // issuer; if they get a preview hostname they redirect users there, which
+  // isn't whitelisted by GitHub's OAuth App and rots when that deployment is
+  // replaced.
+  if (process.env.VERCEL_ENV === 'production') return 'https://buildd.dev';
   const vercelUrl = process.env.VERCEL_URL;
   if (vercelUrl) return `https://${vercelUrl}`;
   return 'http://localhost:3000';
