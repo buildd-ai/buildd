@@ -48,6 +48,7 @@ export const triggerActions = [
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
   'list_schedules', 'trace_schedule',
+  'get_task', 'get_task_messages',
 ] as const;
 
 export const workerActions = [
@@ -59,6 +60,7 @@ export const workerActions = [
   'suggest_schedule_update',
   'post_note',
   'list_schedules', 'trace_schedule',
+  'get_task', 'get_task_messages',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -72,6 +74,7 @@ export const adminActions = [
   'manage_missions',
   'manage_workspaces',
   'list_recipes', 'create_recipe', 'run_recipe',
+  'send_agent_message',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -126,6 +129,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
+    get_task: '{ taskId (required) } — get full task status, assigned worker, completion summary, PR/commit refs, and artifact IDs. Closes the create→observe→confirm loop without needing a share URL. Available to trigger/worker/admin tokens.',
+    get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
   };
 
   const lines = actions
@@ -1877,6 +1883,116 @@ export async function handleBuilddAction(
 
       const taskIds = data.tasks || [];
       return text(`Recipe instantiated! Created ${taskIds.length} task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
+    }
+
+    // ── Agent-Facing Interactive Actions ─────────────────────────────────────
+
+    case 'get_task': {
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const task = await api(`/api/tasks/${params.taskId}`);
+
+      const parts: string[] = [
+        `**Task:** ${task.title}`,
+        `**ID:** ${task.id}`,
+        `**Status:** ${task.status}`,
+      ];
+
+      if (task.priority !== undefined) parts.push(`**Priority:** ${task.priority}`);
+      if (task.category) parts.push(`**Category:** ${task.category}`);
+      if (task.missionId) parts.push(`**Mission:** ${task.missionId}`);
+
+      // Active worker info (populated by enhanced task GET endpoint)
+      const worker = task.activeWorker;
+      if (worker) {
+        parts.push(`\n**Active Worker:** ${worker.id}`);
+        parts.push(`**Worker Status:** ${worker.status}`);
+        if (worker.currentAction) parts.push(`**Current Action:** ${worker.currentAction}`);
+        if (worker.prUrl) parts.push(`**PR URL:** ${worker.prUrl}`);
+        if (worker.prNumber) parts.push(`**PR #:** ${worker.prNumber}`);
+        if (worker.branch) parts.push(`**Branch:** ${worker.branch}`);
+      }
+
+      // Completion result (set when worker completes)
+      const result = task.result;
+      if (result) {
+        parts.push('');
+        if (result.summary) parts.push(`**Summary:** ${result.summary}`);
+        if (result.prUrl && !worker?.prUrl) parts.push(`**PR URL:** ${result.prUrl}`);
+        if (result.prNumber && !worker?.prNumber) parts.push(`**PR #:** ${result.prNumber}`);
+        if (result.branch && !worker?.branch) parts.push(`**Branch:** ${result.branch}`);
+        if (result.commits) parts.push(`**Commits:** ${result.commits}`);
+        if (result.nextSuggestion) parts.push(`**Next Suggestion:** ${result.nextSuggestion}`);
+      }
+
+      // Artifact IDs (populated by enhanced task GET endpoint)
+      if (Array.isArray(task.artifactIds) && task.artifactIds.length > 0) {
+        parts.push(`\n**Artifacts (${task.artifactIds.length}):** ${task.artifactIds.join(', ')}`);
+        parts.push('Use get_artifact with any artifact ID to read its content.');
+      }
+
+      if (!worker && !result) {
+        const hint = task.status === 'pending'
+          ? '\nTask is pending — not yet claimed by a worker.'
+          : task.status === 'completed'
+          ? '\nTask completed but no result snapshot available.'
+          : '';
+        if (hint) parts.push(hint);
+      }
+
+      return text(parts.join('\n'));
+    }
+
+    case 'get_task_messages': {
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const data = await api(`/api/tasks/${params.taskId}/messages`);
+      const messages: Array<{ type: string; message: string; timestamp: number }> = data.messages || [];
+
+      if (messages.length === 0) {
+        return text(`No messages for task ${params.taskId}. Messages appear when instructions are sent to or responses received from the running agent.`);
+      }
+
+      const lines = messages.map((m) => {
+        const when = new Date(m.timestamp).toISOString();
+        const label = m.type === 'instruction' ? '→ [human→agent]' : '← [agent→human]';
+        return `${when} ${label}\n  ${m.message}`;
+      });
+
+      return text(`${messages.length} message(s) for task ${params.taskId}:\n\n${lines.join('\n\n')}`);
+    }
+
+    case 'send_agent_message': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('send_agent_message requires an admin-level token');
+      if (!params.taskId || !params.message) throw new Error('taskId and message are required');
+
+      // Fetch task with active worker info
+      const task = await api(`/api/tasks/${params.taskId}`);
+      const workerId = task.activeWorker?.id;
+
+      if (!workerId) {
+        const hint = task.status === 'completed' || task.status === 'failed'
+          ? `Task is already ${task.status} — no active worker to message.`
+          : task.status === 'pending'
+          ? 'Task is still pending — not yet claimed by a worker.'
+          : 'No active worker found for this task.';
+        throw new Error(`Cannot send message: ${hint} (task status: ${task.status})`);
+      }
+
+      const result = await api(`/api/workers/${workerId}/instruct`, {
+        method: 'POST',
+        body: JSON.stringify({
+          message: params.message as string,
+          ...(params.priority ? { priority: params.priority } : {}),
+        }),
+      });
+
+      const deliveryNote = params.priority === 'urgent'
+        ? 'Message delivered instantly via Pusher.'
+        : 'Message queued for delivery on next worker check-in.';
+
+      return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
     default:
