@@ -5,6 +5,8 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindFirst = mock(() => null as any);
+const mockArtifactsFindMany = mock(() => [] as any[]);
 const mockTasksUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksDelete = mock(() => ({ where: mock(() => Promise.resolve()) }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
@@ -37,6 +39,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
+      workers: { findFirst: mockWorkersFindFirst },
+      artifacts: { findMany: mockArtifactsFindMany },
     },
     update: mockTasksUpdate,
     delete: mockTasksDelete,
@@ -46,12 +50,17 @@ mock.module('@buildd/core/db', () => ({
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey' },
   tasks: { id: 'id' },
+  workers: { taskId: 'taskId', status: 'status', createdAt: 'createdAt' },
+  artifacts: { workerId: 'workerId' },
   workspaces: {},
 }));
 
@@ -94,12 +103,17 @@ describe('GET /api/tasks/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockArtifactsFindMany.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
 
     // Default: grant access
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    // Default: no worker or artifacts
+    mockWorkersFindFirst.mockResolvedValue(null);
+    mockArtifactsFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no auth', async () => {
