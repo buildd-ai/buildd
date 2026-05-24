@@ -28,7 +28,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: { githubInstallationId: 'githubInstallationId' },
 }));
 
-import { GET } from './route';
+import { GET, POST } from './route';
 
 function createGetRequest(): NextRequest {
   return new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos');
@@ -147,6 +147,16 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
     // Verify listInstallationRepos was called with the installation's numeric ID
     expect(mockListInstallationRepos).toHaveBeenCalledWith(12345);
+  });
+
+  it('POST returns 401 when not authenticated', async () => {
+    mockAuth.mockResolvedValue(null);
+
+    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+      method: 'POST',
+    });
+    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(401);
   });
 
   it('returns 500 on error', async () => {
