@@ -49,10 +49,18 @@ fi
 # Manual tag: create git tag + GitHub release from package.json version on current main HEAD.
 # Useful when release-tag.yml was bypassed (e.g., agent merged without PR title match).
 if [ "${1:-}" = "--tag" ]; then
-  # Read version from apps/web/package.json (canonical source)
-  SEMVER=$(jq -r '.version' apps/web/package.json 2>/dev/null)
+  # Read version from the first package.json in PACKAGE_FILES that exists.
+  # Default keeps backwards compatibility with buildd's layout.
+  PACKAGE_FILES="${PACKAGE_FILES:-apps/web/package.json package.json}"
+  SEMVER=""
+  for PKG in $PACKAGE_FILES; do
+    if [ -f "$PKG" ]; then
+      SEMVER=$(jq -r '.version' "$PKG" 2>/dev/null)
+      [ -n "$SEMVER" ] && [ "$SEMVER" != "null" ] && break
+    fi
+  done
   if [ -z "$SEMVER" ] || [ "$SEMVER" = "null" ]; then
-    echo "Could not read version from apps/web/package.json"
+    echo "Could not read version from any of: $PACKAGE_FILES"
     exit 1
   fi
   TAG="v${SEMVER}"
@@ -224,10 +232,12 @@ SEMVER="${MAJOR}.${MINOR}.${PATCH}"
 
 echo "Current: ${LATEST_TAG} → New: ${NEW_VERSION} (${BUMP} bump)"
 
-# Bump version in all package.json files on dev
+# Bump version in package.json files on dev. PACKAGE_FILES env override
+# lets the reusable workflow (buildd-ai/.github) point at any repo's layout.
+PACKAGE_FILES="${PACKAGE_FILES:-apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json}"
 echo "Bumping package.json versions to ${SEMVER}..."
 BUMPED_FILES=""
-for PKG in apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json; do
+for PKG in $PACKAGE_FILES; do
   if [ -f "$PKG" ]; then
     jq --arg v "$SEMVER" '.version = $v' "$PKG" > tmp.json && mv tmp.json "$PKG"
     BUMPED_FILES="${BUMPED_FILES} ${PKG}"
