@@ -1373,4 +1373,158 @@ describe('POST /api/workers/claim', () => {
     expect(joined).toMatch(/status/);
     expect(joined).toMatch(/updated_at/);
   });
+
+  // Regression: on 2026-05-25, a task pinned to project "moa-ops" was created
+  // against a workspace whose projects[] only contained "dispatch-family". The
+  // task got claimed, the agent flailed on a non-existent path, stuck-detector
+  // killed it, cleanup re-queued, and the loop ran 4 times before being killed
+  // manually. The claim route now refuses such tasks up-front and marks them
+  // failed so no runner picks them up again.
+  it('marks task failed with workspace_mismatch when task.project is not in workspace.projects[]', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'misrouted-task',
+        workspaceId: 'ws-1',
+        project: 'moa-ops',
+        requiredCapabilities: [],
+        context: {},
+        workspace: {
+          id: 'ws-1',
+          gitConfig: null,
+          projects: [{ name: 'dispatch-family' }],
+        },
+      },
+    ]);
+
+    let capturedSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSet = data;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // No worker should be created — task was rejected up-front
+    expect(data.workers).toEqual([]);
+    // Task was marked failed, not left pending
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet.status).toBe('failed');
+    expect(capturedSet.context.terminalError).toBe('workspace_mismatch');
+  });
+
+  it('claims normally when task.project matches a workspace project', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'good-task',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        project: 'dispatch-family',
+        requiredCapabilities: [],
+        context: {},
+        workspace: {
+          id: 'ws-1',
+          gitConfig: null,
+          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+        },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'good-task' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'good-task', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+  });
+
+  it('does not gate claims when workspace.projects[] is empty (single-repo workspace)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task has a project string but workspace doesn't enumerate projects — skip the guard.
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'single-repo-task',
+        workspaceId: 'ws-1',
+        title: 'Single repo task',
+        project: 'whatever',
+        requiredCapabilities: [],
+        context: {},
+        workspace: { id: 'ws-1', gitConfig: null, projects: [] },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'single-repo-task' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'single-repo-task', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+  });
 });

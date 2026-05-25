@@ -7,6 +7,59 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
+// Cap consecutive cleanup-driven retries. Without this, a task that keeps
+// erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
+// pending forever — 2026-05-25 incident: a misrouted task burned 4 workers
+// over 3 hours before being killed manually.
+const MAX_TASK_FAILURES = 3;
+
+async function resetOrFailTask(taskId: string, now: Date, reason: string) {
+  const prior = await db.query.workers.findMany({
+    where: and(
+      eq(workers.taskId, taskId),
+      inArray(workers.status, ['error', 'failed']),
+    ),
+    columns: { id: true },
+  });
+  const failureCount = prior.length;
+
+  if (failureCount >= MAX_TASK_FAILURES) {
+    const existing = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+      columns: { context: true },
+    });
+    const existingCtx = (existing?.context || {}) as Record<string, unknown>;
+    await db
+      .update(tasks)
+      .set({
+        status: 'failed',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        updatedAt: now,
+        context: {
+          ...existingCtx,
+          terminalError: 'retry_cap_exceeded',
+          terminalReason: `${failureCount} worker failures (${reason}); aborting auto-retry`,
+        },
+      })
+      .where(eq(tasks.id, taskId));
+    return 'failed' as const;
+  }
+
+  await db
+    .update(tasks)
+    .set({
+      status: 'pending',
+      claimedBy: null,
+      claimedAt: null,
+      expiresAt: null,
+      updatedAt: now,
+    })
+    .where(eq(tasks.id, taskId));
+  return 'pending' as const;
+}
+
 // POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
 // Admin auth only (session or admin-level API key)
 export async function POST(req: NextRequest) {
@@ -56,20 +109,16 @@ export async function POST(req: NextRequest) {
       })
       .where(inArray(workers.id, stalledWorkerIds));
 
-    // Reset associated tasks to pending so they can be re-claimed
+    // Reset associated tasks to pending so they can be re-claimed — but cap
+    // retries via resetOrFailTask to break loops on persistently-failing tasks.
     if (stalledTaskIds.length > 0) {
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          claimedBy: null,
-          claimedAt: null,
-          updatedAt: now,
-        })
-        .where(and(
-          inArray(tasks.id, stalledTaskIds),
-          eq(tasks.status, 'assigned'),
-        ));
+      const stillAssigned = await db.query.tasks.findMany({
+        where: and(inArray(tasks.id, stalledTaskIds), eq(tasks.status, 'assigned')),
+        columns: { id: true },
+      });
+      for (const t of stillAssigned) {
+        await resetOrFailTask(t.id, now, 'worker timed out — no activity for over 1 hour');
+      }
     }
 
     stalledWorkers = stalledRunning.length;
@@ -132,16 +181,7 @@ export async function POST(req: NextRequest) {
 
     // No active workers, no completed workers — reset to pending if stale enough
     if (task.updatedAt < twoHoursAgo) {
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          claimedBy: null,
-          claimedAt: null,
-          expiresAt: null,
-          updatedAt: now,
-        })
-        .where(eq(tasks.id, task.id));
+      await resetOrFailTask(task.id, now, 'orphaned assigned task with no active workers');
       orphanedTasks++;
     }
   }
@@ -221,15 +261,7 @@ export async function POST(req: NextRequest) {
               })
               .where(eq(tasks.id, taskId));
           } else {
-            await db
-              .update(tasks)
-              .set({
-                status: 'pending',
-                claimedBy: null,
-                claimedAt: null,
-                updatedAt: now,
-              })
-              .where(eq(tasks.id, taskId));
+            await resetOrFailTask(taskId, now, 'worker runner heartbeat expired');
           }
         }
       }
