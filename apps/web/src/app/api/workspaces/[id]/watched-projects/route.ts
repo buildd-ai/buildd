@@ -7,7 +7,11 @@ import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { parseCreateInput } from '@/lib/watched-project-input';
 
-async function authenticate(req: NextRequest, workspaceId: string): Promise<{ ok: boolean; userId?: string }> {
+async function authenticate(
+  req: NextRequest,
+  workspaceId: string,
+  permission?: 'canCreate',
+): Promise<{ ok: boolean; userId?: string }> {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
@@ -16,7 +20,7 @@ async function authenticate(req: NextRequest, workspaceId: string): Promise<{ ok
       where: eq(accounts.apiKey, hashApiKey(apiKey)),
     });
     if (account) {
-      const ok = await verifyAccountWorkspaceAccess(account.id, workspaceId, 'canCreate');
+      const ok = await verifyAccountWorkspaceAccess(account.id, workspaceId, permission);
       return { ok };
     }
   }
@@ -43,7 +47,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: workspaceId } = await params;
-  const auth = await authenticate(req, workspaceId);
+  const auth = await authenticate(req, workspaceId, 'canCreate');
   if (!auth.ok) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   let body: Record<string, unknown>;
