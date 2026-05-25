@@ -37,6 +37,8 @@ export interface BuilddMcpServerOptions {
   memoryProject?: string;
   /** Task mode — planning workers get a restricted toolset */
   taskMode?: string;
+  /** Public-facing app base URL for deep-link generation (e.g. https://buildd.dev) */
+  appBaseUrl?: string;
 }
 
 function apiCall(serverUrl: string, apiKey: string, endpoint: string, options: RequestInit = {}) {
@@ -100,6 +102,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
     workspaceId,
     getWorkspaceId: async () => workspaceId || null,
     getLevel: () => getAccountLevel(serverUrl, apiKey),
+    appBaseUrl: opts.appBaseUrl,
   };
 
   return createSdkMcpServer({
