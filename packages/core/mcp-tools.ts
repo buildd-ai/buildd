@@ -71,6 +71,7 @@ export const adminActions = [
   'approve_plan', 'reject_plan',
   'manage_missions',
   'manage_workspaces',
+  'manage_watched_projects',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -118,6 +119,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -1864,6 +1866,69 @@ export async function handleBuilddAction(
         }
         default:
           throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, create, update, create_repo, init`);
+      }
+    }
+
+    case 'manage_watched_projects': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+
+      const wpAction = params.action as string;
+      if (!wpAction) throw new Error('action is required (list, create, update, delete, run)');
+
+      const fields = ['repo', 'enabled', 'vercelProjectId', 'inFlightWindowMin', 'prodGraceMin', 'roleSlug', 'pushoverApp', 'releasePrFilter', 'notes'] as const;
+      const pickFields = (): Record<string, unknown> => {
+        const out: Record<string, unknown> = {};
+        for (const f of fields) if (params[f] !== undefined) out[f] = params[f];
+        return out;
+      };
+
+      switch (wpAction) {
+        case 'list': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for list');
+          const data = await api(`/api/workspaces/${wsId}/watched-projects`);
+          const rows = data.watchedProjects || [];
+          if (rows.length === 0) return text('No watched projects in this workspace.');
+          const summary = rows.map((r: any) =>
+            `- **${r.repo}** ${r.enabled ? '(enabled)' : '(disabled)'}\n  ID: ${r.id} | Vercel: ${r.vercelProjectId || '(none)'} | InFlightWindow: ${r.inFlightWindowMin}m | ProdGrace: ${r.prodGraceMin}m | Role: ${r.roleSlug}\n  Last checked: ${r.lastCheckedAt || 'never'}${r.lastError ? `\n  Last error: ${r.lastError}` : ''}`
+          ).join('\n\n');
+          return text(`${rows.length} watched project(s):\n\n${summary}`);
+        }
+        case 'create': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for create');
+          if (!params.repo) throw new Error('repo is required (owner/name)');
+          const data = await api(`/api/workspaces/${wsId}/watched-projects`, {
+            method: 'POST',
+            body: JSON.stringify(pickFields()),
+          });
+          const row = data.watchedProject;
+          return text(`Watched project created: ${row.repo} (ID: ${row.id})`);
+        }
+        case 'update': {
+          if (!params.projectId) throw new Error('projectId is required for update');
+          const patch = pickFields();
+          if (Object.keys(patch).length === 0) throw new Error('At least one field to update is required');
+          const data = await api(`/api/watched-projects/${params.projectId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(patch),
+          });
+          return text(`Watched project ${params.projectId} updated.\nNow: enabled=${data.watchedProject.enabled} | InFlightWindow: ${data.watchedProject.inFlightWindowMin}m | ProdGrace: ${data.watchedProject.prodGraceMin}m`);
+        }
+        case 'delete': {
+          if (!params.projectId) throw new Error('projectId is required for delete');
+          await api(`/api/watched-projects/${params.projectId}`, { method: 'DELETE' });
+          return text(`Watched project ${params.projectId} deleted.`);
+        }
+        case 'run': {
+          if (!params.projectId) throw new Error('projectId is required for run');
+          const data = await api(`/api/watched-projects/${params.projectId}/run`, { method: 'POST' });
+          if (!data.ok) return errorResult(`Run failed: ${data.error}`);
+          return text(`Watcher ran for ${params.projectId}. Fired ${data.fired} alert(s).`);
+        }
+        default:
+          throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: list, create, update, delete, run`);
       }
     }
 

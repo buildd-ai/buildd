@@ -644,6 +644,54 @@ export const githubRepos = pgTable('github_repos', {
   fullNameIdx: index('github_repos_full_name_idx').on(t.fullName),
 }));
 
+// Project health watcher — periodic checks on external repos/deploys.
+// One row per (workspace, repo). Auto-creates a buildd task + Pushover alert
+// when CI fails on a release PR or prod release is unhealthy, unless suppressed
+// by an in-flight task or recent commit activity. GH and Vercel creds are
+// global (env-based) for now; per-row override columns can be added later.
+export const watchedProjects = pgTable('watched_projects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  enabled: boolean('enabled').default(true).notNull(),
+  repo: text('repo').notNull(), // "owner/name"
+  vercelProjectId: text('vercel_project_id'), // null disables prod-release check
+  vercelTokenSecretId: uuid('vercel_token_secret_id'), // null = fall back to VERCEL_API_TOKEN env
+  releasePrFilter: jsonb('release_pr_filter').default({}).$type<{
+    base?: string;        // PR target branch; default "main"
+    label?: string;       // optional label filter
+    titlePrefix?: string; // optional title prefix filter
+  }>().notNull(),
+  inFlightWindowMin: integer('in_flight_window_min').default(60).notNull(),
+  prodGraceMin: integer('prod_grace_min').default(60).notNull(),
+  roleSlug: text('role_slug').default('ops').notNull(),
+  pushoverApp: text('pushover_app').default('alerts').notNull().$type<'tasks' | 'alerts'>(),
+  notes: text('notes'),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('watched_projects_workspace_idx').on(t.workspaceId),
+  enabledIdx: index('watched_projects_enabled_idx').on(t.enabled),
+  workspaceRepoIdx: uniqueIndex('watched_projects_workspace_repo_idx').on(t.workspaceId, t.repo),
+}));
+
+// Dedupe ledger for watcher firings. Unique on (projectId, kind, dedupeKey)
+// so the same PR head SHA or deploy ID doesn't spawn duplicate tasks.
+export const watcherEvents = pgTable('watcher_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').references(() => watchedProjects.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'failing_release_pr' | 'prod_unhealthy'>(),
+  dedupeKey: text('dedupe_key').notNull(),
+  taskId: uuid('task_id'), // task auto-created in response (may be null if creation failed)
+  meta: jsonb('meta').default({}).$type<Record<string, unknown>>(),
+  firedAt: timestamp('fired_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  projectKindKeyIdx: uniqueIndex('watcher_events_project_kind_key_idx').on(t.projectId, t.kind, t.dedupeKey),
+  projectIdx: index('watcher_events_project_idx').on(t.projectId),
+}));
+
 // Workspace-scoped skills (roles) — per-project bindings, discovered locally or manually registered
 export const workspaceSkills = pgTable('workspace_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -734,7 +782,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -890,6 +938,15 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
 export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
   workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [workspaceSkills.accountId], references: [accounts.id] }),
+}));
+
+export const watchedProjectsRelations = relations(watchedProjects, ({ one, many }) => ({
+  workspace: one(workspaces, { fields: [watchedProjects.workspaceId], references: [workspaces.id] }),
+  events: many(watcherEvents),
+}));
+
+export const watcherEventsRelations = relations(watcherEvents, ({ one }) => ({
+  project: one(watchedProjects, { fields: [watcherEvents.projectId], references: [watchedProjects.id] }),
 }));
 
 export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
