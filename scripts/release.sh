@@ -269,12 +269,12 @@ else
   gh pr create --base main --head dev --title "Release ${NEW_VERSION}" --body "$BODY"
 fi
 
-echo ""
-echo "👉 After merging the release PR, run: bun run release:finalize"
-echo "   (resets dev to main so future release PRs stay clean)"
-
-# Note: release-tag.yml auto-creates the git tag when this PR merges (title must match "Release v...").
-# If the automated flow was bypassed, run: bun run release -- --tag
+# Note: when this PR merges, two workflows fire automatically:
+#   - release-tag.yml tags main and creates the GitHub release (title must match "Release v...")
+#   - sync-dev.yml resets dev to main so future release PRs stay clean
+# If either is bypassed, the manual escape hatches are:
+#   bun run release -- --tag        (manually tag/release main HEAD)
+#   bun run release -- --finalize   (manually reset dev to main)
 
 # Create changelog task (if BUILDD_API_KEY is available)
 BUILDD_KEY="${BUILDD_API_KEY:-}"
