@@ -12,6 +12,7 @@ import { githubApi } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notify } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
+import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
@@ -49,8 +50,9 @@ export async function runHealthWatcher(opts?: { force?: boolean }): Promise<RunR
   for (const project of projects) {
     result.checked++;
     try {
-      const firedThisProject = await checkFailingReleasePRs(project);
-      result.fired += firedThisProject;
+      const firedPrs = await checkFailingReleasePRs(project);
+      const firedProd = await checkProdReleaseHealth(project);
+      result.fired += firedPrs + firedProd;
       await db
         .update(watchedProjects)
         .set({ lastCheckedAt: new Date(), lastError: null, updatedAt: new Date() })
@@ -111,6 +113,135 @@ async function checkFailingReleasePRs(project: WatchedProject): Promise<number> 
     if (created) fired++;
   }
   return fired;
+}
+
+async function checkProdReleaseHealth(project: WatchedProject): Promise<number> {
+  if (!project.vercelProjectId) return 0;
+  const token = process.env.VERCEL_API_TOKEN;
+  if (!token) {
+    throw new Error('VERCEL_API_TOKEN not configured');
+  }
+
+  const deployments = await listProdDeployments(project.vercelProjectId, token, {
+    teamId: process.env.VERCEL_TEAM_ID || undefined,
+  });
+  const health = evaluateDeploymentHealth(deployments, { graceMin: project.prodGraceMin, now: Date.now() });
+  if (health.status !== 'unhealthy' && health.status !== 'stale') return 0;
+  if (await isProdSuppressed(project)) return 0;
+
+  const created = await fireProdAlert(project, health);
+  return created ? 1 : 0;
+}
+
+async function isProdSuppressed(project: WatchedProject): Promise<boolean> {
+  // Any active buildd task on this project for the prod-health signal counts as
+  // in-flight. (We don't gate on recent commits to main here — Vercel itself
+  // reflects post-commit state, so a fresh commit means a fresh deploy attempt
+  // we'll observe directly via the deploy list.)
+  const active = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.workspaceId, project.workspaceId),
+        inArray(tasks.status, ACTIVE_TASK_STATUSES),
+        sql`${tasks.context}->>'watchedProjectId' = ${project.id}`,
+        sql`${tasks.context}->>'watcherKind' = 'prod_unhealthy'`,
+      ),
+    )
+    .limit(1);
+  return active.length > 0;
+}
+
+async function fireProdAlert(project: WatchedProject, health: DeploymentHealth): Promise<boolean> {
+  if (health.status === 'healthy' || health.status === 'unknown' || !health.dedupeKey || !health.deployment) {
+    return false;
+  }
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, project.workspaceId),
+  });
+  if (!workspace) return false;
+
+  await ensureOpsRole(project.workspaceId, project.roleSlug);
+
+  const dep = health.deployment;
+  const title = `Prod release ${health.status === 'unhealthy' ? 'failing' : 'stale'}: ${project.repo}`;
+  const description = `Vercel production deploy is unhealthy for \`${project.repo}\`.
+
+Status: ${health.status} — ${health.reason}
+Latest relevant deploy: ${dep.uid} (${dep.state})
+Inspector: ${dep.inspectorUrl || '(none)'}
+URL: ${dep.url ? `https://${dep.url}` : '(none)'}
+
+Diagnose the failure, push a fix to \`main\`, and confirm the next deploy goes READY.`;
+
+  const taskId = randomUUID();
+  let inserted: { id: string } | undefined;
+  try {
+    const rows = await db
+      .insert(tasks)
+      .values({
+        id: taskId,
+        workspaceId: project.workspaceId,
+        title: title.slice(0, 200),
+        description,
+        priority: 8,
+        status: 'pending',
+        mode: 'execution',
+        creationSource: 'webhook',
+        category: 'bug',
+        roleSlug: project.roleSlug,
+        context: {
+          repo: project.repo,
+          deploymentId: dep.uid,
+          watchedProjectId: project.id,
+          watcherKind: 'prod_unhealthy',
+          health: health.status,
+        },
+      })
+      .returning({ id: tasks.id });
+    inserted = rows[0];
+  } catch (err) {
+    console.error(`[health-watcher] prod task insert failed for ${health.dedupeKey}:`, err);
+  }
+
+  try {
+    await db.insert(watcherEvents).values({
+      projectId: project.id,
+      kind: 'prod_unhealthy',
+      dedupeKey: health.dedupeKey,
+      taskId: inserted?.id ?? null,
+      meta: {
+        deploymentId: dep.uid,
+        state: dep.state,
+        reason: health.reason,
+        inspectorUrl: dep.inspectorUrl,
+      },
+    });
+  } catch {
+    if (inserted) {
+      await db.delete(tasks).where(eq(tasks.id, inserted.id));
+    }
+    return false;
+  }
+
+  if (inserted) {
+    await dispatchNewTask(
+      { id: inserted.id, title, description, workspaceId: project.workspaceId },
+      workspace,
+    );
+  }
+
+  notify({
+    app: project.pushoverApp,
+    title,
+    message: health.reason,
+    priority: 1,
+    url: dep.inspectorUrl || undefined,
+    urlTitle: dep.inspectorUrl ? 'Open deploy' : undefined,
+  });
+
+  return true;
 }
 
 export function matchesFilter(
