@@ -26,6 +26,7 @@ export default function VercelSection({ teams }: Props) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     if (!selectedTeamId) return;
@@ -71,6 +72,7 @@ export default function VercelSection({ teams }: Props) {
       if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
       setLabel('');
       setValue('');
+      setAddOpen(false);
       setMessage({ type: 'success', text: 'Token stored. The watcher will use it for any project tied to this team.' });
       await load(selectedTeamId);
     } catch (err) {
@@ -151,29 +153,45 @@ export default function VercelSection({ teams }: Props) {
           </ul>
         )}
 
-        <div className="space-y-2 border-t pt-4">
-          <div className="text-sm font-medium">Add a token</div>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="Label (e.g. 'Personal — read deployments')"
-            className="w-full h-11 px-3 rounded-lg border bg-surface"
-          />
-          <input
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            type="password"
-            placeholder="Paste token (sk_…)"
-            className="w-full h-11 px-3 rounded-lg border bg-surface"
-          />
+        {tokens.length > 0 && !addOpen ? (
           <button
-            onClick={addToken}
-            disabled={busy || !value.trim()}
-            className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+            onClick={() => setAddOpen(true)}
+            className="text-sm font-medium text-status-info"
           >
-            Store token
+            + Add another token
           </button>
-        </div>
+        ) : (
+          <div className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">Add a token</div>
+              {tokens.length > 0 && (
+                <button onClick={() => { setAddOpen(false); setLabel(''); setValue(''); }} className="text-xs text-text-tertiary">
+                  Cancel
+                </button>
+              )}
+            </div>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Label (e.g. 'Personal — read deployments')"
+              className="w-full h-11 px-3 rounded-lg border bg-surface"
+            />
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              type="password"
+              placeholder="Paste token (sk_…)"
+              className="w-full h-11 px-3 rounded-lg border bg-surface"
+            />
+            <button
+              onClick={addToken}
+              disabled={busy || !value.trim()}
+              className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+            >
+              Store token
+            </button>
+          </div>
+        )}
 
         {message && (
           <div className={`text-sm ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
