@@ -155,4 +155,106 @@ describe('get_task', () => {
     expect(text).not.toContain('Workers (');
     expect(text).not.toContain('Artifacts (');
   });
+
+  it('includes taskUrl in output when appBaseUrl is set', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Test task',
+      status: 'pending',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID },
+      ctx({ appBaseUrl: 'https://buildd.dev' }),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}`);
+  });
+
+  it('uses default appBaseUrl when none is set', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Test task',
+      status: 'pending',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID },
+      ctx(),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}`);
+  });
+
+  it('includes actionUrl when worker has waitingFor set', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Blocked task',
+      status: 'assigned',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [
+        {
+          id: 'w-blocked',
+          status: 'waiting_input',
+          branch: 'feat/x',
+          waitingFor: { type: 'question', prompt: 'Which approach?', options: ['A', 'B'] },
+        },
+      ],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID },
+      ctx({ appBaseUrl: 'https://buildd.dev' }),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}/respond`);
+    expect(text).toContain('Which approach?');
+  });
+
+  it('includes workerUrl for each worker', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Running task',
+      status: 'assigned',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [
+        {
+          id: 'w-running',
+          status: 'running',
+          branch: 'feat/x',
+        },
+      ],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID },
+      ctx({ appBaseUrl: 'https://buildd.dev' }),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}`);
+  });
 });
