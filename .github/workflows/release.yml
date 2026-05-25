@@ -1,0 +1,65 @@
+name: Release
+
+# Manual ship from the GitHub UI (workflow_dispatch) and a daily check
+# that opens a release PR if dev has feat/fix commits ahead of main.
+# Pairs with release-tag.yml (auto-tags on merge) and sync-dev.yml
+# (auto-resets dev after merge) — both already in this repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Open the release PR even if no feat/fix commits since last tag'
+        required: false
+        default: 'false'
+  schedule:
+    # 09:00 UTC daily. No-op when there's nothing shippable.
+    - cron: '0 9 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Check whether dev has shippable commits
+        id: shippable
+        run: |
+          LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "shippable=true" >> "$GITHUB_OUTPUT"
+            echo "No tags yet — proceeding"
+            exit 0
+          fi
+          COMMITS=$(git log "${LATEST_TAG}..dev" --format='%s' --no-merges 2>/dev/null || true)
+          if echo "$COMMITS" | grep -qE '^(feat|fix)(\(.+\))?!?:'; then
+            echo "shippable=true" >> "$GITHUB_OUTPUT"
+            echo "Shippable commits found since ${LATEST_TAG}"
+          else
+            echo "shippable=false" >> "$GITHUB_OUTPUT"
+            echo "No feat/fix commits since ${LATEST_TAG} — nothing to release"
+          fi
+
+      - name: Set up Bun
+        if: steps.shippable.outputs.shippable == 'true' || inputs.force == 'true'
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.x
+
+      - name: Run release script
+        if: steps.shippable.outputs.shippable == 'true' || inputs.force == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release.sh
