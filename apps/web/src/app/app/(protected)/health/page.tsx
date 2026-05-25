@@ -1,9 +1,9 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray, desc } from 'drizzle-orm';
+import { watchedProjects, watcherEvents, workspaces, secrets } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { HealthClient } from './HealthClient';
 
 export const dynamic = 'force-dynamic';
@@ -15,6 +15,7 @@ export interface WatchedProjectRow {
   repo: string;
   enabled: boolean;
   vercelProjectId: string | null;
+  vercelTokenSecretId: string | null;
   inFlightWindowMin: number;
   prodGraceMin: number;
   roleSlug: string;
@@ -29,6 +30,13 @@ export interface WatchedProjectRow {
 export interface WorkspaceOption {
   id: string;
   name: string;
+  teamId: string;
+}
+
+export interface VercelTokenOption {
+  id: string;
+  teamId: string;
+  label: string | null;
 }
 
 export default async function HealthPage() {
@@ -46,10 +54,20 @@ export default async function HealthPage() {
   }
 
   const ws = await db
-    .select({ id: workspaces.id, name: workspaces.name })
+    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
     .from(workspaces)
     .where(inArray(workspaces.id, workspaceIds));
   const wsById = new Map(ws.map((w) => [w.id, w.name] as const));
+
+  const teamIds = await getUserTeamIds(user.id);
+  const vercelTokens: VercelTokenOption[] = teamIds.length
+    ? (await db
+        .select({ id: secrets.id, teamId: secrets.teamId, label: secrets.label })
+        .from(secrets)
+        .where(and(inArray(secrets.teamId, teamIds), eq(secrets.purpose, 'vercel_token')))).map((s) => ({ id: s.id, teamId: s.teamId, label: s.label }))
+    : [];
+
+  const hasGlobalVercelToken = Boolean(process.env.VERCEL_API_TOKEN);
 
   const rows = await db
     .select()
@@ -82,6 +100,7 @@ export default async function HealthPage() {
     repo: r.repo,
     enabled: r.enabled,
     vercelProjectId: r.vercelProjectId,
+    vercelTokenSecretId: r.vercelTokenSecretId,
     inFlightWindowMin: r.inFlightWindowMin,
     prodGraceMin: r.prodGraceMin,
     roleSlug: r.roleSlug,
@@ -93,7 +112,14 @@ export default async function HealthPage() {
     recentEvents: eventsByProject.get(r.id) ?? [],
   }));
 
-  const workspaceOptions: WorkspaceOption[] = ws.map((w) => ({ id: w.id, name: w.name }));
+  const workspaceOptions: WorkspaceOption[] = ws.map((w) => ({ id: w.id, name: w.name, teamId: w.teamId }));
 
-  return <HealthClient initialRows={serialized} workspaces={workspaceOptions} />;
+  return (
+    <HealthClient
+      initialRows={serialized}
+      workspaces={workspaceOptions}
+      vercelTokens={vercelTokens}
+      hasGlobalVercelToken={hasGlobalVercelToken}
+    />
+  );
 }

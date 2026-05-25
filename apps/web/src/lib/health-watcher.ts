@@ -13,6 +13,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notify } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
+import { getSecretsProvider } from '@buildd/core/secrets';
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
@@ -133,11 +134,31 @@ async function checkFailingReleasePRs(project: WatchedProject): Promise<number> 
   return fired;
 }
 
+/**
+ * Resolve the Vercel API token for a project: per-row secret if set,
+ * else the global env. Returns null if neither is configured so the
+ * caller can decide whether to skip or throw.
+ */
+export async function resolveVercelToken(
+  project: { vercelTokenSecretId: string | null },
+  deps?: {
+    getSecret?: (id: string) => Promise<string | null>;
+    env?: string | undefined;
+  },
+): Promise<string | null> {
+  if (project.vercelTokenSecretId) {
+    const get = deps?.getSecret ?? ((id: string) => getSecretsProvider().get(id));
+    const value = await get(project.vercelTokenSecretId);
+    if (value) return value;
+  }
+  return deps?.env !== undefined ? deps.env || null : (process.env.VERCEL_API_TOKEN ?? null);
+}
+
 async function checkProdReleaseHealth(project: WatchedProject): Promise<number> {
   if (!project.vercelProjectId) return 0;
-  const token = process.env.VERCEL_API_TOKEN;
+  const token = await resolveVercelToken(project);
   if (!token) {
-    throw new Error('VERCEL_API_TOKEN not configured');
+    throw new Error('No Vercel token configured — set vercelTokenSecretId or VERCEL_API_TOKEN');
   }
 
   const deployments = await listProdDeployments(project.vercelProjectId, token, {

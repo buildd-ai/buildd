@@ -15,10 +15,12 @@ describe('parseCreateInput', () => {
   });
 
   it('passes through all overrides', () => {
+    const secretId = '11111111-1111-4111-8111-111111111111';
     const out = parseCreateInput({
       repo: 'acme/web',
       enabled: false,
       vercelProjectId: 'prj_abc',
+      vercelTokenSecretId: secretId,
       inFlightWindowMin: 30,
       prodGraceMin: 120,
       roleSlug: 'firefighter',
@@ -28,12 +30,22 @@ describe('parseCreateInput', () => {
     });
     expect(out.enabled).toBe(false);
     expect(out.vercelProjectId).toBe('prj_abc');
+    expect(out.vercelTokenSecretId).toBe(secretId);
     expect(out.inFlightWindowMin).toBe(30);
     expect(out.prodGraceMin).toBe(120);
     expect(out.roleSlug).toBe('firefighter');
     expect(out.pushoverApp).toBe('tasks');
     expect(out.releasePrFilter).toEqual({ base: 'release', label: 'rc' });
     expect(out.notes).toBe('flaky CI');
+  });
+
+  it('defaults vercelTokenSecretId to null when unset', () => {
+    const out = parseCreateInput({ repo: 'a/b' });
+    expect(out.vercelTokenSecretId).toBeNull();
+  });
+
+  it('rejects a non-UUID vercelTokenSecretId', () => {
+    expect(() => parseCreateInput({ repo: 'a/b', vercelTokenSecretId: 'not-a-uuid' })).toThrow(/vercelTokenSecretId/);
   });
 
   it('rejects missing repo', () => {
@@ -68,6 +80,12 @@ describe('parseUpdateInput', () => {
   it('validates types on the fields it does receive', () => {
     expect(() => parseUpdateInput({ prodGraceMin: -5 })).toThrow(/prodGraceMin/);
     expect(() => parseUpdateInput({ repo: 'bad' })).toThrow(/owner\/name/);
+    expect(() => parseUpdateInput({ vercelTokenSecretId: 'not-a-uuid' })).toThrow(/vercelTokenSecretId/);
+  });
+
+  it('accepts null to clear vercelTokenSecretId', () => {
+    const out = parseUpdateInput({ vercelTokenSecretId: null });
+    expect(out.vercelTokenSecretId).toBeNull();
   });
 
   it('does not silently coerce unknown fields', () => {

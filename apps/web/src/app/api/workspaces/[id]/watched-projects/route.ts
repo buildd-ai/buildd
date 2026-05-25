@@ -80,6 +80,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       repo: input.repo,
       enabled: input.enabled,
       vercelProjectId: input.vercelProjectId,
+      vercelTokenSecretId: input.vercelTokenSecretId,
       inFlightWindowMin: input.inFlightWindowMin,
       prodGraceMin: input.prodGraceMin,
       roleSlug: input.roleSlug,

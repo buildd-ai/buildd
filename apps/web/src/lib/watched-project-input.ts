@@ -2,12 +2,23 @@ export interface CreateWatchedProjectInput {
   repo: string;
   enabled: boolean;
   vercelProjectId: string | null;
+  vercelTokenSecretId: string | null;
   inFlightWindowMin: number;
   prodGraceMin: number;
   roleSlug: string;
   pushoverApp: 'tasks' | 'alerts';
   releasePrFilter: { base?: string; label?: string; titlePrefix?: string };
   notes: string | null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function ensureNullableUuid(field: string, value: unknown): string | null {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    throw new Error(`${field} must be a UUID string or null`);
+  }
+  return value;
 }
 
 export type UpdateWatchedProjectInput = Partial<CreateWatchedProjectInput>;
@@ -68,6 +79,7 @@ export function parseCreateInput(raw: Record<string, unknown>): CreateWatchedPro
     repo,
     enabled: raw.enabled === undefined ? true : Boolean(raw.enabled),
     vercelProjectId: typeof raw.vercelProjectId === 'string' && raw.vercelProjectId.length > 0 ? raw.vercelProjectId : null,
+    vercelTokenSecretId: raw.vercelTokenSecretId === undefined ? null : ensureNullableUuid('vercelTokenSecretId', raw.vercelTokenSecretId),
     inFlightWindowMin: raw.inFlightWindowMin === undefined ? 60 : ensurePositiveInt('inFlightWindowMin', raw.inFlightWindowMin, false),
     prodGraceMin: raw.prodGraceMin === undefined ? 60 : ensurePositiveInt('prodGraceMin', raw.prodGraceMin, false),
     roleSlug: typeof raw.roleSlug === 'string' && raw.roleSlug.length > 0 ? raw.roleSlug : 'ops',
@@ -83,6 +95,9 @@ export function parseUpdateInput(raw: Record<string, unknown>): UpdateWatchedPro
   if (raw.enabled !== undefined) out.enabled = Boolean(raw.enabled);
   if (raw.vercelProjectId !== undefined) {
     out.vercelProjectId = typeof raw.vercelProjectId === 'string' && raw.vercelProjectId.length > 0 ? raw.vercelProjectId : null;
+  }
+  if (raw.vercelTokenSecretId !== undefined) {
+    out.vercelTokenSecretId = ensureNullableUuid('vercelTokenSecretId', raw.vercelTokenSecretId);
   }
   if (raw.inFlightWindowMin !== undefined) out.inFlightWindowMin = ensurePositiveInt('inFlightWindowMin', raw.inFlightWindowMin, false);
   if (raw.prodGraceMin !== undefined) out.prodGraceMin = ensurePositiveInt('prodGraceMin', raw.prodGraceMin, false);

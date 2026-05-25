@@ -655,6 +655,7 @@ export const watchedProjects = pgTable('watched_projects', {
   enabled: boolean('enabled').default(true).notNull(),
   repo: text('repo').notNull(), // "owner/name"
   vercelProjectId: text('vercel_project_id'), // null disables prod-release check
+  vercelTokenSecretId: uuid('vercel_token_secret_id'), // null = fall back to VERCEL_API_TOKEN env
   releasePrFilter: jsonb('release_pr_filter').default({}).$type<{
     base?: string;        // PR target branch; default "main"
     label?: string;       // optional label filter
@@ -781,7 +782,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

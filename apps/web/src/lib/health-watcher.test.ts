@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { matchesFilter, filterFailingCheckRuns, dedupeKeyForPr } from './health-watcher';
+import { matchesFilter, filterFailingCheckRuns, dedupeKeyForPr, resolveVercelToken } from './health-watcher';
 
 describe('matchesFilter', () => {
   const pr = { labels: ['release', 'urgent'], title: 'release: v1.2.3' };
@@ -83,5 +83,39 @@ describe('dedupeKeyForPr', () => {
 
   it('changes when the head SHA changes (new commits invalidate the lock)', () => {
     expect(dedupeKeyForPr(42, 'abc123')).not.toBe(dedupeKeyForPr(42, 'def456'));
+  });
+});
+
+describe('resolveVercelToken', () => {
+  it('returns the secret value when secretId is set and the secret exists', async () => {
+    const token = await resolveVercelToken(
+      { vercelTokenSecretId: 'sec-1' },
+      { getSecret: async (id) => (id === 'sec-1' ? 'token-from-secret' : null), env: '' },
+    );
+    expect(token).toBe('token-from-secret');
+  });
+
+  it('falls back to env when secretId is null', async () => {
+    const token = await resolveVercelToken(
+      { vercelTokenSecretId: null },
+      { getSecret: async () => null, env: 'token-from-env' },
+    );
+    expect(token).toBe('token-from-env');
+  });
+
+  it('falls back to env when secret cannot be retrieved', async () => {
+    const token = await resolveVercelToken(
+      { vercelTokenSecretId: 'sec-missing' },
+      { getSecret: async () => null, env: 'token-from-env' },
+    );
+    expect(token).toBe('token-from-env');
+  });
+
+  it('returns null when neither secret nor env is configured', async () => {
+    const token = await resolveVercelToken(
+      { vercelTokenSecretId: null },
+      { getSecret: async () => null, env: '' },
+    );
+    expect(token).toBeNull();
   });
 });
