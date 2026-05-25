@@ -154,11 +154,12 @@ export async function PATCH(
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
   // Pushover notification when agent needs input
   if (waitingFor?.type === 'question') {
+    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     notify({
       app: 'tasks',
       title: 'Agent needs your input',
       message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
-      url: `https://buildd.dev/app/tasks/${worker.taskId}/respond`,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
       urlTitle: 'Respond',
       priority: 0,
     });

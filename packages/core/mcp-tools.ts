@@ -31,6 +31,7 @@ export interface ActionContext {
   workspaceId?: string;
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
+  appBaseUrl?: string;
 }
 
 export type ToolResult = {
@@ -362,9 +363,13 @@ export async function handleBuilddAction(
 
       const task = await api(`/api/tasks/${encodeURIComponent(params.taskId as string)}${qs}`);
 
+      const appBase = ctx.appBaseUrl || 'https://buildd.dev';
+      const taskUrl = `${appBase}/app/tasks/${task.id}`;
+
       const lines: string[] = [];
       lines.push(`**Task:** ${task.title} (${task.id})`);
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
+      lines.push(`**Task URL:** ${taskUrl}`);
       if (task.workspace?.name || task.workspace?.repo) {
         lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
       }
@@ -404,10 +409,16 @@ export async function handleBuilddAction(
         for (const w of workers) {
           const wlines: string[] = [];
           wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
+          wlines.push(`  Worker URL: ${taskUrl}`);
           if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
+          if (w.waitingFor) {
+            const actionUrl = `${taskUrl}/respond`;
+            wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
+            wlines.push(`  Action URL: ${actionUrl}`);
+          }
           lines.push(wlines.join('\n'));
         }
       }
@@ -727,7 +738,9 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const createAppBase = ctx.appBaseUrl || 'https://buildd.dev';
+      const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
