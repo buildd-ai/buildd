@@ -87,6 +87,24 @@ interface OpenPR {
   updatedAt: string;
 }
 
+/**
+ * Force-run both signal checks for a single project, bypassing the
+ * lastCheckedAt gate. Used by the /watched-projects/[id]/run endpoint.
+ */
+export async function runWatcherForProject(projectId: string): Promise<{ fired: number }> {
+  const project = await db.query.watchedProjects.findFirst({
+    where: eq(watchedProjects.id, projectId),
+  });
+  if (!project) throw new Error(`Watched project ${projectId} not found`);
+  const firedPrs = await checkFailingReleasePRs(project);
+  const firedProd = await checkProdReleaseHealth(project);
+  await db
+    .update(watchedProjects)
+    .set({ lastCheckedAt: new Date(), lastError: null, updatedAt: new Date() })
+    .where(eq(watchedProjects.id, project.id));
+  return { fired: firedPrs + firedProd };
+}
+
 async function checkFailingReleasePRs(project: WatchedProject): Promise<number> {
   const installationId = await resolveInstallationId(project.repo);
   if (!installationId) {
