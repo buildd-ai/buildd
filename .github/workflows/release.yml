@@ -1,0 +1,23 @@
+name: Release
+
+# Delegates to the reusable workflow in buildd-ai/.github so release
+# logic stays in one place across the org. Local `bun run release`
+# still uses scripts/release.sh in this repo for offline-friendly
+# shipping; the two are intended to stay in sync.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Open the release PR even if no feat/fix commits since last tag'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: '0 9 * * *'
+
+jobs:
+  release:
+    uses: buildd-ai/.github/.github/workflows/release.yml@main
+    with:
+      package_files: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
+      force: ${{ inputs.force == 'true' }}

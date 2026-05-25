@@ -8,6 +8,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
+import { runHealthWatcher } from '@/lib/health-watcher';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -643,6 +644,15 @@ export async function GET(req: NextRequest) {
       console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
     }
 
+    let healthWatcher: Awaited<ReturnType<typeof runHealthWatcher>> | { error: string } = { checked: 0, fired: 0, errors: 0, skipped: 0 };
+    try {
+      healthWatcher = await runHealthWatcher();
+    } catch (watcherErr) {
+      const message = watcherErr instanceof Error ? watcherErr.message : String(watcherErr);
+      console.warn('[Cron] health watcher failed:', message);
+      healthWatcher = { error: message };
+    }
+
     return NextResponse.json({
       processed,
       created,
@@ -651,6 +661,7 @@ export async function GET(req: NextRequest) {
       errors,
       triggerChecks,
       heartbeatOrphans,
+      healthWatcher,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

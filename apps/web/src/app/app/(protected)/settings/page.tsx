@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/l
 import { isSystemWorkspace } from '@buildd/shared';
 import { TeamSwitcher } from '@/components/TeamSwitcher';
 import GitHubSection from './GitHubSection';
+import VercelSection from './VercelSection';
 import ApiKeysSection from './ApiKeysSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import SignOutButton from '../you/SignOutButton';
@@ -94,6 +95,9 @@ export default async function SettingsPage() {
 
         {/* GitHub */}
         <GitHubSection />
+
+        {/* Vercel (for project health watcher) */}
+        <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
 
         {/* API Keys — compact view */}
         <ApiKeysSection

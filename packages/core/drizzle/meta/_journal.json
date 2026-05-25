@@ -260,6 +260,20 @@
       "when": 1779634666549,
       "tag": "0036_aspiring_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1779716738764,
+      "tag": "0037_odd_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1779718453788,
+      "tag": "0038_thick_junta",
+      "breakpoints": true
     }
   ]
 }

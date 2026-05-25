@@ -1,0 +1,1 @@
+ALTER TABLE "watched_projects" ADD COLUMN "vercel_token_secret_id" uuid;
