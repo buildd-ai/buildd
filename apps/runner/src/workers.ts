@@ -1400,7 +1400,7 @@ export class WorkerManager {
           }
         }
 
-        this.handleMessage(worker, msg);
+        await this.handleMessage(worker, msg);
 
         // On result: run ralph self-review loop before completing
         if (msg.type === 'result') {
@@ -1510,10 +1510,13 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.currentAction = 'Needs input';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
+        // Re-send waitingFor so the dashboard can render the answer UI even
+        // if the earlier sync got 409'd. Server preserves it on failed state.
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
           milestones: worker.milestones,
+          ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
@@ -1783,7 +1786,7 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
   }
 
-  private handleMessage(worker: LocalWorker, msg: SDKMessage) {
+  private async handleMessage(worker: LocalWorker, msg: SDKMessage) {
     worker.lastActivity = Date.now();
     worker.hasNewActivity = true;
 
@@ -2095,16 +2098,31 @@ If something is missing or incomplete, describe what and fix it now.`;
               // The ralph-loop retry system will create a follow-up task with the user's answer.
               console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
               worker.error = `needs_input: ${questionText}`;
-              // Sync waiting_input to server (triggers Pushover notification) before marking failed
-              this.buildd.updateWorker(worker.id, {
-                status: 'waiting_input',
-                currentAction: worker.currentAction,
-                waitingFor: {
-                  type: 'question',
-                  prompt: questionText,
-                  options: firstQuestion?.options,
-                },
-              }).catch(() => {});
+              // Persist waitingFor on the worker so the post-loop cleanup
+              // re-sends it with the failed update (defense in depth — if the
+              // waiting_input update below races and loses, the cleanup still
+              // carries the structured question to the server).
+              worker.waitingFor = {
+                type: 'question',
+                prompt: questionText,
+                options: firstQuestion?.options as any,
+              };
+              // Await the waiting_input sync — fire-and-forget races against
+              // the cleanup's status=failed update and the server then 409s
+              // this one as "worker already terminated", dropping waitingFor.
+              try {
+                await this.buildd.updateWorker(worker.id, {
+                  status: 'waiting_input',
+                  currentAction: worker.currentAction,
+                  waitingFor: {
+                    type: 'question',
+                    prompt: questionText,
+                    options: firstQuestion?.options as any,
+                  },
+                });
+              } catch (err) {
+                console.warn(`[Worker ${worker.id}] waiting_input sync failed:`, err);
+              }
               storeSaveWorker(worker);
               // Abort the subprocess — the post-loop cleanup will detect worker.error
               // and mark the worker as failed with the needs_input context.
