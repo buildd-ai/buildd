@@ -17,6 +17,7 @@ import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
 import MarkdownContent from '@/components/MarkdownContent';
+import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 
@@ -399,9 +400,7 @@ export default async function TaskDetailPage({
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Description
             </div>
-            <div className="card p-4">
-              <MarkdownContent content={task.description} />
-            </div>
+            <CollapsibleDescription content={task.description} />
           </div>
         )}
 
