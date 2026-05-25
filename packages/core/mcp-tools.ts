@@ -72,6 +72,7 @@ export const adminActions = [
   'manage_missions',
   'manage_workspaces',
   'manage_watched_projects',
+  'trigger_release',
   'list_recipes', 'create_recipe', 'run_recipe',
 ] as const;
 
@@ -120,6 +121,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
+    trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
     create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
@@ -1930,6 +1932,26 @@ export async function handleBuilddAction(
         default:
           throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: list, create, update, delete, run`);
       }
+    }
+
+    case 'trigger_release': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.repo) throw new Error('repo is required (owner/name)');
+
+      const body: Record<string, unknown> = { repo: params.repo };
+      if (params.ref !== undefined) body.ref = params.ref;
+      if (params.workflowFile !== undefined) body.workflowFile = params.workflowFile;
+      if (params.force !== undefined) body.force = params.force;
+
+      const data = await api('/api/releases/trigger', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      if (!data.ok) {
+        return errorResult(`Release dispatch failed: ${data.error}`);
+      }
+      return text(`Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}${data.force ? ', force=true' : ''}).\nFollow: ${data.runsUrl}`);
     }
 
     // ── Recipes ───────────────────────────────────────────────────────────
