@@ -158,7 +158,7 @@ export async function PATCH(
       app: 'tasks',
       title: 'Agent needs your input',
       message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
-      url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+      url: `https://buildd.dev/app/tasks/${worker.taskId}/respond`,
       urlTitle: 'Respond',
       priority: 0,
     });
