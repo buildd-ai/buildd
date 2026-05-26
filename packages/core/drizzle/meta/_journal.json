@@ -274,6 +274,13 @@
       "when": 1779718453788,
       "tag": "0038_thick_junta",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1779759178823,
+      "tag": "0039_cooing_toad_men",
+      "breakpoints": true
     }
   ]
 }

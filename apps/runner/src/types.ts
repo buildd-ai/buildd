@@ -149,6 +149,7 @@ export interface LocalWorker {
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
+  pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;

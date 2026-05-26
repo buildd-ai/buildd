@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets, workerErrorTraces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -104,6 +104,7 @@ export async function PATCH(
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
     appendMcpCalls,
+    appendErrorTraces,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -143,6 +144,29 @@ export async function PATCH(
     const existing = (worker.mcpCalls as any[]) || [];
     const merged = [...existing, ...appendMcpCalls];
     updates.mcpCalls = merged.length > 100 ? merged.slice(-100) : merged;
+  }
+  // appendErrorTraces: insert pattern-matched errors into worker_error_traces.
+  // Runner throttles same-pattern traces at the source, so we trust the
+  // payload here without additional dedup. Excerpts are clamped to 500 chars
+  // as a defense against a runaway agent posting megabytes of stderr.
+  if (appendErrorTraces && Array.isArray(appendErrorTraces) && appendErrorTraces.length > 0) {
+    const rows = appendErrorTraces
+      .filter((t: any) => t && typeof t.pattern === 'string' && typeof t.excerpt === 'string')
+      .slice(0, 50)  // hard cap per request to bound write volume
+      .map((t: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        pattern: String(t.pattern).slice(0, 100),
+        excerpt: String(t.excerpt).slice(0, 500),
+        source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerErrorTraces).values(rows);
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert error traces', err);
+      }
+    }
   }
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
