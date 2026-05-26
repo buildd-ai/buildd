@@ -291,7 +291,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
+        // Refuse memory writes when the workspace is ambiguous for an OAuth
+        // multi-workspace token. Same bug class as the claim/create_task
+        // misroute (2026-05-25 incident): falling back to accountTeamId would
+        // silently write memories to the wrong team's vault.
         const wsId = await getWorkspaceId();
+        if (!wsId && authType === 'oauth') {
+          return {
+            content: [{ type: "text" as const, text: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint." }],
+            isError: true,
+          };
+        }
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {

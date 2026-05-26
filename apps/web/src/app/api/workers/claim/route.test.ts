@@ -287,6 +287,89 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('Max concurrent sessions limit reached');
   });
 
+  // Defense-in-depth for the 2026-05-25 misroute incident: even if the MCP-layer
+  // guard is bypassed, the claim route refuses ambiguous OAuth claims.
+  it('returns 400 for OAuth tokens with >1 accessible workspace and no workspaceId', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    // 2 accessible: one via permissions, one via open access — total 2 unique
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-restricted', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-open' }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },  // no workspaceId
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/workspaceId required/);
+    expect(data.accessibleWorkspaces).toBe(2);
+  });
+
+  it('allows OAuth claim without workspaceId when only 1 workspace is accessible', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    // Same workspace shows up via both paths — deduped to 1
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-1' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    // Should NOT be 400 — single accessible workspace, no ambiguity
+    expect(res.status).toBe(200);
+  });
+
+  it('skips the OAuth workspace-required guard when authType is api', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    // 2 accessible workspaces — would trigger the guard if it were OAuth
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-a', canClaim: true },
+      { workspaceId: 'ws-b', canClaim: true },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },  // no workspaceId — fine for API key
+    });
+    const res = await POST(req);
+
+    // API keys are workspace-scoped at creation; the guard doesn't apply.
+    expect(res.status).toBe(200);
+  });
+
   it('skips non-tenant tasks when OAuth budget is exhausted', async () => {
     const futureReset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
     mockAuthenticateApiKey.mockResolvedValue({

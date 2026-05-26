@@ -107,7 +107,8 @@ export async function GET(req: NextRequest) {
 
   // Verify access to the chosen workspace.
   const allowed = await workspacesForUser(userId);
-  if (!allowed.some((w) => w.id === workspaceId)) {
+  const chosen = allowed.find((w) => w.id === workspaceId);
+  if (!chosen) {
     return plainError('you do not have access to that workspace', 403);
   }
 
@@ -124,7 +125,22 @@ export async function GET(req: NextRequest) {
   const cbUrl = new URL(redirectUri);
   cbUrl.searchParams.set('code', code);
   if (state) cbUrl.searchParams.set('state', state);
-  return NextResponse.redirect(cbUrl);
+
+  // Render a brief confirmation interstitial before redirecting back to the
+  // OAuth client. Without this, the user (and any future Claude reading
+  // screenshots) never sees which workspace the token was scoped to — the
+  // root cause of the 2026-05-25 misroute incident, where the user couldn't
+  // tell which of three buildd connectors they had just authorized.
+  //
+  // The page auto-redirects via meta refresh + JS after 2s, with a fallback
+  // link so single-shot OAuth codes don't expire if JS is disabled.
+  return new NextResponse(
+    renderAuthorizedInterstitial(chosen.name, cbUrl.toString(), client.clientName ?? clientId),
+    {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    },
+  );
 }
 
 /**
@@ -168,6 +184,53 @@ function renderWorkspacePicker(
 <p>Pick the buildd workspace this connection should have access to. The connector will be scoped to this workspace only — to expose another workspace, add it as a separate connector.</p>
 ${items}
 </div>
+</body>
+</html>`;
+}
+
+/**
+ * Confirmation page rendered after the user picks a workspace and before the
+ * OAuth code-redirect fires. Two paths complete the redirect:
+ *   - <meta http-equiv="refresh"> (works without JS, 2s delay)
+ *   - inline JS (immediate fallback, fires first when JS is on)
+ * Plus a visible <a> for users who land here without either.
+ */
+function renderAuthorizedInterstitial(
+  workspaceName: string,
+  redirectUrl: string,
+  clientName: string,
+): string {
+  const safeWs = escapeHtml(workspaceName);
+  const safeClient = escapeHtml(clientName);
+  const safeUrl = escapeHtml(redirectUrl);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connected to ${safeWs}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="2;url=${safeUrl}">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
+  .wrap { max-width: 480px; margin: 4rem auto 0; text-align: center; }
+  .check { font-size: 3rem; color: #22c55e; line-height: 1; margin-bottom: 1rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+  .ws { font-size: 1.5rem; font-weight: 600; color: #fafafa; margin: 0.5rem 0 1.5rem; }
+  p { color: #a3a3a3; margin: 0 0 1.5rem; line-height: 1.5; }
+  .hint { color: #737373; font-size: 0.875rem; margin-top: 2rem; }
+  a { color: #60a5fa; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="check">✓</div>
+<h1>Authorized ${safeClient}</h1>
+<div class="ws">${safeWs}</div>
+<p>This connector is scoped to <strong>${safeWs}</strong> only. To use another workspace, add it as a separate connector.</p>
+<p class="hint">Redirecting you back… or <a href="${safeUrl}">continue now</a>.</p>
+</div>
+<script>setTimeout(function(){ window.location.href = ${JSON.stringify(redirectUrl)}; }, 800);</script>
 </body>
 </html>`;
 }
