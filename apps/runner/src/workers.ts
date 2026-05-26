@@ -30,6 +30,7 @@ import {
 } from './prompt-builder';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { RecoveryManager } from './recovery';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 // Re-export for backwards compatibility (tests import from './workers')
@@ -463,6 +464,7 @@ export class WorkerManager {
         this.workers.delete(id);
         this.sessions.delete(id);
         this.workerAuthContexts.delete(id);
+        clearWorkerThrottle(id);
         storeDeleteWorker(id);
         count++;
       }
@@ -2143,6 +2145,52 @@ If something is missing or incomplete, describe what and fix it now.`;
                 },
               }).catch(() => {});
               storeSaveWorker(worker);
+            }
+          }
+        }
+      }
+    }
+
+    // Tool-result inspection: agent SDK sends tool outputs back to the model
+    // as synthetic user messages containing tool_result blocks. Scan each
+    // result against the error-pattern list and buffer matches for sync.
+    if (msg.type === 'user') {
+      const content = (msg as any).message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type !== 'tool_result') continue;
+          // Tool result content can be a string or an array of text blocks.
+          let text = '';
+          if (typeof block.content === 'string') {
+            text = block.content;
+          } else if (Array.isArray(block.content)) {
+            text = block.content
+              .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
+              .map((b: any) => b.text)
+              .join('\n');
+          }
+          if (!text) continue;
+
+          // Source tool: look up the originating tool_use_id in recent tool calls.
+          // Best-effort — if we can't find it, the trace still records useful info.
+          const toolUseId = block.tool_use_id as string | undefined;
+          let source: string | undefined;
+          if (toolUseId) {
+            for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
+              const tc: any = worker.toolCalls[i];
+              if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
+                source = tc.name;
+                break;
+              }
+            }
+          }
+
+          const traces = scanToolResult(worker.id, text, source);
+          if (traces.length > 0) {
+            if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
+            worker.pendingErrorTraces.push(...traces);
+            for (const t of traces) {
+              console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
             }
           }
         }

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -100,6 +100,15 @@ export default async function TaskDetailPage({
   const taskArtifacts = workerIds.length > 0
     ? await db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
     : [];
+
+  // Fetch agent error traces (pattern-matched failures from tool output).
+  // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
+  // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
+  const errorTraces = await db.query.workerErrorTraces.findMany({
+    where: eq(workerErrorTraces.taskId, id),
+    orderBy: [desc(workerErrorTraces.ts)],
+    limit: 50,
+  });
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
   );
@@ -290,6 +299,19 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus}>
                 <StatusBadge status={displayStatus} />
               </span>
+              {errorTraces.length > 0 && (
+                <a
+                  href="#agent-error-traces"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                  title="Pattern-matched errors caught from agent tool output. Click to see details."
+                  data-testid="task-error-count"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
+                  </svg>
+                  {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
+                </a>
+              )}
               {task.mode === 'planning' && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -401,6 +423,40 @@ export default async function TaskDetailPage({
               Description
             </div>
             <CollapsibleDescription content={task.description} />
+          </div>
+        )}
+
+        {/* Agent error traces */}
+        {errorTraces.length > 0 && (
+          <div className="mb-6" id="agent-error-traces">
+            <details className="card">
+              <summary className="cursor-pointer p-4 font-mono text-[10px] uppercase tracking-[2.5px] text-red-400 hover:text-red-300 select-none">
+                Agent errors · {errorTraces.length}
+              </summary>
+              <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
+                <p className="text-xs text-text-muted mb-2">
+                  Pattern-matched errors caught by the runner from agent tool output. Throttled at 1 per pattern per 60s.
+                </p>
+                {errorTraces.map((t) => (
+                  <div key={t.id} className="flex items-start gap-3 text-sm">
+                    <span className="font-mono text-xs text-red-400 shrink-0 w-36 truncate" title={t.pattern}>
+                      {t.pattern}
+                    </span>
+                    {t.source && (
+                      <span className="text-xs text-text-muted shrink-0 w-16 truncate" title={t.source}>
+                        {t.source}
+                      </span>
+                    )}
+                    <span className="flex-1 min-w-0 font-mono text-xs text-text-primary truncate" title={t.excerpt}>
+                      {t.excerpt}
+                    </span>
+                    <span className="text-xs text-text-muted shrink-0">
+                      {new Date(t.ts).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
           </div>
         )}
 

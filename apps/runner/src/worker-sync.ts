@@ -172,6 +172,7 @@ export class WorkerSync {
         localUiUrl: this.ctx.config.localUiUrl,
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
         ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
+        ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
@@ -185,6 +186,10 @@ export class WorkerSync {
       // Clear MCP call buffer after successful sync
       if (worker.pendingMcpCalls?.length) {
         worker.pendingMcpCalls = [];
+      }
+      // Clear error trace buffer after successful sync
+      if (worker.pendingErrorTraces?.length) {
+        worker.pendingErrorTraces = [];
       }
 
       // Server says worker was already terminated

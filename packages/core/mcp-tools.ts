@@ -59,7 +59,7 @@ export const workerActions = [
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
-  'emit_event', 'query_events',
+  'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
   'suggest_schedule_update',
   'post_note',
@@ -132,6 +132,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
+    get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
@@ -1645,6 +1646,56 @@ export async function handleBuilddAction(
       ).join('\n');
 
       return text(`${filtered.length} event(s):\n\n${summary}`);
+    }
+
+    case 'get_error_traces': {
+      // Three resolution modes, in priority:
+      //   1. explicit workerId in params
+      //   2. explicit taskId in params (returns cumulative traces across all
+      //      workers that ran on this task — useful when retrying)
+      //   3. infer from ctx.workerId (default: this agent's session)
+      const limitNum = typeof params.limit === 'number'
+        ? Math.min(Math.max(params.limit, 1), 500)
+        : 50;
+      const limitQs = `limit=${limitNum}`;
+      const sinceQs = params.since && typeof params.since === 'string'
+        ? `&since=${encodeURIComponent(params.since)}`
+        : '';
+
+      let endpoint: string;
+      let scope: string;
+      if (params.workerId && typeof params.workerId === 'string') {
+        endpoint = `/api/workers/${encodeURIComponent(params.workerId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `worker ${params.workerId}`;
+      } else if (params.taskId && typeof params.taskId === 'string') {
+        endpoint = `/api/tasks/${encodeURIComponent(params.taskId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `task ${params.taskId}`;
+      } else if (ctx.workerId) {
+        // Default: traces for this agent's task (cumulative across retries)
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskId = workerData?.taskId;
+        if (!taskId) {
+          return errorResult('Could not determine taskId from context. Pass workerId or taskId explicitly.');
+        }
+        endpoint = `/api/tasks/${encodeURIComponent(taskId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `task ${taskId} (current)`;
+      } else {
+        return errorResult('No workerId, taskId, or worker context provided.');
+      }
+
+      const data = await api(endpoint);
+      const traces = (data.traces || []) as Array<{ pattern: string; excerpt: string; source: string | null; ts: string }>;
+
+      if (traces.length === 0) {
+        return text(`No error traces for ${scope}.`);
+      }
+
+      const summary = traces.map((t) => {
+        const src = t.source ? ` [${t.source}]` : '';
+        return `- **${t.pattern}**${src} at ${t.ts}\n  ${t.excerpt}`;
+      }).join('\n');
+
+      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
     }
 
     case 'suggest_schedule_update': {

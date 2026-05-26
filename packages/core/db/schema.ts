@@ -472,6 +472,33 @@ export const workers = pgTable('workers', {
   accountStatusIdx: index('workers_account_status_idx').on(t.accountId, t.status),
 }));
 
+/**
+ * Pattern-matched errors observed in agent tool output (Bash results, Read
+ * failures, etc.). The runner intercepts the Agent SDK's tool-result messages
+ * and writes a row here for each match. Used for UI error-count badges and
+ * agent-queryable debugging (see get_error_traces MCP action).
+ *
+ * Throttled at the runner: same (workerId, pattern) max 1 row per 60s, so a
+ * flailing agent doesn't flood (2026-05-25 incident: agent ran `cd …` 8 times
+ * in succession; we want one trace, not eight).
+ */
+export const workerErrorTraces = pgTable('worker_error_traces', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // Slug for the matched pattern, e.g. 'cd_no_such_file', 'git_fatal', 'oom'
+  pattern: text('pattern').notNull(),
+  // Truncated raw line from the tool output (max ~500 chars, enforced at write)
+  excerpt: text('excerpt').notNull(),
+  // Tool that produced the output, e.g. 'bash', 'read', 'edit'
+  source: text('source'),
+  ts: timestamp('ts', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerTsIdx: index('worker_error_traces_worker_ts_idx').on(t.workerId, t.ts),
+  taskTsIdx: index('worker_error_traces_task_ts_idx').on(t.taskId, t.ts),
+  patternIdx: index('worker_error_traces_pattern_idx').on(t.pattern),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
