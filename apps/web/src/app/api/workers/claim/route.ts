@@ -115,6 +115,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Defense-in-depth for the 2026-05-25 misroute incident. The MCP-layer guard
+  // (packages/core/mcp-tools.ts requireExplicitWorkspace) catches this for
+  // MCP-originated claims, but anything else calling /api/workers/claim with
+  // an OAuth multi-workspace token and no workspaceId would still trigger the
+  // ambiguous-routing bug. Reject at the API boundary too.
+  if (account.authType === 'oauth' && !workspaceId) {
+    const permissions = await getAccountWorkspacePermissions(account.id);
+    const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
+    // Also count open workspaces — those are claimable by any account
+    const openCount = await db.query.workspaces.findMany({
+      where: eq(workspaces.accessMode, 'open'),
+      columns: { id: true },
+    });
+    for (const w of openCount) accessibleWorkspaceIds.add(w.id);
+
+    if (accessibleWorkspaceIds.size > 1) {
+      return NextResponse.json(
+        {
+          error: 'workspaceId required for OAuth tokens with access to multiple workspaces',
+          accessibleWorkspaces: accessibleWorkspaceIds.size,
+          hint: 'Pass workspaceId in the request body. With multiple accessible workspaces, the claim route refuses to pick one to avoid the 2026-05-25 misroute class.',
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   // Track whether account's own OAuth budget is exhausted (tenant tasks can still proceed)
   const accountBudgetExhausted = account.authType === 'oauth'
     && !!account.budgetExhaustedAt
