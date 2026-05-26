@@ -29,6 +29,11 @@ export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
 export interface ActionContext {
   workerId?: string;
   workspaceId?: string;
+  // Discriminator for the multi-workspace guard: OAuth tokens can have access
+  // to multiple workspaces; API keys are workspace-scoped at creation. Only
+  // OAuth tokens need the "explicit workspaceId required" guard for ambiguous
+  // mutating actions like create_task and claim_task.
+  authType?: 'api' | 'oauth';
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
 }
@@ -246,6 +251,65 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
 }
 
 /**
+ * Actions that read/write workspace-scoped state and silently fail open when
+ * the workspace is ambiguous — the high-blast-radius cases observed on
+ * 2026-05-25 (claim_task picked the wrong workspace, agent flailed for 3hr).
+ *
+ * Guarded: claim_task (root cause), create_task (high blast radius), list_tasks
+ * (silently aggregates across workspaces, makes "which task did I see?" lying).
+ *
+ * NOT guarded (yet): update_task/update_progress/complete_task/create_pr —
+ * these take a taskId/workerId which fully determines the workspace.
+ * Follow-up: resource-derived workspace + sub-action guarding for manage_*.
+ */
+const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
+  'list_tasks',
+  'claim_task',
+  'create_task',
+]);
+
+/**
+ * For OAuth tokens with access to multiple workspaces, refuse ambiguous
+ * mutating/aggregating actions unless workspaceId is explicit (either via
+ * URL pin at OAuth time or via params). API-key tokens are workspace-scoped
+ * at creation and skip this guard.
+ */
+async function requireExplicitWorkspace(
+  api: ApiFn,
+  action: string,
+  params: Record<string, unknown>,
+  ctx: ActionContext,
+): Promise<ToolResult | null> {
+  if (!AMBIGUOUS_WORKSPACE_ACTIONS.has(action)) return null;
+  if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
+  if (params.workspaceId) return null;        // explicit per-call
+  if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
+
+  let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
+  try {
+    const data = await api('/api/workspaces');
+    workspaces = data.workspaces || [];
+  } catch {
+    // If we can't enumerate, fall through — downstream resolver still errors
+    // cleanly on null wsId rather than misrouting.
+    return null;
+  }
+
+  if (workspaces.length <= 1) return null;
+
+  const choices = workspaces
+    .map((ws) => `- "${ws.name}"${ws.repo ? ` (${ws.repo})` : ''} → ${ws.id}`)
+    .join('\n');
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `This OAuth token has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
+    }],
+    isError: true,
+  };
+}
+
+/**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
  * Falls back to context workspace ID if no param given.
  */
@@ -321,6 +385,11 @@ export async function handleBuilddAction(
   // Check trigger-level restrictions before processing
   const levelErr = await requireWorkerLevel(ctx, action);
   if (levelErr) return levelErr;
+
+  // Multi-workspace guard: OAuth tokens must pass workspaceId for ambiguous
+  // actions when they can see >1 workspace.
+  const wsErr = await requireExplicitWorkspace(api, action, params, ctx);
+  if (wsErr) return wsErr;
 
   switch (action) {
     case 'list_tasks': {
