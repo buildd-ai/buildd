@@ -380,6 +380,33 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Workspace/project mismatch guard. If a task is pinned to a project name
+    // (set by MCP at task creation), require that project to exist on the
+    // workspace. Without this, a misrouted task — e.g. MCP connected to
+    // workspace A but the task references a repo only present in workspace B —
+    // gets claimed, the agent flails on a path that doesn't exist in the
+    // worktree, stuck-detector kills the session, cleanup re-queues, repeat.
+    const taskProject = (task as any).project as string | null;
+    const workspaceProjects = ((task.workspace as any)?.projects || []) as Array<{ name: string }>;
+    if (taskProject && workspaceProjects.length > 0 && !workspaceProjects.some((p) => p.name === taskProject)) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          updatedAt: now,
+          context: {
+            ...(taskContext || {}),
+            terminalError: 'workspace_mismatch',
+            terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
+          },
+        })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+      continue;
+    }
+
     const timeoutMinutes = Math.min(
       typeof taskContext?.timeoutMinutes === 'number' ? taskContext.timeoutMinutes : 15,
       240,
