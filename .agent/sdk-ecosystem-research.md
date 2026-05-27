@@ -1,10 +1,38 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-04-20
-**Previous scan**: 2026-04-13
-**Current SDK version in Buildd**: `^0.2.114` (latest: `0.2.114`)
-**Python SDK**: v0.1.63 (latest)
-**Claude Code CLI**: v2.1.114 (released April 18, 2026)
+**Last updated**: 2026-05-27
+**Previous scan**: 2026-04-20
+**Current SDK version in Buildd**: `^0.3.150` (PR #746 open; latest: `0.3.152`)
+**Python SDK**: v0.1.63+ (latest not tracked in this scan)
+**Claude Code CLI**: v2.1.152 (released May 27, 2026)
+
+> **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## SDK Releases (v0.3.150 - v0.3.152) — May 2026
+
+### TypeScript SDK v0.3.152 (May 27, 2026) — current latest
+- **New**: `SessionStart` hook can return `reloadSkills: true` to trigger skill re-scan mid-session
+- **New**: `SessionStart` hook can set `hookSpecificOutput.sessionTitle` to label sessions
+- **New**: `MessageDisplay` hook event — transform or suppress assistant message text before display
+- Claude Code v2.1.152
+
+### TypeScript SDK v0.3.149 (May 22, 2026)
+- **Fixed**: `options.env` no longer drops `CLAUDE_AGENT_SDK_VERSION` when custom env is supplied
+- **Docs**: `Options.env` replaces the subprocess environment (does not merge with `process.env`)
+
+### TypeScript SDK v0.3.142 (May 14, 2026) — BREAKING
+- Removed v2 session API (deprecated since 0.2.133). Use `query()`.
+- MCP servers now connect in background by default; set `alwaysLoad: true` to require by turn 1
+- Task tools (`TaskCreate/Update/Get/List`) replace `TodoWrite` in agent sessions
+- Added `request_id`, `subagent_type`, `task_description` on SDK message types
+
+### TypeScript SDK v0.2.141 (May 13, 2026)
+- Task tool types exported from `@anthropic-ai/claude-agent-sdk/sdk-tools`
+- `@anthropic-ai/sdk` peer aligned to ^0.93.0
+
+See [sdk-reference/integration-status.md](sdk-reference/integration-status.md) for full change history since v0.2.114.
 
 ---
 
