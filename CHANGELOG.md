@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Capture agent error traces from tool output (#780)
 - `/respond` landing page + render needs-input banner on failed workers (#763)
 - Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
 - Connect Claude card with copy-paste connector setup in settings
@@ -32,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent multi-workspace OAuth misrouting (#779)
+- Require explicit workspaceId for ambiguous OAuth actions (#778)
+- Stop infinite retry loop on misrouted tasks (#777)
+- Post-store CTA pointing users to /app/health (#775)
+- Collapse Vercel "Add a token" form once a token exists (#774)
 - Await waiting_input sync; collapsible task descriptions in runner (#765)
 - Push URL → buildd.dev + restore broken GitHub repo sync (#761)
 - Auto-link githubRepoId when updating workspace repoUrl via API
