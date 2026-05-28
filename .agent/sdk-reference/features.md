@@ -1,13 +1,19 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-05-27
-**Covering**: v0.2.114 → v0.3.152
+**Last updated**: 2026-05-28
+**Covering**: v0.2.114 → v0.3.153
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.152 (2026-05-27) — current latest
+### v0.3.153 (2026-05-28) — current latest
+- **Parity with Claude Code v2.1.153** — primarily a bugfix and CLI parity release
+- **`skipLfs` option** on `github`/`git` marketplace sources — skip Git LFS downloads during clone/update
+- **Status line `COLUMNS`/`LINES` env vars** — status line commands now receive terminal dimensions
+- Multiple bug fixes: MCP reconnect loop, OAuth gateway token routing, `Agent` tool subagent worktree, background session stability, Windows installer/updater issues
+
+### v0.3.152 (2026-05-27)
 - **`SessionStart` hook: `reloadSkills` return value** — hook can return `{ hookSpecificOutput: { reloadSkills: true } }` to trigger a skill re-scan without restarting the session
 - **`SessionStart` hook: `sessionTitle` setter** — hook can return `{ hookSpecificOutput: { sessionTitle: "..." } }` to label the session
 - **New `MessageDisplay` hook event** — fires before assistant messages are displayed; hooks can transform or suppress the text
