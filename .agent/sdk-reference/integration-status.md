@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-05-28
-**SDK in package.json**: `^0.3.153` (up to date)
+**Last updated**: 2026-05-29
+**SDK in package.json**: `^0.3.156` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,7 +10,8 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
-| 2026-05-28 | ^0.3.153 | 0.3.153 | (this PR) |
+| 2026-05-29 | ^0.3.156 | 0.3.156 | (this PR) |
+| 2026-05-28 | ^0.3.153 | 0.3.153 | #783 |
 | 2026-05-27 | ^0.3.150 | 0.3.152 | #746 (superseded) |
 | 2026-04-20 | ^0.2.114 | 0.2.114 | — |
 
@@ -33,6 +34,12 @@
 
 ### P1 — High Priority
 
+**Support Claude Opus 4.8 model (v0.3.154)**
+- New: `claude-opus-4-8` model available; defaults to high-effort reasoning mode
+- Benefit: Buildd's model alias/routing layer should recognize and expose this model
+- Location: `packages/core/model-aliases.ts`, `packages/core/model-router.ts`, default-roles seeding
+- Effort: Low–Medium (add alias entries, test routing)
+
 **Set session title via `SessionStart` hook (v0.3.152)**
 - New: `hookSpecificOutput.sessionTitle` in SessionStart response
 - Benefit: labels sessions in Claude telemetry/logs with Buildd task ID or task title
@@ -46,6 +53,12 @@
 - Effort: Medium
 
 ### P2 — Medium Priority
+
+**MCP server `CLAUDE_CODE_SESSION_ID` env var (v0.3.154)**
+- New: Stdio MCP server subprocesses receive `CLAUDE_CODE_SESSION_ID` and `CLAUDECODE=1` in their env
+- Benefit: Buildd's MCP server can read this to correlate MCP calls with the SDK session
+- Location: `apps/web/src/app/api/mcp/route.ts`
+- Effort: Low (read and pass through if needed)
 
 **Skill hot-reload via `reloadSkills` (v0.3.152)**
 - New: `SessionStart` can return `reloadSkills: true` to re-scan skills mid-session

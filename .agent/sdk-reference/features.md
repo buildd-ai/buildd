@@ -1,13 +1,27 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-05-28
-**Covering**: v0.2.114 → v0.3.153
+**Last updated**: 2026-05-29
+**Covering**: v0.2.114 → v0.3.156
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.153 (2026-05-28) — current latest
+### v0.3.156 (2026-05-29) — current latest
+- **Parity with Claude Code v2.1.156**
+- **Bug fix**: Fixed Opus 4.8 thinking block modification causing API errors (important for Opus 4.8 sessions)
+
+### v0.3.154 (2026-05-28)
+- **Parity with Claude Code v2.1.154** — major feature release
+- **Claude Opus 4.8**: New model available; SDK sessions can now use `claude-opus-4-8`; defaults to high-effort reasoning
+- **Dynamic workflows**: Multi-agent workflow orchestration built into sessions; agents can spawn tens to hundreds of background sub-agents
+- **Fast mode on Opus 4.8**: Available at reduced cost (2x standard rate, 2.5x speed)
+- **Lean system prompt now default** for all models except Haiku, Sonnet, and Opus 4.7 and earlier
+- **Streaming tool execution always enabled**: No longer behind a feature flag; works on Bedrock, Vertex, Foundry, and with telemetry disabled
+- **Stdio MCP server env vars**: Subprocesses now receive `CLAUDE_CODE_SESSION_ID` and `CLAUDECODE=1` in their environment
+- Multiple bug fixes: background sessions, worktree isolation for subagents, background session classifier, pinned session respawning
+
+### v0.3.153 (2026-05-28) — superseded by 0.3.156
 - **Parity with Claude Code v2.1.153** — primarily a bugfix and CLI parity release
 - **`skipLfs` option** on `github`/`git` marketplace sources — skip Git LFS downloads during clone/update
 - **Status line `COLUMNS`/`LINES` env vars** — status line commands now receive terminal dimensions
