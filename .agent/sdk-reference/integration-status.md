@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-05-29
-**SDK in package.json**: `^0.3.156` (up to date)
+**Last updated**: 2026-05-30
+**SDK in package.json**: `^0.3.158` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,7 +10,8 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
-| 2026-05-29 | ^0.3.156 | 0.3.156 | (this PR) |
+| 2026-05-30 | ^0.3.158 | 0.3.158 | (this PR) |
+| 2026-05-29 | ^0.3.156 | 0.3.156 | #784 |
 | 2026-05-28 | ^0.3.153 | 0.3.153 | #783 |
 | 2026-05-27 | ^0.3.150 | 0.3.152 | #746 (superseded) |
 | 2026-04-20 | ^0.2.114 | 0.2.114 | — |
@@ -34,6 +35,12 @@
 
 ### P1 — High Priority
 
+**Skills auto-loaded from `.claude/skills` — validate Buildd skill delivery (v0.3.157)**
+- New: Plugins in `.claude/skills` are now auto-loaded without a marketplace entry
+- Benefit: Buildd already writes skill files to `.claude/skills/` in worker worktrees; confirm workers pick them up without explicit marketplace config — could simplify the role-config packaging pipeline
+- Location: `apps/web/src/lib/role-config.ts`, `.claude/skills/`
+- Effort: Low (verify existing behavior; potentially remove marketplace-registration step)
+
 **Support Claude Opus 4.8 model (v0.3.154)**
 - New: `claude-opus-4-8` model available; defaults to high-effort reasoning mode
 - Benefit: Buildd's model alias/routing layer should recognize and expose this model
@@ -53,6 +60,18 @@
 - Effort: Medium
 
 ### P2 — Medium Priority
+
+**`agent` field in `settings.json` for dispatched sessions (v0.3.157)**
+- New: Dispatched SDK sessions now respect the `agent` field in `settings.json`; override with `--agent <name>`
+- Benefit: Buildd could specify a default role/agent in the worker's settings, enabling role-specific behavior without extra flag passing
+- Location: `packages/core/worker-runner.ts`, `apps/web/src/lib/role-config.ts`
+- Effort: Low (configure via settings packaging)
+
+**Worktrees unlocked after agent finishes (v0.3.157)**
+- New: Claude-managed worktrees are left unlocked after agent completion
+- Benefit: Buildd's worktree cleanup (`git worktree remove`/`prune`) should now work without manual unlocking
+- Location: Worktree lifecycle management in `apps/runner/`
+- Effort: Minimal (verify cleanup scripts work; remove any manual unlock calls if present)
 
 **MCP server `CLAUDE_CODE_SESSION_ID` env var (v0.3.154)**
 - New: Stdio MCP server subprocesses receive `CLAUDE_CODE_SESSION_ID` and `CLAUDECODE=1` in their env

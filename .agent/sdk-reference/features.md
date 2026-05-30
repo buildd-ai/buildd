@@ -1,13 +1,27 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-05-29
-**Covering**: v0.2.114 → v0.3.156
+**Last updated**: 2026-05-30
+**Covering**: v0.2.114 → v0.3.158
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.156 (2026-05-29) — current latest
+### v0.3.158 (2026-05-30) — current latest
+- **Parity with Claude Code v2.1.158**
+- **Auto mode on Bedrock/Vertex/Foundry**: Opus 4.7 and Opus 4.8 now support auto mode on enterprise AI platforms; opt in with `CLAUDE_CODE_ENABLE_AUTO_MODE=1`
+
+### v0.3.157 (2026-05-30)
+- **Parity with Claude Code v2.1.157** — feature-heavy release
+- **Skills auto-loaded from `.claude/skills`**: Plugins in `.claude/skills` directories are now automatically loaded; no marketplace entry required
+- **`claude plugin init <name>`**: Scaffold a new plugin directly in `.claude/skills`
+- **`agent` field in `settings.json` honored for dispatched sessions**: Workers can specify a preferred agent role; override with `--agent <name>`
+- **`EnterWorktree` can switch between Claude-managed worktrees mid-session**: Allows dynamic worktree switching without restarting
+- **Worktrees unlocked after agent finishes**: Claude-managed worktrees are left unlocked on completion, so `git worktree remove`/`prune` can clean them up
+- **`tool_decision` telemetry**: Events now include `tool_parameters` (bash commands, MCP/skill names) when `OTEL_LOG_TOOL_DETAILS=1`
+- Bug fixes: sandbox network permission prompts in SDK mode, background subagent worktree orphaning, `--resume` session picker, `--worktree` returning to wrong directory
+
+### v0.3.156 (2026-05-29)
 - **Parity with Claude Code v2.1.156**
 - **Bug fix**: Fixed Opus 4.8 thinking block modification causing API errors (important for Opus 4.8 sessions)
 
