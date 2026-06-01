@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Expose `get_task`, `get_task_messages`, and `send_agent_message` MCP actions to close the agent create→observe→confirm loop (#759)
 - Emit per-minute liveness heartbeat to runner stdout (#709)
 - Add missionId filter to list_artifacts MCP action (#696)
 - Share a single branch + PR across mission tasks (#698)
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Accept existing `prUrl` in `create_pr` to register externally-created PRs when GitHub App is not installed (#762)
 - Fix update_schedule 500 caused by raw workspaceId in PATCH body (#700)
 - Ensure bun is on PATH in launcher script for non-interactive shells (#701)
 - Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)
