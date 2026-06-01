@@ -1,13 +1,16 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-05-30
-**Covering**: v0.2.114 → v0.3.158
+**Last updated**: 2026-06-01
+**Covering**: v0.2.114 → v0.3.159
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.158 (2026-05-30) — current latest
+### v0.3.159 (2026-05-31) — current latest
+- **Parity with Claude Code v2.1.159** — internal infrastructure improvements, no user-facing changes
+
+### v0.3.158 (2026-05-30)
 - **Parity with Claude Code v2.1.158**
 - **Auto mode on Bedrock/Vertex/Foundry**: Opus 4.7 and Opus 4.8 now support auto mode on enterprise AI platforms; opt in with `CLAUDE_CODE_ENABLE_AUTO_MODE=1`
 

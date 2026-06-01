@@ -1,12 +1,82 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-05-27
-**Previous scan**: 2026-04-20
-**Current SDK version in Buildd**: `^0.3.150` (PR #746 open; latest: `0.3.152`)
-**Python SDK**: v0.1.63+ (latest not tracked in this scan)
-**Claude Code CLI**: v2.1.152 (released May 27, 2026)
+**Last updated**: 2026-06-01
+**Previous scan**: 2026-05-27
+**Current SDK version in Buildd**: `^0.3.158` (latest: `0.3.159`)
+**Python SDK**: v0.2.87 (latest)
+**Claude Code CLI**: v2.1.159 (released May 31, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## SDK Releases (v0.3.159) — June 2026
+
+### TypeScript SDK v0.3.159 (May 31, 2026) — current latest
+- **Parity with Claude Code v2.1.159** — internal infrastructure improvements, no user-facing changes
+
+### Python SDK v0.2.87 (May 23, 2026) — major version bump
+- **Major version jump from 0.1.x to 0.2.x** — this branch includes breaking changes mirroring the TS SDK 0.3.142 release:
+  - v0.2.82 (May 15): **MCP servers now connect in background by default** (`status: "pending"` until ready)
+  - v0.2.82: **Task tools replace `TodoWrite`** — `TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`
+  - v0.2.82: **New `EffortLevel` type export** — effort strings `"low"`, `"medium"`, `"high"`, `"max"`, `"xhigh"`
+  - v0.2.86–87: CLI parity updates (v2.1.149–150)
+  - CI switched from static API keys to Workload Identity Federation for short-lived tokens
+
+---
+
+## Major Feature: Dynamic Workflows + Opus 4.8 (May 28, 2026)
+
+### Claude Opus 4.8 — New Model
+Released May 28, 2026 alongside Dynamic Workflows. Available on Claude API, Bedrock, Vertex, Foundry.
+
+**Key improvements for Buildd workers:**
+- **Mid-conversation system messages**: Accepts `role: "system"` messages mid-conversation, after user turns — append updated instructions without restating the full system prompt. Preserves prompt cache hits on earlier turns and **reduces input cost on long agentic loops**.
+- **Lower prompt cache minimum**: 1,024 tokens (down from higher limits on 4.7) — more cache hits on shorter system prompts
+- **Fast mode**: 2.5× speed, same $5/$25/M pricing (described as "3× cheaper than prior models in fast mode")
+- **Four times less likely** to let code flaws pass unreported — more reliable in agentic code tasks
+- **Caveat**: Slightly less robust to agentic prompt injection than 4.7. Review sandboxing if using Opus 4.8 with untrusted input.
+
+SDK model ID: `claude-opus-4-8`
+
+### Dynamic Workflows — Up to 1,000 Parallel Subagents
+Launched May 28, 2026 with Claude Code v2.1.154+. Available on all paid plans (Pro/Max/Team/Enterprise) and Claude API/Bedrock/Vertex/Foundry.
+
+**Core concept**: Instead of orchestrating subagents turn-by-turn in context, Claude writes a **JavaScript orchestration script** for each task. A background runtime executes the script; the model's context window receives only the final verified answer.
+
+**Agent SDK / headless mode**: Fully supported in `claude -p` and Agent SDK. In non-interactive mode, tool calls follow configured permission rules without prompts. Sub-agents always run in `acceptEdits` mode and inherit the session's tool allowlist.
+
+**Activation**:
+- Include the word `workflow` anywhere in a prompt for one-off use
+- `/effort ultracode` — session setting that enables auto-workflow mode (`xhigh` effort + automatic workflows)
+
+**Token cost warning**: Dramatically higher token spend than standard sessions. One user consumed ~70% of a 5-hour window in ~30 minutes on ultracode. Recommend starting on scoped tasks.
+
+**Ultracode vs Ultrathink**: Ultracode = session-wide workflow orchestration. Ultrathink = single-prompt deep reasoning (no extra agents, no session change).
+
+**Real-world results**: Used to rewrite 750,000 lines of Bun from Zig to Rust in 11 days (99.8% test suite green).
+
+---
+
+## Billing Change — URGENT (June 15, 2026, 14 days away)
+
+Starting June 15, 2026, Agent SDK and `claude -p` usage on **subscription plans** moves to a **separate monthly credit pool** at full API list prices:
+
+| Plan | Monthly Agent SDK Credit |
+|------|--------------------------|
+| Pro | $20 |
+| Max 5× | $100 |
+| Max 20× | $200 |
+| Enterprise seat | **$0** (use API key) |
+
+**Covers**: Agent SDK, `claude -p`, Claude Code GitHub Actions, third-party apps using the SDK.  
+**Does NOT cover**: Interactive Claude Code terminal/IDE usage, Claude.ai chat (still draw from subscription limits as before).
+
+**What happens when credit runs out**: If usage credits are enabled, usage flows to pay-as-you-go at API rates. If not enabled, Agent SDK requests are blocked until the credit refreshes.
+
+**No rollover** — credit resets monthly, per-user, non-transferable.
+
+**Action for Buildd**: Buildd workers that use `claude -p` programmatically will now draw from this credit pool. Users need to know this. Enterprise users should switch to API key billing.
 
 ---
 
@@ -119,6 +189,19 @@ See [sdk-reference/integration-status.md](sdk-reference/integration-status.md) f
 
 ## Community & Ecosystem
 
+### New Ecosystem Projects (Since May 27, 2026)
+
+| Project | Description |
+|---------|-------------|
+| **Hivemind** | Plugin for Claude Code/Codex/OpenClaw adding persistent memory, context sync, and virtual filesystem hooks via Deeplake; supports long-term memory, RAG, and embeddings |
+| **Claude-World** | AI-powered content pipeline (trend discovery → research → social publishing) + security scanner for Claude Skills (71K+ skills across 9 engines) |
+| **Real-time Claude Agent Monitor** | SQLite/Node/React/WebSocket dashboard for tracking agent sessions, tool usage, and subagent orchestration via hooks |
+| **openinference-instrumentation-claude-agent-sdk** (PyPI v0.1.5, May 29) | Official OpenInference OTEL instrumentation for Python SDK — traces queries as spans, captures prompts, token counts, tool calls; exports to Arize Phoenix |
+| **Awesome Claude Code & Skills** (GetBindu) | Curated collection of production-ready Claude skills for coding, security, marketing, and specialized domains |
+
+### New Enterprise Integration: Xcode 26.3
+Apple announced that **Xcode 26.3** will include a native Claude Agent SDK integration for iOS/macOS/visionOS development. Specifically calls out hooks and subagents as the building blocks; uses Xcode Previews for visual feedback in SwiftUI editing.
+
 ### GitHub Stars & Adoption (April 20, 2026)
 - **13,087 total repositories** indexed in awesome-claude-plugins collection
 - Claude Code repo: 55K+ stars
@@ -194,6 +277,27 @@ Anthropic rebuilt the Claude Code desktop experience around:
 
 ## Recommendations for Buildd
 
+### This Week (June 1, 2026)
+
+**#0 — URGENT: Document the June 15 billing split for users (14 days)**
+Buildd workers programmatically invoke `claude -p` or the Agent SDK — this usage shifts to the new credit pool on June 15. Users need to know before then. Action items:
+- Add a banner/notice in the Buildd dashboard for affected workspace owners
+- Update docs to distinguish interactive vs programmatic (Buildd worker) billing
+- Enterprise users should be pointed to API key billing (they get $0 credit)
+- Consider showing estimated Agent SDK credit consumption per task in the task detail view
+
+**#1 — Expose Claude Opus 4.8 in Role model options**
+`claude-opus-4-8` is now available and ships with meaningful improvements for agentic sessions: lower prompt cache threshold (1,024 tokens), mid-conversation system messages for cost-efficient long sessions, and better code reliability. Add it to role model selection. Note the prompt-injection caveat in docs.
+
+**#2 — Consider Dynamic Workflows compatibility statement**
+Buildd's coordination model (tasks + workers) and Dynamic Workflows are complementary but distinct. A Buildd worker running with Dynamic Workflows enabled will spawn up to 1,000 sub-sessions — these will each generate separate Claude sessions not tracked by Buildd's worker system. Decisions to make:
+- Should Buildd workers allow or block Dynamic Workflows? (Token cost is extreme)
+- Should Buildd expose an "ultracode" option per task or mission?
+- If a Buildd worker uses workflows, should the sub-agent sessions be captured as task artifacts?
+
+**#3 — Use Opus 4.8 mid-conversation system messages in worker runner**
+Long-running Buildd tasks could benefit from mid-conversation system prompt injection (e.g., appending progress-aware instructions) without restating the full system prompt. This preserves cache hits and reduces input cost. Relevant in `packages/core/worker-runner.ts`.
+
 ### High Priority
 
 1. **Adopt OpenTelemetry for worker observability** — The SDK now natively propagates W3C trace context. Buildd runners should set `CLAUDE_CODE_ENABLE_TELEMETRY=1` and export to a collector. This gives per-task token costs, tool call traces, and session-level metrics without custom instrumentation. The Langfuse integration is drop-in.
@@ -230,6 +334,8 @@ Anthropic rebuilt the Claude Code desktop experience around:
 
 | Date | SDK Versions (TS) | SDK Versions (Py) | CLI Versions | Key Changes |
 |------|-------------------|-------------------|-------------|-------------|
+| 2026-06-01 | 0.3.159 | 0.2.87 | 2.1.159 | Dynamic Workflows + Ultracode (up to 1,000 subagents), Opus 4.8, billing split June 15, OpenInference OTEL, Python SDK major version bump to 0.2.x, Xcode 26.3 integration |
+| 2026-05-27 | 0.3.150-0.3.158 | 0.1.63+ | 2.1.150-2.1.158 | Skills auto-loaded, Opus 4.8 preview, auto mode on Bedrock/Vertex/Foundry, tool_decision telemetry, worktree lifecycle improvements, streaming tool exec GA |
 | 2026-04-20 | 0.2.104-0.2.114 | 0.1.54-0.1.63 | 2.1.101-2.1.114 | OTel tracing, getSessionMessages, skills API, native binary, desktop rebuild, subagent transcript helpers |
 | 2026-04-13 | 0.2.94-0.2.104 | — | 2.1.93-2.1.101 | Managed Agents launch, security hardening cycle, Vertex AI wizard, Focus view, /team-onboarding, subprocess sandbox |
 | 2026-04-06 | 0.2.88-0.2.92 | — | 2.1.88-2.1.92 | startup() pre-warm, terminal_reason, MCP 500K persistence, /powerup, Agent HQ |

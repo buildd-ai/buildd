@@ -11,6 +11,7 @@
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
 | 2026-06-03 | ^0.3.161 | 0.3.161 | #787 |
+| 2026-06-01 | ^0.3.158 | 0.3.159 | #788 |
 | 2026-05-30 | ^0.3.158 | 0.3.158 | #785 |
 | 2026-05-29 | ^0.3.156 | 0.3.156 | #784 |
 | 2026-05-28 | ^0.3.153 | 0.3.153 | #783 |
@@ -34,7 +35,33 @@
 
 ## Enhancement Opportunities
 
+### P0 — URGENT (June 15, 2026)
+
+**Notify users of Agent SDK billing split**
+- Buildd workers invoke `claude -p` programmatically — this shifts to new credit pool on June 15
+- Credit amounts: $20 (Pro), $100 (Max 5x), $200 (Max 20x), $0 (Enterprise — use API key)
+- Action: Dashboard banner for workspace owners, docs update, recommend Enterprise users switch to API key billing
+- Location: Dashboard UI, docs, potentially task detail page (credit consumption estimate)
+
 ### P1 — High Priority
+
+**Add Claude Opus 4.8 to role model selection (v0.3.154)**
+- Model ID: `claude-opus-4-8`; better agentic reliability; lower prompt cache minimum (1,024 tokens); mid-conversation system messages; fast mode at 2.5× speed
+- **Caveat**: Slightly less robust to agentic prompt injection than 4.7 — document in role creation UI
+- Location: `packages/core/model-aliases.ts`, `packages/core/model-router.ts`, default-roles seeding
+
+**Use Opus 4.8 mid-conversation system messages to reduce runner costs**
+- Opus 4.8 accepts `role: "system"` messages after user turns — inject updated instructions without restating the full system prompt, preserving cache hits
+- Useful for long-running Buildd tasks where instructions evolve (e.g., "you've completed phase 1, now focus on X")
+- Location: `packages/core/worker-runner.ts`
+- Effort: Medium (requires Opus 4.8 model selection; add mid-turn system injection logic)
+
+**Dynamic Workflows compatibility decision**
+- A Buildd worker with Dynamic Workflows enabled will spawn up to 1,000 sub-sessions not tracked in Buildd's worker system
+- Decide: allow/block workflows per task/role? Expose "ultracode" as a task option? Capture sub-session artifacts?
+- Token cost warning: one session consumed 70% of a 5-hour window in 30 minutes — potentially needs a budget gate in Buildd
+- Location: Role config, task creation UI, worker-runner.ts (could block `workflow` keyword or set effort ceiling)
+- Effort: Medium (design decision + implementation)
 
 **Skills auto-loaded from `.claude/skills` — validate Buildd skill delivery (v0.3.157)**
 - New: Plugins in `.claude/skills` are now auto-loaded without a marketplace entry
