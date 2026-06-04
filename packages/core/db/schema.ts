@@ -13,6 +13,17 @@ export const teams = pgTable('teams', {
   memoryApiKey: text('memory_api_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+
+  // Aggregate monthly budget tracking across all token-accounts owned by this team.
+  // Replaces the per-account fields so that a single $100/mo SDK credit pool is
+  // correctly tracked regardless of which API token the worker ran under.
+  // monthlyBudgetUsd: cap (e.g. 100); null falls back to BUDGET_MONTHLY_USD env.
+  // monthlyCostUsd accumulates spend for monthlyCostMonth (UTC "YYYY-MM"); resets on the 1st.
+  // budgetAlertsSent records which percent thresholds have already alerted this month.
+  monthlyBudgetUsd: decimal('monthly_budget_usd', { precision: 10, scale: 2 }),
+  monthlyCostUsd: decimal('monthly_cost_usd', { precision: 12, scale: 6 }).default('0').notNull(),
+  monthlyCostMonth: text('monthly_cost_month'),
+  budgetAlertsSent: jsonb('budget_alerts_sent').default([]).$type<number[]>().notNull(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
