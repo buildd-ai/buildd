@@ -66,9 +66,12 @@ mock.module('../../src/buildd', () => ({
   },
 }));
 
+// Records the last argument passed to resolver.resolve so tests can assert
+// which task data (full vs minimal Pusher payload) drove workspace resolution.
+let lastResolveArg: { id: string; name: string; repo?: string | null } | null = null;
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: (ws: { id: string; name: string; repo?: string | null }) => { lastResolveArg = ws; return '/tmp/test-workspace'; },
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
@@ -179,6 +182,35 @@ describe('WorkerManager — lifecycle', () => {
     mockUpdateWorker.mockClear();
     mockClaimTask.mockClear();
     mockStreamInputFn.mockClear();
+  });
+
+  describe('Pusher assignment — workspace resolution', () => {
+    // Regression: the Pusher assignment payload is minimal and often omits
+    // workspace.repo (name falls back to 'unknown'). Resolving from it makes the
+    // resolver fabricate a bogus 'project/unknown' dir with no origin/<branch>,
+    // so worktree setup fails with "invalid reference". claimAndStart must
+    // resolve from the FULL claimed task, like the polling path does.
+    test('resolves workspace from the full claimed task, not the minimal Pusher payload', async () => {
+      manager = new WorkerManager(makeConfig());
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-ws' },
+        { type: 'result', subtype: 'success', session_id: 'sess-ws' },
+      ];
+      // Claim returns the full task with the real repo + name.
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-ws',
+        branch: 'buildd/w-ws',
+        task: makeTask({ id: 'task-ws', workspaceId: 'ws-real', workspace: { name: 'buildd', repo: 'buildd-ai/buildd' } }),
+      }] }));
+
+      lastResolveArg = null;
+      // Minimal Pusher payload: no repo, name unresolvable.
+      await manager.claimAndStart({ id: 'task-ws', workspaceId: 'ws-real', workspace: { name: 'unknown' }, status: 'waiting', priority: 1 } as any);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(lastResolveArg?.repo).toBe('buildd-ai/buildd');
+      expect(lastResolveArg?.name).toBe('buildd');
+    });
   });
 
   describe('abort()', () => {

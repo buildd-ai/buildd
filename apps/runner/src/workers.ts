@@ -697,20 +697,13 @@ export class WorkerManager {
       console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
     }
 
-    // Resolve workspace path
-    const workspacePath = this.resolver.resolve({
-      id: task.workspaceId,
-      name: task.workspace?.name || 'unknown',
-      repo: task.workspace?.repo,
-    });
-
-    if (!workspacePath) {
-      console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
-      this.pusherManager.markUnresolvable(task.id);
-      return null;
-    }
-
-    // Claim from buildd (pass taskId for targeted claiming)
+    // Claim from buildd first (pass taskId for targeted claiming). The claim
+    // response carries the FULL task — including workspace.repo/name — whereas
+    // the Pusher assignment payload is minimal and frequently omits
+    // workspace.repo. Resolving from the minimal payload makes the resolver
+    // fabricate a bogus 'project/unknown' directory (no origin/<branch>), so
+    // worktree setup fails with "invalid reference: origin/<branch>". Resolve
+    // from the full task instead — matching the polling path (claimPendingTasks).
     const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
@@ -725,6 +718,24 @@ export class WorkerManager {
 
     // Prefer claim response task data (full) over Pusher event task data (minimal payload)
     const fullTask = claimedWorker.task || task;
+
+    // Resolve workspace path from the FULL claimed task (see note above).
+    const workspacePath = this.resolver.resolve({
+      id: fullTask.workspaceId,
+      name: fullTask.workspace?.name || 'unknown',
+      repo: fullTask.workspace?.repo,
+    });
+
+    if (!workspacePath) {
+      console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
+      this.pusherManager.markUnresolvable(task.id);
+      // Fail the claimed worker on the server so it doesn't stay "running" forever
+      this.buildd.updateWorker(claimedWorker.id, {
+        status: 'failed',
+        error: `Cannot resolve workspace "${fullTask.workspace?.name || 'unknown'}" (repo: ${fullTask.workspace?.repo || 'none'})`,
+      }).catch(() => {});
+      return null;
+    }
 
     let resolvedPath = workspacePath;
     if ((claimedWorker as any).roleConfig) {

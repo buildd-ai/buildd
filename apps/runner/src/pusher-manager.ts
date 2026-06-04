@@ -170,14 +170,16 @@ export class PusherManager {
       return;
     }
 
-    console.log(`Received task assignment: ${task.title} (${task.id})`);
+    // The Pusher assignment payload is minimal and may omit the title; the full
+    // task (with title) is fetched during claim. Fall back to the id for logging.
+    console.log(`Received task assignment: ${task.title || '<title pending claim>'} (${task.id})`);
     this.callbacks.emit({ type: 'task_assigned', task });
 
     // Auto-claim and start the task
     try {
       const worker = await this.callbacks.claimAndStart(task);
       if (worker) {
-        console.log(`Successfully started assigned task: ${task.title}`);
+        console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }
     } catch (err) {
       console.error(`Failed to start assigned task ${task.id}:`, err);
