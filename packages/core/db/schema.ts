@@ -195,6 +195,57 @@ export interface WorkspaceGitConfig {
 
 }
 
+// Release configuration for a workspace — controls whether/how tasks trigger a prod deploy
+export interface WorkspaceReleaseConfig {
+  // Whether this workspace is configured for releases. Projects without this never release.
+  enabled: boolean;
+
+  // The production branch to merge changes into (e.g., 'main')
+  prodBranch: string;
+
+  // Deploy target for verifying the production deploy completed
+  deployTarget?: {
+    type: 'vercel';
+    // Vercel project slug or ID (used to look up deployments)
+    projectId?: string;
+    // Vercel team slug or ID (required for team projects)
+    teamId?: string;
+  };
+
+  // Post-deploy hooks — run after a successful deploy is confirmed.
+  // e.g., workspace re-link, cache warm, notification
+  postDeployHooks?: Array<{
+    // Type of hook. 'buildd_mcp' calls the buildd MCP tool; 'http' POSTs to a URL.
+    type: 'buildd_mcp' | 'http';
+    description: string;
+    // For type='buildd_mcp': the action and params passed to the buildd tool
+    action?: string;
+    params?: Record<string, unknown>;
+    // For type='http': the URL and optional headers
+    url?: string;
+    headers?: Record<string, string>;
+  }>;
+
+  // Optional URL to GET after deploy to verify prod is healthy (expects 2xx)
+  verificationUrl?: string;
+}
+
+// Result of a release sequence — stored in tasks.release_result
+export interface ReleaseResult {
+  status: 'completed' | 'failed' | 'skipped' | 'not_configured';
+  message: string;
+  // When the merge to prod branch completed
+  mergedAt?: string;
+  // Final Vercel deployment URL (if verified)
+  deployUrl?: string;
+  // Vercel deployment state (READY, ERROR, etc.)
+  deployState?: string;
+  // Results from post-deploy hooks
+  hooksRan?: Array<{ description: string; success: boolean; error?: string }>;
+  // Error details if status='failed'
+  error?: string;
+}
+
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
 export interface WorkspaceWebhookConfig {
   // Webhook endpoint URL (e.g., http://localhost:18789/hooks/agent)
@@ -247,6 +298,10 @@ export interface TaskResult {
   prNumber?: number;
   structuredOutput?: Record<string, unknown>;
   mcpServers?: string[];
+  releaseSummary?: string;
+  nextSuggestion?: string;
+  phases?: Array<{ label: string; toolCount: number }>;
+  lastQuestion?: string;
 }
 
 // Per-model token usage from SDK result
@@ -304,6 +359,9 @@ export const workspaces = pgTable('workspaces', {
     botToken?: string;
     enabled?: boolean;
   }>(),
+
+  // Release configuration — controls whether tasks can trigger a prod deploy
+  releaseConfig: jsonb('release_config').$type<WorkspaceReleaseConfig>(),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -395,6 +453,13 @@ export const tasks = pgTable('tasks', {
   complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
   predictedModel: text('predicted_model'),   // model chosen by router at claim
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
+  // Release override — whether this task should trigger a prod release on completion.
+  // 'true' forces release (errors if workspace has no release config).
+  // 'false' suppresses release even when the workspace default is on.
+  // 'inherit' (default) uses the workspace release config.
+  release: text('release').default('inherit').$type<'true' | 'false' | 'inherit'>(),
+  // Release sequence outcome — populated after the release sequence runs (or is skipped).
+  releaseResult: jsonb('release_result').$type<ReleaseResult | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

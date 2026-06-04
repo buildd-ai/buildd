@@ -281,6 +281,13 @@
       "when": 1779759178823,
       "tag": "0039_cooing_toad_men",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1780533255281,
+      "tag": "0040_amusing_husk",
+      "breakpoints": true
     }
   ]
 }

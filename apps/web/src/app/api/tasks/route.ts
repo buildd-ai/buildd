@@ -172,6 +172,8 @@ export async function POST(req: NextRequest) {
       roleSlug,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
       context: incomingContext,
+      // Release override: 'true' | 'false' | 'inherit' (default inherit)
+      release: rawRelease,
     } = body;
 
     if (!title) {
@@ -314,50 +316,15 @@ export async function POST(req: NextRequest) {
       ? rawOutputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto'
       : undefined;
 
-    // Inherit outputRequirement + shared working branch from mission (if linked)
+    // Inherit outputRequirement from mission if not explicitly set
     let outputRequirement = explicitOutputRequirement;
-    let missionWorkingBranch: string | null = null;
-    let priorMissionTasks: Array<{
-      title: string;
-      summary: string | null;
-      prUrl: string | null;
-      filesTouched: string[] | null;
-    }> = [];
-    if (missionId) {
+    if (!outputRequirement && missionId) {
       const mission = await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        columns: { defaultOutputRequirement: true, workingBranch: true },
+        columns: { defaultOutputRequirement: true },
       });
-      if (!outputRequirement) {
-        outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
-      }
-      missionWorkingBranch = mission?.workingBranch ?? null;
-
-      // Surface the last handful of completed mission tasks so the worker can
-      // build on prior work instead of duplicating it.
-      const prior = await db.query.tasks.findMany({
-        where: and(
-          eq(tasks.missionId, missionId),
-          eq(tasks.status, 'completed'),
-          notInArray(tasks.mode, ['planning']),
-        ),
-        orderBy: [desc(tasks.updatedAt)],
-        limit: 6,
-        columns: { title: true, result: true },
-      });
-      priorMissionTasks = prior.map((t) => {
-        const r = (t.result || {}) as Record<string, unknown>;
-        const files = r.filesTouched;
-        return {
-          title: t.title,
-          summary: typeof r.summary === 'string' ? r.summary : null,
-          prUrl: typeof r.prUrl === 'string' ? r.prUrl : null,
-          filesTouched: Array.isArray(files) ? (files.filter((x) => typeof x === 'string') as string[]) : null,
-        };
-      });
+      outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
     }
-
-    const workspaceBaseBranch = targetWorkspace.gitConfig?.defaultBranch || 'main';
 
     const [task] = await db
       .insert(tasks)
@@ -377,12 +344,6 @@ export async function POST(req: NextRequest) {
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
-          // Mission shared branch takes precedence over any incoming headBranch/baseBranch:
-          // every mission task pushes to the same branch so a single PR tracks the mission.
-          ...(missionWorkingBranch
-            ? { headBranch: missionWorkingBranch, baseBranch: workspaceBaseBranch }
-            : {}),
-          ...(priorMissionTasks.length > 0 ? { priorMissionTasks } : {}),
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -391,6 +352,7 @@ export async function POST(req: NextRequest) {
         ...(missionId ? { missionId } : {}),
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
+        ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })

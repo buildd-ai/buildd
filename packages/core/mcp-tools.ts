@@ -104,7 +104,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting) }',
     create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, key?, type?, limit? }',
@@ -125,7 +125,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
@@ -669,7 +669,26 @@ export async function handleBuilddAction(
       if (mcpCallCount > 0) effortParts.push(`${mcpCallCount} tool calls`);
       const effortSuffix = effortParts.length > 0 ? ` (${effortParts.join(', ')})` : '';
 
-      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}`);
+      // Fetch release result from the task (set by workers route after release execution)
+      let releaseLine = '';
+      if (params.workerId || ctx.workerId) {
+        try {
+          const wid = params.workerId || ctx.workerId;
+          const workerData = await api(`/api/workers/${wid}`);
+          const taskId = workerData?.taskId;
+          if (taskId) {
+            const taskData = await api(`/api/tasks/${taskId}`);
+            const releaseResult = taskData?.releaseResult;
+            if (releaseResult?.message) {
+              releaseLine = `\n\n${releaseResult.message}`;
+            } else if (taskData?.result?.releaseSummary) {
+              releaseLine = `\n\n${taskData.result.releaseSummary}`;
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}`);
     }
 
     case 'create_pr': {
@@ -801,6 +820,9 @@ export async function handleBuilddAction(
       }
       if (Object.keys(taskContext).length > 0) {
         taskBody.context = taskContext;
+      }
+      if (params.release && ['true', 'false', 'inherit'].includes(params.release as string)) {
+        taskBody.release = params.release;
       }
 
       const task = await api('/api/tasks', {
@@ -1955,12 +1977,25 @@ export async function handleBuilddAction(
           if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
           if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
-          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required (name, repoUrl, defaultBranch, accessMode)');
-          await api(`/api/workspaces/${wsId}`, {
-            method: 'PATCH',
-            body: JSON.stringify(body),
-          });
-          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}`);
+          if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
+
+          // releaseConfig goes to the config endpoint; everything else to the workspace endpoint
+          if (body.releaseConfig !== undefined) {
+            await api(`/api/workspaces/${wsId}/config`, {
+              method: 'POST',
+              body: JSON.stringify({ releaseConfig: body.releaseConfig }),
+            });
+            delete body.releaseConfig;
+          }
+
+          const wsFields = Object.keys(body).filter(k => k !== 'releaseConfig');
+          if (wsFields.length > 0) {
+            await api(`/api/workspaces/${wsId}`, {
+              method: 'PATCH',
+              body: JSON.stringify(body),
+            });
+          }
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}`);
         }
         case 'create_repo': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
