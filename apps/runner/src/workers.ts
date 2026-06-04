@@ -3,7 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle } from '@buildd/shared';
+import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -1280,6 +1280,7 @@ export class WorkerManager {
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
       // Build query options
+      const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
         cwd,
@@ -1300,8 +1301,10 @@ export class WorkerManager {
         // SDK debug logging from workspace config
         ...(gitConfig?.debug ? { debug: true } : {}),
         ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
-        // Structured output: pass outputFormat if task defines an outputSchema
-        ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
+        // Structured output: planning tasks always get the planning schema (so the
+        // plan returns as validated structured_output, not free-form text); an
+        // explicit task.outputSchema wins. See @buildd/shared planning contract.
+        ...(outputFormat ? { outputFormat } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },

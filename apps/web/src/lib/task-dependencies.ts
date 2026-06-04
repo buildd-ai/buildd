@@ -85,7 +85,25 @@ export async function resolveCompletedTask(
           }
         }
       } else if (completedTaskFull.missionId) {
-        // Empty plan or no plan — retrigger mission loop (checks missionComplete signal)
+        // No usable plan. Distinguish two very different cases:
+        //  (a) Contract violation — the planning task completed but produced NO
+        //      structured output at all. This means the runner didn't request /
+        //      capture SDK structured output, so the agent's plan (if any) was
+        //      dropped as free-form text. This must NOT look like a normal empty
+        //      cycle: it would loop forever silently. Surface it loudly.
+        //  (b) Legitimate empty plan — structured output present, but the agent
+        //      intentionally returned no steps (conflict / missionComplete).
+        //      The mission loop handles these via its completion + stall guards.
+        if (!structuredOutput) {
+          console.error(
+            `[planning-contract-violation] task ${completedTaskId} (mission ${completedTaskFull.missionId}) ` +
+            `completed with no structuredOutput — the runner did not return a validated plan. ` +
+            `Child tasks cannot be created from free-form text. Check that the runner requests ` +
+            `outputFormat for planning tasks (see @buildd/shared resolveOutputFormat).`
+          );
+        }
+        // Retrigger mission loop (its depth/stall guards decide whether to re-plan,
+        // complete, or stall based on the missionComplete / triageOutcome signals).
         maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
           console.error(`[mission-loop] zero-plan retrigger failed:`, err)
         );
