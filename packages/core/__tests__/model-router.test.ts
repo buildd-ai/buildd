@@ -4,12 +4,12 @@ import { resolveEffectiveModel } from '../model-router';
 describe('resolveEffectiveModel', () => {
   it('explicit override bypasses every gate', () => {
     const d = resolveEffectiveModel({
-      explicitModel: 'claude-opus-4-7',
+      explicitModel: 'claude-opus-4-8',
       kind: 'engineering',
       complexity: 'simple',
       dailyBudgetPct: 0.99,
     });
-    expect(d.model).toBe('claude-opus-4-7');
+    expect(d.model).toBe('claude-opus-4-8');
     expect(d.reason).toBe('explicit_override');
   });
 

@@ -20,7 +20,7 @@ mock.module('@buildd/core/model-aliases', () => ({
   DEFAULT_ALIASES: {
     haiku: 'claude-haiku-4-5-20251001',
     sonnet: 'claude-sonnet-4-6',
-    opus: 'claude-opus-4-7',
+    opus: 'claude-opus-4-8',
   },
 }));
 
@@ -68,7 +68,7 @@ describe('POST /api/admin/refresh-model-aliases', () => {
     expect(data.aliases).toEqual({
       haiku: 'claude-haiku-4-5-20251001',
       sonnet: 'claude-sonnet-4-6',
-      opus: 'claude-opus-4-7',
+      opus: 'claude-opus-4-8',
     });
     expect(mockUpdateModelAliases).toHaveBeenCalledTimes(1);
   });

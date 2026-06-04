@@ -1551,6 +1551,7 @@ function updateSettings() {
     // Set default options
     modelCustomSelect.setOptions([
       { value: '', label: 'Default (recommended)' },
+      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
       { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
       { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -1883,6 +1884,7 @@ async function handleMaxTurnsChange(value) {
 function getModelDisplayName(model) {
   if (!model) return 'Default (latest)';
   const names = {
+    'claude-opus-4-8': 'Opus 4.8',
     'claude-opus-4-6': 'Opus 4.6',
     'claude-opus-4-5-20251101': 'Opus 4.5',
     'claude-sonnet-4-6': 'Sonnet 4.6',
