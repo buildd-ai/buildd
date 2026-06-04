@@ -471,6 +471,7 @@ initCurrentCommit().then(() => {
 let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
 const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const FALLBACK_MODELS = [
+  { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
   { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },

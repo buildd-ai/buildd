@@ -1258,7 +1258,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'simple',
         priority: 0,
         dependsOn: [],
-        context: { model: 'claude-opus-4-7' },
+        context: { model: 'claude-opus-4-8' },
         workspace: { id: 'ws-1', gitConfig: null },
       }]);
       mockClaimSuccess();
@@ -1269,8 +1269,8 @@ describe('POST /api/workers/claim', () => {
       });
       await POST(req);
 
-      expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-7');
-      expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-7');
+      expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-8');
+      expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-8');
     });
 
     it('spike-detection downshifts when recent claim count exceeds threshold', async () => {
