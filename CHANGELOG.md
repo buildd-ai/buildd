@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Monthly budget tracking + per-threshold Pushover alerts at 50/80/100% of configurable cap (#794)
 - Capture agent error traces from tool output (#780)
 - `/respond` landing page + render needs-input banner on failed workers (#763)
 - Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
@@ -61,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Grant write permissions to release workflow caller; fixes startup_failure on every release run (#793)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)
 - Dump runner/server logs on E2E failure for diagnosis
 
