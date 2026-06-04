@@ -17,6 +17,15 @@ on:
 
 jobs:
   release:
+    # The reusable workflow pushes a version-bump commit and opens the release
+    # PR, so it declares contents:write + pull-requests:write. A called workflow
+    # cannot exceed the caller's token permissions, and this repo's default
+    # workflow permissions are read-only — without this block the run fails at
+    # startup (startup_failure) before any job executes. Grant the same scopes
+    # here so they can be passed down.
+    permissions:
+      contents: write
+      pull-requests: write
     uses: buildd-ai/.github/.github/workflows/release.yml@main
     with:
       package_files: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
