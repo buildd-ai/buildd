@@ -122,8 +122,9 @@ mock.module('@/lib/worker-deliverables', () => ({
   getWorkerArtifactCount: mock(() => Promise.resolve(0)),
 }));
 
+const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
-  notify: mock(() => Promise.resolve()),
+  notify: mockNotify,
 }));
 
 mock.module('@/lib/slack-notify', () => ({
@@ -1737,6 +1738,102 @@ describe('PATCH /api/workers/[id]', () => {
       // Account should NOT have been updated for non-budget errors
       expect(mockAccountsUpdate).not.toHaveBeenCalled();
       expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /api/workers/[id] - monthly budget tracking', () => {
+    const monthKey = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`;
+    // Completion fires unrelated notifies too; isolate the budget-threshold ones.
+    const budgetNotifies = () => mockNotify.mock.calls
+      .map((c: any) => c[0])
+      .filter((o: any) => typeof o?.title === 'string' && o.title.includes('budget'));
+
+    function setupCompletion(account: Record<string, unknown>, worker: Record<string, unknown> = {}) {
+      mockNotify.mockClear();
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
+      });
+      let capturedAccountSet: any = null;
+      mockAccountsUpdate.mockReturnValue({
+        set: mock((v: any) => { capturedAccountSet = v; return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', ...account });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', branch: 'feature/test', commitCount: 0, prUrl: null, prNumber: null,
+        pendingInstructions: null, ...worker,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      return () => capturedAccountSet;
+    }
+
+    it('accumulates reported cost and fires the 50% threshold alert', async () => {
+      const getSet = setupCompletion({
+        monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [],
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 10 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(55, 6);
+      expect(set.budgetAlertsSent).toEqual([50]);
+      const alerts = budgetNotifies();
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toMatchObject({ app: 'alerts', title: 'Buildd budget 50% used' });
+    });
+
+    it('does not re-fire a threshold already alerted this month', async () => {
+      const getSet = setupCompletion({
+        monthlyBudgetUsd: '100', monthlyCostUsd: '55', monthlyCostMonth: monthKey, budgetAlertsSent: [50],
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 5 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(60, 6);
+      expect(set.budgetAlertsSent).toEqual([50]);
+      expect(budgetNotifies()).toHaveLength(0);
+    });
+
+    it('falls back to a token-derived estimate when reported cost is $0 (OAuth case)', async () => {
+      const getSet = setupCompletion({
+        monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [],
+      });
+
+      // 1M sonnet output tokens = $15 at list rates
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          costUsd: 0,
+          resultMeta: {
+            modelUsage: {
+              'claude-sonnet-4-6': {
+                inputTokens: 0, outputTokens: 1_000_000,
+                cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0,
+              },
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(15, 6);
+      expect(budgetNotifies()).toHaveLength(0); // 15% < 50%
     });
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.99.0",
+  "version": "0.100.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -15,7 +15,9 @@
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./model-aliases": "./model-aliases.ts",
+    "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
+    "./budget-alerts": "./budget-alerts.ts",
     "./task-classifier": "./task-classifier.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./secrets": "./secrets/index.ts",

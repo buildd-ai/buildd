@@ -14,6 +14,8 @@ import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
+import { estimateCostUsd } from '@buildd/core/model-prices';
+import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 
 // GET /api/workers/[id] - Get worker details
@@ -397,6 +399,62 @@ export async function PATCH(
   let shouldAutoRetry = false;
   if (status === 'completed' || status === 'failed') {
     updates.completedAt = new Date();
+
+    // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
+    // Guarded by the worker's prior status so a duplicate terminal PATCH can't
+    // double-count. Prefers the SDK's reported cost; falls back to a token-derived
+    // estimate (list prices) when cost is $0 — the OAuth / credit-pool case.
+    const wasTerminal = worker.status === 'completed' || worker.status === 'failed';
+    if (!wasTerminal) {
+      try {
+        const reportedCost = typeof costUsd === 'number'
+          ? costUsd
+          : parseFloat((worker.costUsd as string | null) ?? '0');
+        const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
+          | Parameters<typeof estimateCostUsd>[0]
+          | undefined;
+        const effectiveCost = reportedCost > 0 ? reportedCost : estimateCostUsd(usageForCost);
+
+        if (effectiveCost > 0) {
+          const budgetUsd = account.monthlyBudgetUsd != null
+            ? parseFloat(account.monthlyBudgetUsd.toString())
+            : (process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null);
+
+          const result = applyBudgetUsage(
+            {
+              monthlyCostUsd: parseFloat((account.monthlyCostUsd as string | null) ?? '0'),
+              monthlyCostMonth: account.monthlyCostMonth ?? null,
+              alertsSent: (account.budgetAlertsSent ?? []) as number[],
+            },
+            effectiveCost,
+            budgetUsd,
+            new Date(),
+          );
+
+          await db
+            .update(accounts)
+            .set({
+              monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
+              monthlyCostMonth: result.monthlyCostMonth,
+              budgetAlertsSent: result.alertsSent,
+            })
+            .where(eq(accounts.id, account.id));
+
+          for (const threshold of result.crossed) {
+            notify({
+              app: 'alerts',
+              priority: threshold >= 100 ? 1 : 0,
+              title: `Buildd budget ${threshold}% used`,
+              message: budgetUsd != null
+                ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
+                : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
+            });
+          }
+        }
+      } catch (budgetErr) {
+        console.error(`[Worker ${id}] budget tracking failed:`, budgetErr);
+      }
+    }
 
     // Update task status + snapshot deliverables
     // Skip task update for budget errors — already handled above
