@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Capture agent error traces from tool output (#780)
+- `/respond` landing page + render needs-input banner on failed workers (#763)
+- Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
+- Connect Claude card with copy-paste connector setup in settings
+- claude.ai connector via workspace-scoped MCP OAuth
+- Make routines discoverable via trigger/worker tokens in MCP
+- `get_skill` action to read full skill body by slug via MCP
 - Emit per-minute liveness heartbeat to runner stdout (#709)
 - Add missionId filter to list_artifacts MCP action (#696)
 - Share a single branch + PR across mission tasks (#698)
@@ -26,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent multi-workspace OAuth misrouting (#779)
+- Require explicit workspaceId for ambiguous OAuth actions (#778)
+- Stop infinite retry loop on misrouted tasks (#777)
+- Post-store CTA pointing users to /app/health (#775)
+- Collapse Vercel "Add a token" form once a token exists (#774)
+- Await waiting_input sync; collapsible task descriptions in runner (#765)
+- Push URL → buildd.dev + restore broken GitHub repo sync (#761)
+- Auto-link githubRepoId when updating workspace repoUrl via API
+- Make connector icons render as a square (#755)
+- Advertise canonical buildd.dev as issuer on Vercel prod for OAuth (#753)
+- Resolve Claude Code native binary explicitly via SDK package dir (#750)
 - Fix update_schedule 500 caused by raw workspaceId in PATCH body (#700)
 - Ensure bun is on PATH in launcher script for non-interactive shells (#701)
 - Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)

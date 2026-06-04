@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets, workerErrorTraces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -14,6 +14,7 @@ import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
+import { executeRelease } from '@/lib/release-executor';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -104,6 +105,7 @@ export async function PATCH(
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
     appendMcpCalls,
+    appendErrorTraces,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -113,6 +115,9 @@ export async function PATCH(
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
     taskProgress,
+    // Self-reported PR (for runners that create PRs outside the create_pr action)
+    prUrl: selfReportedPrUrl,
+    prNumber: selfReportedPrNumber,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -144,6 +149,29 @@ export async function PATCH(
     const merged = [...existing, ...appendMcpCalls];
     updates.mcpCalls = merged.length > 100 ? merged.slice(-100) : merged;
   }
+  // appendErrorTraces: insert pattern-matched errors into worker_error_traces.
+  // Runner throttles same-pattern traces at the source, so we trust the
+  // payload here without additional dedup. Excerpts are clamped to 500 chars
+  // as a defense against a runaway agent posting megabytes of stderr.
+  if (appendErrorTraces && Array.isArray(appendErrorTraces) && appendErrorTraces.length > 0) {
+    const rows = appendErrorTraces
+      .filter((t: any) => t && typeof t.pattern === 'string' && typeof t.excerpt === 'string')
+      .slice(0, 50)  // hard cap per request to bound write volume
+      .map((t: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        pattern: String(t.pattern).slice(0, 100),
+        excerpt: String(t.excerpt).slice(0, 500),
+        source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerErrorTraces).values(rows);
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert error traces', err);
+      }
+    }
+  }
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
@@ -154,11 +182,12 @@ export async function PATCH(
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
   // Pushover notification when agent needs input
   if (waitingFor?.type === 'question') {
+    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     notify({
       app: 'tasks',
       title: 'Agent needs your input',
       message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
-      url: `https://buildd.dev/app/tasks/${worker.taskId}/respond`,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
       urlTitle: 'Respond',
       priority: 0,
     });
@@ -167,6 +196,9 @@ export async function PATCH(
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
   if (resultMeta !== undefined) updates.resultMeta = resultMeta;
+  // Self-reported PR (for runners that open PRs outside the create_pr MCP action)
+  if (typeof selfReportedPrUrl === 'string' && selfReportedPrUrl) updates.prUrl = selfReportedPrUrl;
+  if (typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0) updates.prNumber = selfReportedPrNumber;
 
   // Status audit trail: record terminal transitions in milestones for debugging
   if (status === 'completed' || status === 'failed') {
@@ -451,6 +483,28 @@ export async function PATCH(
         .update(tasks)
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
+
+      // Run release sequence on successful completion (non-fatal — must not block worker update)
+      if (status === 'completed' && !shouldAutoRetry) {
+        try {
+          const releaseResult = await executeRelease({
+            taskId: worker.taskId,
+            workerId: id,
+            workspaceId: worker.workspaceId,
+          });
+          const resultWithRelease = {
+            ...((taskUpdate.result ?? {}) as Record<string, unknown>),
+            releaseSummary: releaseResult.message,
+          };
+          await db
+            .update(tasks)
+            .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
+            .where(eq(tasks.id, worker.taskId));
+          taskUpdate.result = resultWithRelease;
+        } catch (releaseErr) {
+          console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
+        }
+      }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
       // (we only want one row per terminal outcome). Fire-and-forget.

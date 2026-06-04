@@ -91,7 +91,7 @@ describe('recordTaskOutcome', () => {
   it('never flags a full-model-ID prediction as downshifted', async () => {
     mockTasksFindFirst.mockResolvedValue({
       id: 't3', kind: 'engineering', complexity: 'complex', classifiedBy: 'user',
-      predictedModel: 'claude-opus-4-7',
+      predictedModel: 'claude-opus-4-8',
     });
     const values = mock(() => Promise.resolve());
     mockOutcomesInsert.mockReturnValue({ values });

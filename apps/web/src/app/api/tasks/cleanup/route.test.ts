@@ -5,6 +5,7 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
+const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -52,7 +53,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
-      tasks: { findMany: mockTasksFindMany },
+      tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       workerHeartbeats: { findMany: mockHeartbeatsFindMany },
     },
     update: (table: any) => {
@@ -91,6 +92,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindMany.mockReset();
     mockTasksFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ context: {} });
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockHeartbeatsFindMany.mockReset();
@@ -238,10 +241,12 @@ describe('POST /api/tasks/cleanup', () => {
     // Call sequence for mockWorkersFindMany:
     // 1. Stalled running workers → empty
     // 2. Workers for orphan task → all failed (no active)
-    // 3. Active account IDs for per-account cleanup → empty
+    // 3. resetOrFailTask failure-count → 1 prior failure (under MAX_TASK_FAILURES)
+    // 4. Active account IDs for per-account cleanup → empty
     mockWorkersFindMany
       .mockResolvedValueOnce([])  // stalled running
       .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])  // task workers - all failed
+      .mockResolvedValueOnce([{ id: 'w-old' }])  // resetOrFailTask prior failures count
       .mockResolvedValueOnce([]);  // active account IDs
 
     // Orphaned task: assigned, stale > 2 hours
@@ -279,6 +284,49 @@ describe('POST /api/tasks/cleanup', () => {
     expect(capturedSetData.expiresAt).toBeNull();
   });
 
+  it('marks task failed (not pending) once worker failures hit the retry cap', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    // Sequence: stalled empty → task workers (all failed) → prior failures (3, at cap) → active accounts empty
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])
+      .mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }])  // at cap
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'loop-task',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ context: { prior: 'context' } });
+
+    let capturedSetData: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSetData = data;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.status).toBe('failed');
+    expect(capturedSetData.context.terminalError).toBe('retry_cap_exceeded');
+    expect(capturedSetData.context.prior).toBe('context');  // preserves existing context
+  });
+
   it('fails workers when their heartbeat is stale (runner offline)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
@@ -291,7 +339,10 @@ describe('POST /api/tasks/cleanup', () => {
       .mockResolvedValueOnce([
         { id: 'w1', taskId: 'task-1' },
         { id: 'w2', taskId: 'task-2' },
-      ]);
+      ])
+      // resetOrFailTask prior-failure counts (one per orphan task, both under cap)
+      .mockResolvedValueOnce([{ id: 'w1' }])
+      .mockResolvedValueOnce([{ id: 'w2' }]);
 
     mockTasksFindMany.mockResolvedValue([]); // No orphaned tasks
 

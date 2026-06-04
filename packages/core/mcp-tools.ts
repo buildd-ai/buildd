@@ -29,8 +29,14 @@ export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
 export interface ActionContext {
   workerId?: string;
   workspaceId?: string;
+  // Discriminator for the multi-workspace guard: OAuth tokens can have access
+  // to multiple workspaces; API keys are workspace-scoped at creation. Only
+  // OAuth tokens need the "explicit workspaceId required" guard for ambiguous
+  // mutating actions like create_task and claim_task.
+  authType?: 'api' | 'oauth';
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
+  appBaseUrl?: string;
 }
 
 export type ToolResult = {
@@ -48,17 +54,19 @@ export const triggerActions = [
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
   'list_schedules', 'trace_schedule',
+  'get_task', 'get_task_messages',
 ] as const;
 
 export const workerActions = [
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
-  'emit_event', 'query_events',
+  'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
   'suggest_schedule_update',
   'post_note',
   'list_schedules', 'trace_schedule',
+  'get_task', 'get_task_messages',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -74,6 +82,7 @@ export const adminActions = [
   'manage_watched_projects',
   'trigger_release',
   'list_recipes', 'create_recipe', 'run_recipe',
+  'send_agent_message',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -96,9 +105,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
-    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft? } — workerId auto-resolved from context if omitted',
+    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth) }',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting) }',
     create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, key?, type?, limit? }',
@@ -119,7 +128,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description? } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
@@ -127,10 +136,13 @@ export function buildParamsDescription(actions: readonly string[]): string {
     run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
+    get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
+    get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
   };
 
   const lines = actions
@@ -246,6 +258,65 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
 }
 
 /**
+ * Actions that read/write workspace-scoped state and silently fail open when
+ * the workspace is ambiguous — the high-blast-radius cases observed on
+ * 2026-05-25 (claim_task picked the wrong workspace, agent flailed for 3hr).
+ *
+ * Guarded: claim_task (root cause), create_task (high blast radius), list_tasks
+ * (silently aggregates across workspaces, makes "which task did I see?" lying).
+ *
+ * NOT guarded (yet): update_task/update_progress/complete_task/create_pr —
+ * these take a taskId/workerId which fully determines the workspace.
+ * Follow-up: resource-derived workspace + sub-action guarding for manage_*.
+ */
+const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
+  'list_tasks',
+  'claim_task',
+  'create_task',
+]);
+
+/**
+ * For OAuth tokens with access to multiple workspaces, refuse ambiguous
+ * mutating/aggregating actions unless workspaceId is explicit (either via
+ * URL pin at OAuth time or via params). API-key tokens are workspace-scoped
+ * at creation and skip this guard.
+ */
+async function requireExplicitWorkspace(
+  api: ApiFn,
+  action: string,
+  params: Record<string, unknown>,
+  ctx: ActionContext,
+): Promise<ToolResult | null> {
+  if (!AMBIGUOUS_WORKSPACE_ACTIONS.has(action)) return null;
+  if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
+  if (params.workspaceId) return null;        // explicit per-call
+  if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
+
+  let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
+  try {
+    const data = await api('/api/workspaces');
+    workspaces = data.workspaces || [];
+  } catch {
+    // If we can't enumerate, fall through — downstream resolver still errors
+    // cleanly on null wsId rather than misrouting.
+    return null;
+  }
+
+  if (workspaces.length <= 1) return null;
+
+  const choices = workspaces
+    .map((ws) => `- "${ws.name}"${ws.repo ? ` (${ws.repo})` : ''} → ${ws.id}`)
+    .join('\n');
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `This OAuth token has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
+    }],
+    isError: true,
+  };
+}
+
+/**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
  * Falls back to context workspace ID if no param given.
  */
@@ -322,6 +393,11 @@ export async function handleBuilddAction(
   const levelErr = await requireWorkerLevel(ctx, action);
   if (levelErr) return levelErr;
 
+  // Multi-workspace guard: OAuth tokens must pass workspaceId for ambiguous
+  // actions when they can see >1 workspace.
+  const wsErr = await requireExplicitWorkspace(api, action, params, ctx);
+  if (wsErr) return wsErr;
+
   switch (action) {
     case 'list_tasks': {
       const data = await api('/api/tasks');
@@ -362,9 +438,13 @@ export async function handleBuilddAction(
 
       const task = await api(`/api/tasks/${encodeURIComponent(params.taskId as string)}${qs}`);
 
+      const appBase = ctx.appBaseUrl || 'https://buildd.dev';
+      const taskUrl = `${appBase}/app/tasks/${task.id}`;
+
       const lines: string[] = [];
       lines.push(`**Task:** ${task.title} (${task.id})`);
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
+      lines.push(`**Task URL:** ${taskUrl}`);
       if (task.workspace?.name || task.workspace?.repo) {
         lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
       }
@@ -404,10 +484,16 @@ export async function handleBuilddAction(
         for (const w of workers) {
           const wlines: string[] = [];
           wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
+          wlines.push(`  Worker URL: ${taskUrl}`);
           if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
+          if (w.waitingFor) {
+            const actionUrl = `${taskUrl}/respond`;
+            wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
+            wlines.push(`  Action URL: ${actionUrl}`);
+          }
           lines.push(wlines.join('\n'));
         }
       }
@@ -588,7 +674,26 @@ export async function handleBuilddAction(
       if (mcpCallCount > 0) effortParts.push(`${mcpCallCount} tool calls`);
       const effortSuffix = effortParts.length > 0 ? ` (${effortParts.join(', ')})` : '';
 
-      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}`);
+      // Fetch release result from the task (set by workers route after release execution)
+      let releaseLine = '';
+      if (params.workerId || ctx.workerId) {
+        try {
+          const wid = params.workerId || ctx.workerId;
+          const workerData = await api(`/api/workers/${wid}`);
+          const taskId = workerData?.taskId;
+          if (taskId) {
+            const taskData = await api(`/api/tasks/${taskId}`);
+            const releaseResult = taskData?.releaseResult;
+            if (releaseResult?.message) {
+              releaseLine = `\n\n${releaseResult.message}`;
+            } else if (taskData?.result?.releaseSummary) {
+              releaseLine = `\n\n${taskData.result.releaseSummary}`;
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}`);
     }
 
     case 'create_pr': {
@@ -606,6 +711,7 @@ export async function handleBuilddAction(
           head: params.head,
           base: params.base,
           draft: params.draft,
+          prUrl: params.prUrl,
         }),
       });
 
@@ -721,13 +827,18 @@ export async function handleBuilddAction(
       if (Object.keys(taskContext).length > 0) {
         taskBody.context = taskContext;
       }
+      if (params.release && ['true', 'false', 'inherit'].includes(params.release as string)) {
+        taskBody.release = params.release;
+      }
 
       const task = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify(taskBody),
       });
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const createAppBase = ctx.appBaseUrl || 'https://buildd.dev';
+      const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: pending\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -1578,6 +1689,56 @@ export async function handleBuilddAction(
       return text(`${filtered.length} event(s):\n\n${summary}`);
     }
 
+    case 'get_error_traces': {
+      // Three resolution modes, in priority:
+      //   1. explicit workerId in params
+      //   2. explicit taskId in params (returns cumulative traces across all
+      //      workers that ran on this task — useful when retrying)
+      //   3. infer from ctx.workerId (default: this agent's session)
+      const limitNum = typeof params.limit === 'number'
+        ? Math.min(Math.max(params.limit, 1), 500)
+        : 50;
+      const limitQs = `limit=${limitNum}`;
+      const sinceQs = params.since && typeof params.since === 'string'
+        ? `&since=${encodeURIComponent(params.since)}`
+        : '';
+
+      let endpoint: string;
+      let scope: string;
+      if (params.workerId && typeof params.workerId === 'string') {
+        endpoint = `/api/workers/${encodeURIComponent(params.workerId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `worker ${params.workerId}`;
+      } else if (params.taskId && typeof params.taskId === 'string') {
+        endpoint = `/api/tasks/${encodeURIComponent(params.taskId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `task ${params.taskId}`;
+      } else if (ctx.workerId) {
+        // Default: traces for this agent's task (cumulative across retries)
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskId = workerData?.taskId;
+        if (!taskId) {
+          return errorResult('Could not determine taskId from context. Pass workerId or taskId explicitly.');
+        }
+        endpoint = `/api/tasks/${encodeURIComponent(taskId)}/error-traces?${limitQs}${sinceQs}`;
+        scope = `task ${taskId} (current)`;
+      } else {
+        return errorResult('No workerId, taskId, or worker context provided.');
+      }
+
+      const data = await api(endpoint);
+      const traces = (data.traces || []) as Array<{ pattern: string; excerpt: string; source: string | null; ts: string }>;
+
+      if (traces.length === 0) {
+        return text(`No error traces for ${scope}.`);
+      }
+
+      const summary = traces.map((t) => {
+        const src = t.source ? ` [${t.source}]` : '';
+        return `- **${t.pattern}**${src} at ${t.ts}\n  ${t.excerpt}`;
+      }).join('\n');
+
+      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
+    }
+
     case 'suggest_schedule_update': {
       if (!params.reason) throw new Error('reason is required');
       if (params.cronExpression === undefined && params.enabled === undefined) {
@@ -1822,12 +1983,25 @@ export async function handleBuilddAction(
           if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
           if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
-          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required (name, repoUrl, defaultBranch, accessMode)');
-          await api(`/api/workspaces/${wsId}`, {
-            method: 'PATCH',
-            body: JSON.stringify(body),
-          });
-          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}`);
+          if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
+
+          // releaseConfig goes to the config endpoint; everything else to the workspace endpoint
+          if (body.releaseConfig !== undefined) {
+            await api(`/api/workspaces/${wsId}/config`, {
+              method: 'POST',
+              body: JSON.stringify({ releaseConfig: body.releaseConfig }),
+            });
+            delete body.releaseConfig;
+          }
+
+          const wsFields = Object.keys(body).filter(k => k !== 'releaseConfig');
+          if (wsFields.length > 0) {
+            await api(`/api/workspaces/${wsId}`, {
+              method: 'PATCH',
+              body: JSON.stringify(body),
+            });
+          }
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}`);
         }
         case 'create_repo': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -2039,6 +2213,116 @@ export async function handleBuilddAction(
 
       const taskIds = data.tasks || [];
       return text(`Recipe instantiated! Created ${taskIds.length} task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
+    }
+
+    // ── Agent-Facing Interactive Actions ─────────────────────────────────────
+
+    case 'get_task': {
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const task = await api(`/api/tasks/${params.taskId}`);
+
+      const parts: string[] = [
+        `**Task:** ${task.title}`,
+        `**ID:** ${task.id}`,
+        `**Status:** ${task.status}`,
+      ];
+
+      if (task.priority !== undefined) parts.push(`**Priority:** ${task.priority}`);
+      if (task.category) parts.push(`**Category:** ${task.category}`);
+      if (task.missionId) parts.push(`**Mission:** ${task.missionId}`);
+
+      // Active worker info (populated by enhanced task GET endpoint)
+      const worker = task.activeWorker;
+      if (worker) {
+        parts.push(`\n**Active Worker:** ${worker.id}`);
+        parts.push(`**Worker Status:** ${worker.status}`);
+        if (worker.currentAction) parts.push(`**Current Action:** ${worker.currentAction}`);
+        if (worker.prUrl) parts.push(`**PR URL:** ${worker.prUrl}`);
+        if (worker.prNumber) parts.push(`**PR #:** ${worker.prNumber}`);
+        if (worker.branch) parts.push(`**Branch:** ${worker.branch}`);
+      }
+
+      // Completion result (set when worker completes)
+      const result = task.result;
+      if (result) {
+        parts.push('');
+        if (result.summary) parts.push(`**Summary:** ${result.summary}`);
+        if (result.prUrl && !worker?.prUrl) parts.push(`**PR URL:** ${result.prUrl}`);
+        if (result.prNumber && !worker?.prNumber) parts.push(`**PR #:** ${result.prNumber}`);
+        if (result.branch && !worker?.branch) parts.push(`**Branch:** ${result.branch}`);
+        if (result.commits) parts.push(`**Commits:** ${result.commits}`);
+        if (result.nextSuggestion) parts.push(`**Next Suggestion:** ${result.nextSuggestion}`);
+      }
+
+      // Artifact IDs (populated by enhanced task GET endpoint)
+      if (Array.isArray(task.artifactIds) && task.artifactIds.length > 0) {
+        parts.push(`\n**Artifacts (${task.artifactIds.length}):** ${task.artifactIds.join(', ')}`);
+        parts.push('Use get_artifact with any artifact ID to read its content.');
+      }
+
+      if (!worker && !result) {
+        const hint = task.status === 'pending'
+          ? '\nTask is pending — not yet claimed by a worker.'
+          : task.status === 'completed'
+          ? '\nTask completed but no result snapshot available.'
+          : '';
+        if (hint) parts.push(hint);
+      }
+
+      return text(parts.join('\n'));
+    }
+
+    case 'get_task_messages': {
+      if (!params.taskId) throw new Error('taskId is required');
+
+      const data = await api(`/api/tasks/${params.taskId}/messages`);
+      const messages: Array<{ type: string; message: string; timestamp: number }> = data.messages || [];
+
+      if (messages.length === 0) {
+        return text(`No messages for task ${params.taskId}. Messages appear when instructions are sent to or responses received from the running agent.`);
+      }
+
+      const lines = messages.map((m) => {
+        const when = new Date(m.timestamp).toISOString();
+        const label = m.type === 'instruction' ? '→ [human→agent]' : '← [agent→human]';
+        return `${when} ${label}\n  ${m.message}`;
+      });
+
+      return text(`${messages.length} message(s) for task ${params.taskId}:\n\n${lines.join('\n\n')}`);
+    }
+
+    case 'send_agent_message': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('send_agent_message requires an admin-level token');
+      if (!params.taskId || !params.message) throw new Error('taskId and message are required');
+
+      // Fetch task with active worker info
+      const task = await api(`/api/tasks/${params.taskId}`);
+      const workerId = task.activeWorker?.id;
+
+      if (!workerId) {
+        const hint = task.status === 'completed' || task.status === 'failed'
+          ? `Task is already ${task.status} — no active worker to message.`
+          : task.status === 'pending'
+          ? 'Task is still pending — not yet claimed by a worker.'
+          : 'No active worker found for this task.';
+        throw new Error(`Cannot send message: ${hint} (task status: ${task.status})`);
+      }
+
+      const result = await api(`/api/workers/${workerId}/instruct`, {
+        method: 'POST',
+        body: JSON.stringify({
+          message: params.message as string,
+          ...(params.priority ? { priority: params.priority } : {}),
+        }),
+      });
+
+      const deliveryNote = params.priority === 'urgent'
+        ? 'Message delivered instantly via Pusher.'
+        : 'Message queued for delivery on next worker check-in.';
+
+      return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
     default:

@@ -143,7 +143,7 @@ async function getMemoryClientForTeam(workspaceId: string | null | undefined, fa
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -186,8 +186,10 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   const ctx: ActionContext = {
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
+    authType,
     getWorkspaceId,
     getLevel: async () => accountLevel,
+    appBaseUrl,
   };
 
   const server = new Server(
@@ -290,7 +292,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
+        // Refuse memory writes when the workspace is ambiguous for an OAuth
+        // multi-workspace token. Same bug class as the claim/create_task
+        // misroute (2026-05-25 incident): falling back to accountTeamId would
+        // silently write memories to the wrong team's vault.
         const wsId = await getWorkspaceId();
+        if (!wsId && authType === 'oauth') {
+          return {
+            content: [{ type: "text" as const, text: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint." }],
+            isError: true,
+          };
+        }
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {
@@ -513,7 +525,8 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const api = createApi(apiKey);
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
   const workerParam = url.searchParams.get("worker");
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined);
+  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

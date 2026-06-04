@@ -115,6 +115,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Defense-in-depth for the 2026-05-25 misroute incident. The MCP-layer guard
+  // (packages/core/mcp-tools.ts requireExplicitWorkspace) catches this for
+  // MCP-originated claims, but anything else calling /api/workers/claim with
+  // an OAuth multi-workspace token and no workspaceId would still trigger the
+  // ambiguous-routing bug. Reject at the API boundary too.
+  if (account.authType === 'oauth' && !workspaceId) {
+    const permissions = await getAccountWorkspacePermissions(account.id);
+    const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
+    // Also count open workspaces — those are claimable by any account
+    const openCount = await db.query.workspaces.findMany({
+      where: eq(workspaces.accessMode, 'open'),
+      columns: { id: true },
+    });
+    for (const w of openCount) accessibleWorkspaceIds.add(w.id);
+
+    if (accessibleWorkspaceIds.size > 1) {
+      return NextResponse.json(
+        {
+          error: 'workspaceId required for OAuth tokens with access to multiple workspaces',
+          accessibleWorkspaces: accessibleWorkspaceIds.size,
+          hint: 'Pass workspaceId in the request body. With multiple accessible workspaces, the claim route refuses to pick one to avoid the 2026-05-25 misroute class.',
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   // Track whether account's own OAuth budget is exhausted (tenant tasks can still proceed)
   const accountBudgetExhausted = account.authType === 'oauth'
     && !!account.budgetExhaustedAt
@@ -378,6 +405,33 @@ export async function POST(req: NextRequest) {
           }
         }
       }
+    }
+
+    // Workspace/project mismatch guard. If a task is pinned to a project name
+    // (set by MCP at task creation), require that project to exist on the
+    // workspace. Without this, a misrouted task — e.g. MCP connected to
+    // workspace A but the task references a repo only present in workspace B —
+    // gets claimed, the agent flails on a path that doesn't exist in the
+    // worktree, stuck-detector kills the session, cleanup re-queues, repeat.
+    const taskProject = (task as any).project as string | null;
+    const workspaceProjects = ((task.workspace as any)?.projects || []) as Array<{ name: string }>;
+    if (taskProject && workspaceProjects.length > 0 && !workspaceProjects.some((p) => p.name === taskProject)) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          updatedAt: now,
+          context: {
+            ...(taskContext || {}),
+            terminalError: 'workspace_mismatch',
+            terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
+          },
+        })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+      continue;
     }
 
     const timeoutMinutes = Math.min(

@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, title, body: prBody, head, base, draft } = body;
+    const { workerId, title, body: prBody, head, base, draft, prUrl: existingPrUrl } = body;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -40,6 +40,33 @@ export async function POST(req: NextRequest) {
     // Verify the account owns this worker
     if (worker.accountId !== account.id) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+
+    // If an existing PR URL is provided, register it directly without going through GitHub API.
+    // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
+    // (e.g. the PR was created via gh CLI in a different repo).
+    if (existingPrUrl) {
+      if (worker.prUrl && worker.prNumber) {
+        return NextResponse.json({
+          ok: true,
+          pr: { number: worker.prNumber, url: worker.prUrl, state: 'open', title },
+          deduplicated: true,
+        });
+      }
+      const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
+      const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      await db.update(workers).set({
+        prUrl: existingPrUrl,
+        prNumber,
+        updatedAt: new Date(),
+      }).where(eq(workers.id, workerId));
+      if (prNumber) {
+        await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl);
+      }
+      return NextResponse.json({
+        ok: true,
+        pr: { number: prNumber, url: existingPrUrl, state: 'open', title },
+      });
     }
 
     const workspace = worker.workspace;

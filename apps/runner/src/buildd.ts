@@ -103,6 +103,7 @@ export class BuilddClient {
     currentAction?: string;
     milestones?: any[];
     appendMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;
+    appendErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;
     waitingFor?: { type: string; prompt: string; options?: string[] } | null;
     // Git stats
     lastCommitSha?: string;

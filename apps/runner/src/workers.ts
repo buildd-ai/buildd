@@ -3,7 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle } from '@buildd/shared';
+import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -30,6 +30,7 @@ import {
 } from './prompt-builder';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { RecoveryManager } from './recovery';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 // Re-export for backwards compatibility (tests import from './workers')
@@ -463,6 +464,7 @@ export class WorkerManager {
         this.workers.delete(id);
         this.sessions.delete(id);
         this.workerAuthContexts.delete(id);
+        clearWorkerThrottle(id);
         storeDeleteWorker(id);
         count++;
       }
@@ -695,20 +697,13 @@ export class WorkerManager {
       console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
     }
 
-    // Resolve workspace path
-    const workspacePath = this.resolver.resolve({
-      id: task.workspaceId,
-      name: task.workspace?.name || 'unknown',
-      repo: task.workspace?.repo,
-    });
-
-    if (!workspacePath) {
-      console.error(`Cannot resolve workspace for task: ${task.title} (${task.id}) — will skip on future retries`);
-      this.pusherManager.markUnresolvable(task.id);
-      return null;
-    }
-
-    // Claim from buildd (pass taskId for targeted claiming)
+    // Claim from buildd first (pass taskId for targeted claiming). The claim
+    // response carries the FULL task — including workspace.repo/name — whereas
+    // the Pusher assignment payload is minimal and frequently omits
+    // workspace.repo. Resolving from the minimal payload makes the resolver
+    // fabricate a bogus 'project/unknown' directory (no origin/<branch>), so
+    // worktree setup fails with "invalid reference: origin/<branch>". Resolve
+    // from the full task instead — matching the polling path (claimPendingTasks).
     const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
@@ -723,6 +718,24 @@ export class WorkerManager {
 
     // Prefer claim response task data (full) over Pusher event task data (minimal payload)
     const fullTask = claimedWorker.task || task;
+
+    // Resolve workspace path from the FULL claimed task (see note above).
+    const workspacePath = this.resolver.resolve({
+      id: fullTask.workspaceId,
+      name: fullTask.workspace?.name || 'unknown',
+      repo: fullTask.workspace?.repo,
+    });
+
+    if (!workspacePath) {
+      console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
+      this.pusherManager.markUnresolvable(task.id);
+      // Fail the claimed worker on the server so it doesn't stay "running" forever
+      this.buildd.updateWorker(claimedWorker.id, {
+        status: 'failed',
+        error: `Cannot resolve workspace "${fullTask.workspace?.name || 'unknown'}" (repo: ${fullTask.workspace?.repo || 'none'})`,
+      }).catch(() => {});
+      return null;
+    }
 
     let resolvedPath = workspacePath;
     if ((claimedWorker as any).roleConfig) {
@@ -1278,6 +1291,7 @@ export class WorkerManager {
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
       // Build query options
+      const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: worker.id,
         cwd,
@@ -1298,8 +1312,10 @@ export class WorkerManager {
         // SDK debug logging from workspace config
         ...(gitConfig?.debug ? { debug: true } : {}),
         ...(gitConfig?.debugFile ? { debugFile: gitConfig.debugFile } : {}),
-        // Structured output: pass outputFormat if task defines an outputSchema
-        ...(task.outputSchema ? { outputFormat: { type: 'json_schema' as const, schema: task.outputSchema } } : {}),
+        // Structured output: planning tasks always get the planning schema (so the
+        // plan returns as validated structured_output, not free-form text); an
+        // explicit task.outputSchema wins. See @buildd/shared planning contract.
+        ...(outputFormat ? { outputFormat } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
@@ -2143,6 +2159,52 @@ If something is missing or incomplete, describe what and fix it now.`;
                 },
               }).catch(() => {});
               storeSaveWorker(worker);
+            }
+          }
+        }
+      }
+    }
+
+    // Tool-result inspection: agent SDK sends tool outputs back to the model
+    // as synthetic user messages containing tool_result blocks. Scan each
+    // result against the error-pattern list and buffer matches for sync.
+    if (msg.type === 'user') {
+      const content = (msg as any).message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type !== 'tool_result') continue;
+          // Tool result content can be a string or an array of text blocks.
+          let text = '';
+          if (typeof block.content === 'string') {
+            text = block.content;
+          } else if (Array.isArray(block.content)) {
+            text = block.content
+              .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
+              .map((b: any) => b.text)
+              .join('\n');
+          }
+          if (!text) continue;
+
+          // Source tool: look up the originating tool_use_id in recent tool calls.
+          // Best-effort — if we can't find it, the trace still records useful info.
+          const toolUseId = block.tool_use_id as string | undefined;
+          let source: string | undefined;
+          if (toolUseId) {
+            for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
+              const tc: any = worker.toolCalls[i];
+              if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
+                source = tc.name;
+                break;
+              }
+            }
+          }
+
+          const traces = scanToolResult(worker.id, text, source);
+          if (traces.length > 0) {
+            if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
+            worker.pendingErrorTraces.push(...traces);
+            for (const t of traces) {
+              console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
             }
           }
         }

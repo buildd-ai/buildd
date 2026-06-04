@@ -287,6 +287,89 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('Max concurrent sessions limit reached');
   });
 
+  // Defense-in-depth for the 2026-05-25 misroute incident: even if the MCP-layer
+  // guard is bypassed, the claim route refuses ambiguous OAuth claims.
+  it('returns 400 for OAuth tokens with >1 accessible workspace and no workspaceId', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    // 2 accessible: one via permissions, one via open access — total 2 unique
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-restricted', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-open' }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },  // no workspaceId
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/workspaceId required/);
+    expect(data.accessibleWorkspaces).toBe(2);
+  });
+
+  it('allows OAuth claim without workspaceId when only 1 workspace is accessible', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    // Same workspace shows up via both paths — deduped to 1
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-1' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    // Should NOT be 400 — single accessible workspace, no ambiguity
+    expect(res.status).toBe(200);
+  });
+
+  it('skips the OAuth workspace-required guard when authType is api', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    // 2 accessible workspaces — would trigger the guard if it were OAuth
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-a', canClaim: true },
+      { workspaceId: 'ws-b', canClaim: true },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },  // no workspaceId — fine for API key
+    });
+    const res = await POST(req);
+
+    // API keys are workspace-scoped at creation; the guard doesn't apply.
+    expect(res.status).toBe(200);
+  });
+
   it('skips non-tenant tasks when OAuth budget is exhausted', async () => {
     const futureReset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
     mockAuthenticateApiKey.mockResolvedValue({
@@ -1175,7 +1258,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'simple',
         priority: 0,
         dependsOn: [],
-        context: { model: 'claude-opus-4-7' },
+        context: { model: 'claude-opus-4-8' },
         workspace: { id: 'ws-1', gitConfig: null },
       }]);
       mockClaimSuccess();
@@ -1186,8 +1269,8 @@ describe('POST /api/workers/claim', () => {
       });
       await POST(req);
 
-      expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-7');
-      expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-7');
+      expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-8');
+      expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-8');
     });
 
     it('spike-detection downshifts when recent claim count exceeds threshold', async () => {
@@ -1372,5 +1455,159 @@ describe('POST /api/workers/claim', () => {
     expect(joined).toMatch(/runner/);
     expect(joined).toMatch(/status/);
     expect(joined).toMatch(/updated_at/);
+  });
+
+  // Regression: on 2026-05-25, a task pinned to project "moa-ops" was created
+  // against a workspace whose projects[] only contained "dispatch-family". The
+  // task got claimed, the agent flailed on a non-existent path, stuck-detector
+  // killed it, cleanup re-queued, and the loop ran 4 times before being killed
+  // manually. The claim route now refuses such tasks up-front and marks them
+  // failed so no runner picks them up again.
+  it('marks task failed with workspace_mismatch when task.project is not in workspace.projects[]', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'misrouted-task',
+        workspaceId: 'ws-1',
+        project: 'moa-ops',
+        requiredCapabilities: [],
+        context: {},
+        workspace: {
+          id: 'ws-1',
+          gitConfig: null,
+          projects: [{ name: 'dispatch-family' }],
+        },
+      },
+    ]);
+
+    let capturedSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSet = data;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // No worker should be created — task was rejected up-front
+    expect(data.workers).toEqual([]);
+    // Task was marked failed, not left pending
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet.status).toBe('failed');
+    expect(capturedSet.context.terminalError).toBe('workspace_mismatch');
+  });
+
+  it('claims normally when task.project matches a workspace project', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'good-task',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        project: 'dispatch-family',
+        requiredCapabilities: [],
+        context: {},
+        workspace: {
+          id: 'ws-1',
+          gitConfig: null,
+          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+        },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'good-task' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'good-task', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+  });
+
+  it('does not gate claims when workspace.projects[] is empty (single-repo workspace)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    // Task has a project string but workspace doesn't enumerate projects — skip the guard.
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'single-repo-task',
+        workspaceId: 'ws-1',
+        title: 'Single repo task',
+        project: 'whatever',
+        requiredCapabilities: [],
+        context: {},
+        workspace: { id: 'ws-1', gitConfig: null, projects: [] },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'single-repo-task' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'single-repo-task', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
   });
 });

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 
 interface Team {
   id: string;
@@ -26,9 +27,12 @@ export default function VercelSection({ teams }: Props) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [justAdded, setJustAdded] = useState(false);
 
   useEffect(() => {
     if (!selectedTeamId) return;
+    setJustAdded(false);
     void load(selectedTeamId);
   }, [selectedTeamId]);
 
@@ -71,7 +75,9 @@ export default function VercelSection({ teams }: Props) {
       if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
       setLabel('');
       setValue('');
-      setMessage({ type: 'success', text: 'Token stored. The watcher will use it for any project tied to this team.' });
+      setAddOpen(false);
+      setMessage(null);
+      setJustAdded(true);
       await load(selectedTeamId);
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
@@ -87,6 +93,7 @@ export default function VercelSection({ teams }: Props) {
     try {
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      setJustAdded(false);
       await load(selectedTeamId);
       setMessage({ type: 'success', text: 'Deleted.' });
     } catch (err) {
@@ -111,6 +118,26 @@ export default function VercelSection({ teams }: Props) {
           </a>{' '}
           with read access. Stored encrypted at the team level — never sent to runners.
         </p>
+
+        {justAdded && (
+          <div className="rounded-lg border border-status-success/30 bg-status-success/10 p-3 space-y-2">
+            <div className="font-medium text-status-success">Token ready</div>
+            <p className="text-sm text-text-secondary">
+              Attach it to a watched project to start receiving prod-deploy alerts. Open the project at <strong>/app/health</strong>, set its Vercel project ID, and pick this token from the dropdown.
+            </p>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/app/health"
+                className="inline-flex items-center h-10 px-4 rounded-lg bg-status-info text-white text-sm font-medium"
+              >
+                Go to Health →
+              </Link>
+              <button onClick={() => setJustAdded(false)} className="text-sm text-text-tertiary">
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         {teams.length > 1 && (
           <label className="block">
@@ -151,29 +178,45 @@ export default function VercelSection({ teams }: Props) {
           </ul>
         )}
 
-        <div className="space-y-2 border-t pt-4">
-          <div className="text-sm font-medium">Add a token</div>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="Label (e.g. 'Personal — read deployments')"
-            className="w-full h-11 px-3 rounded-lg border bg-surface"
-          />
-          <input
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            type="password"
-            placeholder="Paste token (sk_…)"
-            className="w-full h-11 px-3 rounded-lg border bg-surface"
-          />
+        {tokens.length > 0 && !addOpen ? (
           <button
-            onClick={addToken}
-            disabled={busy || !value.trim()}
-            className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+            onClick={() => setAddOpen(true)}
+            className="text-sm font-medium text-status-info"
           >
-            Store token
+            + Add another token
           </button>
-        </div>
+        ) : (
+          <div className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">Add a token</div>
+              {tokens.length > 0 && (
+                <button onClick={() => { setAddOpen(false); setLabel(''); setValue(''); }} className="text-xs text-text-tertiary">
+                  Cancel
+                </button>
+              )}
+            </div>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Label (e.g. 'Personal — read deployments')"
+              className="w-full h-11 px-3 rounded-lg border bg-surface"
+            />
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              type="password"
+              placeholder="Paste token (sk_…)"
+              className="w-full h-11 px-3 rounded-lg border bg-surface"
+            />
+            <button
+              onClick={addToken}
+              disabled={busy || !value.trim()}
+              className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+            >
+              Store token
+            </button>
+          </div>
+        )}
 
         {message && (
           <div className={`text-sm ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>

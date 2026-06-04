@@ -1,20 +1,11 @@
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import type { PlanStep } from '@buildd/shared';
 
-export interface PlanStep {
-  ref: string;
-  title: string;
-  description: string;
-  dependsOn?: string[];
-  baseBranch?: string;
-  roleSlug?: string;
-  requiredCapabilities?: string[];
-  outputRequirement?: string;
-  priority?: number;
-  model?: string;
-  skillSlugs?: string[];
-}
+// PlanStep is defined once in @buildd/shared (the planning contract). Re-exported
+// here for the existing internal importers (task-dependencies, mission-loop, etc.).
+export type { PlanStep } from '@buildd/shared';
 
 export interface ApprovePlanResult {
   taskIds: string[];

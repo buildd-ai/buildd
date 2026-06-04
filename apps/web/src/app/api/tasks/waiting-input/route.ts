@@ -39,6 +39,8 @@ export async function GET() {
       columns: { id: true, title: true, status: true, workspaceId: true },
     });
 
+    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+
     // Only include non-terminal tasks
     const activeTasks = waitingTasks
       .filter(t => t.status !== 'completed' && t.status !== 'failed')
@@ -49,6 +51,7 @@ export async function GET() {
           title: t.title,
           workspaceId: t.workspaceId,
           waitingFor: worker?.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+          actionUrl: `${appBaseUrl}/app/tasks/${t.id}/respond`,
         };
       });
 

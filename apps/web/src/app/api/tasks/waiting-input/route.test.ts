@@ -104,6 +104,7 @@ describe('GET /api/tasks/waiting-input', () => {
       title: 'Setup database',
       workspaceId: 'ws-1',
       waitingFor: { type: 'question', prompt: 'Which database?' },
+      actionUrl: 'https://buildd.dev/app/tasks/task-1/respond',
     });
   });
 
@@ -130,6 +131,32 @@ describe('GET /api/tasks/waiting-input', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.tasks).toHaveLength(0);
+  });
+
+  it('includes actionUrl pointing to respond page', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReturnValue([
+      {
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        waitingFor: { type: 'question', prompt: 'Which database?' },
+      },
+    ]);
+    mockTasksFindMany.mockReturnValue([
+      {
+        id: 'task-1',
+        title: 'Setup database',
+        status: 'running',
+        workspaceId: 'ws-1',
+      },
+    ]);
+
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tasks).toHaveLength(1);
+    expect(data.tasks[0].actionUrl).toMatch(/\/app\/tasks\/task-1\/respond$/);
   });
 
   it('filters workers to user workspaces only', async () => {

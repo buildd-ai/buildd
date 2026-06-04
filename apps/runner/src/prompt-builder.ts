@@ -291,10 +291,11 @@ export function buildPrompt(ctx: PromptContext): string {
   if (task.mode === 'planning') {
     promptParts.push(
       '## Output Requirement\n' +
-      'This is a **planning task**. Output a structured JSON plan.\n' +
-      'Each item needs: ref (unique ID like "step-1"), title, description.\n' +
-      'Optional: dependsOn (array of refs for ordering), baseBranch (ref of predecessor task to chain branches from), roleSlug (e.g. "builder", "researcher"), priority (integer).\n' +
-      'Set missionComplete: true when the mission goal is fully achieved.\n' +
+      'This is a **planning task**. Your final output is validated against a fixed JSON schema and returned as structured output — the system creates tasks directly from your `plan` array. Free-form text or a fenced ```json block is NOT read; only the structured output is.\n' +
+      'Each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
+      'Optional per item: dependsOn (array of refs for ordering), baseBranch (ref of predecessor task to chain branches from), roleSlug (e.g. "builder", "researcher"), priority (integer), kind, complexity.\n' +
+      'Always set `summary`, and set `missionComplete: true` when the mission goal is fully achieved.\n' +
+      'Every planning cycle must either return a non-empty `plan` OR set `missionComplete: true` (or triageOutcome: "conflict") — an empty plan that does neither stalls the mission.\n' +
       'Do NOT call create_task — the system creates tasks from your plan automatically.'
     );
   } else if (outputReq === 'pr_required') {
