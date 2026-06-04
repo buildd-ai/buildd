@@ -74,6 +74,15 @@ export const accounts = pgTable('accounts', {
   budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }),
   budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }),
 
+  // Monthly budget tracking (Agent SDK credit pool, post 2026-06-15).
+  // monthlyBudgetUsd is the cap (e.g. 100); null falls back to the BUDGET_MONTHLY_USD env.
+  // monthlyCostUsd accumulates spend for monthlyCostMonth (UTC "YYYY-MM"); both reset on the 1st.
+  // budgetAlertsSent records which percent thresholds have already alerted this month.
+  monthlyBudgetUsd: decimal('monthly_budget_usd', { precision: 10, scale: 2 }),
+  monthlyCostUsd: decimal('monthly_cost_usd', { precision: 12, scale: 6 }).default('0').notNull(),
+  monthlyCostMonth: text('monthly_cost_month'),
+  budgetAlertsSent: jsonb('budget_alerts_sent').default([]).$type<number[]>().notNull(),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
