@@ -126,4 +126,32 @@ describe('create_task — parentTaskId support', () => {
 
     expect(result.content[0].text).toContain('Parent: task-parent');
   });
+
+  it('includes taskUrl in response when appBaseUrl is set', async () => {
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'New task',
+        description: 'test',
+      },
+      createMockContext({ appBaseUrl: 'https://buildd.dev' }),
+    );
+
+    expect(result.content[0].text).toContain('https://buildd.dev/app/tasks/task-new');
+  });
+
+  it('includes taskUrl using default base URL when appBaseUrl not set', async () => {
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'New task',
+        description: 'test',
+      },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).toContain('https://buildd.dev/app/tasks/task-new');
+  });
 });
