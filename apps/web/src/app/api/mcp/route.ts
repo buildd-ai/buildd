@@ -346,8 +346,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       },
       {
         uri: "buildd://workspace/workflows",
-        name: "Workflow Recipes",
-        description: "Reusable workflow patterns (fan-out, sequential, release) — use create_recipe + run_recipe to orchestrate",
+        name: "Workflow Patterns",
+        description: "Reusable workflow patterns (fan-out, sequential, release)",
         mimeType: "text/plain",
       },
     ],
@@ -411,7 +411,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             text: [
               "# Workflow Recipes",
               "",
-              "Use `create_recipe` to save these patterns, then `run_recipe` to instantiate them as tasks.",
+              "Use `create_task` with dependsOn to chain tasks into these patterns.",
               "",
               "## Fan-Out & Merge",
               "Break work into parallel sub-tasks, then merge results.",

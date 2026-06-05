@@ -295,6 +295,13 @@
       "when": 1780538571993,
       "tag": "0041_tranquil_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1780659095804,
+      "tag": "0042_short_corsair",
+      "breakpoints": true
     }
   ]
 }

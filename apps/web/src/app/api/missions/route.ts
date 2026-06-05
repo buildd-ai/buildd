@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
+    const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks } = body;
 
     if (!title) {
@@ -185,7 +185,6 @@ export async function POST(req: NextRequest) {
       const nextRunAt = computeNextRunAt(effectiveCron, 'UTC');
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
-      if (recipeId) templateContext.recipeId = recipeId;
       if (outputSchema) templateContext.outputSchema = outputSchema;
       if (model) templateContext.model = model;
       if (effectiveHeartbeat) {
