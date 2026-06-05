@@ -738,6 +738,11 @@ export interface ClaimTasksInput {
   runner: string;
   environment?: WorkerEnvironment;
   availableSkills?: string[]; // skill slugs this runner can execute
+  // Explicit opt-in for a multi-workspace OAuth token to claim the next pending
+  // task across ALL its accessible workspaces in one call (server ranks/picks).
+  // Distinguishes a deliberate cross-workspace runner poll from an accidental
+  // ambiguous claim (the 2026-05-25 misroute class), which stays rejected.
+  claimAcrossAccessible?: boolean;
 }
 
 export type ClaimDiagnosticReason =

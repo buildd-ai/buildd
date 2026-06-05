@@ -316,6 +316,33 @@ describe('POST /api/workers/claim', () => {
     expect(data.accessibleWorkspaces).toBe(2);
   });
 
+  it('allows OAuth claim across >1 accessible workspaces when claimAcrossAccessible is set', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    // 2 accessible workspaces — would trip the guard without the explicit opt-in
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-restricted', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-open' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-open', accessMode: 'open', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', claimAcrossAccessible: true },  // explicit cross-workspace intent
+    });
+    const res = await POST(req);
+
+    // Should NOT be 400 — caller explicitly opted into cross-workspace claiming
+    expect(res.status).toBe(200);
+  });
+
   it('allows OAuth claim without workspaceId when only 1 workspace is accessible', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
