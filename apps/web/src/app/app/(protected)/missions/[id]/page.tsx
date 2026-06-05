@@ -156,7 +156,6 @@ export default async function MissionDetailPage({
 
   // Configuration from schedule template
   const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
-  const recipeId = (templateContext?.recipeId as string) || null;
   const configModel = (templateContext?.model as string) || null;
   const outputSchema = (templateContext?.outputSchema as unknown) || null;
 
@@ -433,7 +432,6 @@ export default async function MissionDetailPage({
             missionId={id}
             workspaceId={mission.workspaceId}
             skillSlugs={skillSlugs}
-            recipeId={recipeId}
             model={configModel}
             outputSchema={outputSchema}
             workspaces={teamWorkspaces}

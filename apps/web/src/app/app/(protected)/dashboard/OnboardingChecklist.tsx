@@ -59,8 +59,8 @@ export default function OnboardingChecklist({
     },
     {
       id: 'task',
-      label: 'Create your first task or recipe',
-      description: 'Assign work to an agent, or build a reusable Recipe template',
+      label: 'Create your first task',
+      description: 'Assign work to an agent',
       done: hasCompletedTask,
       href: '/app/tasks/new',
       external: false,
