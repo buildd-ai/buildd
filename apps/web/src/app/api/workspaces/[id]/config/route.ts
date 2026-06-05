@@ -111,6 +111,15 @@ export async function POST(
             requiresPR: body.requiresPR ?? false,
             targetBranch: body.targetBranch || undefined,
             autoCreatePR: body.autoCreatePR ?? false,
+            autoMergePR: body.autoMergePR ?? false,
+            // Safety rails for autoMergePR (optional; not yet surfaced in the form
+            // but accepted here so they can be configured via the API).
+            ...(Array.isArray(body.autoMergeDenyPaths)
+                ? { autoMergeDenyPaths: body.autoMergeDenyPaths.filter((p: unknown) => typeof p === 'string') }
+                : {}),
+            ...(typeof body.autoMergeMaxLines === 'number' && body.autoMergeMaxLines > 0
+                ? { autoMergeMaxLines: body.autoMergeMaxLines }
+                : {}),
 
             // Agent instructions
             agentInstructions: body.agentInstructions || undefined,

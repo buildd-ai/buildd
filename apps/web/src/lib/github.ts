@@ -296,6 +296,30 @@ export async function allCheckSuitesPassed(
   }
 }
 
+// Returns true if the commit has at least one CI check suite registered (any
+// status), false if it has none. Lets auto-merge distinguish "CI exists, wait
+// for it" from "no CI configured, nothing will ever report" — so a PR on a repo
+// without CI isn't blocked forever waiting on a check_suite event that never
+// fires. Errs toward `true` (assume CI exists) on API failure, so a transient
+// error never results in a merge that skipped checks.
+export async function hasCheckSuites(
+  installationId: number,
+  repoFullName: string,
+  headSha: string
+): Promise<boolean> {
+  try {
+    const data = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/commits/${headSha}/check-suites`
+    );
+    const suites = data.check_suites as Array<unknown> | undefined;
+    return Array.isArray(suites) && suites.length > 0;
+  } catch (error) {
+    console.warn(`Failed to fetch check suites for ${repoFullName}@${headSha}:`, error);
+    return true;
+  }
+}
+
 // Types for webhook events
 export interface GitHubInstallationEvent {
   action: 'created' | 'deleted' | 'suspend' | 'unsuspend' | 'new_permissions_accepted';

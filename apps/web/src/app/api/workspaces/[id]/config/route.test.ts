@@ -196,6 +196,31 @@ describe('POST /api/workspaces/[id]/config', () => {
     const data = await res.json();
     expect(data.gitConfig.defaultBranch).toBe('main');
     expect(data.gitConfig.branchingStrategy).toBe('feature');
+    // Auto-merge defaults off when not provided
+    expect(data.gitConfig.autoMergePR).toBe(false);
+  });
+
+  it('persists autoMergePR and its safety rails', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        autoMergePR: true,
+        autoMergeMaxLines: 500,
+        autoMergeDenyPaths: ['drizzle/', 'src/lib/auth/', 123],
+      }),
+    });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.autoMergePR).toBe(true);
+    expect(data.gitConfig.autoMergeMaxLines).toBe(500);
+    // Non-string deny-path entries are filtered out
+    expect(data.gitConfig.autoMergeDenyPaths).toEqual(['drizzle/', 'src/lib/auth/']);
   });
 
 });
