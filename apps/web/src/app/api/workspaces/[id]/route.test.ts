@@ -242,6 +242,24 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 
+  it('merges partial gitConfig via API key auth, preserving existing fields', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    // Same mock answers the team check (teamId) and the gitConfig merge read.
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { defaultBranch: 'dev', autoCreatePR: true } });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { gitConfig: { autoMergePR: true } },
+      headers: { authorization: 'Bearer bld_testkey123' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Existing fields preserved, new flag merged in
+    expect(capturedUpdates.gitConfig).toEqual({ defaultBranch: 'dev', autoCreatePR: true, autoMergePR: true });
+  });
+
   it('returns 404 when API key team does not match workspace team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
