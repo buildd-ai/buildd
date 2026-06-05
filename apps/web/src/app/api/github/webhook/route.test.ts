@@ -6,6 +6,10 @@ import { NextRequest } from 'next/server';
 // ── Mock functions ──────────────────────────────────────────────────────────
 const mockVerifyWebhookSignature = mock(() => Promise.resolve(true));
 const mockGithubApi = mock(() => Promise.resolve(null) as any);
+const mockAllCheckSuitesPassed = mock(() => Promise.resolve(true));
+const mockHasCheckSuites = mock(() => Promise.resolve(false));
+const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'ok' }));
+const mockNotifyMissionPrReady = mock(() => Promise.resolve());
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -21,9 +25,14 @@ let updateCalls: Array<{ table: any; setValues: any }> = [];
 // ── Module mocks (must be before route import) ──────────────────────────────
 mock.module('@/lib/github', () => ({
   verifyWebhookSignature: mockVerifyWebhookSignature,
-  allCheckSuitesPassed: mock(() => Promise.resolve(true)),
-  mergePullRequest: mock(() => Promise.resolve({ merged: true, message: 'ok' })),
+  allCheckSuitesPassed: mockAllCheckSuitesPassed,
+  hasCheckSuites: mockHasCheckSuites,
+  mergePullRequest: mockMergePullRequest,
   githubApi: mockGithubApi,
+}));
+
+mock.module('@/lib/mission-notifications', () => ({
+  notifyMissionPrReady: mockNotifyMissionPrReady,
 }));
 
 mock.module('@/lib/task-dispatch', () => ({
@@ -169,6 +178,10 @@ function makeCheckSuitePayload(overrides: Record<string, any> = {}) {
 function resetAll() {
   mockVerifyWebhookSignature.mockReset();
   mockGithubApi.mockReset();
+  mockAllCheckSuitesPassed.mockReset();
+  mockHasCheckSuites.mockReset();
+  mockMergePullRequest.mockReset();
+  mockNotifyMissionPrReady.mockReset();
   mockDispatchNewTask.mockReset();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -189,6 +202,10 @@ function resetAll() {
   mockWorkersFindFirst.mockReturnValue(null);
   mockTasksFindFirst.mockReturnValue(null);
   mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+  mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
+  mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+  mockMergePullRequest.mockReturnValue(Promise.resolve({ merged: true, message: 'ok' }));
+  mockNotifyMissionPrReady.mockReturnValue(Promise.resolve());
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -473,6 +490,90 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
+    });
+  });
+
+  // ── Pull request auto-merge (no-CI repos) ────────────────────────────────
+  describe('pull_request auto-merge for repos without CI', () => {
+    function makePullRequestPayload(overrides: Record<string, any> = {}) {
+      return {
+        action: 'opened',
+        pull_request: {
+          number: 7,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc12345-fix', sha: 'sha-7' },
+          html_url: 'https://github.com/test-org/test-repo/pull/7',
+          ...overrides.pull_request,
+        },
+        repository: { full_name: 'test-org/test-repo', ...overrides.repository },
+        installation: { id: 5000, ...overrides.installation },
+        ...overrides.top,
+      };
+    }
+
+    function withAutoMergeWorkspaceAndWorker(gitConfig: Record<string, any> = { autoMergePR: true }) {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
+      // PR files fetch (safety rails) — empty diff passes the line budget
+      mockGithubApi.mockReturnValue(Promise.resolve([]));
+    }
+
+    it('auto-merges a newly-opened PR when the repo has no CI', async () => {
+      withAutoMergeWorkspaceAndWorker();
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('defers to check_suite when the repo has CI', async () => {
+      withAutoMergeWorkspaceAndWorker();
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(true));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-merge draft PRs', async () => {
+      withAutoMergeWorkspaceAndWorker();
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const payload = makePullRequestPayload({ pull_request: { draft: true } });
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockHasCheckSuites).not.toHaveBeenCalled();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when autoMergePR is disabled', async () => {
+      withAutoMergeWorkspaceAndWorker({ autoMergePR: false });
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('blocks merge and notifies when the diff exceeds the line budget', async () => {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+      mockTasksFindFirst.mockReturnValue({ missionId: 'm1', title: 'Big task' });
+      // Oversized diff → safety rail trips
+      mockGithubApi.mockReturnValue(Promise.resolve([{ filename: 'src/big.ts', additions: 500, deletions: 0 }]));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
   });
 });
