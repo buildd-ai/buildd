@@ -604,7 +604,11 @@ export class WorkerManager {
     if (slots <= 0) return [];
 
     try {
-      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl);
+      // No specific workspace: this is the autonomous cross-workspace poll. Opt
+      // in explicitly so a multi-workspace OAuth token is allowed to claim the
+      // next pending task across all accessible workspaces (server ranks/picks),
+      // rather than being rejected by the ambiguous-claim guard.
+      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true);
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since

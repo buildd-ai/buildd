@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body: ClaimTasksInput = await req.json();
-  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [] } = body;
+  let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
@@ -120,7 +120,13 @@ export async function POST(req: NextRequest) {
   // MCP-originated claims, but anything else calling /api/workers/claim with
   // an OAuth multi-workspace token and no workspaceId would still trigger the
   // ambiguous-routing bug. Reject at the API boundary too.
-  if (account.authType === 'oauth' && !workspaceId) {
+  //
+  // claimAcrossAccessible is an explicit opt-in for the legitimate case: a
+  // single runner that serves N workspaces and deliberately wants the next
+  // pending task across all of them (ranked/picked below). That is declared
+  // intent, not the accidental ambiguity the guard targets — so allow it while
+  // still rejecting silent multi-workspace claims (e.g. a misconfigured MCP).
+  if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
     // Also count open workspaces — those are claimable by any account
