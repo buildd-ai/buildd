@@ -128,7 +128,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
     list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
@@ -1985,6 +1985,17 @@ export async function handleBuilddAction(
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
           if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
 
+          // Partial gitConfig: accept a gitConfig object and/or the common
+          // autoMergePR shortcut. Shallow-merged server-side (PATCH), so other
+          // gitConfig fields are preserved.
+          const gitConfig: Record<string, unknown> = {
+            ...(params.gitConfig && typeof params.gitConfig === 'object' ? params.gitConfig as Record<string, unknown> : {}),
+          };
+          if (params.autoMergePR !== undefined) gitConfig.autoMergePR = params.autoMergePR;
+          if (params.autoMergeMaxLines !== undefined) gitConfig.autoMergeMaxLines = params.autoMergeMaxLines;
+          if (params.autoMergeDenyPaths !== undefined) gitConfig.autoMergeDenyPaths = params.autoMergeDenyPaths;
+          if (Object.keys(gitConfig).length > 0) body.gitConfig = gitConfig;
+
           // releaseConfig goes to the config endpoint; everything else to the workspace endpoint
           if (body.releaseConfig !== undefined) {
             await api(`/api/workspaces/${wsId}/config`, {
@@ -2001,7 +2012,7 @@ export async function handleBuilddAction(
               body: JSON.stringify(body),
             });
           }
-          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}`);
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}${body.gitConfig ? ` gitConfig merged: ${JSON.stringify(gitConfig)}.` : ''}`);
         }
         case 'create_repo': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);

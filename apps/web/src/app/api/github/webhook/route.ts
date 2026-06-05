@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 
@@ -277,45 +278,14 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           continue;
         }
 
-        // Safety rails: deny paths + line budget. If violated, notify instead of merge.
-        const safetyCheck = await evaluateAutoMergeSafety(
-          installation.id,
-          repository.full_name,
-          pr.number,
-          workspace.gitConfig,
-        );
-        if (!safetyCheck.ok) {
-          console.log(`Auto-merge blocked for ${repository.full_name}#${pr.number}: ${safetyCheck.reason}`);
-          const task = await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId!),
-            columns: { missionId: true, title: true },
-          });
-          if (task?.missionId) {
-            await notifyMissionPrReady(task.missionId, {
-              title: 'Auto-merge blocked — review needed',
-              prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
-              prNumber: pr.number,
-              headSha,
-              reason: 'auto_merge_blocked',
-              message: `${task.title} — ${safetyCheck.reason}`,
-            });
-          }
-          continue;
-        }
-
-        // Merge the PR
-        const result = await mergePullRequest(
-          installation.id,
-          repository.full_name,
-          pr.number,
-          'squash',
-        );
-
-        if (result.merged) {
-          console.log(`Auto-merged PR #${pr.number} on ${repository.full_name} for worker ${worker.id}`);
-        } else {
-          console.warn(`Failed to auto-merge PR #${pr.number} on ${repository.full_name}: ${result.message}`);
-        }
+        await tryAutoMergeWorkerPr({
+          installationId: installation.id,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          headSha,
+          worker,
+          gitConfig: workspace.gitConfig,
+        });
       }
     } catch (error) {
       console.error(`Error processing check_suite for PR #${pr.number} on ${repository.full_name}:`, error);
@@ -328,17 +298,33 @@ async function handlePullRequestEvent(event: {
   pull_request: {
     number: number;
     merged: boolean;
-    head: { ref: string };
+    draft?: boolean;
+    head: { ref: string; sha: string };
     html_url: string;
   };
+  installation?: { id: number };
   repository: { full_name: string };
 }) {
-  // Only handle merged PRs
-  if (event.action !== 'closed' || !event.pull_request.merged) {
+  const { action, pull_request: pr, repository } = event;
+
+  // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
+  // because no check_suite event will ever fire to trigger the CI-gated path —
+  // otherwise the PR would sit open forever. Repos WITH CI are left to the
+  // check_suite handler, which waits for green.
+  if (
+    !pr.merged &&
+    !pr.draft &&
+    event.installation &&
+    (action === 'opened' || action === 'reopened' || action === 'ready_for_review')
+  ) {
+    await maybeAutoMergeNoCiPr(event.installation.id, repository.full_name, pr);
     return;
   }
 
-  const { pull_request: pr, repository } = event;
+  // Only handle merged PRs beyond this point
+  if (action !== 'closed' || !pr.merged) {
+    return;
+  }
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)
   const worker = await db.query.workers.findFirst({
@@ -373,6 +359,97 @@ async function handlePullRequestEvent(event: {
         .where(eq(tasks.id, matchingTask.id));
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
     }
+  }
+}
+
+// For a newly-opened worker PR on a repo with no CI, attempt auto-merge now.
+// Repos that DO have CI are skipped here and handled by the check_suite path
+// once checks go green.
+async function maybeAutoMergeNoCiPr(
+  installationId: number,
+  repoFullName: string,
+  pr: { number: number; head: { sha: string } },
+): Promise<void> {
+  const linkedWorkspaces = await db.query.workspaces.findMany({
+    where: eq(workspaces.repo, repoFullName),
+  });
+
+  for (const workspace of linkedWorkspaces) {
+    if (!workspace.gitConfig?.autoMergePR) {
+      continue;
+    }
+
+    // Only auto-merge PRs created by a Buildd worker in this workspace.
+    const worker = await db.query.workers.findFirst({
+      where: and(
+        eq(workers.workspaceId, workspace.id),
+        eq(workers.prNumber, pr.number),
+      ),
+    });
+    if (!worker) {
+      continue;
+    }
+
+    // If CI exists for this commit, defer to the check_suite handler (it waits
+    // for green). Only proceed when there are genuinely no checks to wait on.
+    const ciExists = await hasCheckSuites(installationId, repoFullName, pr.head.sha);
+    if (ciExists) {
+      console.log(`PR #${pr.number} on ${repoFullName} has CI — deferring auto-merge to check_suite`);
+      continue;
+    }
+
+    console.log(`PR #${pr.number} on ${repoFullName} has no CI — attempting immediate auto-merge`);
+    await tryAutoMergeWorkerPr({
+      installationId,
+      repoFullName,
+      prNumber: pr.number,
+      headSha: pr.head.sha,
+      worker,
+      gitConfig: workspace.gitConfig,
+    });
+  }
+}
+
+// Shared auto-merge step: enforce safety rails (deny paths + line budget), then
+// squash-merge. On a rail violation, notify the mission instead of merging.
+// Used by both the check_suite (CI-green) path and the no-CI open-PR path.
+async function tryAutoMergeWorkerPr(params: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+  worker: { id: string; taskId: string | null };
+  gitConfig: WorkspaceGitConfig | null | undefined;
+}): Promise<void> {
+  const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
+
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, gitConfig);
+  if (!safetyCheck.ok) {
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
+    if (worker.taskId) {
+      const task = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true, title: true },
+      });
+      if (task?.missionId) {
+        await notifyMissionPrReady(task.missionId, {
+          title: 'Auto-merge blocked — review needed',
+          prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
+          prNumber,
+          headSha,
+          reason: 'auto_merge_blocked',
+          message: `${task.title} — ${safetyCheck.reason}`,
+        });
+      }
+    }
+    return;
+  }
+
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
+  if (result.merged) {
+    console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
+  } else {
+    console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
   }
 }
 

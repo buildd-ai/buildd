@@ -87,7 +87,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId } = body;
+    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId, gitConfig } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -125,6 +125,17 @@ export async function PATCH(
     if (branchValue !== undefined) updates.localPath = branchValue;
     if (accessMode !== undefined) updates.accessMode = accessMode;
     if (discordConfig !== undefined) updates.discordConfig = discordConfig;
+
+    // Partial gitConfig merge (e.g. { autoMergePR: true }). Reads the existing
+    // gitConfig and shallow-merges the provided keys, so a one-flag update can't
+    // clobber the rest of the config — unlike the form's full-rebuild POST.
+    if (gitConfig !== undefined && gitConfig !== null && typeof gitConfig === 'object' && !Array.isArray(gitConfig)) {
+      const current = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, id),
+        columns: { gitConfig: true },
+      });
+      updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
+    }
 
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
 

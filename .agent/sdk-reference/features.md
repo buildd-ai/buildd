@@ -1,13 +1,33 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-01
-**Covering**: v0.2.114 → v0.3.159
+**Last updated**: 2026-06-05
+**Covering**: v0.2.114 → v0.3.162
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.159 (2026-05-31) — current latest
+### v0.3.162 (2026-06-03) — current latest
+- **Parity with Claude Code v2.1.162**
+- **`claude agents --json` adds `waitingFor` field**: Programmatic callers can now read what a waiting session is blocked on (e.g. tool name or input prompt)
+- **`WebFetch(domain:...)` permission rules take precedence over preapproved hosts**: Explicit domain rules now override blanket preapprovals — more precise permission control
+- Bug fixes: Windows permission rules not matching backslashes/case-variant paths; MCP per-server `timeout` values below 1000ms incorrectly floored; `claude agents` truncating long session names; image paste (`Ctrl+V`) failing in agents view
+- Quieter startup with grouped notices and clearer startup warnings
+
+### v0.3.161 (2026-06-02)
+- **Parity with Claude Code v2.1.161**
+- **`OTEL_RESOURCE_ATTRIBUTES` values included as metric labels**: Custom dimension slicing in OpenTelemetry dashboards
+- **`claude agents` progress view**: Rows now show `done/total` count and longest-running item in peek
+- **Parallel tool calls: failed Bash commands no longer cancel sibling calls**: Improves resilience when one parallel command errors
+- Bug fixes: `/effort` dialog motion setting, background subagent output corrupting `claude -p` stdout, OpenTelemetry log events dropped before init, `claude mcp` commands printing secrets
+
+### v0.3.160 (2026-06-02)
+- **Parity with Claude Code v2.1.160**
+- **Safety prompts before writing to shell startup files** (`.zshenv`, `.bash_login`, etc.): Extra guard before modifying shell init scripts
+- **`acceptEdits` mode prompts before writing build-tool config files**: Additional confirmation step for build config changes
+- Bug fixes: background sessions dropping chat history on reattach, Windows clipboard with WSL, keyboard responsiveness under heavy CPU load, CJK IME composition in agents view
+
+### v0.3.159 (2026-05-31)
 - **Parity with Claude Code v2.1.159** — internal infrastructure improvements, no user-facing changes
 
 ### v0.3.158 (2026-05-30)
