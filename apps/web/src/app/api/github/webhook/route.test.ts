@@ -89,6 +89,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
@@ -448,14 +449,92 @@ describe('POST /api/github/webhook', () => {
 
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
-    it('logs CI failure without creating retry tasks', async () => {
+    // Helpers for the CI-failure → retry-task path.
+    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null } = {}) {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
+        task: {
+          id: 't1', title: 'Fix the thing', description: 'orig desc',
+          workspaceId: 'ws1', missionId: opts.missionId ?? 'm1',
+          context: opts.taskCtx ?? {},
+        },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: opts.gitConfig ?? {} });
+      // PR-files / runs lookups return a non-array → draft=false, no logs (fallback context)
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+      mockTasksFindFirst.mockReturnValue(null); // no existing in-flight retry
+    }
+
+    it('skips CI retry when no buildd worker owns the PR', async () => {
+      // Default worker mock is null → nothing to retry
       const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
       const res = await POST(req);
 
       expect(res.status).toBe(200);
-      // No retry tasks created — CI retry infrastructure removed
       expect(insertCalls.length).toBe(0);
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('creates and dispatches a CI fix task when CI fails on a worker PR', async () => {
+      withFailedWorkerPr();
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      const inserted = insertCalls[0].values;
+      expect(inserted.title).toBe('[CI Retry #1] Fix the thing');
+      expect(inserted.parentTaskId).toBe('t1');
+      expect(inserted.missionId).toBe('m1');
+      expect((inserted.context as any).iteration).toBe(1);
+      expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('dedupes — skips when a retry task is already in flight', async () => {
+      withFailedWorkerPr();
+      mockTasksFindFirst.mockReturnValue({ id: 'existing-retry' });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('skips CI retry for draft PRs', async () => {
+      withFailedWorkerPr();
+      mockGithubApi.mockReturnValue(Promise.resolve({ draft: true }));
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('fails the task and notifies the mission when retries are exhausted', async () => {
+      // iteration already at the max → buildCIRetryTask returns null
+      withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry when maxCiRetries is 0 (disabled)', async () => {
+      withFailedWorkerPr({ gitConfig: { maxCiRetries: 0 } });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      // exhausted/disabled path marks the task failed
+      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
     });
 
     it('ignores non-completed check_suite actions', async () => {
