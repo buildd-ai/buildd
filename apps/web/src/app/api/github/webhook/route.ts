@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, inArray } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
+import { buildCIRetryTask } from '@/lib/ci-retry';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -230,10 +231,11 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   const headSha = check_suite.head_sha;
 
-  // CI failures are logged but no longer trigger automatic retry tasks.
-  // Verification retries are handled in-session by the runner's ralph-loop pattern.
+  // CI failure on a worker's PR → spawn a bounded fix task (Ralph loop) and
+  // dispatch it to a runner immediately. Real-time via this webhook — no waiting
+  // on the hourly mission cron. Honors gitConfig.maxCiRetries (0 disables).
   if (check_suite.conclusion === 'failure') {
-    console.log(`CI check suite failed on ${repository.full_name} (SHA: ${headSha}) — no retry task created`);
+    await handleCheckSuiteFailure(check_suite, repository, installation.id);
     return;
   }
 
@@ -359,6 +361,190 @@ async function handlePullRequestEvent(event: {
         .where(eq(tasks.id, matchingTask.id));
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
     }
+  }
+}
+
+/**
+ * CI check suite failed → create a bounded fix task for the buildd worker's PR
+ * and dispatch it to a runner. Part of the Ralph loop: CI fails → fix task →
+ * agent fixes on the same branch → CI re-runs → (with autoMergePR) merges.
+ *
+ * Guard rails:
+ * - Only acts on PRs created by a buildd worker.
+ * - Skips draft PRs (not ready for CI feedback).
+ * - Dedupes — skips if a pending/in-progress child task already exists.
+ * - Honors gitConfig.maxCiRetries (default 3; 0 disables). On exhaustion, marks
+ *   the original task failed and notifies the mission instead of looping.
+ */
+async function handleCheckSuiteFailure(
+  checkSuite: GitHubCheckSuiteEvent['check_suite'],
+  repository: GitHubCheckSuiteEvent['repository'],
+  installationId: number,
+) {
+  for (const pr of checkSuite.pull_requests) {
+    try {
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.prNumber, pr.number),
+        with: { task: true },
+      });
+      if (!worker?.task) {
+        continue;
+      }
+      const task = worker.task;
+
+      const workspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, task.workspaceId),
+      });
+      if (!workspace) {
+        console.log(`No workspace found for task ${task.id}, skipping CI retry`);
+        continue;
+      }
+
+      // Guard: skip draft PRs — not ready for CI feedback.
+      const isDraft = await checkPrIsDraft(installationId, repository.full_name, pr.number);
+      if (isDraft) {
+        console.log(`Skipping CI retry for draft PR #${pr.number} on ${repository.full_name}`);
+        continue;
+      }
+
+      // Guard: dedupe — don't pile on if a fix task is already queued/running.
+      const existingRetry = await db.query.tasks.findFirst({
+        where: and(
+          eq(tasks.parentTaskId, task.id),
+          inArray(tasks.status, ['pending', 'in_progress']),
+        ),
+        columns: { id: true },
+      });
+      if (existingRetry) {
+        console.log(`Skipping CI retry for task ${task.id} — child task ${existingRetry.id} already in flight`);
+        continue;
+      }
+
+      const ciLogs = await fetchCIFailureLogs(installationId, repository.full_name, checkSuite.head_sha);
+      const failureContext = ciLogs ||
+        `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`;
+
+      const retryTask = buildCIRetryTask({
+        originalTask: {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          workspaceId: task.workspaceId,
+          context: (task.context as Record<string, unknown>) || {},
+          missionId: task.missionId ?? null,
+        },
+        worker: { id: worker.id, branch: worker.branch, prNumber: worker.prNumber },
+        failureContext,
+        repoFullName: repository.full_name,
+        workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
+      });
+
+      if (!retryTask) {
+        // Retries exhausted (or disabled) — fail the task and escalate to a human.
+        console.log(`CI retries exhausted/disabled for task ${task.id} on ${repository.full_name}#${pr.number}`);
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            result: { summary: `CI failed after max retries on PR #${pr.number}.\n\n${failureContext}` },
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, task.id));
+        if (task.missionId) {
+          await notifyMissionPrReady(task.missionId, {
+            title: 'CI failing — retries exhausted',
+            prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
+            prNumber: pr.number,
+            headSha: checkSuite.head_sha,
+            reason: 'ci_failed',
+            message: `${task.title} — CI still failing after max retries. Needs a human.`,
+          });
+        }
+        continue;
+      }
+
+      const [newTask] = await db
+        .insert(tasks)
+        .values({
+          workspaceId: retryTask.workspaceId,
+          title: retryTask.title,
+          description: retryTask.description,
+          parentTaskId: retryTask.parentTaskId,
+          missionId: retryTask.missionId,
+          context: retryTask.context,
+          creationSource: retryTask.creationSource,
+          status: 'pending',
+          priority: 7, // CI fix is urgent
+        })
+        .returning();
+
+      if (newTask) {
+        await dispatchNewTask(newTask, workspace);
+        console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+      }
+    } catch (error) {
+      console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
+    }
+  }
+}
+
+// Check if a PR is a draft via the GitHub API. Fails open (returns false).
+async function checkPrIsDraft(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<boolean> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    return pr?.draft === true;
+  } catch (error) {
+    console.warn(`Failed to check draft status for PR #${prNumber} on ${repoFullName}:`, error);
+    return false;
+  }
+}
+
+// Fetch failed-job/step names from GitHub Actions for actionable retry context.
+// Returns null if logs can't be fetched.
+async function fetchCIFailureLogs(
+  installationId: number,
+  repoFullName: string,
+  headSha: string,
+): Promise<string | null> {
+  try {
+    const runsData = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&status=failure`,
+    );
+    if (!runsData?.workflow_runs?.length) {
+      return null;
+    }
+
+    const run = runsData.workflow_runs[0];
+    const jobsData = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/actions/runs/${run.id}/jobs`,
+    );
+    if (!jobsData?.jobs?.length) {
+      return null;
+    }
+
+    const failedJobs: string[] = [];
+    for (const job of jobsData.jobs) {
+      if (job.conclusion === 'failure') {
+        const failedSteps = (job.steps || [])
+          .filter((s: { conclusion?: string }) => s.conclusion === 'failure')
+          .map((s: { name?: string }) => `  - Step "${s.name}" failed`)
+          .join('\n');
+        failedJobs.push(`Job "${job.name}" failed${failedSteps ? ':\n' + failedSteps : ''}`);
+      }
+    }
+    if (failedJobs.length === 0) {
+      return null;
+    }
+    return `CI failed on ${repoFullName} (run: ${run.html_url})\n\n${failedJobs.join('\n\n')}`;
+  } catch (error) {
+    console.warn(`Failed to fetch CI logs for ${repoFullName}@${headSha}:`, error);
+    return null;
   }
 }
 

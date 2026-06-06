@@ -16,7 +16,7 @@ export async function notifyMissionPrReady(
     prUrl: string;
     prNumber: number;
     headSha: string;
-    reason: 'pr_open' | 'auto_merge_blocked' | 'awaiting_review';
+    reason: 'pr_open' | 'auto_merge_blocked' | 'awaiting_review' | 'ci_failed';
     message: string;
   },
 ): Promise<{ notified: boolean }> {
@@ -44,7 +44,7 @@ export async function notifyMissionPrReady(
     message: opts.message,
     url: opts.prUrl,
     urlTitle: `Review PR #${opts.prNumber}`,
-    priority: opts.reason === 'auto_merge_blocked' ? 0 : -1,
+    priority: (opts.reason === 'auto_merge_blocked' || opts.reason === 'ci_failed') ? 0 : -1,
   });
 
   return { notified: true };
