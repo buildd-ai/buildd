@@ -27,6 +27,9 @@ export interface CIRetryParams {
   };
   failureContext: string;
   repoFullName: string;
+  /** GitHub Actions run id/url for the failed run — lets the agent pull scoped logs via `gh run view`. */
+  ciRunId?: number | null;
+  ciRunUrl?: string | null;
   /** Workspace-level max CI retries (from gitConfig.maxCiRetries). Overrides task-level maxIterations. 0 disables. */
   workspaceMaxCiRetries?: number;
 }
@@ -48,7 +51,7 @@ export interface CIRetryTask {
  * which prevents infinite retry loops.
  */
 export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
-  const { originalTask, worker, failureContext, repoFullName, workspaceMaxCiRetries } = params;
+  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, workspaceMaxCiRetries } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
@@ -70,7 +73,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: `[CI Retry #${nextIteration}] ${cleanTitle}`,
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, nextIteration, maxIterations),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, nextIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -84,6 +87,9 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
       iteration: nextIteration,
       maxIterations,
       failureContext,
+      // CI run reference for on-demand log pulls
+      ...(ciRunId ? { ciRunId } : {}),
+      ...(ciRunUrl ? { ciRunUrl } : {}),
       // Preserve verification command if set
       ...(ctx.verificationCommand ? { verificationCommand: ctx.verificationCommand } : {}),
       // PR reference
@@ -100,21 +106,35 @@ function buildRetryDescription(
   repoFullName: string,
   iteration: number,
   maxIterations: number,
+  ciRunId: number | null,
+  ciRunUrl: string | null,
 ): string {
+  // Don't ship the full (verbose) log — point the agent at `gh run view`, which
+  // returns only the failed steps' output, so it pulls just what it needs.
+  const logSection = ciRunId
+    ? `## Pull the failing logs (failed steps only)
+
+\`\`\`bash
+gh run view ${ciRunId} --repo ${repoFullName} --log-failed
+\`\`\`
+Grep or tail if the output is large — don't dump the whole thing.${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
+`
+    : '';
+
   return `CI checks failed on the PR for "${task.title}" (${repoFullName}).
 
 **Attempt ${iteration} of ${maxIterations}.**
 
-## CI Failure Output
+## What failed
 
 \`\`\`
 ${failureContext}
 \`\`\`
 
-## Instructions
+${logSection}## Instructions
 
 1. Check out the existing branch — your worktree is based on the previous attempt's work
-2. Read the CI failure output above carefully
+2. ${ciRunId ? 'Pull the failing logs with the command above and read them carefully' : 'Read the failure summary above carefully'}
 3. Fix the failing tests/build/lint issues
 4. Run the verification command locally before completing
 5. Push your fixes to the existing branch (the PR will auto-update)

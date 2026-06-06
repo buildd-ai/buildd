@@ -62,6 +62,20 @@ describe('buildCIRetryTask', () => {
     expect(t!.context.iteration).toBe(2);
   });
 
+  it('embeds a scoped `gh run view --log-failed` command when a run id is provided', () => {
+    const t = buildCIRetryTask({ ...baseParams, ciRunId: 12345, ciRunUrl: 'https://github.com/org/repo/actions/runs/12345' });
+    expect(t!.description).toContain('gh run view 12345 --repo org/repo --log-failed');
+    expect(t!.description).toContain('failed steps only');
+    expect(t!.context.ciRunId).toBe(12345);
+    expect(t!.context.ciRunUrl).toBe('https://github.com/org/repo/actions/runs/12345');
+  });
+
+  it('omits the gh log section when no run id is available', () => {
+    const t = buildCIRetryTask(baseParams);
+    expect(t!.description).not.toContain('gh run view');
+    expect(t!.context.ciRunId).toBeUndefined();
+  });
+
   it('preserves verificationCommand and skillSlugs from the original task', () => {
     const t = buildCIRetryTask({
       ...baseParams,

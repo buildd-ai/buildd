@@ -421,7 +421,7 @@ async function handleCheckSuiteFailure(
       }
 
       const ciLogs = await fetchCIFailureLogs(installationId, repository.full_name, checkSuite.head_sha);
-      const failureContext = ciLogs ||
+      const failureContext = ciLogs.summary ||
         `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`;
 
       const retryTask = buildCIRetryTask({
@@ -436,6 +436,8 @@ async function handleCheckSuiteFailure(
         worker: { id: worker.id, branch: worker.branch, prNumber: worker.prNumber },
         failureContext,
         repoFullName: repository.full_name,
+        ciRunId: ciLogs.runId,
+        ciRunUrl: ciLogs.runUrl,
         workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
       });
 
@@ -503,29 +505,43 @@ async function checkPrIsDraft(
   }
 }
 
+interface CIFailureInfo {
+  /** Human-readable failed-job/step summary, or null if it couldn't be built. */
+  summary: string | null;
+  /** Actions run ID — lets the fix-task agent pull scoped logs via `gh run view`. */
+  runId: number | null;
+  runUrl: string | null;
+}
+
 // Fetch failed-job/step names from GitHub Actions for actionable retry context.
-// Returns null if logs can't be fetched.
+// Returns the failing-step summary plus the run id/url so the agent can pull the
+// scoped logs itself (`gh run view <id> --log-failed`) rather than us shipping
+// the full, verbose log down. Fields are null when nothing can be fetched.
 async function fetchCIFailureLogs(
   installationId: number,
   repoFullName: string,
   headSha: string,
-): Promise<string | null> {
+): Promise<CIFailureInfo> {
+  const empty: CIFailureInfo = { summary: null, runId: null, runUrl: null };
   try {
     const runsData = await githubApi(
       installationId,
       `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&status=failure`,
     );
     if (!runsData?.workflow_runs?.length) {
-      return null;
+      return empty;
     }
 
     const run = runsData.workflow_runs[0];
+    const runId = typeof run.id === 'number' ? run.id : null;
+    const runUrl = typeof run.html_url === 'string' ? run.html_url : null;
+
     const jobsData = await githubApi(
       installationId,
       `/repos/${repoFullName}/actions/runs/${run.id}/jobs`,
     );
     if (!jobsData?.jobs?.length) {
-      return null;
+      return { summary: null, runId, runUrl };
     }
 
     const failedJobs: string[] = [];
@@ -539,12 +555,16 @@ async function fetchCIFailureLogs(
       }
     }
     if (failedJobs.length === 0) {
-      return null;
+      return { summary: null, runId, runUrl };
     }
-    return `CI failed on ${repoFullName} (run: ${run.html_url})\n\n${failedJobs.join('\n\n')}`;
+    return {
+      summary: `CI failed on ${repoFullName} (run: ${runUrl})\n\n${failedJobs.join('\n\n')}`,
+      runId,
+      runUrl,
+    };
   } catch (error) {
     console.warn(`Failed to fetch CI logs for ${repoFullName}@${headSha}:`, error);
-    return null;
+    return empty;
   }
 }
 
