@@ -21,6 +21,7 @@ const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
 const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -49,10 +50,12 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findMany: mockArtifactsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
+      teams: { findFirst: mockTeamsFindFirst },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts') return mockAccountsUpdate();
+      if (table === 'teams') return mockTeamsUpdate();
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockTenantBudgetsInsert(),
@@ -73,6 +76,11 @@ const mockAccountsUpdate = mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+const mockTeamsUpdate = mock(() => ({
+  set: mock(() => ({
+    where: mock(() => Promise.resolve()),
+  })),
+}));
 const mockTenantBudgetsInsert = mock(() => ({
   values: mock(() => ({
     onConflictDoUpdate: mock(() => Promise.resolve()),
@@ -86,6 +94,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
   accounts: 'accounts',
+  teams: 'teams',
   tenantBudgets: { tenantId: 'tenantId', teamId: 'teamId' },
   missionNotes: 'missionNotes',
 }));
@@ -245,6 +254,7 @@ describe('PATCH /api/workers/[id]', () => {
     mockTriggerEvent.mockReset();
     mockUpsertAutoArtifact.mockReset();
     mockFormatStructuredOutput.mockReset();
+    mockTeamsFindFirst.mockReset();
 
     // Defaults
     mockUpsertAutoArtifact.mockResolvedValue(undefined);
@@ -1748,17 +1758,21 @@ describe('PATCH /api/workers/[id]', () => {
       .map((c: any) => c[0])
       .filter((o: any) => typeof o?.title === 'string' && o.title.includes('budget'));
 
-    function setupCompletion(account: Record<string, unknown>, worker: Record<string, unknown> = {}) {
+    function setupCompletion(
+      account: Record<string, unknown>,
+      team: Record<string, unknown> = {},
+      worker: Record<string, unknown> = {},
+    ) {
       mockNotify.mockClear();
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
-      let capturedAccountSet: any = null;
-      mockAccountsUpdate.mockReturnValue({
-        set: mock((v: any) => { capturedAccountSet = v; return { where: mock(() => Promise.resolve()) }; }),
+      let capturedTeamSet: any = null;
+      mockTeamsUpdate.mockReturnValue({
+        set: mock((v: any) => { capturedTeamSet = v; return { where: mock(() => Promise.resolve()) }; }),
       });
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', ...account });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', ...account });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
         taskId: 'task-1', branch: 'feature/test', commitCount: 0, prUrl: null, prNumber: null,
@@ -1766,13 +1780,23 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
       mockArtifactsFindMany.mockResolvedValue([]);
-      return () => capturedAccountSet;
+      // Return team with budget fields
+      mockTeamsFindFirst.mockResolvedValue({
+        id: 'team-1',
+        monthlyBudgetUsd: null,
+        monthlyCostUsd: '0',
+        monthlyCostMonth: null,
+        budgetAlertsSent: [],
+        ...team,
+      });
+      return () => capturedTeamSet;
     }
 
-    it('accumulates reported cost and fires the 50% threshold alert', async () => {
-      const getSet = setupCompletion({
-        monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [],
-      });
+    it('accumulates reported cost on the team row and fires the 50% threshold alert', async () => {
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
@@ -1782,6 +1806,8 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       const set = getSet();
+      // Team row should be updated (not account row)
+      expect(set).not.toBeNull();
       expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(55, 6);
       expect(set.budgetAlertsSent).toEqual([50]);
       const alerts = budgetNotifies();
@@ -1790,9 +1816,10 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('does not re-fire a threshold already alerted this month', async () => {
-      const getSet = setupCompletion({
-        monthlyBudgetUsd: '100', monthlyCostUsd: '55', monthlyCostMonth: monthKey, budgetAlertsSent: [50],
-      });
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '55', monthlyCostMonth: monthKey, budgetAlertsSent: [50] },
+      );
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
@@ -1808,9 +1835,10 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('falls back to a token-derived estimate when reported cost is $0 (OAuth case)', async () => {
-      const getSet = setupCompletion({
-        monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [],
-      });
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
 
       // 1M sonnet output tokens = $15 at list rates
       const req = createMockRequest({
@@ -1834,6 +1862,74 @@ describe('PATCH /api/workers/[id]', () => {
       const set = getSet();
       expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(15, 6);
       expect(budgetNotifies()).toHaveLength(0); // 15% < 50%
+    });
+
+    it('aggregates cost from a second account in the same team and crosses threshold once', async () => {
+      // Simulates: account-2 (same team) completed a task earlier, now account-1 completes another.
+      // The team row already has $45 accumulated (from account-2). account-1 adds $10 → crosses 50%.
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 10 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      // Team total is now $55 → crossed 50%
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(55, 6);
+      expect(set.budgetAlertsSent).toContain(50);
+      // Alert fired exactly once
+      expect(budgetNotifies()).toHaveLength(1);
+    });
+
+    it('budget is read from team row, not from account row', async () => {
+      // Account has no budget fields; team has a $200 budget with $150 already spent.
+      // Adding $20 → $170 = 85% → crosses 80% threshold (50% already sent).
+      const getSet = setupCompletion(
+        { /* account has no monthly budget fields */ },
+        { monthlyBudgetUsd: '200', monthlyCostUsd: '150', monthlyCostMonth: monthKey, budgetAlertsSent: [50] },
+      );
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 20 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      // $170 of $200 = 85% → crosses 80% threshold (50% was already sent)
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(170, 6);
+      expect(set.budgetAlertsSent).toContain(80);
+      const alerts = budgetNotifies();
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toMatchObject({ title: 'Buildd budget 80% used' });
+    });
+
+    it('skips team budget update when team has no budget configured and no env fallback', async () => {
+      // Team with null monthly_budget_usd and no BUDGET_MONTHLY_USD env — no alerts, but cost still accumulates.
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: null, monthlyCostUsd: '0', monthlyCostMonth: null, budgetAlertsSent: [] },
+      );
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 50 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const set = getSet();
+      // Cost still written to team row
+      expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(50, 6);
+      // No alerts (no budget cap configured)
+      expect(budgetNotifies()).toHaveLength(0);
     });
   });
 });

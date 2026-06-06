@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, tenantBudgets, workerErrorTraces } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -416,15 +416,22 @@ export async function PATCH(
         const effectiveCost = reportedCost > 0 ? reportedCost : estimateCostUsd(usageForCost);
 
         if (effectiveCost > 0) {
-          const budgetUsd = account.monthlyBudgetUsd != null
-            ? parseFloat(account.monthlyBudgetUsd.toString())
+          // Aggregate budget is tracked at the team level so all token-accounts
+          // under the same owner share one monthly cap (the Claude Agent SDK
+          // credit pool is a single pool per subscription).
+          const team = await db.query.teams.findFirst({
+            where: eq(teams.id, account.teamId),
+          });
+
+          const budgetUsd = team?.monthlyBudgetUsd != null
+            ? parseFloat(team.monthlyBudgetUsd.toString())
             : (process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null);
 
           const result = applyBudgetUsage(
             {
-              monthlyCostUsd: parseFloat((account.monthlyCostUsd as string | null) ?? '0'),
-              monthlyCostMonth: account.monthlyCostMonth ?? null,
-              alertsSent: (account.budgetAlertsSent ?? []) as number[],
+              monthlyCostUsd: parseFloat((team?.monthlyCostUsd as string | null) ?? '0'),
+              monthlyCostMonth: team?.monthlyCostMonth ?? null,
+              alertsSent: (team?.budgetAlertsSent ?? []) as number[],
             },
             effectiveCost,
             budgetUsd,
@@ -432,13 +439,13 @@ export async function PATCH(
           );
 
           await db
-            .update(accounts)
+            .update(teams)
             .set({
               monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
               monthlyCostMonth: result.monthlyCostMonth,
               budgetAlertsSent: result.alertsSent,
             })
-            .where(eq(accounts.id, account.id));
+            .where(eq(teams.id, account.teamId));
 
           for (const threshold of result.crossed) {
             notify({
