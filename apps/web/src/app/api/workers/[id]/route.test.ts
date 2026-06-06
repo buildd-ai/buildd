@@ -78,7 +78,7 @@ const mockAccountsUpdate = mock(() => ({
 }));
 const mockTeamsUpdate = mock(() => ({
   set: mock(() => ({
-    where: mock(() => Promise.resolve()),
+    where: mock(() => ({ returning: mock(() => [{ id: 'team-1' }]) })),
   })),
 }));
 const mockTenantBudgetsInsert = mock(() => ({
@@ -1770,7 +1770,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       let capturedTeamSet: any = null;
       mockTeamsUpdate.mockReturnValue({
-        set: mock((v: any) => { capturedTeamSet = v; return { where: mock(() => Promise.resolve()) }; }),
+        set: mock((v: any) => { capturedTeamSet = v; return { where: mock(() => ({ returning: mock(() => [{ id: 'team-1' }]) })) }; }),
       });
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', ...account });
       mockWorkersFindFirst.mockResolvedValue({
@@ -1929,6 +1929,50 @@ describe('PATCH /api/workers/[id]', () => {
       // Cost still written to team row
       expect(parseFloat(set.monthlyCostUsd)).toBeCloseTo(50, 6);
       // No alerts (no budget cap configured)
+      expect(budgetNotifies()).toHaveLength(0);
+    });
+
+    it('retries on optimistic-lock contention without losing the charge or double-firing alerts', async () => {
+      setupCompletion({}, {}); // worker/account/task plumbing; team mocks overridden below
+      mockNotify.mockClear();
+
+      // First read sees $45 (no alerts). The CAS write loses to a concurrent writer.
+      // The re-read sees that writer's committed state ($55, 50% already alerted).
+      let reads = 0;
+      mockTeamsFindFirst.mockReset();
+      mockTeamsFindFirst.mockImplementation(() => {
+        reads++;
+        return Promise.resolve(reads === 1
+          ? { id: 'team-1', monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] }
+          : { id: 'team-1', monthlyBudgetUsd: '100', monthlyCostUsd: '55', monthlyCostMonth: monthKey, budgetAlertsSent: [50] });
+      });
+
+      let captured: any = null;
+      let writes = 0;
+      mockTeamsUpdate.mockReturnValue({
+        set: mock((v: any) => {
+          captured = v;
+          writes++;
+          // First attempt loses the race (0 rows); second commits.
+          const rows = writes === 1 ? [] : [{ id: 'team-1' }];
+          return { where: mock(() => ({ returning: mock(() => rows) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 10 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(reads).toBe(2);   // re-read after the lost CAS
+      expect(writes).toBe(2);  // retried the write
+      // Final commit is computed from the re-read ($55 + $10) — the charge isn't lost.
+      expect(parseFloat(captured.monthlyCostUsd)).toBeCloseTo(65, 6);
+      // 50% was already alerted by the concurrent writer — not re-fired, and the
+      // lost first attempt must NOT have notified either.
+      expect(captured.budgetAlertsSent).toEqual([50]);
       expect(budgetNotifies()).toHaveLength(0);
     });
   });

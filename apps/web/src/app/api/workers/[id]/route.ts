@@ -419,43 +419,72 @@ export async function PATCH(
           // Aggregate budget is tracked at the team level so all token-accounts
           // under the same owner share one monthly cap (the Claude Agent SDK
           // credit pool is a single pool per subscription).
-          const team = await db.query.teams.findFirst({
-            where: eq(teams.id, account.teamId),
-          });
+          //
+          // Optimistic locking: read the team budget, compute the next state, then
+          // commit only if the row is unchanged since we read it (CAS on cost+month).
+          // neon-http has no interactive transactions, so we retry on contention —
+          // concurrent worker completions under the same team must not lose spend
+          // or mis-fire threshold alerts by racing on a read-modify-write.
+          const envBudget = process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null;
+          let committed = false;
 
-          const budgetUsd = team?.monthlyBudgetUsd != null
-            ? parseFloat(team.monthlyBudgetUsd.toString())
-            : (process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null);
-
-          const result = applyBudgetUsage(
-            {
-              monthlyCostUsd: parseFloat((team?.monthlyCostUsd as string | null) ?? '0'),
-              monthlyCostMonth: team?.monthlyCostMonth ?? null,
-              alertsSent: (team?.budgetAlertsSent ?? []) as number[],
-            },
-            effectiveCost,
-            budgetUsd,
-            new Date(),
-          );
-
-          await db
-            .update(teams)
-            .set({
-              monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
-              monthlyCostMonth: result.monthlyCostMonth,
-              budgetAlertsSent: result.alertsSent,
-            })
-            .where(eq(teams.id, account.teamId));
-
-          for (const threshold of result.crossed) {
-            notify({
-              app: 'alerts',
-              priority: threshold >= 100 ? 1 : 0,
-              title: `Buildd budget ${threshold}% used`,
-              message: budgetUsd != null
-                ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
-                : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
+          for (let attempt = 0; attempt < 5 && !committed; attempt++) {
+            const team = await db.query.teams.findFirst({
+              where: eq(teams.id, account.teamId),
             });
+            if (!team) break;
+
+            const budgetUsd = team.monthlyBudgetUsd != null
+              ? parseFloat(team.monthlyBudgetUsd.toString())
+              : envBudget;
+            const prevCost = (team.monthlyCostUsd as string | null) ?? '0';
+            const prevMonth = team.monthlyCostMonth ?? null;
+
+            const result = applyBudgetUsage(
+              {
+                monthlyCostUsd: parseFloat(prevCost),
+                monthlyCostMonth: prevMonth,
+                alertsSent: (team.budgetAlertsSent ?? []) as number[],
+              },
+              effectiveCost,
+              budgetUsd,
+              new Date(),
+            );
+
+            // CAS guard: a concurrent writer that won the race will have changed
+            // cost or month (cost strictly moves on every charge), failing this
+            // WHERE and returning no rows, so we re-read and retry.
+            const rows = await db
+              .update(teams)
+              .set({
+                monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
+                monthlyCostMonth: result.monthlyCostMonth,
+                budgetAlertsSent: result.alertsSent,
+              })
+              .where(and(
+                eq(teams.id, account.teamId),
+                eq(teams.monthlyCostUsd, prevCost),
+                prevMonth === null ? isNull(teams.monthlyCostMonth) : eq(teams.monthlyCostMonth, prevMonth),
+              ))
+              .returning({ id: teams.id });
+
+            if (rows.length === 0) continue; // lost the race — re-read and retry
+            committed = true;
+
+            for (const threshold of result.crossed) {
+              notify({
+                app: 'alerts',
+                priority: threshold >= 100 ? 1 : 0,
+                title: `Buildd budget ${threshold}% used`,
+                message: budgetUsd != null
+                  ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
+                  : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
+              });
+            }
+          }
+
+          if (!committed) {
+            console.warn(`[Worker ${id}] budget update lost contention after retries; charge of $${effectiveCost.toFixed(4)} not recorded`);
           }
         }
       } catch (budgetErr) {
