@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-05
-**SDK in package.json**: `^0.3.162` (up to date)
+**Last updated**: 2026-06-08
+**SDK in package.json**: `^0.3.168` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,7 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-06-08 | ^0.3.168 | 0.3.168 | #815 |
 | 2026-06-05 | ^0.3.162 | 0.3.162 | pending |
 | 2026-06-03 | ^0.3.161 | 0.3.161 | #787 |
 | 2026-06-01 | ^0.3.158 | 0.3.159 | #788 |
@@ -36,7 +37,14 @@
 
 ## Enhancement Opportunities
 
-### P0 — URGENT (June 15, 2026)
+### P0 — CRITICAL (June 15, 2026 — 7 days away)
+
+**Audit for hardcoded model API version strings**
+- `claude-sonnet-4-20250514` and `claude-opus-4-20250514` retire June 15; API requests using those strings return errors after that date
+- Run: `grep -r '20250514' packages/ apps/` to find all exposure
+- Migration: `claude-sonnet-4-20250514` → `claude-sonnet-4-6`, `claude-opus-4-20250514` → `claude-opus-4-8`
+- `packages/core/model-aliases.ts` should abstract most of this — verify no strings escaped
+- Also check Drizzle migration files or seed scripts that may reference model names
 
 **Notify users of Agent SDK billing split**
 - Buildd workers invoke `claude -p` programmatically — this shifts to new credit pool on June 15
@@ -45,6 +53,18 @@
 - Location: Dashboard UI, docs, potentially task detail page (credit consumption estimate)
 
 ### P1 — High Priority
+
+**Use `agentProgressSummaries` for live task progress (v0.3.162+)**
+- New: `agentProgressSummaries: true` in SDK `query()` options emits periodic AI-generated summaries from subagents on `task_progress` events via the `summary` field
+- Benefit: Buildd task detail page could display live progress updates without workers manually calling `update_progress` — zero instrumentation overhead
+- Location: `packages/core/worker-runner.ts` (pass option in query call)
+- Effort: Low (one-line SDK option, then surface `summary` in Pusher events / task progress updates)
+
+**Adopt `fallbackModel` for worker reliability (v2.1.160+)**
+- New: `fallbackModel` setting configures up to 3 fallback models when the primary is overloaded/unavailable
+- Benefit: Fewer failed tasks during capacity spikes; retry on fallback is automatic
+- Location: `packages/core/worker-runner.ts`, `apps/web/src/lib/role-config.ts`
+- Effort: Low (add to worker settings or role config packaging)
 
 **Add Claude Opus 4.8 to role model selection (v0.3.154)**
 - Model ID: `claude-opus-4-8`; better agentic reliability; lower prompt cache minimum (1,024 tokens); mid-conversation system messages; fast mode at 2.5× speed
