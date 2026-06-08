@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Monthly budget tracking + Pushover threshold alerts at 50/80/100% of configurable monthly cap (#794)
+- Aggregate team-level monthly budget — all token-accounts under the same owner share one pool (#796)
 - Capture agent error traces from tool output (#780)
 - `/respond` landing page + render needs-input banner on failed workers (#763)
 - Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
@@ -29,10 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to ^0.2.119 (#708)
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.167 (#814)
 
 ### Fixed
 
+- Atomic optimistic-locking for team budget accumulation; prevents lost spend under concurrent worker completions (#811)
 - Prevent multi-workspace OAuth misrouting (#779)
 - Require explicit workspaceId for ambiguous OAuth actions (#778)
 - Stop infinite retry loop on misrouted tasks (#777)
@@ -61,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Grant write permissions to release workflow caller; fixes startup_failure on every release run (#793)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)
 - Dump runner/server logs on E2E failure for diagnosis
 
