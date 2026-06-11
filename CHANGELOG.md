@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Recipe concept from frontend, onboarding checklist, mission config, and integration tests (#804)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.168 (#815)
+
 ### Added
 
 - Capture agent error traces from tool output (#780)
