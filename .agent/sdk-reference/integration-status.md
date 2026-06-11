@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-05
-**SDK in package.json**: `^0.3.162` (up to date)
+**Last updated**: 2026-06-11
+**SDK in package.json**: `^0.3.173` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,7 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-06-11 | ^0.3.173 | 0.3.173 | #818 |
 | 2026-06-05 | ^0.3.162 | 0.3.162 | pending |
 | 2026-06-03 | ^0.3.161 | 0.3.161 | #787 |
 | 2026-06-01 | ^0.3.158 | 0.3.159 | #788 |
@@ -35,6 +36,33 @@
 ---
 
 ## Enhancement Opportunities
+
+### P1 — High Priority (new in 0.3.163–0.3.173)
+
+**`fallbackModel` setting for role resilience (v0.3.166)**
+- New: Configure up to 3 fallback models tried in order when primary is overloaded or unavailable
+- Benefit: Buildd workers could transparently fall back (e.g. Opus → Sonnet) instead of failing, improving task reliability under load
+- Location: `apps/web/src/lib/role-config.ts`, worker settings packaging
+- Effort: Low–Medium (add `fallbackModel` array to role config and inject into worker settings)
+
+**`Stop`/`SubagentStop` hook `additionalContext` for graceful stop handling (v0.3.163)**
+- New: Stop/SubagentStop hooks can return `hookSpecificOutput.additionalContext` to give Claude feedback and keep the turn going without being labeled a hook error
+- Benefit: Buildd's hooks could provide structured guidance on stop conditions (e.g. "task limit reached, summarize progress") rather than hard-stopping or erroring
+- Location: `apps/runner/src/hook-factory.ts`
+- Effort: Low (hook already wired; add return value)
+
+**Sub-agent nesting up to 5 levels deep (v0.3.172)**
+- New: Sub-agents can now spawn their own sub-agents (recursive, up to 5 levels)
+- Benefit: Buildd's orchestration model can support deeper delegation chains; missions could spawn nested planning → execution → verification agents automatically
+- Note: Each sub-session is NOT tracked in Buildd's worker system — decide whether to expose or limit nesting
+- Location: Role config, task creation UI, worker-runner.ts
+- Effort: Medium (design decision on whether to allow/track/limit)
+
+**Claude Fable 5 (Mythos-class) model in role selection (v0.3.170)**
+- New: Fable 5 available as a model option; includes 1M context by default
+- Benefit: Add to Buildd's model alias/routing layer for high-capability tasks
+- Location: `packages/core/model-aliases.ts`, `packages/core/model-router.ts`
+- Effort: Low (add alias entry once model ID is confirmed)
 
 ### P0 — URGENT (June 15, 2026)
 
