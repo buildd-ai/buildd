@@ -1,13 +1,68 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-05
-**Covering**: v0.2.114 → v0.3.162
+**Last updated**: 2026-06-11
+**Covering**: v0.2.114 → v0.3.173
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.162 (2026-06-03) — current latest
+### v0.3.173 (2026-06-11) — current latest
+- **Parity with Claude Code v2.1.173**
+- **Bug fix**: Fable 5 model names with `[1m]` suffix now stripped automatically — no manual normalization needed
+- Bug fix: spurious "sandbox dependencies missing" startup warning on Windows
+
+### v0.3.172 (2026-06-10)
+- **Parity with Claude Code v2.1.172**
+- **Sub-agents can now spawn sub-agents (up to 5 levels deep)**: Recursive multi-agent orchestration now supported natively
+- **Bug fix (critical for Buildd)**: Background agents no longer read another directory's project settings (`.mcp.json` approvals, trust) when dispatched onto a pre-warmed worker
+- **`availableModels` restrictions now applied to subagent model overrides**: Role-based model restrictions are properly enforced across nested agents
+- OTEL metric `claude_code.lines_of_code.count` now includes a `model` attribute for per-model slicing
+- Bug fix: 1M context sessions no longer get permanently stuck — auto-compacts back under standard limit
+- Bug fix: model IDs no longer get a doubled `[1M][1m]` suffix
+
+### v0.3.170 (2026-06-09)
+- **Parity with Claude Code v2.1.170**
+- **Claude Fable 5 (Mythos-class) model**: New model available via SDK sessions — check Anthropic docs for model ID
+- Bug fix: sessions not saving transcripts (not appearing in `--resume`) when launched from VS Code integrated terminal or shells inheriting Claude Code env vars
+
+### v0.3.169 (2026-06-08)
+- **Parity with Claude Code v2.1.169**
+- **`--safe-mode` / `CLAUDE_CODE_SAFE_MODE`**: Start Claude Code with all customizations (CLAUDE.md, plugins, skills, hooks, MCP servers) disabled — useful for Buildd worker troubleshooting
+- **`disableBundledSkills` setting / `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`**: Hide bundled skills, workflows, and built-in slash commands from the model — useful in tightly-scoped Buildd roles
+- **`/cd` command**: Move a session to a new working directory without breaking the prompt cache
+- **Bug fix (Buildd-relevant)**: Background agents now correctly apply project-level settings `env` values (e.g. `ANTHROPIC_MODEL`) when dispatched onto a pre-warmed worker
+- **`claude agents --json` improvements**: Blocked and just-dispatched sessions now included; `--all` includes completed sessions; new `id` and `state` fields
+- `TaskCreate` reliability improved — malformed inputs are repaired automatically; validation errors for unloaded tools include the schema
+- CLAUDE.md length warning threshold now scales with the model's context window
+- Restored 5-minute idle timeout on Vertex/Foundry (`API_FORCE_IDLE_TIMEOUT=0` to opt out)
+
+### v0.3.168 (2026-06-06)
+- **Parity with Claude Code v2.1.168** — bug fixes and reliability improvements
+
+### v0.3.167 (2026-06-06)
+- **Parity with Claude Code v2.1.167** — bug fixes and reliability improvements
+
+### v0.3.166 (2026-06-06)
+- **Parity with Claude Code v2.1.166**
+- **`fallbackModel` setting**: Configure up to 3 fallback models tried in order when the primary model is overloaded or unavailable; `--fallback-model` also applies to interactive sessions
+- **Glob patterns in deny rules**: `"*"` in tool-name position denies all tools; unknown tool names in deny rules warn at startup
+- **`SendMessage` hardened**: Messages relayed via `SendMessage` from other Claude sessions no longer carry user authority — receivers refuse relayed permission requests, auto mode blocks them
+- `MAX_THINKING_TOKENS=0` / `--thinking disabled` now disables thinking on API models that think by default
+- Bug fix: remote sessions permanently stuck when a brief backend disruption occurred during worker registration at startup
+
+### v0.3.165 (2026-06-05)
+- **Parity with Claude Code v2.1.165** — bug fixes and reliability improvements
+
+### v0.3.163 (2026-06-04)
+- **Parity with Claude Code v2.1.163**
+- **`requiredMinimumVersion` / `requiredMaximumVersion` managed settings**: Claude Code refuses to start if its version is outside the allowed range
+- **Stop/SubagentStop hooks: `additionalContext` return value**: Hooks can now return `hookSpecificOutput.additionalContext` to give Claude feedback and keep the turn going without being labeled a hook error
+- Bug fix: `claude -p` no longer hangs after its final result when a background command never exits — background shells are stopped ~5s after result once stdin closes
+- Bug fix: `claude -p` no longer fails with "ANTHROPIC_API_KEY required" on Bedrock/Vertex/Foundry when `CI=true` and no Anthropic API key is set
+- Bug fix: Bash commands failing under bazel and EDR-protected Go workflows (regression in 2.1.154)
+
+### v0.3.162 (2026-06-03)
 - **Parity with Claude Code v2.1.162**
 - **`claude agents --json` adds `waitingFor` field**: Programmatic callers can now read what a waiting session is blocked on (e.g. tool name or input prompt)
 - **`WebFetch(domain:...)` permission rules take precedence over preapproved hosts**: Explicit domain rules now override blanket preapprovals — more precise permission control

@@ -1,7 +1,7 @@
 # Claude Agent SDK Reference
 
-**Current version in Buildd**: `^0.3.162` (latest released: `0.3.162`)
-**Last updated**: 2026-06-05
+**Current version in Buildd**: `^0.3.173` (latest released: `0.3.173`)
+**Last updated**: 2026-06-11
 
 This index covers the SDK features and integration patterns relevant to Buildd's worker runner.
 
