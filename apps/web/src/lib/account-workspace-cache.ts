@@ -2,6 +2,11 @@ import { db } from '@buildd/core/db';
 import { accountWorkspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { TTLCache } from './cache';
+import {
+  getCachedAccountWorkspaces,
+  setCachedAccountWorkspaces,
+  invalidateCachedAccountWorkspaces,
+} from './redis';
 
 /**
  * Cached account workspace permission entry.
@@ -32,9 +37,18 @@ const permissionsCache = new TTLCache<AccountWorkspacePermission[]>({
 export async function getAccountWorkspacePermissions(
   accountId: string,
 ): Promise<AccountWorkspacePermission[]> {
+  // L1: in-memory TTL cache
   const cached = permissionsCache.get(accountId);
   if (cached) return cached;
 
+  // L2: Redis (survives cold starts across serverless instances)
+  const redisPerms = await getCachedAccountWorkspaces<AccountWorkspacePermission[]>(accountId);
+  if (redisPerms) {
+    permissionsCache.set(accountId, redisPerms);
+    return redisPerms;
+  }
+
+  // L3: DB
   const rows = await db.query.accountWorkspaces.findMany({
     where: eq(accountWorkspaces.accountId, accountId),
   });
@@ -46,6 +60,7 @@ export async function getAccountWorkspacePermissions(
   }));
 
   permissionsCache.set(accountId, permissions);
+  await setCachedAccountWorkspaces(accountId, permissions);
   return permissions;
 }
 
@@ -55,6 +70,7 @@ export async function getAccountWorkspacePermissions(
  */
 export function invalidateAccountWorkspaceCache(accountId: string): void {
   permissionsCache.delete(accountId);
+  void invalidateCachedAccountWorkspaces(accountId);
 }
 
 /**

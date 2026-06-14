@@ -12,6 +12,12 @@ const mockHeartbeatsInsert = mock(() => ({
 }));
 const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
 const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
+const mockGetCachedApiKey = mock(() => Promise.resolve(null));
+const mockSetCachedApiKey = mock(() => Promise.resolve());
+const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
+const mockGetCachedAccountWorkspaces = mock(() => Promise.resolve(null));
+const mockSetCachedAccountWorkspaces = mock(() => Promise.resolve());
+const mockInvalidateCachedAccountWorkspaces = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -20,6 +26,12 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/redis', () => ({
   getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
   setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
+  getCachedApiKey: mockGetCachedApiKey,
+  setCachedApiKey: mockSetCachedApiKey,
+  invalidateCachedApiKey: mockInvalidateCachedApiKey,
+  getCachedAccountWorkspaces: mockGetCachedAccountWorkspaces,
+  setCachedAccountWorkspaces: mockSetCachedAccountWorkspaces,
+  invalidateCachedAccountWorkspaces: mockInvalidateCachedAccountWorkspaces,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -82,10 +94,20 @@ describe('POST /api/workers/heartbeat', () => {
     mockHeartbeatsInsert.mockReset();
     mockGetCachedOpenWorkspaceIds.mockReset();
     mockSetCachedOpenWorkspaceIds.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockSetCachedApiKey.mockReset();
+    mockInvalidateCachedApiKey.mockReset();
+    mockGetCachedAccountWorkspaces.mockReset();
+    mockSetCachedAccountWorkspaces.mockReset();
+    mockInvalidateCachedAccountWorkspaces.mockReset();
 
     // Default mocks
     mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
     mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
+    mockGetCachedApiKey.mockResolvedValue(null);
+    mockSetCachedApiKey.mockResolvedValue(undefined);
+    mockGetCachedAccountWorkspaces.mockResolvedValue(null);
+    mockSetCachedAccountWorkspaces.mockResolvedValue(undefined);
 
     // Default mock for insert chain
     mockHeartbeatsInsert.mockReturnValue({
