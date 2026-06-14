@@ -174,6 +174,8 @@ export async function POST(req: NextRequest) {
       context: incomingContext,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
       release: rawRelease,
+      // Agent backend that executes this task: 'claude' | 'codex'
+      backend: rawBackend,
     } = body;
 
     if (!title) {
@@ -353,6 +355,7 @@ export async function POST(req: NextRequest) {
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
+        ...(['claude', 'codex'].includes(rawBackend) ? { backend: rawBackend as 'claude' | 'codex' } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })

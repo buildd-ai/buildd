@@ -1,6 +1,8 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum
 } from 'drizzle-orm/pg-core';
+
+export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 import { relations } from 'drizzle-orm';
 import type { WorkerEnvironment } from '@buildd/shared';
 
@@ -473,6 +475,8 @@ export const tasks = pgTable('tasks', {
   complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
   predictedModel: text('predicted_model'),   // model chosen by router at claim
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
+  // Agent backend that executes this task
+  backend: agentBackendEnum('backend').notNull().default('claude'),
   // Release override — whether this task should trigger a prod release on completion.
   // 'true' forces release (errors if workspace has no release config).
   // 'false' suppresses release even when the workspace default is on.
