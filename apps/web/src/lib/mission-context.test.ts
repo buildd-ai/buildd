@@ -111,14 +111,6 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: { id: 'id', missionId: 'missionId', type: 'type', status: 'status', authorType: 'authorType', createdAt: 'createdAt' },
 }));
 
-mock.module('./heartbeat-helpers', () => ({
-  detectMissionPhase: () => ({
-    phase: 'idle',
-    reason: 'No tasks yet.',
-    actions: ['Wait for initial planning task'],
-  }),
-}));
-
 // Dynamic import so mocks are wired up
 const { buildMissionContext, getWorkspaceRoles } = await import('./mission-context');
 
