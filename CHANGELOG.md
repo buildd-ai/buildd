@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bump @anthropic-ai/claude-agent-sdk to ^0.3.168 (#815)
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.177 (#820)
 
 ### Added
 
+- Back api-key auth and account-workspace cache with Redis L2 (#821)
 - Capture agent error traces from tool output (#780)
 - `/respond` landing page + render needs-input banner on failed workers (#763)
 - Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
