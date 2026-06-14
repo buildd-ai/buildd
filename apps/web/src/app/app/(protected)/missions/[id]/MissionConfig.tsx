@@ -14,7 +14,6 @@ interface MissionConfigProps {
   missionId: string;
   workspaceId: string | null;
   skillSlugs: string[];
-  recipeId: string | null;
   model: string | null;
   outputSchema: unknown | null;
   workspaces: WorkspaceOption[];
@@ -26,7 +25,6 @@ export default function MissionConfig({
   missionId,
   workspaceId,
   skillSlugs: initialSkillSlugs,
-  recipeId: initialRecipeId,
   model: initialModel,
   outputSchema: initialOutputSchema,
   workspaces,
@@ -42,10 +40,6 @@ export default function MissionConfig({
   const [skillSlugs, setSkillSlugs] = useState<string[]>(initialSkillSlugs);
   const [newSkill, setNewSkill] = useState('');
   const [showSkillInput, setShowSkillInput] = useState(false);
-
-  // Recipe state
-  const [recipeId, setRecipeId] = useState(initialRecipeId || '');
-  const [editingRecipe, setEditingRecipe] = useState(false);
 
   // Model state
   const [model, setModel] = useState(initialModel || '');
@@ -102,12 +96,6 @@ export default function MissionConfig({
     patchMission({ skillSlugs: updated }, 'skills');
   }
 
-  function handleSaveRecipe() {
-    const trimmed = recipeId.trim();
-    patchMission({ recipeId: trimmed || null }, 'recipe');
-    setEditingRecipe(false);
-  }
-
   function handleModelChange(value: string) {
     setModel(value);
     patchMission({ model: value || null }, 'model');
@@ -155,7 +143,6 @@ export default function MissionConfig({
     model && MODEL_OPTIONS.find(m => m.value === model)?.label,
     skillSlugs.length > 0 && `${skillSlugs.length} skill${skillSlugs.length > 1 ? 's' : ''}`,
     initialMaxConcurrent != null && `Max ${initialMaxConcurrent} concurrent`,
-    initialRecipeId && 'Recipe',
     initialOutputSchema && 'Schema',
   ].filter(Boolean);
 
@@ -315,49 +302,6 @@ export default function MissionConfig({
             </div>
             {skillSlugs.length === 0 && !showSkillInput && (
               <p className="text-[11px] text-text-muted mt-1">No skills configured.</p>
-            )}
-          </div>
-
-          {/* Recipe */}
-          <div>
-            <label className="block text-[11px] text-text-muted mb-1.5">Recipe</label>
-            {editingRecipe ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  value={recipeId}
-                  onChange={e => setRecipeId(e.target.value)}
-                  placeholder="Recipe ID"
-                  className="flex-1 max-w-xs px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[11px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono"
-                  autoFocus
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') handleSaveRecipe();
-                    if (e.key === 'Escape') { setRecipeId(initialRecipeId || ''); setEditingRecipe(false); }
-                  }}
-                />
-                <button type="button" onClick={handleSaveRecipe} disabled={disabled} className="px-2 py-1 text-[11px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">
-                  Save
-                </button>
-                <button type="button" onClick={() => { setRecipeId(initialRecipeId || ''); setEditingRecipe(false); }} className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary">
-                  Cancel
-                </button>
-                {initialRecipeId && (
-                  <button type="button" onClick={() => { setRecipeId(''); handleSaveRecipe(); }} disabled={disabled} className="px-2 py-1 text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50">
-                    Remove
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {initialRecipeId ? (
-                  <span className="text-[11px] text-text-primary font-mono">{initialRecipeId}</span>
-                ) : (
-                  <span className="text-[11px] text-text-muted">None</span>
-                )}
-                <button type="button" onClick={() => setEditingRecipe(true)} disabled={disabled} className="text-[11px] text-accent-text hover:text-accent-text/80 disabled:opacity-50">
-                  {initialRecipeId ? 'Edit' : 'Set recipe'}
-                </button>
-              </div>
             )}
           </div>
 
