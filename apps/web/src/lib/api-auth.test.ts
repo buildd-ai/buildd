@@ -4,6 +4,11 @@ import { createHash } from 'crypto';
 // Mock database
 const mockAccountsFindFirst = mock(() => null as any);
 
+// Mock Redis — default to no-ops so existing L1 tests are unaffected
+const mockGetCachedApiKey = mock(() => Promise.resolve(null) as any);
+const mockSetCachedApiKey = mock(() => Promise.resolve());
+const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -18,6 +23,12 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
+}));
+
+mock.module('./redis', () => ({
+  getCachedApiKey: mockGetCachedApiKey,
+  setCachedApiKey: mockSetCachedApiKey,
+  invalidateCachedApiKey: mockInvalidateCachedApiKey,
 }));
 
 import {
@@ -74,6 +85,12 @@ describe('extractApiKeyPrefix', () => {
 describe('authenticateApiKey', () => {
   beforeEach(() => {
     mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockSetCachedApiKey.mockReset();
+    mockInvalidateCachedApiKey.mockReset();
+    mockGetCachedApiKey.mockResolvedValue(null);
+    mockSetCachedApiKey.mockResolvedValue(undefined);
+    mockInvalidateCachedApiKey.mockResolvedValue(undefined);
     clearAccountCache();
   });
 
@@ -148,6 +165,37 @@ describe('authenticateApiKey', () => {
       expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
     });
 
+    it('returns account from Redis L2 without hitting DB (cold L1)', async () => {
+      const mockAccount = { id: 'redis-acct', name: 'Redis Account' };
+      mockGetCachedApiKey.mockResolvedValueOnce(mockAccount);
+
+      const result = await authenticateApiKey('bld_redis_key');
+
+      expect(result).toEqual(mockAccount);
+      expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('populates L1 from Redis hit so next call skips both Redis and DB', async () => {
+      const mockAccount = { id: 'redis-acct-2', name: 'Redis Account 2' };
+      mockGetCachedApiKey.mockResolvedValueOnce(mockAccount);
+
+      await authenticateApiKey('bld_redis_warm');
+      const result2 = await authenticateApiKey('bld_redis_warm');
+
+      expect(result2).toEqual(mockAccount);
+      expect(mockGetCachedApiKey).toHaveBeenCalledTimes(1); // only on first call
+      expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('writes to Redis after DB hit', async () => {
+      const mockAccount = { id: 'db-acct', name: 'DB Account' };
+      mockAccountsFindFirst.mockResolvedValueOnce(mockAccount);
+
+      await authenticateApiKey('bld_db_key');
+
+      expect(mockSetCachedApiKey).toHaveBeenCalledTimes(1);
+    });
+
     it('different keys get separate cache entries', async () => {
       const account1 = { id: 'acct-1', name: 'Account 1' };
       const account2 = { id: 'acct-2', name: 'Account 2' };
@@ -217,6 +265,11 @@ describe('authenticateApiKey', () => {
       const result = await authenticateApiKey('bld_new_key');
       expect(result).toEqual(mockAccount);
       expect(mockAccountsFindFirst).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidateAccountCacheByHash also fires Redis invalidation', () => {
+      invalidateAccountCacheByHash(hashApiKey('bld_some_key'));
+      expect(mockInvalidateCachedApiKey).toHaveBeenCalledTimes(1);
     });
 
     it('clearAccountCache empties all caches', async () => {

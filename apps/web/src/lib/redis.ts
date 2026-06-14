@@ -46,3 +46,63 @@ export async function invalidateOpenWorkspacesCache(): Promise<void> {
     // Ignore errors
   }
 }
+
+// API key cache — key: buildd:api_key:{hash}, 5-min TTL
+const API_KEY_TTL = 5 * 60;
+
+export async function getCachedApiKey<T>(hash: string): Promise<T | null> {
+  if (!redis) return null;
+  try {
+    return await redis.get<T>(`buildd:api_key:${hash}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedApiKey<T>(hash: string, account: T, ttlSec = API_KEY_TTL): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.setex(`buildd:api_key:${hash}`, ttlSec, account);
+  } catch {
+    // Redis failure is non-fatal
+  }
+}
+
+export async function invalidateCachedApiKey(hash: string): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.del(`buildd:api_key:${hash}`);
+  } catch {
+    // Ignore errors
+  }
+}
+
+// Account-workspace permissions cache — key: buildd:acct_ws:{accountId}, 5-min TTL
+const ACCT_WS_TTL = 5 * 60;
+
+export async function getCachedAccountWorkspaces<T>(accountId: string): Promise<T | null> {
+  if (!redis) return null;
+  try {
+    return await redis.get<T>(`buildd:acct_ws:${accountId}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedAccountWorkspaces<T>(accountId: string, perms: T, ttlSec = ACCT_WS_TTL): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.setex(`buildd:acct_ws:${accountId}`, ttlSec, perms);
+  } catch {
+    // Redis failure is non-fatal
+  }
+}
+
+export async function invalidateCachedAccountWorkspaces(accountId: string): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.del(`buildd:acct_ws:${accountId}`);
+  } catch {
+    // Ignore errors
+  }
+}

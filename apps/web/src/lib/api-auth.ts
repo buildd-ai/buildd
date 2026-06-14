@@ -4,6 +4,7 @@ import { accounts, users, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { TTLCache } from './cache';
 import { verifyAccessTokenAnyAudience, looksLikeJwt } from './oauth/tokens';
+import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 
 /**
  * Cache API key hash → account record.
@@ -51,6 +52,8 @@ async function dbLookupAccount(hashedKey: string) {
     where: eq(accounts.apiKey, hashedKey),
   });
 }
+
+type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
 
 /**
  * OAuth JWT path — verify, resolve to the user's primary account, override
@@ -104,9 +107,17 @@ export async function authenticateApiKey(apiKey: string | null) {
     const cached = accountCache.get(hashed);
     if (cached) return cached;
 
+    // L1 miss — check Redis (L2) before expensive JWT verify + DB round-trips
+    const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
+    if (redisAccount) {
+      accountCache.set(hashed, redisAccount);
+      return redisAccount;
+    }
+
     const account = await authenticateOauthJwt(apiKey);
     if (account) {
       accountCache.set(hashed, account);
+      await setCachedApiKey(hashed, account);
     } else {
       negativeCache.set(hashed, true);
     }
@@ -120,17 +131,25 @@ export async function authenticateApiKey(apiKey: string | null) {
     return null;
   }
 
-  // Check positive cache
+  // Check positive cache (L1)
   const cached = accountCache.get(hashed);
   if (cached) {
     return cached;
   }
 
-  // Cache miss — query DB
+  // L1 miss — check Redis (L2) before hitting the DB
+  const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
+  if (redisAccount) {
+    accountCache.set(hashed, redisAccount);
+    return redisAccount;
+  }
+
+  // L2 miss — query DB
   const account = await dbLookupAccount(hashed);
 
   if (account) {
     accountCache.set(hashed, account);
+    await setCachedApiKey(hashed, account);
   } else {
     negativeCache.set(hashed, true);
   }
@@ -161,6 +180,7 @@ export function invalidateAccountCache(accountId: string): void {
 export function invalidateAccountCacheByHash(hashedKey: string): void {
   accountCache.delete(hashedKey);
   negativeCache.delete(hashedKey);
+  void invalidateCachedApiKey(hashedKey);
 }
 
 /**
