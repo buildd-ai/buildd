@@ -186,7 +186,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
 
 /**
  * Build rich context for a mission planning task.
- * Queries task history, active tasks, failures, available roles, and optional recipe playbook.
+ * Queries task history, active tasks, failures, and available roles.
  * Detects heartbeat mode from the schedule's taskTemplate context and produces specialised instructions.
  */
 export async function buildMissionContext(missionId: string, templateContext?: Record<string, unknown>) {
