@@ -81,7 +81,6 @@ export const adminActions = [
   'manage_workspaces',
   'manage_watched_projects',
   'trigger_release',
-  'list_recipes', 'create_recipe', 'run_recipe',
   'send_agent_message',
 ] as const;
 
@@ -127,13 +126,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, recipeId?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
-    list_recipes: '{ workspaceId? } — list reusable workflow recipes [admin]',
-    create_recipe: '{ name (required), steps (required: array of { ref, title, description?, mode?, dependsOn?, requiredCapabilities?, outputRequirement?, priority? }), description?, category? (content|research|code|ops|custom), variables?, isPublic?, workspaceId? } [admin]',
-    run_recipe: '{ recipeId (required), variables?, parentTaskId?, workspaceId? } — instantiate recipe into tasks [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
@@ -1850,7 +1846,6 @@ export async function handleBuilddAction(
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
-          if (params.recipeId) body.recipeId = params.recipeId;
           if (params.model) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist) body.heartbeatChecklist = params.heartbeatChecklist;
@@ -1889,7 +1884,6 @@ export async function handleBuilddAction(
             body.workspaceId = wsId;
           }
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
-          if (params.recipeId !== undefined) body.recipeId = params.recipeId;
           if (params.model !== undefined) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist !== undefined) body.heartbeatChecklist = params.heartbeatChecklist;
@@ -2137,93 +2131,6 @@ export async function handleBuilddAction(
         return errorResult(`Release dispatch failed: ${data.error}`);
       }
       return text(`Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}${data.force ? ', force=true' : ''}).\nFollow: ${data.runsUrl}`);
-    }
-
-    // ── Recipes ───────────────────────────────────────────────────────────
-
-    case 'list_recipes': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-
-      if (wsId) {
-        const data = await api(`/api/workspaces/${wsId}/recipes`);
-        const recipes = data.recipes || [];
-
-        if (recipes.length === 0) return text('No recipes configured for this workspace.');
-
-        const summary = recipes.map((r: any) =>
-          `- **${r.name}**${r.category ? ` [${r.category}]` : ''}\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
-        ).join('\n\n');
-
-        return text(`${recipes.length} recipe(s):\n\n${summary}`);
-      }
-
-      // No workspace — aggregate across all
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
-
-      const allRecipes: { workspace: string; recipe: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/recipes`);
-        for (const r of (data.recipes || [])) {
-          allRecipes.push({ workspace: ws.name, recipe: r });
-        }
-      }
-
-      if (allRecipes.length === 0) return text('No recipes configured across any workspace.');
-
-      const summary = allRecipes.map(({ workspace, recipe: r }) =>
-        `- **${r.name}**${r.category ? ` [${r.category}]` : ''} [${workspace}]\n  ${r.description || 'No description'}\n  Steps: ${r.steps?.length || 0} | Public: ${r.isPublic}\n  ID: ${r.id}`
-      ).join('\n\n');
-
-      return text(`${allRecipes.length} recipe(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
-    }
-
-    case 'create_recipe': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.name || !params.steps) throw new Error('name and steps are required');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const data = await api(`/api/workspaces/${wsId}/recipes`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: params.name,
-          steps: params.steps,
-          description: params.description || undefined,
-          category: params.category || undefined,
-          variables: params.variables || undefined,
-          isPublic: params.isPublic || false,
-        }),
-      });
-
-      const recipe = data.recipe;
-      return text(`Recipe created: "${recipe.name}" (ID: ${recipe.id})\nSteps: ${recipe.steps?.length || 0}\nCategory: ${recipe.category || 'none'}`);
-    }
-
-    case 'run_recipe': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.recipeId) throw new Error('recipeId is required');
-
-      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
-
-      const data = await api(`/api/workspaces/${wsId}/recipes/${params.recipeId}/run`, {
-        method: 'POST',
-        body: JSON.stringify({
-          variables: params.variables || {},
-          parentTaskId: params.parentTaskId || undefined,
-        }),
-      });
-
-      const taskIds = data.tasks || [];
-      return text(`Recipe instantiated! Created ${taskIds.length} task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
     }
 
     // ── Agent-Facing Interactive Actions ─────────────────────────────────────
