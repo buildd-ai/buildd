@@ -965,7 +965,6 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
-  codexCredential: one(codexCredentials, { fields: [workspaces.id], references: [codexCredentials.workspaceId] }),
 }));
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
@@ -1112,24 +1111,9 @@ export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
 }));
 
-// Workspace-scoped Codex auth storage (one record per workspace, upserted)
-export const codexCredentials = pgTable('codex_credentials', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
-  encryptedAccessToken: text('encrypted_access_token').notNull(),
-  encryptedRefreshToken: text('encrypted_refresh_token').notNull(),
-  accountId: text('account_id').notNull(),
-  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
-  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  workspaceIdx: uniqueIndex('codex_credentials_workspace_idx').on(t.workspaceId),
-}));
-
-export const codexCredentialsRelations = relations(codexCredentials, ({ one }) => ({
-  workspace: one(workspaces, { fields: [codexCredentials.workspaceId], references: [workspaces.id] }),
-}));
+// Codex auth now lives in the unified `secrets` table (purpose='codex_credential').
+// See docs/credentials-architecture.md. The legacy per-workspace codex_credentials
+// table was dropped in migration 0047 (no rows existed).
 
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
 // Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
