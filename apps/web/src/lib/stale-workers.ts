@@ -7,6 +7,9 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
 
+/** 150 minutes — 2.5× the 60-min poll cycle so one dropped beat doesn't kill in-flight workers */
+export const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
+
 /** 24 hours — how long a standalone worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
 
@@ -166,7 +169,6 @@ export async function cleanupStaleWorkers(accountId: string) {
   // Heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min) so the
   // DB can stay idle long enough for Neon to suspend — use 2.5× as the cutoff so one
   // dropped beat doesn't fail in-flight workers.
-  const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
   const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
