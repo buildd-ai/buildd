@@ -316,6 +316,13 @@
       "when": 1781472646816,
       "tag": "0044_mighty_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1781492500902,
+      "tag": "0045_thick_vengeance",
+      "breakpoints": true
     }
   ]
 }
