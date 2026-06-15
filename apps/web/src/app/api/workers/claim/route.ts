@@ -918,6 +918,14 @@ export async function POST(req: NextRequest) {
   // Attach Codex credential for codex-backend tasks.
   // Fetched and decrypted at claim time so the runner never needs DB access.
   // Never included for non-codex tasks to limit token exposure.
+  //
+  // Runner trust model: access is gated on the same API key auth used for all
+  // claim requests (authenticateApiKey above). Any account-level API key can
+  // receive decrypted Codex tokens for tasks in workspaces it can claim.
+  // There is no concept of "public-repo runner" in this architecture — runners
+  // are private processes that present a buildd API key. If an API key is
+  // compromised, the attacker gains the same access as the key holder (including
+  // Codex tokens on codex-backend tasks). Protect API keys accordingly.
   if (process.env.ENCRYPTION_KEY) {
     for (const cw of claimedWorkers) {
       const task = filteredTasks.find(t => t.id === cw.taskId);
