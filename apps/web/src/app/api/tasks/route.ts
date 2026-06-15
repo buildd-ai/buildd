@@ -176,6 +176,8 @@ export async function POST(req: NextRequest) {
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
       backend: rawBackend,
+      // Whether this task requires human review before auto-merge
+      requiresReview: rawRequiresReview,
     } = body;
 
     if (!title) {
@@ -356,6 +358,7 @@ export async function POST(req: NextRequest) {
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(['claude', 'codex'].includes(rawBackend) ? { backend: rawBackend as 'claude' | 'codex' } : {}),
+        ...(rawRequiresReview === true ? { requiresReview: true } : {}),
         // Creator tracking (from service)
         ...creatorContext,
       })
