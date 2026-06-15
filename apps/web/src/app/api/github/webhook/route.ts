@@ -252,7 +252,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
-        if (!workspace.gitConfig?.autoMergePR) {
+        // Honour autoMergeOnGreenCI (CI-specific alias), fallback to autoMergePR, default true.
+        const gitCfg = workspace.gitConfig;
+        const shouldAutoMerge = gitCfg?.autoMergeOnGreenCI ?? gitCfg?.autoMergePR ?? true;
+        if (!shouldAutoMerge) {
           continue;
         }
 
@@ -278,6 +281,31 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         if (!allPassed) {
           console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
           continue;
+        }
+
+        // requiresReview gate — hold PR for human review if task or mission requires it.
+        if (worker.taskId) {
+          const reviewTask = await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            with: { mission: { columns: { id: true, requiresReview: true } } },
+            columns: { id: true, requiresReview: true, missionId: true, title: true },
+          });
+
+          const missionRequires = (reviewTask?.mission as { requiresReview?: boolean } | null)?.requiresReview;
+          if (reviewTask && (reviewTask.requiresReview || missionRequires)) {
+            console.log(`PR held for human review (requiresReview=true) — ${repository.full_name}#${pr.number}`);
+            if (reviewTask.missionId) {
+              await notifyMissionPrReady(reviewTask.missionId, {
+                title: 'PR ready — awaiting human review',
+                prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
+                prNumber: pr.number,
+                headSha,
+                reason: 'awaiting_review',
+                message: `${reviewTask.title} — PR #${pr.number} is ready but held for human review (requiresReview=true).`,
+              });
+            }
+            continue;
+          }
         }
 
         await tryAutoMergeWorkerPr({
@@ -342,6 +370,36 @@ async function handlePullRequestEvent(event: {
       .set({ status: 'completed', updatedAt: new Date() })
       .where(eq(tasks.id, worker.task.id));
     console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+
+    // Post-merge release trigger — fire release.yml if task.release indicates it.
+    const mergedTask = worker.task;
+    if (mergedTask.release !== 'false' && event.installation) {
+      const mergedWorkspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mergedTask.workspaceId),
+      });
+      const shouldRelease =
+        mergedTask.release === 'true' ||
+        (mergedTask.release === 'inherit' && mergedWorkspace?.releaseConfig?.enabled === true);
+
+      if (shouldRelease && mergedWorkspace) {
+        const releaseRef = mergedWorkspace.gitConfig?.defaultBranch ?? 'dev';
+        try {
+          await githubApi(
+            event.installation.id,
+            `/repos/${repository.full_name}/actions/workflows/release.yml/dispatches`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ref: releaseRef, inputs: { force: 'false' } }),
+            },
+          );
+          console.log(`Triggered release workflow for ${repository.full_name} on ${releaseRef} (task ${mergedTask.id})`);
+        } catch (err) {
+          console.error(`Failed to trigger release for ${repository.full_name}:`, err);
+        }
+      }
+    }
+
     return;
   }
 
@@ -581,7 +639,7 @@ async function maybeAutoMergeNoCiPr(
   });
 
   for (const workspace of linkedWorkspaces) {
-    if (!workspace.gitConfig?.autoMergePR) {
+    if (!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR)) {
       continue;
     }
 
@@ -629,7 +687,7 @@ async function tryAutoMergeWorkerPr(params: {
 }): Promise<void> {
   const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, gitConfig);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, gitConfig);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
     if (worker.taskId) {
@@ -665,8 +723,42 @@ async function evaluateAutoMergeSafety(
   installationId: number,
   repoFullName: string,
   prNumber: number,
+  headSha: string,
   gitConfig: { autoMergeDenyPaths?: string[]; autoMergeMaxLines?: number } | null | undefined,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // CI completeness check — verify no check runs are still pending or failing.
+  try {
+    const checkRunsData = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/commits/${headSha}/check-runs`,
+    );
+    const checkRuns: Array<{ name: string; status: string; conclusion: string | null }> =
+      checkRunsData?.check_runs ?? [];
+
+    const pendingOrFailed = checkRuns.filter(
+      (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
+    );
+    if (pendingOrFailed.length > 0) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: ${pendingOrFailed.map((r) => r.name).join(', ')}`,
+      };
+    }
+
+    // Warn if expected named checks are absent — likely means no test suite is configured.
+    const runNames = checkRuns.map((r) => r.name.toLowerCase());
+    const missingChecks = ['typecheck', 'build', 'test'].filter(
+      (c) => !runNames.some((n) => n.includes(c)),
+    );
+    if (missingChecks.length > 0) {
+      console.warn(
+        `${repoFullName}#${prNumber}: expected CI checks not found (${missingChecks.join(', ')}) — no test suite configured?`,
+      );
+    }
+  } catch (err) {
+    console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+  }
+
   const denyPaths = gitConfig?.autoMergeDenyPaths ?? [];
   const maxLines = gitConfig?.autoMergeMaxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
 

@@ -260,6 +260,7 @@ export interface Mission {
   scheduleId: string | null;
   parentMissionId: string | null;
   createdByUserId: string | null;
+  requiresReview: boolean;
   createdAt: Date;
   updatedAt: Date;
   // Relations
@@ -368,6 +369,7 @@ export interface Task {
   dependsOn: string[];
   result: TaskResult | null;
   backend?: AgentBackend;
+  requiresReview?: boolean;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;

@@ -1023,4 +1023,67 @@ describe('POST /api/tasks', () => {
       global.fetch = originalFetch;
     }
   });
+
+  it('forwards requiresReview: true to the DB insert', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Review Task',
+      requiresReview: true,
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Review Task', requiresReview: true },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(capturedValues.requiresReview).toBe(true);
+  });
+
+  it('does not set requiresReview in insert when not provided (DB default applies)', async () => {
+    const createdTask = {
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      title: 'Normal Task',
+      requiresReview: false,
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Normal Task' },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // requiresReview not set in insert values — DB default (false) applies
+    expect(capturedValues.requiresReview).toBeUndefined();
+  });
 });

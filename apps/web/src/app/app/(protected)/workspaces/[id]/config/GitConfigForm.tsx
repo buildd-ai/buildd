@@ -32,6 +32,7 @@ interface GitConfig {
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
     autoMergePR?: boolean;
+    autoMergeOnGreenCI?: boolean;
     defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
@@ -60,7 +61,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [requiresPR, setRequiresPR] = useState(initialConfig?.requiresPR || false);
     const [targetBranch, setTargetBranch] = useState(initialConfig?.targetBranch || '');
     const [autoCreatePR, setAutoCreatePR] = useState(initialConfig?.autoCreatePR || false);
-    const [autoMergePR, setAutoMergePR] = useState(initialConfig?.autoMergePR || false);
+    const [autoMergeOnGreenCI, setAutoMergeOnGreenCI] = useState(initialConfig?.autoMergeOnGreenCI ?? initialConfig?.autoMergePR ?? true);
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
@@ -104,7 +105,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     requiresPR,
                     targetBranch: targetBranch || undefined,
                     autoCreatePR,
-                    autoMergePR,
+                    autoMergeOnGreenCI,
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
@@ -286,17 +287,21 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     <div className="flex items-center gap-2">
                         <input
                             type="checkbox"
-                            id="autoMergePR"
-                            checked={autoMergePR}
-                            onChange={(e) => setAutoMergePR(e.target.checked)}
+                            id="autoMergeOnGreenCI"
+                            checked={autoMergeOnGreenCI}
+                            onChange={(e) => setAutoMergeOnGreenCI(e.target.checked)}
                             className="rounded"
                         />
-                        <label htmlFor="autoMergePR" className="text-sm">
-                            Auto-merge PRs when CI passes
+                        <label htmlFor="autoMergeOnGreenCI" className="text-sm font-medium">
+                            Auto-merge on green CI
+                            <span className="ml-1.5 text-xs font-normal text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">default: on</span>
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Automatically squash-merge agent PRs when all CI checks pass.
+                        When enabled, PRs are automatically merged and released when all CI checks pass. Turn off to require manual review for all PRs.
+                    </p>
+                    <p className="text-xs text-text-secondary -mt-1 bg-surface-3/60 border border-border-default rounded px-2.5 py-1.5">
+                        Override per-task or per-mission using the <code className="font-mono">requiresReview</code> flag.
                     </p>
                 </div>
             </div>
