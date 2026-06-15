@@ -9,6 +9,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
+import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -598,14 +599,15 @@ export async function GET(req: NextRequest) {
     }
 
     // Lightweight stale-worker cleanup: mark workers as failed when their
-    // runner heartbeat expired (10+ min).  Runs every cron tick (~1 min)
-    // so stale workers are caught quickly instead of waiting 30 min for a
-    // runner to call /api/tasks/cleanup.
+    // runner heartbeat expired.  Runs every cron tick (~1 min) so stale
+    // workers are caught quickly instead of waiting 30 min for a runner to
+    // call /api/tasks/cleanup.  Threshold matches stale-workers.ts (150 min
+    // = 2.5× the 60-min poll cycle) so one missed beat doesn't kill live workers.
     let heartbeatOrphans = 0;
     try {
-      const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+      const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
       const staleHBs = await db.query.workerHeartbeats.findMany({
-        where: lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+        where: lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
         columns: { id: true, accountId: true },
       });
       if (staleHBs.length > 0) {
@@ -638,7 +640,7 @@ export async function GET(req: NextRequest) {
           heartbeatOrphans = orphanedWorkers.length;
         }
         // Delete stale heartbeat records
-        await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo));
+        await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff));
       }
     } catch (cleanupErr) {
       console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
