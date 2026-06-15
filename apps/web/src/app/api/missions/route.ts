@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, recipeId, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -172,6 +172,7 @@ export async function POST(req: NextRequest) {
         contextArtifactIds: contextArtifactIds || [],
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
+        ...(requiresReview === true ? { requiresReview: true } : {}),
       })
       .returning();
 

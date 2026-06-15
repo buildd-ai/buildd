@@ -252,7 +252,8 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
-        if (!workspace.gitConfig?.autoMergePR) {
+        const shouldAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR ?? true;
+        if (!shouldAutoMerge) {
           continue;
         }
 
@@ -581,7 +582,8 @@ async function maybeAutoMergeNoCiPr(
   });
 
   for (const workspace of linkedWorkspaces) {
-    if (!workspace.gitConfig?.autoMergePR) {
+    const shouldAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR ?? true;
+    if (!shouldAutoMerge) {
       continue;
     }
 

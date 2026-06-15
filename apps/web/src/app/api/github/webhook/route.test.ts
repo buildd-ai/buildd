@@ -640,6 +640,36 @@ describe('POST /api/github/webhook', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
+    it('auto-merges when gitConfig is absent (defaults to opt-OUT)', async () => {
+      withAutoMergeWorkspaceAndWorker({});
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('respects autoMergeOnGreenCI: false over autoMergePR: true', async () => {
+      withAutoMergeWorkspaceAndWorker({ autoMergeOnGreenCI: false, autoMergePR: true });
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('auto-merges when autoMergeOnGreenCI: true even if autoMergePR is absent', async () => {
+      withAutoMergeWorkspaceAndWorker({ autoMergeOnGreenCI: true });
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
     it('blocks merge and notifies when the diff exceeds the line budget', async () => {
       mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });

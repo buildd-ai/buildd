@@ -309,6 +309,13 @@
       "when": 1781473011611,
       "tag": "0043_fine_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1781522959223,
+      "tag": "0044_minor_serpent_society",
+      "breakpoints": true
     }
   ]
 }

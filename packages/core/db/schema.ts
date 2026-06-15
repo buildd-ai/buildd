@@ -205,6 +205,10 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
+  // Replaces autoMergePR — defaults to TRUE when neither field is set, making auto-merge opt-OUT.
+  // Takes precedence over autoMergePR when present.
+  autoMergeOnGreenCI?: boolean;
+
   // Safety rails for autoMergePR — if set, PRs that violate these are NOT auto-merged
   // even when CI is green. A mission notification is sent instead.
   autoMergeDenyPaths?: string[];      // e.g. ["drizzle/", "src/lib/auth/"] — any touched path starting with these blocks auto-merge
@@ -420,6 +424,7 @@ export const missions = pgTable('missions', {
   // Dedup key for PR-ready push notifications — set to PR head SHA after each notify.
   lastNotifiedSha: text('last_notified_sha'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  requiresReview: boolean('requires_review').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -477,6 +482,8 @@ export const tasks = pgTable('tasks', {
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
   // Agent backend that executes this task
   backend: agentBackendEnum('backend').notNull().default('claude'),
+  // Whether this task requires human review before auto-merge
+  requiresReview: boolean('requires_review').notNull().default(false),
   // Release override — whether this task should trigger a prod release on completion.
   // 'true' forces release (errors if workspace has no release config).
   // 'false' suppresses release even when the workspace default is on.
