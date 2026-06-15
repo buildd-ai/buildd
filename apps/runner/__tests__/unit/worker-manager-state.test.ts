@@ -186,6 +186,7 @@ describe('WorkerManager — state transitions', () => {
     mockGetBatchObservations.mockClear();
     mockCreateObservation.mockClear();
     mockStreamInputFn.mockClear();
+    mockSendHeartbeat.mockClear();
   });
 
   describe('AskUserQuestion detection', () => {
@@ -601,6 +602,28 @@ describe('WorkerManager — state transitions', () => {
         // Worker should be 'done' since all messages were processed
         expect(['done', 'stale']).toContain(worker.status);
       }
+    });
+  });
+
+  describe('Claim-time heartbeat', () => {
+    test('sends heartbeat immediately when a task is claimed', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-hb' },
+        { type: 'result', subtype: 'success', session_id: 'sess-hb' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({
+        workers: [{ id: 'w-hb', branch: 'buildd/hb-test', task: makeTask() }],
+      }));
+
+      // serverless: true disables the periodic heartbeat interval, so any
+      // sendHeartbeat call here comes exclusively from the claim path.
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+
+      // startFromClaim must call sendHeartbeat as its first action so the
+      // stale-workers cron can't flag a freshly-started worker dead.
+      expect(mockSendHeartbeat.mock.calls.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

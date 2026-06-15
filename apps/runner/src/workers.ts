@@ -763,6 +763,11 @@ export class WorkerManager {
     workspacePath: string,
   ): Promise<LocalWorker | null> {
 
+    // Refresh the runner heartbeat record immediately so the stale-workers cron
+    // can't flag this worker dead due to a pre-existing stale/absent heartbeat.
+    // Fire-and-forget — non-fatal if it fails.
+    this.sendHeartbeat();
+
     // Use server-managed secrets (delivered inline during claim)
     let serverApiKey: string | undefined;
     let serverOauthToken: string | undefined;
