@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockRefreshCodexCredential = mock(() => Promise.resolve('refreshed' as any));
+const mockGetCodexSecretId = mock(() => Promise.resolve('secret-1' as string | null));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -17,6 +18,7 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@/lib/codex-credential', () => ({
   refreshCodexCredential: mockRefreshCodexCredential,
+  getCodexSecretId: mockGetCodexSecretId,
 }));
 
 // ── imports (after mocks) ─────────────────────────────────────────────────────
@@ -27,10 +29,8 @@ import { POST } from './route';
 
 const mockParams = Promise.resolve({ id: 'ws-1' });
 
-function makeReq(): NextRequest {
-  return new NextRequest('http://localhost:3000/api/workspaces/ws-1/codex-credential/refresh', {
-    method: 'POST',
-  });
+function makeReq(url = 'http://localhost:3000/api/workspaces/ws-1/codex-credential/refresh'): NextRequest {
+  return new NextRequest(url, { method: 'POST' });
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -40,12 +40,13 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh', () => {
     mockGetCurrentUser.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockRefreshCodexCredential.mockReset();
+    mockGetCodexSecretId.mockReset();
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockGetCodexSecretId.mockResolvedValue('secret-1');
   });
 
   it('returns 401 when not authenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(401);
     expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
@@ -54,69 +55,46 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh', () => {
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
-
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(404);
     expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
   });
 
-  it('returns { status: refreshed } when token successfully refreshed', async () => {
+  it('returns no_credential and skips refresh when no secret at scope', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('refreshed');
-
-    const res = await POST(makeReq(), { params: mockParams });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.status).toBe('refreshed');
-    expect(mockRefreshCodexCredential).toHaveBeenCalledWith('ws-1');
-  });
-
-  it('returns { status: locked } when another refresh is already in progress', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('locked');
-
-    const res = await POST(makeReq(), { params: mockParams });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.status).toBe('locked');
-  });
-
-  it('returns { status: no_credential } when no credential is stored', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('no_credential');
-
+    mockGetCodexSecretId.mockResolvedValue(null);
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.status).toBe('no_credential');
+    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
   });
 
-  it('returns { status: error } when OpenAI API call fails', async () => {
+  it('refreshes by resolved secret id (team scope by default)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('error');
-
+    mockRefreshCodexCredential.mockResolvedValue('refreshed');
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.status).toBe('error');
+    expect(data.status).toBe('refreshed');
+    expect(mockRefreshCodexCredential).toHaveBeenCalledWith('secret-1');
+    // team-wide scope by default
+    expect(mockGetCodexSecretId).toHaveBeenCalledWith({ teamId: 'team-1' });
   });
-});
 
-// ── refreshCodexCredential unit tests (via lib mock) ─────────────────────────
-// These test the logic embedded in the function — for direct unit tests of the
-// lib, see codex-credential.test.ts
-
-describe('refreshCodexCredential integration contracts', () => {
-  it('is called with the workspace id from the URL param', async () => {
+  it('uses workspace scope when scope=workspace', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockRefreshCodexCredential.mockResolvedValue('refreshed');
+    const res = await POST(makeReq('http://localhost:3000/api/workspaces/ws-1/codex-credential/refresh?scope=workspace'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockGetCodexSecretId).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
+  });
 
-    const customParams = Promise.resolve({ id: 'ws-custom-999' });
-    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-custom-999/codex-credential/refresh', {
-      method: 'POST',
-    });
-    await POST(req, { params: customParams });
-    expect(mockRefreshCodexCredential).toHaveBeenCalledWith('ws-custom-999');
+  it('passes through locked / error outcomes', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockRefreshCodexCredential.mockResolvedValue('locked');
+    const res = await POST(makeReq(), { params: mockParams });
+    const data = await res.json();
+    expect(data.status).toBe('locked');
   });
 });

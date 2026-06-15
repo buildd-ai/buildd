@@ -11,7 +11,7 @@ import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
-import { getCodexCredential } from '@/lib/codex-credential';
+import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -932,10 +932,12 @@ export async function POST(req: NextRequest) {
       if ((task as any)?.backend !== 'codex') continue;
 
       const wsId = task?.workspaceId;
-      if (!wsId) continue;
+      const teamId = (task as any)?.workspace?.teamId;
+      if (!wsId || !teamId) continue;
 
       try {
-        const cred = await getCodexCredential(wsId);
+        // Resolve the most-specific credential: workspace > account > team-wide.
+        const cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
         if (cred) {
           (cw as any).codexCredential = {
             accessToken: cred.accessToken,

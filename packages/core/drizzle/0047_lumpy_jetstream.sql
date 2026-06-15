@@ -1,0 +1,1 @@
+DROP TABLE "codex_credentials";

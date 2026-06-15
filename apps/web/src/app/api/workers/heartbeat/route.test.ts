@@ -18,6 +18,7 @@ const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
 const mockGetCachedAccountWorkspaces = mock(() => Promise.resolve(null));
 const mockSetCachedAccountWorkspaces = mock(() => Promise.resolve());
 const mockInvalidateCachedAccountWorkspaces = mock(() => Promise.resolve());
+const mockGetLatestVersion = mock(() => Promise.resolve({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' }));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -67,6 +68,10 @@ mock.module('crypto', () => ({
   }),
 }));
 
+mock.module('@/lib/version-cache', () => ({
+  getLatestVersion: mockGetLatestVersion,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -100,6 +105,7 @@ describe('POST /api/workers/heartbeat', () => {
     mockGetCachedAccountWorkspaces.mockReset();
     mockSetCachedAccountWorkspaces.mockReset();
     mockInvalidateCachedAccountWorkspaces.mockReset();
+    mockGetLatestVersion.mockReset();
 
     // Default mocks
     mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
@@ -108,6 +114,7 @@ describe('POST /api/workers/heartbeat', () => {
     mockSetCachedApiKey.mockResolvedValue(undefined);
     mockGetCachedAccountWorkspaces.mockResolvedValue(null);
     mockSetCachedAccountWorkspaces.mockResolvedValue(undefined);
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
 
     // Default mock for insert chain
     mockHeartbeatsInsert.mockReturnValue({

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -50,7 +51,7 @@ export async function GET(
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true },
+          columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, creationSource: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
         },
         subMissions: { columns: { id: true, title: true, status: true } },
@@ -62,8 +63,9 @@ export async function GET(
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
-    const totalTasks = mission.tasks?.length || 0;
-    const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
+    const deliverableTasks = mission.tasks?.filter(isDeliverableTask) || [];
+    const totalTasks = deliverableTasks.length;
+    const completedTasks = deliverableTasks.filter(t => t.status === 'completed').length;
     const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
     // Extract config from schedule template

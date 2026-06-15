@@ -9,8 +9,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { codexCredentials } from '@buildd/core/db/schema';
-import { lt, sql, isNotNull } from 'drizzle-orm';
+import { secrets } from '@buildd/core/db/schema';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
 
 export const maxDuration = 60;
@@ -28,10 +28,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Find credentials expiring within 1 hour that have a refresh token
-  const expiringSoon = await db.query.codexCredentials.findMany({
-    where: lt(codexCredentials.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
-    columns: { workspaceId: true, tokenExpiresAt: true },
+  // Find Codex credentials expiring within 1 hour
+  const expiringSoon = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.purpose, 'codex_credential'),
+      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+    ),
+    columns: { id: true },
   });
 
   const results: Record<string, string> = {};
@@ -41,8 +44,8 @@ export async function GET(req: NextRequest) {
   let noCredential = 0;
 
   for (const cred of expiringSoon) {
-    const outcome = await refreshCodexCredential(cred.workspaceId);
-    results[cred.workspaceId] = outcome;
+    const outcome = await refreshCodexCredential(cred.id);
+    results[cred.id] = outcome;
     if (outcome === 'refreshed') refreshed++;
     else if (outcome === 'locked') locked++;
     else if (outcome === 'error') errors++;
@@ -57,6 +60,6 @@ export async function GET(req: NextRequest) {
     locked,
     errors,
     noCredential,
-    workspaces: results,
+    secrets: results,
   });
 }
