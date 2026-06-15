@@ -25,9 +25,17 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 import { materializeCodexAuth, cleanupCodexAuth } from '../../src/codex-auth';
 
+// Detect whether another test file has called mock.module('fs') before us.
+// Real fs: existsSync('/') === true. Mocked fs (in this codebase): always false.
+// When mocked, all describe blocks below are skipped — they need real filesystem
+// writes. Run this file in isolation to exercise them:
+//   bun test apps/runner/__tests__/unit/codex-credential-injection.test.ts
+const FS_IS_MOCKED = !existsSync('/');
+const describeFs = FS_IS_MOCKED ? describe.skip : describe;
+
 // ─── materializeCodexAuth ─────────────────────────────────────────────────────
 
-describe('materializeCodexAuth', () => {
+describeFs('materializeCodexAuth', () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs) {
@@ -82,7 +90,7 @@ describe('materializeCodexAuth', () => {
 
 // ─── cleanupCodexAuth ─────────────────────────────────────────────────────────
 
-describe('cleanupCodexAuth', () => {
+describeFs('cleanupCodexAuth', () => {
   test('removes the temp directory', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'codex-test-'));
     writeFileSync(join(tempDir, 'auth.json'), '{}');
@@ -102,7 +110,7 @@ describe('cleanupCodexAuth', () => {
 
 // ─── CodexBackend.resolveApiKey with access_token ────────────────────────────
 
-describe('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
+describeFs('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
   let tempDir: string | null = null;
 
   afterEach(() => {
