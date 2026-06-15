@@ -572,6 +572,87 @@ describe('POST /api/github/webhook', () => {
     });
   });
 
+  // ── requiresReview gate (check_suite success path) ──────────────────────────
+  describe('check_suite — requiresReview gate', () => {
+    function withSuccessWorkerPr(opts: {
+      taskRequiresReview?: boolean;
+      mission?: { id: string; requiresReview: boolean } | null;
+    } = {}) {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
+      mockTasksFindFirst.mockReturnValue({
+        id: 't1',
+        requiresReview: opts.taskRequiresReview ?? false,
+        missionId: opts.mission?.id ?? 'm1',
+        title: 'Fix bug',
+        mission: opts.mission ?? null,
+      });
+    }
+
+    it('holds PR and skips merge when task.requiresReview is true', async () => {
+      withSuccessWorkerPr({ taskRequiresReview: true });
+      mockNotifyMissionPrReady.mockReturnValue(Promise.resolve({ notified: true }));
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+      const notifyArgs = (mockNotifyMissionPrReady.mock.calls[0] as any[])[1];
+      expect(notifyArgs.reason).toBe('awaiting_review');
+    });
+
+    it('holds PR and skips merge when mission.requiresReview is true (inherited)', async () => {
+      withSuccessWorkerPr({ mission: { id: 'm1', requiresReview: true } });
+      mockNotifyMissionPrReady.mockReturnValue(Promise.resolve({ notified: true }));
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+      const notifyArgs = (mockNotifyMissionPrReady.mock.calls[0] as any[])[1];
+      expect(notifyArgs.reason).toBe('awaiting_review');
+    });
+
+    it('auto-merges when requiresReview is false and CI is green', async () => {
+      withSuccessWorkerPr({ taskRequiresReview: false, mission: null });
+      // check-runs empty (warns but does not block), PR files within budget
+      mockGithubApi
+        .mockReturnValueOnce(Promise.resolve({ check_runs: [] }))
+        .mockReturnValueOnce(Promise.resolve([]));
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks merge when a check run is still pending (CI completeness check)', async () => {
+      withSuccessWorkerPr({ taskRequiresReview: false, mission: null });
+      // First githubApi call is check-runs — pending run blocks merge
+      mockGithubApi.mockReturnValueOnce(
+        Promise.resolve({
+          check_runs: [{ name: 'build', status: 'in_progress', conclusion: null }],
+        })
+      );
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Pull request auto-merge (no-CI repos) ────────────────────────────────
   describe('pull_request auto-merge for repos without CI', () => {
     function makePullRequestPayload(overrides: Record<string, any> = {}) {
@@ -638,6 +719,48 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('completes task and triggers release workflow when task.release is "true"', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 7,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t1-fix', sha: 'sha-7' },
+          html_url: 'https://github.com/test-org/test-repo/pull/7',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        task: {
+          id: 't1',
+          status: 'pending',
+          workspaceId: 'ws1',
+          release: 'true',
+          title: 'Fix bug',
+          missionId: null,
+        },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws1',
+        releaseConfig: { enabled: true, prodBranch: 'main' },
+        gitConfig: { defaultBranch: 'dev' },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(true);
+      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
+        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
+      );
+      expect(dispatchCall).toBeDefined();
     });
 
     it('blocks merge and notifies when the diff exceeds the line budget', async () => {
