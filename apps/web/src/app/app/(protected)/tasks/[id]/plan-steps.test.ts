@@ -146,6 +146,11 @@ describe('matchMilestoneToStep', () => {
     expect(matchMilestoneToStep('', steps)).toBe(-1);
   });
 
+  test('returns -1 for undefined label without throwing', () => {
+    expect(() => matchMilestoneToStep(undefined as any, steps)).not.toThrow();
+    expect(matchMilestoneToStep(undefined as any, steps)).toBe(-1);
+  });
+
   test('returns -1 for empty steps', () => {
     expect(matchMilestoneToStep('Some label', [])).toBe(-1);
   });
