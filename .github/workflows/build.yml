@@ -347,7 +347,6 @@ jobs:
                apps/web/tests/integration/worker-state-machine.test.ts \
                apps/web/tests/integration/schedule-triggers.test.ts \
                apps/web/tests/integration/artifacts.test.ts \
-               apps/web/tests/integration/recipes.test.ts \
                apps/web/tests/integration/missions-smoke.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'fs';
+import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -20,7 +20,7 @@ export interface CodexCredential {
  */
 export function materializeCodexAuth(workerId: string, credential: CodexCredential): { codexHome: string } {
   // mkdtempSync guarantees 0o700 on POSIX — no need to re-chmod the dir.
-  const codexHome = mkdtempSync(join(tmpdir(), 'codex-'));
+  const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
   const authJson = {
     access_token: credential.accessToken,
     refresh_token: credential.refreshToken,
@@ -29,8 +29,8 @@ export function materializeCodexAuth(workerId: string, credential: CodexCredenti
   const authPath = join(codexHome, 'auth.json');
   // Write first (no mode option — avoids a Bun 1.3.x bug where writeFileSync
   // with { mode } silently fails to create the file), then chmod explicitly.
-  writeFileSync(authPath, JSON.stringify(authJson));
-  chmodSync(authPath, 0o600);
+  fs.writeFileSync(authPath, JSON.stringify(authJson));
+  fs.chmodSync(authPath, 0o600);
   console.log(`[Worker ${workerId}] Materialized Codex auth.json at ${codexHome}`);
   return { codexHome };
 }
@@ -38,7 +38,7 @@ export function materializeCodexAuth(workerId: string, credential: CodexCredenti
 /** Remove the temp CODEX_HOME directory created by materializeCodexAuth. */
 export function cleanupCodexAuth(workerId: string, codexHome: string): void {
   try {
-    rmSync(codexHome, { recursive: true, force: true });
+    fs.rmSync(codexHome, { recursive: true, force: true });
     console.log(`[Worker ${workerId}] Cleaned up Codex auth temp dir`);
   } catch (err) {
     console.warn(`[Worker ${workerId}] Failed to clean up Codex auth dir:`, err);
