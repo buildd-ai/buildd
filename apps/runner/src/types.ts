@@ -165,6 +165,13 @@ export interface LocalWorker {
   serverOauthToken?: string;
   // Server-managed MCP credential secrets (label/env var name → decrypted value)
   mcpSecrets?: Record<string, string>;
+  // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
+  codexCredential?: {
+    accessToken: string;
+    refreshToken: string;
+    accountId: string;
+    expiresAt: Date | null;
+  };
   // Role config from claim route (for role env resolution)
   roleConfig?: RoleConfig;
   // Prompt suggestions for follow-up actions (populated on completion)

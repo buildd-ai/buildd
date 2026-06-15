@@ -785,6 +785,13 @@ export interface ClaimTasksResponse {
     serverOauthToken?: string;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
+    /** Decrypted Codex OAuth credential (only present for backend=codex tasks) */
+    codexCredential?: {
+      accessToken: string;
+      refreshToken: string;
+      accountId: string;
+      expiresAt: Date | null;
+    };
     /** Role configuration for the claimed task's assigned role */
     roleConfig?: RoleConfig;
   }>;

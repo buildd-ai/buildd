@@ -109,6 +109,8 @@ export class CodexBackend implements AgentBackend {
         try {
           const auth = JSON.parse(readFileSync(authPath, 'utf-8'));
           if (auth.api_key || auth.apiKey) return auth.api_key || auth.apiKey;
+          // OAuth device-code flow: access_token stored by the Codex credential UI
+          if (auth.access_token) return auth.access_token;
         } catch {
           // Fall through to OPENAI_API_KEY
         }
