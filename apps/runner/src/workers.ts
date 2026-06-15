@@ -8,6 +8,7 @@ import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { materializeCodexAuth, cleanupCodexAuth } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
@@ -760,7 +761,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -844,6 +845,10 @@ export class WorkerManager {
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
+    }
+    if (claimedWorker.codexCredential) {
+      worker.codexCredential = claimedWorker.codexCredential;
+      console.log(`[Worker ${claimedWorker.id}] Received Codex credential for accountId=${claimedWorker.codexCredential.accountId}`);
     }
     if (claimedWorker.roleConfig) {
       worker.roleConfig = claimedWorker.roleConfig;
@@ -1197,6 +1202,15 @@ export class WorkerManager {
           cleanEnv[envVar] = value;
         }
         console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
+      }
+
+      // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
+      // The temp dir is stored in the session so the finally block can clean it up.
+      if (worker.codexCredential) {
+        const { codexHome } = materializeCodexAuth(worker.id, worker.codexCredential);
+        cleanEnv.CODEX_HOME = codexHome;
+        const session = this.sessions.get(worker.id);
+        if (session) (session as any).codexHome = codexHome;
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
@@ -1799,6 +1813,12 @@ If something is missing or incomplete, describe what and fix it now.`;
           await cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
+        }
+
+        // Clean up Codex auth temp dir (written before backend spawn)
+        const codexHome = (session as any).codexHome as string | undefined;
+        if (codexHome) {
+          cleanupCodexAuth(worker.id, codexHome);
         }
 
         this.sessions.delete(worker.id);

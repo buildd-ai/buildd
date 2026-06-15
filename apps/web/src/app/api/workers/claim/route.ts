@@ -11,6 +11,7 @@ import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
+import { getCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -911,6 +912,33 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       // Non-fatal: worker can still use local credentials
       console.warn('Failed to decrypt server-managed secrets:', err);
+    }
+  }
+
+  // Attach Codex credential for codex-backend tasks.
+  // Fetched and decrypted at claim time so the runner never needs DB access.
+  // Never included for non-codex tasks to limit token exposure.
+  if (process.env.ENCRYPTION_KEY) {
+    for (const cw of claimedWorkers) {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      if ((task as any)?.backend !== 'codex') continue;
+
+      const wsId = task?.workspaceId;
+      if (!wsId) continue;
+
+      try {
+        const cred = await getCodexCredential(wsId);
+        if (cred) {
+          (cw as any).codexCredential = {
+            accessToken: cred.accessToken,
+            refreshToken: cred.refreshToken,
+            accountId: cred.accountId,
+            expiresAt: cred.tokenExpiresAt,
+          };
+        }
+      } catch (err) {
+        console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
+      }
     }
   }
 
