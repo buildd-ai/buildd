@@ -34,16 +34,13 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-const STATUS_PRIORITY: Record<string, number> = {
-  waiting_input: 0,
-  in_progress: 1,
-  assigned: 2,
-  pending: 3,
-  failed: 4,
-  completed: 5,
-};
+// Sort strictly by recency — status is never a sort key
+function sortByRecency(list: GridTask[]): GridTask[] {
+  return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
+type ContentFilter = 'all' | 'missions' | 'tasks';
 type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
 
 function getStatusDot(status: string): { color: string; pulse: boolean } {
@@ -76,7 +73,22 @@ function StatusBadge({ status }: { status: string }) {
   return null;
 }
 
-function TaskRow({ task }: { task: GridTask }) {
+// Small icon that distinguishes standalone tasks from mission-grouped ones
+function StandaloneIcon() {
+  return (
+    <span
+      title="Standalone task"
+      className="inline-flex items-center justify-center w-4 h-4 rounded border border-border-default text-text-muted shrink-0"
+    >
+      <svg viewBox="0 0 12 12" fill="none" className="w-2.5 h-2.5" stroke="currentColor" strokeWidth={1.5}>
+        <rect x="1.5" y="1.5" width="9" height="9" rx="1" />
+        <path d="M3.5 5.5h5M3.5 7.5h3" strokeLinecap="round" />
+      </svg>
+    </span>
+  );
+}
+
+function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolean }) {
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
 
@@ -87,6 +99,9 @@ function TaskRow({ task }: { task: GridTask }) {
     >
       {/* Status dot */}
       <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
+
+      {/* Standalone icon — only shown when not inside a named mission group */}
+      {isStandalone && <StandaloneIcon />}
 
       {/* Title */}
       <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
@@ -147,16 +162,17 @@ interface TaskGridProps {
 }
 
 export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGridProps) {
-  // When viewing a single mission's tasks, filter to just those
   const visibleTasks = useMemo(() => {
     if (!missionFilter) return tasks;
     return tasks.filter(t => t.missionId === missionFilter);
   }, [tasks, missionFilter]);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
+  const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
   const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'mission');
   const [search, setSearch] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // Empty = all collapsed by default. Toggling adds a group to expandedGroups to open it.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Counts from unfiltered tasks
   const allCount = visibleTasks.length;
@@ -164,12 +180,16 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
   const completedCount = visibleTasks.filter(t => t.status === 'completed').length;
   const failedCount = visibleTasks.filter(t => t.status === 'failed').length;
 
-  // Apply filter + search
   const filtered = useMemo(() => {
     let result = visibleTasks;
+
     if (filter === 'active') result = result.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status));
     else if (filter === 'completed') result = result.filter(t => t.status === 'completed');
     else if (filter === 'failed') result = result.filter(t => t.status === 'failed');
+
+    // Content type filter
+    if (contentFilter === 'missions') result = result.filter(t => t.missionId !== null);
+    else if (contentFilter === 'tasks') result = result.filter(t => t.missionId === null);
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -177,47 +197,47 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     }
 
     return result;
-  }, [visibleTasks, filter, search]);
+  }, [visibleTasks, filter, contentFilter, search]);
 
-  // Split out needs-input tasks (always pinned at top)
+  // Needs-input tasks pinned at top regardless of grouping
   const needsInputTasks = useMemo(() => filtered.filter(t => t.status === 'waiting_input'), [filtered]);
   const nonWaitingTasks = useMemo(() => filtered.filter(t => t.status !== 'waiting_input'), [filtered]);
 
-  // Sort helper
-  const sortTasks = (list: GridTask[]) =>
-    [...list].sort((a, b) => {
-      const aPri = STATUS_PRIORITY[a.status] ?? 99;
-      const bPri = STATUS_PRIORITY[b.status] ?? 99;
-      if (aPri !== bPri) return aPri - bPri;
-      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    });
-
-  // Build groups
   const missionGroups = useMemo((): MissionGroup[] => {
     if (groupBy !== 'mission') return [];
     const map = new Map<string | null, GridTask[]>();
     for (const t of nonWaitingTasks) {
-      const key = t.missionId;
-      const existing = map.get(key) || [];
+      const existing = map.get(t.missionId) || [];
       existing.push(t);
-      map.set(key, existing);
+      map.set(t.missionId, existing);
     }
     const groups: MissionGroup[] = [];
     for (const [id, groupTasks] of map) {
+      const sorted = sortByRecency(groupTasks);
+      // Deduplicate planning-cycle rows: within named mission groups, drop tasks with
+      // the same title as a more-recent sibling (heartbeat/planning tasks repeat once per run).
+      let deduped: GridTask[];
+      if (id !== null) {
+        const seenTitles = new Set<string>();
+        deduped = [];
+        for (const t of sorted) {
+          if (!seenTitles.has(t.title)) {
+            seenTitles.add(t.title);
+            deduped.push(t);
+          }
+        }
+      } else {
+        deduped = sorted;
+      }
       groups.push({
         id,
         title: id ? (groupTasks[0].missionTitle || 'Untitled mission') : 'No mission',
-        tasks: sortTasks(groupTasks),
+        tasks: deduped,
       });
     }
-    // Sort: groups with active tasks first, then by recency
+    // Sort groups by latest activity (max updatedAt) descending.
+    // No special "No mission at bottom" rule — let recency decide.
     groups.sort((a, b) => {
-      const aHasActive = a.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
-      const bHasActive = b.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
-      if (aHasActive !== bHasActive) return aHasActive ? -1 : 1;
-      // "No mission" at the bottom
-      if (a.id === null && b.id !== null) return 1;
-      if (a.id !== null && b.id === null) return -1;
       const aLatest = Math.max(...a.tasks.map(t => new Date(t.updatedAt).getTime()));
       const bLatest = Math.max(...b.tasks.map(t => new Date(t.updatedAt).getTime()));
       return bLatest - aLatest;
@@ -234,40 +254,27 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
       { key: 'completed', label: 'Completed' },
       { key: 'failed', label: 'Failed' },
     ];
-    const groups: StatusGroup[] = [];
-    for (const { key, label } of order) {
-      const matching = nonWaitingTasks.filter(t => t.status === key);
-      if (matching.length > 0) {
-        groups.push({
-          label,
-          tasks: [...matching].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-        });
-      }
-    }
-    return groups;
+    return order
+      .map(({ key, label }) => ({
+        label,
+        tasks: sortByRecency(nonWaitingTasks.filter(t => t.status === key)),
+      }))
+      .filter(g => g.tasks.length > 0);
   }, [nonWaitingTasks, groupBy]);
 
   const workspaceGroups = useMemo((): MissionGroup[] => {
     if (groupBy !== 'workspace') return [];
     const map = new Map<string, GridTask[]>();
     for (const t of nonWaitingTasks) {
-      const key = t.workspaceName;
-      const existing = map.get(key) || [];
+      const existing = map.get(t.workspaceName) || [];
       existing.push(t);
-      map.set(key, existing);
+      map.set(t.workspaceName, existing);
     }
     const groups: MissionGroup[] = [];
     for (const [name, groupTasks] of map) {
-      groups.push({
-        id: name,
-        title: name,
-        tasks: sortTasks(groupTasks),
-      });
+      groups.push({ id: name, title: name, tasks: sortByRecency(groupTasks) });
     }
     groups.sort((a, b) => {
-      const aHasActive = a.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
-      const bHasActive = b.tasks.some(t => ['in_progress', 'assigned', 'pending'].includes(t.status));
-      if (aHasActive !== bHasActive) return aHasActive ? -1 : 1;
       const aLatest = Math.max(...a.tasks.map(t => new Date(t.updatedAt).getTime()));
       const bLatest = Math.max(...b.tasks.map(t => new Date(t.updatedAt).getTime()));
       return bLatest - aLatest;
@@ -277,11 +284,11 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
 
   const flatSorted = useMemo(() => {
     if (groupBy !== 'none') return [];
-    return sortTasks(nonWaitingTasks);
+    return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, groupBy]);
 
   const toggleGroup = (groupId: string) => {
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
@@ -289,7 +296,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     });
   };
 
-  // Empty state
   if (visibleTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8">
@@ -315,7 +321,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
     );
   }
 
-  const filters: { key: FilterStatus; label: string; count: number }[] = [
+  const statusFilters: { key: FilterStatus; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: allCount },
     { key: 'active', label: 'Active', count: activeCount },
     { key: 'completed', label: 'Completed', count: completedCount },
@@ -345,17 +351,40 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between px-4 mb-4">
+        <div className="flex items-center justify-between px-4 mb-3">
           <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>
             {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
           </h1>
         </div>
 
-        {/* Filter bar */}
-        <div className="flex items-center gap-2 px-4 mb-4">
+        {/* Content type segmented filter: All / Missions / Tasks */}
+        {!missionFilter && (
+          <div className="flex items-center gap-1 px-4 mb-3">
+            {([
+              { key: 'all' as ContentFilter, label: 'All' },
+              { key: 'missions' as ContentFilter, label: 'Missions' },
+              { key: 'tasks' as ContentFilter, label: 'Tasks' },
+            ]).map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setContentFilter(key)}
+                className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
+                  contentFilter === key
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Filter + search bar */}
+        <div className="flex items-center gap-2 px-4 mb-4 flex-wrap">
           {/* Status tabs */}
           <div className="flex gap-1">
-            {filters.map((f) => (
+            {statusFilters.map((f) => (
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
@@ -383,7 +412,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
             placeholder="Search tasks..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
+            className="w-[160px] sm:w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
           />
 
           {/* Group by dropdown */}
@@ -402,16 +431,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
 
         {/* Task list */}
         <div className="border-t border-border-default">
-          {/* Needs Input — pinned section */}
+          {/* Needs Input — always pinned at the top */}
           {needsInputTasks.length > 0 && (
             <div className="bg-status-warning/8">
-              {/* Header */}
               <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border-default">
                 <span className="w-2 h-2 rounded-full bg-status-warning" />
                 <span className="text-[13px] font-semibold text-text-primary">Needs Input</span>
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
-              {/* Rows */}
               {needsInputTasks.map((task) => {
                 const dot = getStatusDot(task.status);
                 return (
@@ -442,26 +469,52 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
           {/* Grouped by Mission */}
           {groupBy === 'mission' && missionGroups.map((group) => {
             const groupId = group.id || '__no_mission__';
-            const isCollapsed = collapsedGroups.has(groupId);
+            const isExpanded = expandedGroups.has(groupId);
+            const isNoMission = group.id === null;
+            const latestMs = Math.max(...group.tasks.map(t => new Date(t.updatedAt).getTime()));
+            const completedInGroup = group.tasks.filter(t => t.status === 'completed').length;
 
             return (
               <div key={groupId}>
-                {/* Group header */}
                 <button
                   onClick={() => toggleGroup(groupId)}
                   className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
                 >
-                  <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
+                  {/* Chevron: points right when collapsed, down when expanded */}
+                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
                     &#9662;
                   </span>
-                  <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
-                  <span className="text-[12px] text-text-desc ml-auto">
+
+                  {/* Mission icon (only for named missions) */}
+                  {!isNoMission && (
+                    <svg className="w-3 h-3 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <circle cx="12" cy="12" r="3" />
+                      <circle cx="12" cy="12" r="9" strokeDasharray="2 4" />
+                    </svg>
+                  )}
+
+                  <span className="text-[13px] font-semibold text-text-primary truncate min-w-0 flex-1">
+                    {group.title}
+                  </span>
+
+                  {/* Progress (for named missions) */}
+                  {!isNoMission && group.tasks.length > 0 && (
+                    <span className="text-[11px] text-text-muted shrink-0">
+                      {completedInGroup}/{group.tasks.length}
+                    </span>
+                  )}
+
+                  <span className="text-[12px] text-text-desc shrink-0">
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
+
+                  <span className="text-[11px] text-text-muted shrink-0 w-[58px] text-right">
+                    {timeAgo(new Date(latestMs).toISOString())}
+                  </span>
                 </button>
-                {/* Task rows */}
-                {!isCollapsed && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
+
+                {isExpanded && group.tasks.map((task) => (
+                  <TaskRow key={task.id} task={task} isStandalone={isNoMission} />
                 ))}
               </div>
             );
@@ -470,7 +523,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
           {/* Grouped by Status */}
           {groupBy === 'status' && statusGroups.map((group) => {
             const groupId = `status_${group.label}`;
-            const isCollapsed = collapsedGroups.has(groupId);
+            const isExpanded = expandedGroups.has(groupId);
 
             return (
               <div key={groupId}>
@@ -478,7 +531,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                   onClick={() => toggleGroup(groupId)}
                   className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
                 >
-                  <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
+                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
                     &#9662;
                   </span>
                   <span className="text-[13px] font-semibold text-text-primary">{group.label}</span>
@@ -486,7 +539,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {!isCollapsed && group.tasks.map((task) => (
+                {isExpanded && group.tasks.map((task) => (
                   <TaskRow key={task.id} task={task} />
                 ))}
               </div>
@@ -496,7 +549,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
           {/* Grouped by Workspace */}
           {groupBy === 'workspace' && workspaceGroups.map((group) => {
             const groupId = `ws_${group.id}`;
-            const isCollapsed = collapsedGroups.has(groupId);
+            const isExpanded = expandedGroups.has(groupId);
 
             return (
               <div key={groupId}>
@@ -504,7 +557,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                   onClick={() => toggleGroup(groupId)}
                   className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
                 >
-                  <span className={`text-[11px] text-text-muted transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>
+                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
                     &#9662;
                   </span>
                   <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
@@ -512,7 +565,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {!isCollapsed && group.tasks.map((task) => (
+                {isExpanded && group.tasks.map((task) => (
                   <TaskRow key={task.id} task={task} />
                 ))}
               </div>
@@ -521,7 +574,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
 
           {/* Flat list (no grouping) */}
           {groupBy === 'none' && flatSorted.map((task) => (
-            <TaskRow key={task.id} task={task} />
+            <TaskRow key={task.id} task={task} isStandalone={!task.missionId} />
           ))}
 
           {/* Empty filtered state */}

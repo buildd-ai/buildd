@@ -236,6 +236,42 @@ describe('gzip archive', () => {
   });
 });
 
+describe('milestone label guard', () => {
+  test('does not throw when iterating milestones with undefined labels', () => {
+    const milestones: Array<{ ts: number; label?: string }> = [
+      { ts: 1000000, label: undefined },
+      { ts: 2000000, label: 'Task started' },
+      { ts: 3000000 },
+      { ts: 4000000, label: 'PR #42 https://github.com/org/repo/pull/42' },
+    ];
+
+    let prUrl: string | null = null;
+    expect(() => {
+      for (const m of milestones) {
+        if ('label' in m && m.label && m.label.includes('PR #')) {
+          const match = m.label.match(/https?:\/\/\S+/);
+          if (match) prUrl = match[0];
+        }
+      }
+    }).not.toThrow();
+    expect(prUrl).toBe('https://github.com/org/repo/pull/42');
+  });
+
+  test('inserts session with milestones_json containing undefined label entry', () => {
+    const milestones = [
+      { ts: 1000000, label: undefined },
+      { ts: 2000000, label: 'Task started' },
+    ];
+    const id = `ml-undef-${Date.now()}`;
+    insertSession({ id, milestones_json: JSON.stringify(milestones) });
+    const row = db.query('SELECT milestones_json FROM sessions WHERE id = ?').get(id) as any;
+    expect(row).not.toBeNull();
+    const parsed = JSON.parse(row.milestones_json);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].label).toBeUndefined();
+  });
+});
+
 describe('integration flow', () => {
   test('insert + gzip + FTS search', async () => {
     mkdirSync(TEST_ARCHIVE_DIR, { recursive: true });

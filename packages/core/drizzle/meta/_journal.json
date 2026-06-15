@@ -302,6 +302,27 @@
       "when": 1780542323290,
       "tag": "0042_jazzy_mister_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1781473011611,
+      "tag": "0043_fine_tenebrous",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1781472646816,
+      "tag": "0044_mighty_ricochet",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1781492500902,
+      "tag": "0045_thick_vengeance",
+      "breakpoints": true
     }
   ]
 }

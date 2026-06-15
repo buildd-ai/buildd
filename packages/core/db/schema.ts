@@ -1,6 +1,8 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum
 } from 'drizzle-orm/pg-core';
+
+export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 import { relations } from 'drizzle-orm';
 import type { WorkerEnvironment } from '@buildd/shared';
 
@@ -473,6 +475,8 @@ export const tasks = pgTable('tasks', {
   complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
   predictedModel: text('predicted_model'),   // model chosen by router at claim
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
+  // Agent backend that executes this task
+  backend: agentBackendEnum('backend').notNull().default('claude'),
   // Release override — whether this task should trigger a prod release on completion.
   // 'true' forces release (errors if workspace has no release config).
   // 'false' suppresses release even when the workspace default is on.
@@ -648,18 +652,6 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   heartbeatIdx: index('worker_heartbeats_heartbeat_idx').on(t.lastHeartbeatAt),
 }));
 
-// Recipe step definition (used by taskRecipes)
-export type RecipeStep = {
-  ref: string;
-  title: string;
-  description?: string;
-  mode?: 'execution' | 'planning';
-  dependsOn?: string[];
-  requiredCapabilities?: string[];
-  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
-  priority?: number;
-};
-
 // Task schedules - cron-based automated task creation
 export const taskSchedules = pgTable('task_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -697,24 +689,6 @@ export const taskSchedules = pgTable('task_schedules', {
 }, (t) => ({
   workspaceIdx: index('task_schedules_workspace_idx').on(t.workspaceId),
   enabledNextRunIdx: index('task_schedules_enabled_next_run_idx').on(t.enabled, t.nextRunAt),
-}));
-
-// Task recipes - reusable multi-step workflow templates
-export const taskRecipes = pgTable('task_recipes', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  name: text('name').notNull(),
-  description: text('description'),
-  category: text('category').$type<'content' | 'research' | 'code' | 'ops' | 'custom'>(),
-  steps: jsonb('steps').notNull().$type<RecipeStep[]>(),
-  variables: jsonb('variables').default({}).$type<Record<string, { type: string; description?: string; default?: string }>>(),
-  isPublic: boolean('is_public').default(false).notNull(),
-  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  workspaceIdx: index('task_recipes_workspace_idx').on(t.workspaceId),
-  categoryIdx: index('task_recipes_category_idx').on(t.category),
 }));
 
 // GitHub App Integration
@@ -982,11 +956,11 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
 
   artifacts: many(artifacts),
   taskSchedules: many(taskSchedules),
-  taskRecipes: many(taskRecipes),
   workspaceSkills: many(workspaceSkills),
   missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
+  codexCredential: one(codexCredentials, { fields: [workspaces.id], references: [codexCredentials.workspaceId] }),
 }));
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
@@ -1031,10 +1005,6 @@ export const taskSchedulesRelations = relations(taskSchedules, ({ one, many }) =
   workspace: one(workspaces, { fields: [taskSchedules.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [taskSchedules.createdByUserId], references: [users.id] }),
   tasks: many(tasks),
-}));
-
-export const taskRecipesRelations = relations(taskRecipes, ({ one }) => ({
-  workspace: one(workspaces, { fields: [taskRecipes.workspaceId], references: [workspaces.id] }),
 }));
 
 export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({
@@ -1135,6 +1105,25 @@ export const tenantBudgets = pgTable('tenant_budgets', {
 
 export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
+}));
+
+// Workspace-scoped Codex auth storage (one record per workspace, upserted)
+export const codexCredentials = pgTable('codex_credentials', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  encryptedAccessToken: text('encrypted_access_token').notNull(),
+  encryptedRefreshToken: text('encrypted_refresh_token').notNull(),
+  accountId: text('account_id').notNull(),
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: uniqueIndex('codex_credentials_workspace_idx').on(t.workspaceId),
+}));
+
+export const codexCredentialsRelations = relations(codexCredentials, ({ one }) => ({
+  workspace: one(workspaces, { fields: [codexCredentials.workspaceId], references: [workspaces.id] }),
 }));
 
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────

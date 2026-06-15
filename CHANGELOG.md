@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pluggable AgentBackend abstraction with Claude and Codex support (#826)
 - Back api-key auth and account-workspace cache with Redis L2 (#821)
 - Capture agent error traces from tool output (#780)
 - `/respond` landing page + render needs-input banner on failed workers (#763)
@@ -42,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Send heartbeat on task claim to close stale-on-claim worker-kill edge (#830)
+- Full-bleed app icon across all surfaces, removing white side bars (#833)
 - Prevent multi-workspace OAuth misrouting (#779)
 - Require explicit workspaceId for ambiguous OAuth actions (#778)
 - Stop infinite retry loop on misrouted tasks (#777)

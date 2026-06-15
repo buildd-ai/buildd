@@ -2088,7 +2088,7 @@ function initCustomSelect(id, onSelect, { searchable = false } = {}) {
     optionEls.forEach((el, i) => {
       const opt = allOptions[i];
       if (!opt) return;
-      const matchLabel = opt.label.toLowerCase().includes(query);
+      const matchLabel = (opt.label ?? '').toLowerCase().includes(query);
       const matchHint = opt.hint && opt.hint.toLowerCase().includes(query);
       el.classList.toggle('hidden', query && !matchLabel && !matchHint);
       el.classList.remove('highlighted');

@@ -126,6 +126,7 @@ export interface LocalWorker {
   taskTitle: string;
   taskDescription?: string;
   taskMode?: string;  // 'execution' or 'planning'
+  taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
   workspaceName: string;
   branch: string;
@@ -164,6 +165,13 @@ export interface LocalWorker {
   serverOauthToken?: string;
   // Server-managed MCP credential secrets (label/env var name → decrypted value)
   mcpSecrets?: Record<string, string>;
+  // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
+  codexCredential?: {
+    accessToken: string;
+    refreshToken: string;
+    accountId: string;
+    expiresAt: Date | null;
+  };
   // Role config from claim route (for role env resolution)
   roleConfig?: RoleConfig;
   // Prompt suggestions for follow-up actions (populated on completion)
@@ -221,6 +229,10 @@ export interface BuilddTask {
   dependsOn?: string[];
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // Task taxonomy
+  kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+  // Agent backend to use for execution
+  backend?: 'claude' | 'codex';
   // Output requirement — what deliverables are enforced on completion
   outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
   // JSON Schema for structured output — passed to SDK outputFormat

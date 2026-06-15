@@ -12,6 +12,7 @@ import GitHubSection from './GitHubSection';
 import VercelSection from './VercelSection';
 import ApiKeysSection from './ApiKeysSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
+import CodexSection from './CodexSection';
 import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
@@ -107,6 +108,11 @@ export default async function SettingsPage() {
 
         {/* Connect Claude (MCP connector for claude.ai + Claude Code) */}
         <ConnectClaudeSection
+          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+        />
+
+        {/* Codex — paste auth.json to connect Codex as agent backend */}
+        <CodexSection
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
         />
 

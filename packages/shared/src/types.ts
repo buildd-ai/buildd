@@ -128,6 +128,8 @@ export const MissionStatus = {
 
 export type MissionStatusValue = typeof MissionStatus[keyof typeof MissionStatus];
 
+export type AgentBackend = 'claude' | 'codex';
+
 export const OutputRequirement = {
   PR_REQUIRED: 'pr_required',
   ARTIFACT_REQUIRED: 'artifact_required',
@@ -365,6 +367,7 @@ export interface Task {
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: string[];
   result: TaskResult | null;
+  backend?: AgentBackend;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
@@ -682,6 +685,8 @@ export interface CreateTaskInput {
   missionId?: string;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn?: string[];
+  // Agent backend that executes this task
+  backend?: AgentBackend;
 }
 
 export interface CreateMissionInput {
@@ -780,6 +785,13 @@ export interface ClaimTasksResponse {
     serverOauthToken?: string;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
+    /** Decrypted Codex OAuth credential (only present for backend=codex tasks) */
+    codexCredential?: {
+      accessToken: string;
+      refreshToken: string;
+      accountId: string;
+      expiresAt: Date | null;
+    };
     /** Role configuration for the claimed task's assigned role */
     roleConfig?: RoleConfig;
   }>;
