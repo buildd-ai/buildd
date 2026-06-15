@@ -170,7 +170,7 @@ export function archiveSession(worker: LocalWorker): void {
     // Find PR URL from commits or milestones
     let prUrl: string | null = null;
     for (const m of worker.milestones) {
-      if ('label' in m && m.label.includes('PR #')) {
+      if ('label' in m && m.label && m.label.includes('PR #')) {
         // Extract URL from milestone label if present
         const match = m.label.match(/https?:\/\/\S+/);
         if (match) prUrl = match[0];

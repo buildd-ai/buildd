@@ -67,7 +67,7 @@ export function Select({
   const selectedOption = options.find(o => o.value === value);
 
   const filtered = searchable && search
-    ? options.filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
+    ? options.filter(o => (o.label ?? '').toLowerCase().includes(search.toLowerCase()))
     : options;
 
   // Desktop: measure available space and decide drop direction
