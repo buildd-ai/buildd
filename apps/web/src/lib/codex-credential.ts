@@ -17,6 +17,7 @@ export interface CodexStatus {
   connected: boolean;
   expired: boolean;
   accountId: string | null;
+  lastRefreshedAt: string | null;
 }
 
 export interface CodexCredential {
@@ -82,15 +83,20 @@ export async function getCodexCredential(workspaceId: string): Promise<CodexCred
 export async function getCodexStatus(workspaceId: string): Promise<CodexStatus> {
   const row = await db.query.codexCredentials.findFirst({
     where: eq(codexCredentials.workspaceId, workspaceId),
-    columns: { accountId: true, tokenExpiresAt: true },
+    columns: { accountId: true, tokenExpiresAt: true, lastRefreshedAt: true },
   });
 
   if (!row) {
-    return { connected: false, expired: false, accountId: null };
+    return { connected: false, expired: false, accountId: null, lastRefreshedAt: null };
   }
 
   const expired = row.tokenExpiresAt != null && row.tokenExpiresAt < new Date();
-  return { connected: true, expired, accountId: row.accountId };
+  return {
+    connected: true,
+    expired,
+    accountId: row.accountId,
+    lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
+  };
 }
 
 export async function deleteCodexCredential(workspaceId: string): Promise<void> {
