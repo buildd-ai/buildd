@@ -14,6 +14,34 @@ let tasksFindManyCallCount = 0;
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'new-task' } }));
 const mockTriggerEvent = mock(() => Promise.resolve());
 
+// Mock drizzle-orm operators (only used as opaque args to mocked db calls)
+mock.module('drizzle-orm', () => ({
+  eq: (...args: any[]) => ({ _op: 'eq', args }),
+  and: (...args: any[]) => ({ _op: 'and', args }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ _op: 'sql' }),
+  desc: (col: any) => ({ _op: 'desc', col }),
+  gt: (col: any, val: any) => ({ _op: 'gt', col, val }),
+}));
+
+// Mock schema types (used only as keys into mocked db calls)
+mock.module('@buildd/core/db/schema', () => ({
+  missions: Symbol('missions'),
+  tasks: Symbol('tasks'),
+  taskSchedules: Symbol('taskSchedules'),
+  missionNotes: Symbol('missionNotes'),
+}));
+
+// Mock mission-helpers — must match real logic for dormancy tests
+mock.module('@buildd/core/mission-helpers', () => ({
+  isDeliverableTask(t: { title: string; mode?: string | null }): boolean {
+    if (t.mode === 'planning') return false;
+    if (t.title.startsWith('Aggregate results:')) return false;
+    if (t.title.startsWith('Evaluate mission completion:')) return false;
+    if (t.title.startsWith('Mission:')) return false;
+    return true;
+  },
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -48,6 +76,9 @@ mock.module('@buildd/core/db', () => ({
           },
         }),
       }),
+    }),
+    insert: () => ({
+      values: () => Promise.resolve([]),
     }),
   },
 }));
@@ -115,6 +146,8 @@ describe('mission-loop', () => {
       context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: { structuredOutput: { missionComplete: false, summary: 'Still working' } },
     };
+    // dormancy check sees no tasks → no auto-complete → falls through to heartbeat skip
+    tasksFindManyResults = [[]];
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
@@ -150,6 +183,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child1' }],
     ];
@@ -218,6 +252,7 @@ describe('mission-loop', () => {
       result: {},
     };
     selectResults = [[{ count: 5 }]];
+    // dormancy check returns [] → no auto-complete, falls through to depth guard
 
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('depth_exceeded');
@@ -234,9 +269,10 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 3 }]];
     tasksFindManyResults = [
-      [{ id: 'pt-prev1' }, { id: 'pt-prev2' }],
-      [],
-      [],
+      [],                                       // dormancy check: no tasks → no auto-complete
+      [{ id: 'pt-prev1' }, { id: 'pt-prev2' }], // stall: 2 recent planning tasks
+      [],                                       // stall: no children for pt-prev1
+      [],                                       // stall: no children for pt-prev2
     ];
 
     const result = await retrigger('m1', 'pt1');
@@ -282,6 +318,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }, { id: 'child-2' }],
     ];
@@ -304,6 +341,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }], // has children so stall detection passes
     ];
@@ -329,6 +367,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -365,6 +404,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -384,6 +424,7 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
+      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -396,5 +437,145 @@ describe('mission-loop', () => {
     expect((runCall[1] as any).cycleContext.cycleNumber).toBe(2);
     expect((runCall[1] as any).cycleContext.triggerSource).toBe('retrigger');
     expect((runCall[1] as any).cycleContext.triggerChainId).toBe('chain-1');
+  });
+
+  // ── Dormancy auto-complete tests ──────────────────────────────────────────
+
+  it('auto-completes mission when all deliverable tasks are completed', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    // dormancy check: all deliverable tasks are completed
+    tasksFindManyResults = [
+      [
+        { title: 'Build the API', mode: 'execution', status: 'completed' },
+        { title: 'Write tests', mode: 'execution', status: 'completed' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1',
+      'mission:loop_completed',
+      expect.objectContaining({ missionId: 'm1', reason: 'dormancy_auto_complete' })
+    );
+  });
+
+  it('auto-completes when deliverables are completed and failed (mixed terminal)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    tasksFindManyResults = [
+      [
+        { title: 'Build the API', mode: 'execution', status: 'completed' },
+        { title: 'Deploy to prod', mode: 'execution', status: 'failed' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-complete when some deliverable tasks are still pending', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [
+        { title: 'Build the API', mode: 'execution', status: 'completed' },
+        { title: 'Write tests', mode: 'execution', status: 'pending' },
+      ],
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-complete when only housekeeping tasks exist (no deliverables)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [
+      [
+        { title: 'Aggregate results: cycle 1', mode: 'planning', status: 'completed' },
+        { title: 'Evaluate mission completion: Build API', mode: 'planning', status: 'completed' },
+      ],
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    // deliverableTasks.length === 0 → allDeliverablesDone = false → no auto-complete
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-completes when deliverables done even if housekeeping tasks are pending', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 3, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    tasksFindManyResults = [
+      [
+        { title: 'Build the API', mode: 'execution', status: 'completed' },
+        { title: 'Aggregate results: cycle 3', mode: 'planning', status: 'pending' },
+        { title: 'Mission: Organizer', mode: 'planning', status: 'in_progress' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    // Only execution task counts as deliverable; it's completed → auto-complete
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('auto-completes heartbeat mission via dormancy when all deliverables done', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
+    scheduleFindFirstResult = {
+      taskTemplate: { context: { heartbeat: true } },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    // All execution tasks done — missionComplete was NOT signaled
+    tasksFindManyResults = [
+      [
+        { title: 'Implement feature X', mode: 'execution', status: 'completed' },
+        { title: 'Write tests for X', mode: 'execution', status: 'completed' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1',
+      'mission:loop_completed',
+      expect.objectContaining({ reason: 'dormancy_auto_complete' })
+    );
   });
 });
