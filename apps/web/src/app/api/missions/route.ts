@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, status: true },
+          columns: { id: true, status: true, kind: true, title: true, creationSource: true },
           with: { workers: { columns: { id: true, status: true } } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
@@ -56,8 +57,9 @@ export async function GET(req: NextRequest) {
     });
 
     const missionsWithProgress = results.map(mission => {
-      const totalTasks = mission.tasks?.length || 0;
-      const completedTasks = mission.tasks?.filter(t => t.status === 'completed').length || 0;
+      const deliverableTasks = mission.tasks?.filter(isDeliverableTask) || [];
+      const totalTasks = deliverableTasks.length;
+      const completedTasks = deliverableTasks.filter(t => t.status === 'completed').length;
       const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
       const activeAgents = mission.tasks?.reduce((count, t) =>
         count + (t.workers?.filter((w: any) => w.status === 'running').length || 0), 0) || 0;

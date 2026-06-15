@@ -15,20 +15,22 @@ export interface CodexCredential {
  * cleanEnv.CODEX_HOME = codexHome before spawning the backend.
  *
  * Directory is created at 0o700 (mkdtempSync guarantees this on POSIX).
- * auth.json is written at 0o600. We call chmodSync on both as defense-in-depth
- * in case a non-POSIX platform or unusual umask produces wider permissions.
+ * auth.json is written then explicitly chmod'd to 0o600.
  * Call cleanupCodexAuth() in the finally block to remove the temp dir.
  */
 export function materializeCodexAuth(workerId: string, credential: CodexCredential): { codexHome: string } {
+  // mkdtempSync guarantees 0o700 on POSIX — no need to re-chmod the dir.
   const codexHome = mkdtempSync(join(tmpdir(), 'codex-'));
-  chmodSync(codexHome, 0o700);
   const authJson = {
     access_token: credential.accessToken,
     refresh_token: credential.refreshToken,
     account_id: credential.accountId,
   };
-  writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(authJson), { mode: 0o600 });
-  chmodSync(join(codexHome, 'auth.json'), 0o600);
+  const authPath = join(codexHome, 'auth.json');
+  // Write first (no mode option — avoids a Bun 1.3.x bug where writeFileSync
+  // with { mode } silently fails to create the file), then chmod explicitly.
+  writeFileSync(authPath, JSON.stringify(authJson));
+  chmodSync(authPath, 0o600);
   console.log(`[Worker ${workerId}] Materialized Codex auth.json at ${codexHome}`);
   return { codexHome };
 }
