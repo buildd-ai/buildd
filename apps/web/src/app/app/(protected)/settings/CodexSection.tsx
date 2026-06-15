@@ -96,6 +96,30 @@ export default function CodexSection({ workspaces }: Props) {
     }
   }
 
+  async function refresh() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/workspaces/${selectedWorkspaceId}/codex-credential/refresh`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to refresh');
+      if (data.status === 'refreshed') {
+        setMessage({ type: 'success', text: 'Token refreshed successfully.' });
+        await load(selectedWorkspaceId);
+      } else if (data.status === 'locked') {
+        setMessage({ type: 'success', text: 'Token was already refreshed recently.' });
+      } else if (data.status === 'error') {
+        setMessage({ type: 'error', text: 'Refresh failed — OpenAI returned an error. The credential may be invalid.' });
+      } else {
+        setMessage({ type: 'error', text: 'No credential to refresh.' });
+      }
+    } catch (e) {
+      setMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to refresh token' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revoke() {
     if (!confirm('Remove this Codex credential? The workspace will lose access to Codex.')) return;
     setBusy(true);
@@ -177,12 +201,19 @@ export default function CodexSection({ workspaces }: Props) {
 
             {status.expired && (
               <div className="rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm text-text-secondary">
-                Token has expired. Replace the credential below, or use the refresh endpoint once available.
+                Token has expired. Use <strong>Refresh now</strong> or replace the credential below.
               </div>
             )}
 
             {/* Action buttons */}
             <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={refresh}
+                disabled={busy}
+                className="text-sm font-medium text-status-info disabled:opacity-50"
+              >
+                {busy ? 'Refreshing…' : 'Refresh now'}
+              </button>
               <button
                 onClick={revoke}
                 disabled={busy}
@@ -193,7 +224,7 @@ export default function CodexSection({ workspaces }: Props) {
               {!pasteOpen && (
                 <button
                   onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }}
-                  className="text-sm font-medium text-status-info"
+                  className="text-sm font-medium text-text-secondary"
                 >
                   Replace credential
                 </button>
