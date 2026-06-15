@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, sql, desc, gt } from 'drizzle-orm';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
@@ -170,12 +171,56 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // 5. Heartbeat missions don't self-retrigger — cron handles next cycle
+  // 5. Dormancy check — if all deliverable tasks are terminal, auto-complete the mission.
+  //    Fires regardless of whether any agent signaled missionComplete, covering the case
+  //    where tasks finish without an explicit completion signal.
+  const allMissionTasksForDormancy = await db.query.tasks.findMany({
+    where: eq(tasks.missionId, missionId),
+    columns: { status: true, title: true, mode: true },
+  });
+
+  const deliverableTasks = allMissionTasksForDormancy.filter(isDeliverableTask);
+  const allDeliverablesDone = deliverableTasks.length > 0 && deliverableTasks.every(
+    t => t.status === 'completed' || t.status === 'failed'
+  );
+
+  if (allDeliverablesDone) {
+    await db
+      .update(missions)
+      .set({ status: 'completed', updatedAt: new Date() })
+      .where(eq(missions.id, missionId));
+
+    if (mission.scheduleId) {
+      await db
+        .update(taskSchedules)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(taskSchedules.id, mission.scheduleId));
+    }
+
+    await db.insert(missionNotes).values({
+      missionId,
+      authorType: 'system',
+      type: 'update',
+      title: 'Mission auto-completed',
+      body: 'All deliverable tasks complete. Mission auto-completed.',
+      status: 'open',
+    });
+
+    await triggerEvent(
+      channels.mission(missionId),
+      events.MISSION_LOOP_COMPLETED,
+      { missionId, reason: 'dormancy_auto_complete' }
+    );
+
+    return { action: 'completed' };
+  }
+
+  // 6. Heartbeat missions don't self-retrigger — cron handles next cycle
   if (isHeartbeat) {
     return { action: 'skipped' };
   }
 
-  // 6. Depth guard — max cycles per trigger chain
+  // 7. Depth guard — max cycles per trigger chain
   const chainTaskCount = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(tasks)
@@ -196,7 +241,7 @@ export async function maybeRetriggerMission(
     return { action: 'depth_exceeded' };
   }
 
-  // 6.5. Stuck-planning detection — zero tasks with no completion signal
+  // 7.5. Stuck-planning detection — zero tasks with no completion signal
   // If the organizer reported an empty plan and triageOutcome !== 'conflict',
   // inject corrective feedback into the next cycle
   let stuckPlanningFeedback: string | null = null;
@@ -224,7 +269,7 @@ export async function maybeRetriggerMission(
     }
   }
 
-  // 7. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
+  // 8. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
   //    (Failed tasks are infrastructure issues, not planning stalls — handled separately)
   const recentPlanningTasks = await db.query.tasks.findMany({
     where: and(
@@ -262,7 +307,7 @@ export async function maybeRetriggerMission(
     return { action: 'stalled' };
   }
 
-  // 7.5. Open-PR guard — if the mission has an unmerged primary PR, stop
+  // 8.5. Open-PR guard — if the mission has an unmerged primary PR, stop
   //      fanning out more planning cycles. Notify instead so a human (or
   //      auto-merge) can resolve the PR before we pile on more work.
   const missionWithPr = await db.query.missions.findFirst({
@@ -289,7 +334,7 @@ export async function maybeRetriggerMission(
     }
   }
 
-  // 8. All guards pass — retrigger
+  // 9. All guards pass — retrigger
   const nextCycle: CycleContext = {
     cycleNumber: currentCycle + 1,
     triggerChainId,
