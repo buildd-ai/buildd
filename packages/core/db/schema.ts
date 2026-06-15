@@ -868,9 +868,14 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
+  // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
+  // tokenExpiresAt enables efficient "expiring soon" cron queries; lastRefreshedAt doubles as
+  // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -12,7 +12,7 @@ import GitHubSection from './GitHubSection';
 import VercelSection from './VercelSection';
 import ApiKeysSection from './ApiKeysSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
-import CodexSection from './CodexSection';
+import AgentBackendsSection from './AgentBackendsSection';
 import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +27,7 @@ export default async function SettingsPage() {
   let allAccounts: any[] = [];
   let userTeams: UserTeam[] = [];
   let teamsError = false;
-  let userWorkspaces: { id: string; name: string; repo: string | null }[] = [];
+  let userWorkspaces: { id: string; name: string; repo: string | null; teamId: string }[] = [];
 
   try {
     userTeams = await getUserTeamsWithDetails(user.id);
@@ -64,7 +64,7 @@ export default async function SettingsPage() {
     if (wsIds.length > 0) {
       userWorkspaces = await db.query.workspaces.findMany({
         where: inArray(workspaces.id, wsIds),
-        columns: { id: true, name: true, repo: true },
+        columns: { id: true, name: true, repo: true, teamId: true },
       });
     }
   } catch (error) {
@@ -111,9 +111,11 @@ export default async function SettingsPage() {
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
         />
 
-        {/* Codex — paste auth.json to connect Codex as agent backend */}
-        <CodexSection
+        {/* Agent Backends — Claude (setup token / API key) + Codex (auth.json),
+            scoped team-wide (all workspaces) or per-workspace. */}
+        <AgentBackendsSection
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+          currentTeamId={currentTeamId}
         />
 
         {/* Teams */}

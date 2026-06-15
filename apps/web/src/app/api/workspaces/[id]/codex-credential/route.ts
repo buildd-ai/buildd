@@ -6,12 +6,24 @@ import {
   getCodexStatus,
   deleteCodexCredential,
   type CodexAuthJson,
+  type CodexScope,
 } from '@/lib/codex-credential';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-// GET /api/workspaces/[id]/codex-credential — return connection status (no tokens)
-export async function GET(_req: NextRequest, { params }: RouteContext) {
+/**
+ * Build the credential scope from the request. Default is team-wide (shared by
+ * every workspace in the team); `scope=workspace` narrows it to this workspace.
+ * See docs/credentials-architecture.md.
+ */
+function buildScope(teamId: string, workspaceId: string, scopeParam: string | null): CodexScope {
+  return scopeParam === 'workspace'
+    ? { teamId, workspaceId }
+    : { teamId };
+}
+
+// GET /api/workspaces/[id]/codex-credential?scope=team|workspace — status (no tokens)
+export async function GET(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
 
   const user = await getCurrentUser();
@@ -20,11 +32,13 @@ export async function GET(_req: NextRequest, { params }: RouteContext) {
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 
-  const status = await getCodexStatus(id);
+  const scope = buildScope(access.teamId, id, req.nextUrl.searchParams.get('scope'));
+  const status = await getCodexStatus(scope);
   return NextResponse.json(status);
 }
 
 // POST /api/workspaces/[id]/codex-credential — store encrypted Codex auth.json
+// Body: { authJson: string, scope?: 'team' | 'workspace' } (default 'team')
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
 
@@ -59,13 +73,14 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
     );
   }
 
-  await storeCodexCredential(id, auth as unknown as CodexAuthJson);
-  const status = await getCodexStatus(id);
+  const scope = buildScope(access.teamId, id, typeof body.scope === 'string' ? body.scope : null);
+  await storeCodexCredential(scope, auth as unknown as CodexAuthJson);
+  const status = await getCodexStatus(scope);
   return NextResponse.json(status);
 }
 
-// DELETE /api/workspaces/[id]/codex-credential — remove stored credential
-export async function DELETE(_req: NextRequest, { params }: RouteContext) {
+// DELETE /api/workspaces/[id]/codex-credential?scope=team|workspace — remove credential
+export async function DELETE(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
 
   const user = await getCurrentUser();
@@ -74,6 +89,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteContext) {
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 
-  await deleteCodexCredential(id);
+  const scope = buildScope(access.teamId, id, req.nextUrl.searchParams.get('scope'));
+  await deleteCodexCredential(scope);
   return new NextResponse(null, { status: 204 });
 }

@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
-import { codexCredentials } from '@buildd/core/db/schema';
+import { secrets } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CODEX_CLIENT_ID = process.env.CODEX_OAUTH_CLIENT_ID ?? 'app_client_id';
+const PURPOSE = 'codex_credential' as const;
 
 export interface CodexAuthJson {
   access_token: string;
@@ -21,6 +22,8 @@ export interface CodexStatus {
   expired: boolean;
   accountId: string | null;
   lastRefreshedAt: string | null;
+  /** Where the connected credential is scoped: 'team' (all workspaces) or 'workspace'. */
+  scope: 'team' | 'workspace' | null;
 }
 
 export interface CodexCredential {
@@ -31,123 +34,188 @@ export interface CodexCredential {
   lastRefreshedAt: Date | null;
 }
 
-export async function storeCodexCredential(workspaceId: string, authJson: CodexAuthJson): Promise<void> {
-  const encryptedAccessToken = encrypt(authJson.access_token);
-  const encryptedRefreshToken = encrypt(authJson.refresh_token);
-
-  let tokenExpiresAt: Date | null = null;
-  if (authJson.expires_in != null) {
-    tokenExpiresAt = new Date(Date.now() + authJson.expires_in * 1000);
-  } else if (authJson.expiry) {
-    tokenExpiresAt = new Date(authJson.expiry);
-  }
-
-  const now = new Date();
-  await db
-    .insert(codexCredentials)
-    .values({
-      workspaceId,
-      encryptedAccessToken,
-      encryptedRefreshToken,
-      accountId: authJson.account_id,
-      tokenExpiresAt,
-      lastRefreshedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: codexCredentials.workspaceId,
-      set: {
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        accountId: authJson.account_id,
-        tokenExpiresAt,
-        lastRefreshedAt: now,
-        updatedAt: now,
-      },
-    });
+/**
+ * Identifies where a Codex credential is stored. `accountId`/`workspaceId` left
+ * undefined (or null) means team-wide — shared by every workspace in the team.
+ * See docs/credentials-architecture.md.
+ */
+export interface CodexScope {
+  teamId: string;
+  accountId?: string | null;
+  workspaceId?: string | null;
 }
 
-export async function getCodexCredential(workspaceId: string): Promise<CodexCredential | null> {
-  const row = await db.query.codexCredentials.findFirst({
-    where: eq(codexCredentials.workspaceId, workspaceId),
-  });
-  if (!row) return null;
+/** The encrypted-at-rest payload stored in secrets.encryptedValue. */
+interface CodexBlob {
+  access_token: string;
+  refresh_token: string;
+  account_id: string;
+}
 
+function encodeBlob(blob: CodexBlob): string {
+  return encrypt(JSON.stringify(blob));
+}
+
+function decodeBlob(encryptedValue: string): CodexBlob {
+  return JSON.parse(decrypt(encryptedValue)) as CodexBlob;
+}
+
+function expiryFromAuthJson(authJson: CodexAuthJson): Date | null {
+  if (authJson.expires_in != null) return new Date(Date.now() + authJson.expires_in * 1000);
+  if (authJson.expiry) return new Date(authJson.expiry);
+  return null;
+}
+
+/** Exact-scope match (NULL-aware) for accountId + workspaceId. */
+function scopeMatch(scope: CodexScope) {
+  return and(
+    eq(secrets.teamId, scope.teamId),
+    eq(secrets.purpose, PURPOSE),
+    scope.accountId ? eq(secrets.accountId, scope.accountId) : isNull(secrets.accountId),
+    scope.workspaceId ? eq(secrets.workspaceId, scope.workspaceId) : isNull(secrets.workspaceId),
+  );
+}
+
+/**
+ * Store (replace) the Codex credential at an exact scope. There is one Codex
+ * login per scope, so any existing row at the same scope is removed first.
+ */
+export async function storeCodexCredential(scope: CodexScope, authJson: CodexAuthJson): Promise<void> {
+  const encryptedValue = encodeBlob({
+    access_token: authJson.access_token,
+    refresh_token: authJson.refresh_token,
+    account_id: authJson.account_id,
+  });
+  const tokenExpiresAt = expiryFromAuthJson(authJson);
+  const now = new Date();
+
+  // One credential per scope: replace any existing one. Not transactional, but
+  // this is a manual "connect" action — neon-http has no interactive tx anyway.
+  await db.delete(secrets).where(scopeMatch(scope));
+  await db.insert(secrets).values({
+    teamId: scope.teamId,
+    accountId: scope.accountId ?? null,
+    workspaceId: scope.workspaceId ?? null,
+    purpose: PURPOSE,
+    encryptedValue,
+    tokenExpiresAt,
+    lastRefreshedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+/**
+ * Resolve the most-specific Codex credential visible to a task: workspace-scoped
+ * beats account-scoped beats team-wide. Used at claim time.
+ */
+export async function resolveCodexCredential(opts: {
+  teamId: string;
+  accountId?: string | null;
+  workspaceId?: string | null;
+}): Promise<CodexCredential | null> {
+  const rows = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.teamId, opts.teamId),
+      eq(secrets.purpose, PURPOSE),
+      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
+      or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
+    ),
+    columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
+  });
+  if (rows.length === 0) return null;
+
+  // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
+  const score = (r: { accountId: string | null; workspaceId: string | null }) =>
+    (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
+    (r.accountId && r.accountId === opts.accountId ? 1 : 0);
+  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
+
+  const blob = decodeBlob(best.encryptedValue);
   return {
-    accessToken: decrypt(row.encryptedAccessToken),
-    refreshToken: decrypt(row.encryptedRefreshToken),
-    accountId: row.accountId,
-    tokenExpiresAt: row.tokenExpiresAt ?? null,
-    lastRefreshedAt: row.lastRefreshedAt ?? null,
+    accessToken: blob.access_token,
+    refreshToken: blob.refresh_token,
+    accountId: blob.account_id,
+    tokenExpiresAt: best.tokenExpiresAt ?? null,
+    lastRefreshedAt: best.lastRefreshedAt ?? null,
   };
 }
 
-export async function getCodexStatus(workspaceId: string): Promise<CodexStatus> {
-  const row = await db.query.codexCredentials.findFirst({
-    where: eq(codexCredentials.workspaceId, workspaceId),
-    columns: { accountId: true, tokenExpiresAt: true, lastRefreshedAt: true },
+/** Connection status (no token values) for the credential stored at an exact scope. */
+export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
+  const row = await db.query.secrets.findFirst({
+    where: scopeMatch(scope),
+    columns: { encryptedValue: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
   });
 
   if (!row) {
-    return { connected: false, expired: false, accountId: null, lastRefreshedAt: null };
+    return { connected: false, expired: false, accountId: null, lastRefreshedAt: null, scope: null };
   }
 
   const expired = row.tokenExpiresAt != null && row.tokenExpiresAt < new Date();
   return {
     connected: true,
     expired,
-    accountId: row.accountId,
+    accountId: decodeBlob(row.encryptedValue).account_id,
     lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
+    scope: row.workspaceId ? 'workspace' : 'team',
   };
 }
 
-export async function deleteCodexCredential(workspaceId: string): Promise<void> {
-  await db.delete(codexCredentials).where(eq(codexCredentials.workspaceId, workspaceId));
+/** Remove the Codex credential stored at an exact scope. */
+export async function deleteCodexCredential(scope: CodexScope): Promise<void> {
+  await db.delete(secrets).where(scopeMatch(scope));
+}
+
+/** Secret id of the Codex credential at an exact scope, or null. Used by the refresh route. */
+export async function getCodexSecretId(scope: CodexScope): Promise<string | null> {
+  const row = await db.query.secrets.findFirst({
+    where: scopeMatch(scope),
+    columns: { id: true },
+  });
+  return row?.id ?? null;
 }
 
 export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
 
 /**
- * Refresh the Codex OAuth tokens for a workspace.
+ * Refresh the Codex OAuth tokens for one secret row (identified by id).
  *
- * Uses a DB-level optimistic lock so only one caller refreshes at a time.
- * OpenAI ROTATES the refresh token on each use — both new tokens are always
- * persisted, even if the new refresh_token looks identical to the old one.
+ * Uses a DB-level optimistic lock on `lastRefreshedAt` so only one caller
+ * refreshes at a time. OpenAI ROTATES the refresh token on each use — the new
+ * refresh token is always persisted, even if it looks identical to the old one.
  *
  * Never logs token values.
  */
-export async function refreshCodexCredential(workspaceId: string): Promise<RefreshResult> {
-  // Atomically claim refresh rights: only proceed if last_refreshed_at is
-  // NULL or older than LOCK_WINDOW_MINUTES. Concurrent callers get nothing back.
+export async function refreshCodexCredential(secretId: string): Promise<RefreshResult> {
+  // Atomically claim refresh rights: only proceed if last_refreshed_at is NULL
+  // or older than the lock window. Concurrent callers get nothing back.
   const [claimed] = await db
-    .update(codexCredentials)
-    .set({
-      lastRefreshedAt: sql`NOW()`,
-      updatedAt: sql`NOW()`,
-    })
+    .update(secrets)
+    .set({ lastRefreshedAt: sql`NOW()`, updatedAt: sql`NOW()` })
     .where(
       and(
-        eq(codexCredentials.workspaceId, workspaceId),
+        eq(secrets.id, secretId),
+        eq(secrets.purpose, PURPOSE),
         or(
-          isNull(codexCredentials.lastRefreshedAt),
-          lt(codexCredentials.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`)
-        )
-      )
+          isNull(secrets.lastRefreshedAt),
+          lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`),
+        ),
+      ),
     )
     .returning();
 
   if (!claimed) {
-    // Either the credential doesn't exist, or it was refreshed recently.
-    const exists = await db.query.codexCredentials.findFirst({
-      where: eq(codexCredentials.workspaceId, workspaceId),
+    const exists = await db.query.secrets.findFirst({
+      where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
   }
 
-  // We hold the lock. Decrypt the stored refresh token.
-  const currentRefreshToken = decrypt(claimed.encryptedRefreshToken);
+  // We hold the lock. Decrypt the stored blob.
+  const blob = decodeBlob(claimed.encryptedValue);
+  const currentRefreshToken = blob.refresh_token;
 
   try {
     const res = await fetch(OPENAI_TOKEN_URL, {
@@ -161,16 +229,16 @@ export async function refreshCodexCredential(workspaceId: string): Promise<Refre
     });
 
     if (!res.ok) {
-      console.warn(`[Codex] Token refresh failed for workspace ${workspaceId}: HTTP ${res.status}`);
+      console.warn(`[Codex] Token refresh failed for secret ${secretId}: HTTP ${res.status}`);
       return 'error';
     }
 
     const tokens = await res.json() as Record<string, unknown>;
 
     const newAccessToken = tokens.access_token as string;
-    // CRITICAL: always use the rotated refresh token from the response.
-    // OpenAI may rotate it on every call. Fall back to the current one only
-    // if the response genuinely omits it (some providers do this).
+    // CRITICAL: always use the rotated refresh token from the response. OpenAI may
+    // rotate it on every call. Fall back to the current one only if the response
+    // genuinely omits it.
     const newRefreshToken = typeof tokens.refresh_token === 'string'
       ? tokens.refresh_token
       : currentRefreshToken;
@@ -179,19 +247,22 @@ export async function refreshCodexCredential(workspaceId: string): Promise<Refre
     const tokenExpiresAt = expiresIn != null ? new Date(Date.now() + expiresIn * 1000) : null;
 
     await db
-      .update(codexCredentials)
+      .update(secrets)
       .set({
-        encryptedAccessToken: encrypt(newAccessToken),
-        encryptedRefreshToken: encrypt(newRefreshToken),
+        encryptedValue: encodeBlob({
+          access_token: newAccessToken,
+          refresh_token: newRefreshToken,
+          account_id: blob.account_id,
+        }),
         tokenExpiresAt,
         updatedAt: sql`NOW()`,
       })
-      .where(eq(codexCredentials.workspaceId, workspaceId));
+      .where(eq(secrets.id, secretId));
 
-    console.log(`[Codex] Token refreshed for workspace ${workspaceId}`);
+    console.log(`[Codex] Token refreshed for secret ${secretId}`);
     return 'refreshed';
   } catch (err) {
-    console.warn(`[Codex] Token refresh error for workspace ${workspaceId}:`, err instanceof Error ? err.message : 'unknown');
+    console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
     return 'error';
   }
 }

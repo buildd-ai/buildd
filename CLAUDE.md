@@ -101,6 +101,14 @@ When you encounter pain points, blockers, or broken tooling while working a task
 
 **Why:** These reports feed directly into platform improvements (like the `get_task` / `send_agent_message` actions added after observing the create→observe→confirm loop was broken). Friction that goes unreported stays broken.
 
+## Credentials (agent backends)
+
+**All agent-backend credentials (Claude API key / OAuth token, Codex auth.json, future backends) live in the single `secrets` table** with team/account/workspace scoping. A team-wide row (`accountId`/`workspaceId` NULL) is shared by all workspaces — one secret covers everything.
+
+**Do NOT create a per-integration credential table** (e.g. `codex_credentials`, `anthropic_credentials`). Add a new `purpose` to `secrets` instead. Multi-field credentials are stored as an encrypted JSON blob in `encryptedValue`; expiring/refreshing tokens use the `tokenExpiresAt` / `lastRefreshedAt` columns and the optimistic-lock refresh pattern.
+
+See `docs/credentials-architecture.md` for the full spec, scoping precedence, and the new-backend checklist.
+
 ## When Modifying
 
 - **Schema changes** → run `bun db:generate` and commit migration files (see Database section)
