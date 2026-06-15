@@ -1648,7 +1648,6 @@ If something is missing or incomplete, describe what and fix it now.`;
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
-        worker.status = 'done';
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
@@ -1687,6 +1686,9 @@ If something is missing or incomplete, describe what and fix it now.`;
           // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
           ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
         });
+        // Set 'done' only after the server update so any poll of local status
+        // reflects the server's task state (prevents getMission race in E2E tests).
+        worker.status = 'done';
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
 
