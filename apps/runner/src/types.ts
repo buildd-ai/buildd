@@ -126,6 +126,7 @@ export interface LocalWorker {
   taskTitle: string;
   taskDescription?: string;
   taskMode?: string;  // 'execution' or 'planning'
+  taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
   workspaceName: string;
   branch: string;
@@ -221,6 +222,10 @@ export interface BuilddTask {
   dependsOn?: string[];
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
+  // Task taxonomy
+  kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+  // Agent backend to use for execution
+  backend?: 'claude' | 'codex';
   // Output requirement — what deliverables are enforced on completion
   outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto';
   // JSON Schema for structured output — passed to SDK outputFormat

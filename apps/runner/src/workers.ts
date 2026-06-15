@@ -1,5 +1,6 @@
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
@@ -120,6 +121,7 @@ interface WorkerSession {
   repoPath: string;  // Original repo path (different from cwd when using worktrees)
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
+  backend?: ClaudeBackend;  // Stored for queryInstance access after runStreamed() starts
 }
 
 // Constants for repetition detection
@@ -777,6 +779,25 @@ export class WorkerManager {
       }
     }
 
+    // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
+    // Codex uses a shared 5-hour plan window, so concurrent runs exhaust it quickly.
+    if (fullTask.backend === 'codex') {
+      const activeCodexWorker = Array.from(this.workers.values()).find(w =>
+        w.workspaceId === fullTask.workspaceId &&
+        w.taskBackend === 'codex' &&
+        (w.status === 'working' || w.status === 'stale') &&
+        w.id !== claimedWorker.id,
+      );
+      if (activeCodexWorker) {
+        console.log(`[Worker ${claimedWorker.id}] Codex sequential enforcement: workspace ${fullTask.workspaceId} already has active codex worker ${activeCodexWorker.id} — deferring`);
+        this.buildd.updateWorker(claimedWorker.id, {
+          status: 'failed',
+          error: `Deferred: another Codex worker (${activeCodexWorker.id}) is already active in this workspace`,
+        }).catch(() => {});
+        return null;
+      }
+    }
+
     // Create local worker
     const worker: LocalWorker = {
       id: claimedWorker.id,
@@ -784,6 +805,7 @@ export class WorkerManager {
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
       taskMode: fullTask.mode,
+      taskBackend: fullTask.backend || 'claude',
       workspaceId: fullTask.workspaceId,
       workspaceName: fullTask.workspace?.name || 'unknown',
       branch: claimedWorker.branch,
@@ -1363,7 +1385,7 @@ export class WorkerManager {
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
-      const prompt: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
+      const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
         ? (async function* () {
             yield buildUserMessage([
               { type: 'text', text: promptText },
@@ -1372,28 +1394,30 @@ export class WorkerManager {
           })()
         : promptText;
 
-      // Start query with full options
-      const queryInstance = query({
-        prompt,
-        options: queryOptions,
-      });
+      // Infer sandboxMode from task.kind when not explicitly set
+      const taskSandboxMode = (task.context as any)?.sandboxMode as 'read-only' | 'workspace-write' | undefined
+        || inferSandboxMode(task.kind);
 
-      // Store queryInstance in session for rewindFiles() access
-      const session = this.sessions.get(worker.id);
-      if (session) {
-        session.queryInstance = queryInstance;
-      }
+      // Select agent backend (claude default, codex if task.backend === 'codex')
+      const taskBackend = (task.backend || 'claude') as 'claude' | 'codex';
 
-      // Connect input stream for multi-turn conversations (AskUserQuestion pauses here until user responds)
-      queryInstance.streamInput(inputStream);
-
-      // Discover model capabilities via SDK v0.2.49+ supportedModels()
-      // Validates configured effort/thinking against actual model support
-      discoverModelCapabilities(queryInstance, worker, {
-        effort: configuredEffort,
-        thinking: configuredThinking,
-        extendedContext,
-      }, this.config.model, (e: any) => this.emit(e));
+      const backend = createBackend(taskBackend, taskBackend === 'claude' ? {
+        options: queryOptions as Record<string, unknown>,
+        inputStream,
+        onInit: (qi: ReturnType<typeof query>) => {
+          // Wire up queryInstance for rewindFiles() and model capability discovery
+          const session = this.sessions.get(worker.id);
+          if (session) {
+            session.queryInstance = qi;
+            session.backend = backend as ClaudeBackend;
+          }
+          discoverModelCapabilities(qi, worker, {
+            effort: configuredEffort,
+            thinking: configuredThinking,
+            extendedContext,
+          }, this.config.model, (e: any) => this.emit(e));
+        },
+      } : {});
 
       // Stream responses with ralph loop (prompt-based self-review)
       let resultSubtype: string | undefined;
@@ -1405,25 +1429,41 @@ export class WorkerManager {
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
-      for await (const msg of queryInstance) {
-        // Debug: log result/system messages and AskUserQuestion-related flow
-        if (msg.type === 'result') {
-          const result = msg as any;
-          resultSubtype = result.subtype;
-          console.log(`[Worker ${worker.id}] SDK result: subtype=${result.subtype}, worker.status=${worker.status}`);
-          if (worker.status === 'waiting') {
-            console.log(`[Worker ${worker.id}] ⚠️ Result received while still waiting — toolUseId=${worker.waitingFor?.toolUseId}`);
+      for await (const event of backend.runStreamed({
+        prompt: promptArg as string | AsyncIterable<unknown>,
+        sessionId: worker.id,
+        cwd,
+        model: this.config.model,
+        ...(maxTurns ? { maxTurns } : {}),
+        sandboxMode: taskSandboxMode,
+        env: cleanEnv,
+        ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
+        onProgress: async (msg: unknown) => {
+          const sdkMsg = msg as any;
+          // Capture result metadata for post-loop handling
+          if (sdkMsg.type === 'result') {
+            resultSubtype = sdkMsg.subtype;
+            console.log(`[Worker ${worker.id}] SDK result: subtype=${sdkMsg.subtype}, worker.status=${worker.status}`);
+            if (worker.status === 'waiting') {
+              console.log(`[Worker ${worker.id}] ⚠️ Result received while still waiting — toolUseId=${worker.waitingFor?.toolUseId}`);
+            }
+            if (sdkMsg.structured_output && typeof sdkMsg.structured_output === 'object') {
+              structuredOutput = sdkMsg.structured_output;
+            }
           }
-          // Capture structured output from SDK result (when outputFormat was provided)
-          if (result.structured_output && typeof result.structured_output === 'object') {
-            structuredOutput = result.structured_output;
-          }
+          await this.handleMessage(worker, sdkMsg as SDKMessage);
+        },
+      })) {
+        if (event.type === 'error') {
+          throw new Error(event.error);
         }
 
-        await this.handleMessage(worker, msg);
+        if (event.type === 'turn_complete') {
+          // Sync structured output from BackendEvent (Codex path — Claude uses onProgress)
+          if (event.structuredOutput && typeof event.structuredOutput === 'object') {
+            structuredOutput = event.structuredOutput as Record<string, unknown>;
+          }
 
-        // On result: run ralph self-review loop before completing
-        if (msg.type === 'result') {
           // Output requirement gate: before letting the session end, verify the agent
           // created the required deliverable (PR or artifact). If not, nudge the agent
           // while the session is still alive rather than failing post-loop.
@@ -1439,8 +1479,8 @@ export class WorkerManager {
               /* artifact_required */ !hasPR && !hasArtifact;
 
             if (unmet) {
-              const session = this.sessions.get(worker.id);
-              if (session) {
+              const sessionRef = this.sessions.get(worker.id);
+              if (sessionRef) {
                 const nudge = outputReq === 'pr_required'
                   ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
                   : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
@@ -1449,7 +1489,7 @@ export class WorkerManager {
                 this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
                 worker.currentAction = `Creating ${outputReq === 'pr_required' ? 'PR' : 'deliverable'}...`;
                 this.emit({ type: 'worker_update', worker });
-                session.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
+                sessionRef.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
                 outputReqNudged = true;
                 outputReqNudgeCount++;
               }
@@ -1502,12 +1542,15 @@ If something is missing or incomplete, describe what and fix it now.`;
           worker.currentAction = `Self-review (${reviewIteration}/${maxReviewIterations})`;
           this.emit({ type: 'worker_update', worker });
 
-          const session = this.sessions.get(worker.id);
-          if (session) {
-            session.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
+          const sessionRef = this.sessions.get(worker.id);
+          if (sessionRef) {
+            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
           }
           continue; // Don't break — keep streaming the agent's response
         }
+
+        // event.type === 'progress': detailed handling already done in onProgress
+        // event.type === 'complete': backend loop ended naturally — break out
       }
 
       // If a newer session has been started (e.g. plan approval killed this one),
