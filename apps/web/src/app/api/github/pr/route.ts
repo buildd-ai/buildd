@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
     await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
 
     // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
-    const autoMergeEnabled = !!workspace.gitConfig?.autoMergePR;
+    const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);
 
     return NextResponse.json({
       ok: true,

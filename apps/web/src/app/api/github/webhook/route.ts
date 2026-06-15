@@ -246,13 +246,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   for (const pr of check_suite.pull_requests) {
     try {
-      // Find workspaces linked to this repo with autoMergePR enabled
+      // Find workspaces linked to this repo with auto-merge enabled
       const linkedWorkspaces = await db.query.workspaces.findMany({
         where: eq(workspaces.repo, repository.full_name),
       });
 
       for (const workspace of linkedWorkspaces) {
-        if (!workspace.gitConfig?.autoMergePR) {
+        if (!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR)) {
           continue;
         }
 
@@ -581,7 +581,7 @@ async function maybeAutoMergeNoCiPr(
   });
 
   for (const workspace of linkedWorkspaces) {
-    if (!workspace.gitConfig?.autoMergePR) {
+    if (!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR)) {
       continue;
     }
 

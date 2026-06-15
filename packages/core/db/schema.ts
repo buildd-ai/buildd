@@ -205,6 +205,10 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
+  // Canonical alias for autoMergePR — exposed in workspace settings UI.
+  // When set, takes precedence over autoMergePR. Defaults to ON in the UI.
+  autoMergeOnGreenCI?: boolean;
+
   // Safety rails for autoMergePR — if set, PRs that violate these are NOT auto-merged
   // even when CI is green. A mission notification is sent instead.
   autoMergeDenyPaths?: string[];      // e.g. ["drizzle/", "src/lib/auth/"] — any touched path starting with these blocks auto-merge
