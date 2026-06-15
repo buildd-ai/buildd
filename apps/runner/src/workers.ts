@@ -1018,6 +1018,10 @@ export class WorkerManager {
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
 
+    // Declared before try so the finally block can always clean up the correct
+    // temp dir, even if the session is superseded by a newer generation.
+    let codexHome: string | undefined;
+
     try {
       // Fetch workspace git config from server
       const workspaceConfig = await this.buildd.getWorkspaceConfig(task.workspaceId);
@@ -1205,9 +1209,13 @@ export class WorkerManager {
       }
 
       // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
-      // The temp dir is stored in the session so the finally block can clean it up.
+      // codexHome is captured as a local (not only on the session object) so the
+      // finally block cleans up the correct dir even if the session is superseded
+      // by a newer generation (in that case this.sessions.get(worker.id) would
+      // return the new session, not this one).
       if (worker.codexCredential) {
-        const { codexHome } = materializeCodexAuth(worker.id, worker.codexCredential);
+        const { codexHome: _ch } = materializeCodexAuth(worker.id, worker.codexCredential);
+        codexHome = _ch;
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
@@ -1815,8 +1823,9 @@ If something is missing or incomplete, describe what and fix it now.`;
           });
         }
 
-        // Clean up Codex auth temp dir (written before backend spawn)
-        const codexHome = (session as any).codexHome as string | undefined;
+        // Clean up Codex auth temp dir (written before backend spawn).
+        // Use the local var (not session.codexHome) so cleanup runs correctly
+        // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
         }
