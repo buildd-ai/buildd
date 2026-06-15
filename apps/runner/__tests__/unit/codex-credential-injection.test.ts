@@ -10,9 +10,11 @@
  */
 
 import { describe, test, expect, afterEach, mock } from 'bun:test';
-import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import * as fsModule from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+const { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } = fsModule;
 
 // Must be before imports that transitively use the Claude SDK
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
