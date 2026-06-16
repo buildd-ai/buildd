@@ -803,6 +803,10 @@ export const workspaceSkills = pgTable('workspace_skills', {
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   // Role config
   model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
+  // Default agent backend for tasks routed to this role (a hint — an explicit task.backend wins).
+  // null = no preference → falls back to 'claude'. Model selection stays independent: when this is
+  // 'codex', the Claude-only `model` field above is ignored. See docs/credentials-architecture.md.
+  defaultBackend: agentBackendEnum('default_backend'),
   allowedTools: jsonb('allowed_tools').notNull().default([]).$type<string[]>(), // empty = all tools
   canDelegateTo: jsonb('can_delegate_to').notNull().default([]).$type<string[]>(), // slugs of other skills
   background: boolean('background').notNull().default(false),
