@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-14
-**SDK in package.json**: `^0.3.177` (up to date)
+**Last updated**: 2026-06-16
+**SDK in package.json**: `^0.3.178` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,7 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-06-16 | ^0.3.178 | 0.3.178 | pending |
 | 2026-06-14 | ^0.3.177 | 0.3.177 | #820 |
 | 2026-06-11 | ^0.3.173 | 0.3.173 | #818 |
 | 2026-06-08 | ^0.3.168 | 0.3.168 | #815 |
@@ -56,7 +57,13 @@
 - Action: Dashboard banner for workspace owners, docs update, recommend Enterprise users switch to API key billing
 - Location: Dashboard UI, docs, potentially task detail page (credit consumption estimate)
 
-### P1 — High Priority (new in 0.3.163–0.3.177)
+### P1 — High Priority (new in 0.3.163–0.3.178)
+
+**`Tool(param:value)` syntax for granular permission rules (v0.3.178)**
+- New: Permission rules can now match on tool input parameters, e.g. `Agent(model:opus)` to block Opus subagents, `Bash(command:rm*)` to deny `rm`-class commands
+- Benefit: Buildd's PreToolUse hook (`apps/runner/src/hook-factory.ts`) could be replaced or augmented with declarative permission rules in role config — less code, more auditable
+- Location: `apps/web/src/lib/role-config.ts` (role permission array), `apps/runner/src/hook-factory.ts`
+- Effort: Low (add `allowedTools`/`disallowedTools` entries with param syntax; verify hook still needed)
 
 **`fallbackModel` setting for role resilience (v0.3.166)**
 - New: Configure up to 3 fallback models tried in order when primary is overloaded or unavailable

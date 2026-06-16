@@ -1,12 +1,27 @@
 # Claude Agent SDK — Advanced Usage
 
-**Last updated**: 2026-05-27
+**Last updated**: 2026-06-16
 
 ---
 
 ## Hook System
 
 All hooks in Buildd are registered on the `query()` options and implemented as `HookCallback` functions.
+
+### `Tool(param:value)` permission rule syntax (new in v0.3.178)
+
+Permission rules can now match on tool input parameters, in addition to tool name. Use `*` as a wildcard:
+
+```json
+// In role config allowedTools / disallowedTools:
+"disallowedTools": [
+  "Agent(model:claude-opus*)",   // block Opus subagents
+  "Bash(command:rm *)",          // block rm commands
+  "Bash(command:curl*)"          // block curl
+]
+```
+
+This can supplement or replace parts of Buildd's programmatic hook. Declarative rules are evaluated before `PreToolUse` hooks fire.
 
 ### PreToolUse hook (permission enforcement)
 
