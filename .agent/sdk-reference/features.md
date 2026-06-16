@@ -1,13 +1,52 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-11
-**Covering**: v0.2.114 → v0.3.173
+**Last updated**: 2026-06-16
+**Covering**: v0.2.114 → v0.3.178
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.173 (2026-06-11) — current latest
+### v0.3.178 (2026-06-15) — current latest
+- **Parity with Claude Code v2.1.178**
+- **`Tool(param:value)` permission rule syntax**: Match tool calls by input parameter value, e.g. `Agent(model:opus)` to block Opus subagents, `Bash(command:rm*)` to deny `rm` commands — adds fine-grained PreToolUse control beyond tool name
+- **Skills in nested `.claude/skills` directories**: Skills now load when working on files in nested directories; name clash resolved with `<dir>:<name>` prefix — relevant to Buildd's skill delivery in nested worktrees
+- **Nested `.claude/` closest-wins**: Agent, workflow, and output-style configs resolve to the nearest `.claude/` directory; project-scope workflow saves target the closest existing `.claude/workflows/`
+- **Auto mode: subagent spawns evaluated by classifier before launch**: Closes a gap where a subagent could request a blocked action without review — affects Buildd workers using auto mode
+- **Bug fix (Buildd-relevant)**: Fixed OOM crash when CLI inherits stale websocket/OAuth file-descriptor env vars from parent process — affects Buildd workers that inherit subprocess env
+- **Bug fix (Buildd-relevant)**: Fixed workers failing with `401 Invalid bearer token` when daemon started from shell with custom `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`
+- **Bug fix**: Fixed compaction not honoring `--fallback-model`; compaction now uses configured fallback model chain on overload/availability errors
+- **Bug fix**: Fixed model requests continuing to fail with auth errors after credentials refreshed outside the session (stale cached request config)
+- **Bug fix**: Fixed nested `.claude/skills` skills with directory-qualified names being blocked by permission prompts in non-interactive runs
+- **Bug fix**: Fixed background sessions created with `/bg` showing "Working" forever in agents list
+- Improved `/doctor` with flat tree layout, clearer status icons, highlighted command names
+- Changed workflow prompt keyword to require explicit phrases like "run a workflow" or "workflow:" (purple shimmer highlight)
+
+### v0.3.177 (2026-06-13)
+- **Parity with Claude Code v2.1.177** — no user-facing changes
+
+### v0.3.176 (2026-06-12)
+- **Parity with Claude Code v2.1.176**
+- **Bug fix (Buildd-relevant)**: Hook `if` conditions for Read/Edit/Write tool paths now match correctly — patterns like `Edit(src/**)`, `Read(~/.ssh/**)`, `Read(.env)` were previously broken
+- **Bug fix**: Linux sandbox no longer fails to start when `.claude/settings.json` is a symlink with an absolute target — affects Buildd workers using symlinked config
+- Session titles now generated in the language of your conversation (`language` setting to pin)
+- `footerLinksRegexes` setting for regex-matched footer link badges
+- Improved Bedrock credential caching: credentials from `awsCredentialExport` cached until their `Expiration` (was fixed 1 hour)
+- Fixed `availableModels` enforcement: alias model picks can't bypass via `ANTHROPIC_DEFAULT_*_MODEL`; `/fast` refuses when target model is outside allowlist
+
+### v0.3.175 (2026-06-12)
+- **Parity with Claude Code v2.1.175**
+- **`enforceAvailableModels` managed setting**: When enabled, `availableModels` also constrains the Default model (falls back to first allowed model); user/project settings can no longer widen a managed allowlist — relevant to Buildd role-based model restrictions
+
+### v0.3.174 (2026-06-11)
+- **Parity with Claude Code v2.1.174**
+- **Bug fix (Buildd-relevant)**: Background sessions no longer inherit another session's `ANTHROPIC_*` provider env (gateway URL, custom headers, model aliases) from the shell that started the daemon — affects Buildd workers on pre-warmed runners
+- **Bug fix**: Workflow `agent()` subagents now include per-agent attribution headers — improves traceability in multi-agent workflows
+- **Bug fix**: Skill hot-reload now only re-announces changed skills (not the full listing) — reduces noise during skill updates
+- `wheelScrollAccelerationEnabled` setting to disable mouse-wheel scroll acceleration in fullscreen mode
+- Fixed Bedrock GovCloud regions (`us-gov-*`) deriving wrong inference profile prefix
+
+### v0.3.173 (2026-06-11)
 - **Parity with Claude Code v2.1.173**
 - **Bug fix**: Fable 5 model names with `[1m]` suffix now stripped automatically — no manual normalization needed
 - Bug fix: spurious "sandbox dependencies missing" startup warning on Windows
