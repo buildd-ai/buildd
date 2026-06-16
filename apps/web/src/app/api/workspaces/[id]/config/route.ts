@@ -111,8 +111,10 @@ export async function POST(
             requiresPR: body.requiresPR ?? false,
             targetBranch: body.targetBranch || undefined,
             autoCreatePR: body.autoCreatePR ?? false,
-            autoMergePR: body.autoMergePR ?? false,
-            // Safety rails for autoMergePR (optional; not yet surfaced in the form
+            autoMergeOnGreenCI: body.autoMergeOnGreenCI ?? true,
+            // Keep legacy field in sync so old readers still work
+            autoMergePR: body.autoMergeOnGreenCI ?? body.autoMergePR ?? false,
+            // Safety rails for autoMergeOnGreenCI (optional; not yet surfaced in the form
             // but accepted here so they can be configured via the API).
             ...(Array.isArray(body.autoMergeDenyPaths)
                 ? { autoMergeDenyPaths: body.autoMergeDenyPaths.filter((p: unknown) => typeof p === 'string') }

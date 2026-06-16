@@ -205,6 +205,10 @@ export interface WorkspaceGitConfig {
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
 
+  // Replaces autoMergePR — defaults to TRUE when neither field is set, making auto-merge opt-OUT.
+  // Takes precedence over autoMergePR when present.
+  autoMergeOnGreenCI?: boolean;
+
   // Safety rails for autoMergePR — if set, PRs that violate these are NOT auto-merged
   // even when CI is green. A mission notification is sent instead.
   autoMergeDenyPaths?: string[];      // e.g. ["drizzle/", "src/lib/auth/"] — any touched path starting with these blocks auto-merge
@@ -419,6 +423,8 @@ export const missions = pgTable('missions', {
   primaryPrUrl: text('primary_pr_url'),
   // Dedup key for PR-ready push notifications — set to PR head SHA after each notify.
   lastNotifiedSha: text('last_notified_sha'),
+  // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
+  requiresReview: boolean('requires_review').default(false).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -477,6 +483,9 @@ export const tasks = pgTable('tasks', {
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
   // Agent backend that executes this task
   backend: agentBackendEnum('backend').notNull().default('claude'),
+  // When true, the worker PR for this task must be reviewed by a human before auto-merge.
+  // Takes precedence over the mission-level requiresReview.
+  requiresReview: boolean('requires_review').default(false).notNull(),
   // Release override — whether this task should trigger a prod release on completion.
   // 'true' forces release (errors if workspace has no release config).
   // 'false' suppresses release even when the workspace default is on.
@@ -794,6 +803,10 @@ export const workspaceSkills = pgTable('workspace_skills', {
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   // Role config
   model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
+  // Default agent backend for tasks routed to this role (a hint — an explicit task.backend wins).
+  // null = no preference → falls back to 'claude'. Model selection stays independent: when this is
+  // 'codex', the Claude-only `model` field above is ignored. See docs/credentials-architecture.md.
+  defaultBackend: agentBackendEnum('default_backend'),
   allowedTools: jsonb('allowed_tools').notNull().default([]).$type<string[]>(), // empty = all tools
   canDelegateTo: jsonb('can_delegate_to').notNull().default([]).$type<string[]>(), // slugs of other skills
   background: boolean('background').notNull().default(false),

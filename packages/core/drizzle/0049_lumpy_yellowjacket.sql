@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_skills" ADD COLUMN "default_backend" "agent_backend";

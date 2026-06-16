@@ -81,6 +81,14 @@ stored as an **encrypted JSON blob**:
 - `account_id` is not secret but lives in the blob for atomicity; surface it to the UI by
   decrypting (status endpoint).
 
+**Input normalization.** `normalizeCodexAuthJson()` accepts what the user actually pastes:
+the raw `~/.codex/auth.json` (credential fields nested under a `tokens` object) **or** an
+already-flat object. Expiry is resolved from explicit `expires_in` / `expiry`, else decoded
+from the access-token JWT `exp` claim; if none is derivable the credential is still stored
+with no expiry. Keep this normalization **server-side** — never push format-wrangling (jq,
+JWT base64url decoding, clipboard tools) into the UI, where it rots across CLI versions and
+operating systems.
+
 ### Token refresh + rotation lock
 
 OpenAI rotates the refresh token on every use, so a refresh must always persist the new

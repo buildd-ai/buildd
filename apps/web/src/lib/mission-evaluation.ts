@@ -11,6 +11,7 @@ import { eq, and, desc, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { workspaces } from '@buildd/core/db/schema';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 
 /** Structured output schema the evaluator must produce */
 export const EVALUATION_OUTPUT_SCHEMA = {
@@ -76,9 +77,9 @@ export async function buildEvaluationContext(missionId: string): Promise<{
     },
   });
 
-  // Build task disposition summary
+  // Build task disposition summary — only real deliverables, not housekeeping
   const taskSummary = allTasks
-    .filter(t => !t.title.startsWith('Aggregate results:') && !t.title.startsWith('Evaluate mission completion:'))
+    .filter(isDeliverableTask)
     .map(t => {
       const result = t.result as Record<string, unknown> | null;
       const summary = result?.summary as string || null;
