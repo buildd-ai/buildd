@@ -56,12 +56,71 @@ import {
   resolveCodexCredential,
   storeCodexCredential,
   getCodexStatus,
+  normalizeCodexAuthJson,
 } from './codex-credential';
 
 // helper: build an encrypted blob the way the lib does (encrypt = `enc:${json}`)
 function blob(access: string, refresh: string, account: string) {
   return `enc:${JSON.stringify({ access_token: access, refresh_token: refresh, account_id: account })}`;
 }
+
+// helper: build a fake JWT carrying an `exp` claim (signature is irrelevant — we don't verify)
+function jwtWithExp(expEpoch: number): string {
+  const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return `${b64url({ alg: 'none' })}.${b64url({ exp: expEpoch })}.sig`;
+}
+
+describe('normalizeCodexAuthJson', () => {
+  it('accepts the raw ~/.codex/auth.json (nested under tokens) and derives expiry from the JWT', () => {
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const raw = {
+      OPENAI_API_KEY: null,
+      auth_mode: 'chatgpt',
+      tokens: { id_token: 'x', access_token: jwtWithExp(exp), refresh_token: 'rt', account_id: 'acc-1' },
+      last_refresh: '2026-06-15T00:00:00Z',
+    };
+    const res = normalizeCodexAuthJson(raw);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.access_token).toBe(raw.tokens.access_token);
+    expect(res.value.refresh_token).toBe('rt');
+    expect(res.value.account_id).toBe('acc-1');
+    expect(res.value.expires_in).toBeGreaterThan(3500);
+    expect(res.value.expires_in).toBeLessThanOrEqual(3600);
+  });
+
+  it('accepts an already-flat object with explicit expires_in', () => {
+    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expires_in: 7200 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.expires_in).toBe(7200);
+  });
+
+  it('passes through an explicit expiry timestamp', () => {
+    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expiry: '2026-07-01T00:00:00Z' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.expiry).toBe('2026-07-01T00:00:00Z');
+  });
+
+  it('accepts a credential with no derivable expiry (non-JWT access token)', () => {
+    const res = normalizeCodexAuthJson({ tokens: { access_token: 'opaque', refresh_token: 'rt', account_id: 'acc' } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.expires_in).toBeUndefined();
+    expect(res.value.expiry).toBeUndefined();
+  });
+
+  it('rejects missing required fields', () => {
+    const res = normalizeCodexAuthJson({ tokens: { access_token: 'at', account_id: 'acc' } });
+    expect(res.ok).toBe(false);
+  });
+
+  it('rejects non-objects', () => {
+    expect(normalizeCodexAuthJson('nope').ok).toBe(false);
+    expect(normalizeCodexAuthJson(null).ok).toBe(false);
+  });
+});
 
 describe('storeCodexCredential', () => {
   beforeEach(() => {

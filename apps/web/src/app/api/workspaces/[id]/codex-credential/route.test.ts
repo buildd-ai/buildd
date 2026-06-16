@@ -205,6 +205,23 @@ describe('POST /api/workspaces/[id]/codex-credential', () => {
     const res = await POST(makeReq('POST', { authJson }), { params: mockParams });
     expect(res.status).toBe(200);
   });
+
+  it('accepts the raw ~/.codex/auth.json with fields nested under tokens', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const insertValues = mock(() => Promise.resolve());
+    mockDbInsert.mockReturnValue({ values: insertValues });
+    const rawFile = JSON.stringify({
+      OPENAI_API_KEY: null,
+      auth_mode: 'chatgpt',
+      tokens: { id_token: 'id', access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1' },
+      last_refresh: '2026-06-15T00:00:00Z',
+    });
+    const res = await POST(makeReq('POST', { authJson: rawFile }), { params: mockParams });
+    expect(res.status).toBe(200);
+    // Stored blob contains the unwrapped fields (encrypt mock = `enc:${json}`)
+    const row = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(row.encryptedValue).toBe(`enc:${JSON.stringify({ access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1' })}`);
+  });
 });
 
 describe('DELETE /api/workspaces/[id]/codex-credential', () => {

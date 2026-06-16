@@ -288,9 +288,12 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
   function validate(raw: string): string | null {
     let parsed: unknown;
     try { parsed = JSON.parse(raw); } catch { return 'Must be valid JSON'; }
-    const a = parsed as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return 'Must be a JSON object';
+    const root = parsed as Record<string, unknown>;
+    // Codex CLI nests fields under `tokens`; accept that or a flat object.
+    const a = (root.tokens && typeof root.tokens === 'object' ? root.tokens : root) as Record<string, unknown>;
     if (typeof a.access_token !== 'string' || typeof a.refresh_token !== 'string' || typeof a.account_id !== 'string') {
-      return 'JSON must contain access_token, refresh_token, and account_id fields';
+      return 'auth.json must contain access_token, refresh_token, and account_id';
     }
     return null;
   }

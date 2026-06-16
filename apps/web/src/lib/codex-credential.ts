@@ -26,6 +26,62 @@ export interface CodexStatus {
   scope: 'team' | 'workspace' | null;
 }
 
+/** Decode a JWT's `exp` (epoch seconds) without verifying the signature. */
+function jwtExpSeconds(token: unknown): number | null {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Record<string, unknown>;
+    return typeof payload.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalize whatever the user pasted into a CodexAuthJson. Accepts:
+ *   - the raw `~/.codex/auth.json` (fields nested under a `tokens` object), or
+ *   - an already-flat object with top-level fields.
+ *
+ * Expiry is resolved in priority order: explicit `expires_in` / `expiry`, then the
+ * access-token JWT `exp` claim. If none can be derived, the credential is still
+ * accepted with no expiry (it works until it 401s; the refresh cron skips it).
+ *
+ * Returns the normalized value or a human-readable error — never throws.
+ */
+export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: CodexAuthJson } | { ok: false; error: string } {
+  if (!parsed || typeof parsed !== 'object') {
+    return { ok: false, error: 'Must be a JSON object' };
+  }
+  const root = parsed as Record<string, unknown>;
+  // Codex CLI nests credentials under `tokens`; fall back to top-level (flat) shape.
+  const src = (root.tokens && typeof root.tokens === 'object' ? root.tokens : root) as Record<string, unknown>;
+
+  const access_token = src.access_token;
+  const refresh_token = src.refresh_token;
+  const account_id = src.account_id;
+  if (typeof access_token !== 'string' || typeof refresh_token !== 'string' || typeof account_id !== 'string') {
+    return { ok: false, error: 'auth.json must contain access_token, refresh_token, and account_id (top-level or under "tokens")' };
+  }
+
+  const value: CodexAuthJson = { access_token, refresh_token, account_id };
+
+  // Explicit lifetime fields can live at the root or alongside the tokens.
+  const expiresIn = root.expires_in ?? src.expires_in;
+  const expiry = root.expiry ?? src.expiry;
+  if (typeof expiresIn === 'number') {
+    value.expires_in = expiresIn;
+  } else if (typeof expiry === 'string') {
+    value.expiry = expiry;
+  } else {
+    const exp = jwtExpSeconds(access_token);
+    if (exp != null) value.expires_in = Math.max(0, exp - Math.floor(Date.now() / 1000));
+  }
+
+  return { ok: true, value };
+}
+
 export interface CodexCredential {
   accessToken: string;
   refreshToken: string;
