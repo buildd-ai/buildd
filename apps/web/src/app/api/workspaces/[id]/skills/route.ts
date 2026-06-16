@@ -31,6 +31,11 @@ function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
     return {};
 }
 
+/** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
+function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
+    return raw === 'claude' || raw === 'codex' ? raw : null;
+}
+
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -134,7 +139,7 @@ export async function POST(
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
-            mcpServers, requiredEnvVars, isRole, repoUrl, accountId } = body;
+            mcpServers, requiredEnvVars, isRole, repoUrl, accountId, defaultBackend } = body;
 
         if (!name || !content) {
             return NextResponse.json(
@@ -190,6 +195,7 @@ export async function POST(
                     ...(isRole !== undefined ? { isRole } : {}),
                     ...(repoUrl !== undefined ? { repoUrl } : {}),
                     ...(accountId !== undefined ? { accountId } : {}),
+                    ...(defaultBackend !== undefined ? { defaultBackend: normalizeBackend(defaultBackend) } : {}),
                     updatedAt: new Date(),
                 })
                 .where(eq(workspaceSkills.id, existing.id))
@@ -238,6 +244,7 @@ export async function POST(
                 ...(isRole !== undefined ? { isRole } : {}),
                 ...(repoUrl !== undefined ? { repoUrl } : {}),
                 ...(accountId ? { accountId } : {}),
+                ...(defaultBackend !== undefined ? { defaultBackend: normalizeBackend(defaultBackend) } : {}),
             })
             .returning();
 

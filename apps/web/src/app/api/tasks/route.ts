@@ -330,6 +330,22 @@ export async function POST(req: NextRequest) {
       outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
     }
 
+    // Resolve agent backend: explicit task.backend wins, else inherit the role's
+    // defaultBackend (a hint), else fall through to the schema default ('claude').
+    let resolvedBackend: 'claude' | 'codex' | undefined =
+      ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
+    if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
+      const role = await db.query.workspaceSkills.findFirst({
+        where: and(
+          eq(workspaceSkills.workspaceId, workspaceId),
+          eq(workspaceSkills.slug, roleSlug),
+          eq(workspaceSkills.enabled, true),
+        ),
+        columns: { defaultBackend: true },
+      });
+      if (role?.defaultBackend) resolvedBackend = role.defaultBackend;
+    }
+
     const [task] = await db
       .insert(tasks)
       .values({
@@ -357,7 +373,7 @@ export async function POST(req: NextRequest) {
         ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
-        ...(['claude', 'codex'].includes(rawBackend) ? { backend: rawBackend as 'claude' | 'codex' } : {}),
+        ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
         // Creator tracking (from service)
         ...creatorContext,

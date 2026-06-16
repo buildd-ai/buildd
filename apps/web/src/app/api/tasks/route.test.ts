@@ -14,6 +14,7 @@ const mockTasksInsert = mock(() => ({
   })),
 }));
 const mockMissionsFindFirst = mock(() => null as any);
+const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -101,6 +102,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany },
       missions: { findFirst: mockMissionsFindFirst },
+      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
     },
     insert: mockTasksInsert,
   },
@@ -816,6 +818,58 @@ describe('POST /api/tasks', () => {
     await POST(request);
 
     expect(capturedValues.project).toBe('@mono/web');
+  });
+
+  // ── agent backend resolution ─────────────────────────────────────────
+
+  function backendCase() {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    let capturedValues: any = null;
+    const mockValues = mock((values: any) => { capturedValues = values; return { returning: mock(() => [{ id: 'task-123', workspaceId: 'ws-1', title: 'T' }]) }; });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+    return () => capturedValues;
+  }
+
+  it('inherits backend from the role default when not explicitly set', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('explicit task.backend overrides the role default', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder', backend: 'claude' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+  });
+
+  it('omits backend (schema default applies) when neither task nor role specify one', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: null });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T' },
+    });
+    await POST(request);
+    expect(captured().backend).toBeUndefined();
   });
 
   // ── outputRequirement inheritance from missions ──────────────────────
