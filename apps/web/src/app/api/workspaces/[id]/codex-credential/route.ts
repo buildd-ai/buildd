@@ -5,7 +5,7 @@ import {
   storeCodexCredential,
   getCodexStatus,
   deleteCodexCredential,
-  type CodexAuthJson,
+  normalizeCodexAuthJson,
   type CodexScope,
 } from '@/lib/codex-credential';
 
@@ -60,21 +60,14 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: 'authJson must be valid JSON' }, { status: 400 });
   }
 
-  const auth = parsed as Record<string, unknown>;
-  if (
-    typeof auth.access_token !== 'string' ||
-    typeof auth.refresh_token !== 'string' ||
-    typeof auth.account_id !== 'string' ||
-    (auth.expires_in == null && auth.expiry == null)
-  ) {
-    return NextResponse.json(
-      { error: 'authJson must contain access_token, refresh_token, account_id, and expires_in or expiry' },
-      { status: 400 },
-    );
+  // Accept the raw ~/.codex/auth.json (fields nested under `tokens`) or a flat object.
+  const normalized = normalizeCodexAuthJson(parsed);
+  if (!normalized.ok) {
+    return NextResponse.json({ error: normalized.error }, { status: 400 });
   }
 
   const scope = buildScope(access.teamId, id, typeof body.scope === 'string' ? body.scope : null);
-  await storeCodexCredential(scope, auth as unknown as CodexAuthJson);
+  await storeCodexCredential(scope, normalized.value);
   const status = await getCodexStatus(scope);
   return NextResponse.json(status);
 }
