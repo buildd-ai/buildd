@@ -27,17 +27,36 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 import { materializeCodexAuth, cleanupCodexAuth } from '../../src/codex-auth';
 
-// Detect whether another test file has called mock.module('fs') before us.
-// Real fs: existsSync('/') === true. Mocked fs (in this codebase): always false.
-// When mocked, all describe blocks below are skipped — they need real filesystem
-// writes. Run this file in isolation to exercise them:
+// These tests need a real filesystem. Sibling suites (e.g. env-scan.test.ts)
+// call mock.module('fs') process-wide, and those mocks register during the load
+// phase — AFTER this file's top-level code runs — so a load-time check is
+// unreliable (notably env-scan's mock returns existsSync() === true for every
+// path, defeating a `!existsSync('/')` probe). We probe at RUN time instead and
+// skip the disk-backed tests when fs is mocked; they're exercised when this file
+// runs in isolation:
 //   bun test apps/runner/__tests__/unit/codex-credential-injection.test.ts
-const FS_IS_MOCKED = !existsSync('/');
-const describeFs = FS_IS_MOCKED ? describe.skip : describe;
+function probeFsIsReal(): boolean {
+  try {
+    return existsSync('/') && !existsSync(join(tmpdir(), `__codex_fs_probe_${process.pid}_${Math.random().toString(16).slice(2)}`));
+  } catch {
+    return false;
+  }
+}
+
+// Runs the body only when fs is real; otherwise records a skip.
+function fsTest(name: string, fn: () => void | Promise<void>) {
+  test(name, async () => {
+    if (!probeFsIsReal()) {
+      console.warn(`[codex-credential-injection.test] skipping "${name}" — fs is mocked by a sibling suite (covered when run in isolation)`);
+      return;
+    }
+    await fn();
+  });
+}
 
 // ─── materializeCodexAuth ─────────────────────────────────────────────────────
 
-describeFs('materializeCodexAuth', () => {
+describe('materializeCodexAuth', () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs) {
@@ -53,7 +72,7 @@ describeFs('materializeCodexAuth', () => {
     expiresAt: null,
   };
 
-  test('creates a temp dir and writes auth.json', () => {
+  fsTest('creates a temp dir and writes auth.json', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
@@ -62,7 +81,7 @@ describeFs('materializeCodexAuth', () => {
     expect(existsSync(authPath)).toBe(true);
   });
 
-  test('auth.json contains access_token, refresh_token, account_id', () => {
+  fsTest('auth.json contains access_token, refresh_token, account_id', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
@@ -72,7 +91,7 @@ describeFs('materializeCodexAuth', () => {
     expect(authJson.account_id).toBe('acct_789');
   });
 
-  test('auth.json does not contain extra sensitive fields', () => {
+  fsTest('auth.json does not contain extra sensitive fields', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
@@ -81,7 +100,7 @@ describeFs('materializeCodexAuth', () => {
     expect(Object.keys(authJson).sort()).toEqual(['access_token', 'account_id', 'refresh_token']);
   });
 
-  test('temp dir is prefixed with "codex-"', () => {
+  fsTest('temp dir is prefixed with "codex-"', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
@@ -92,8 +111,8 @@ describeFs('materializeCodexAuth', () => {
 
 // ─── cleanupCodexAuth ─────────────────────────────────────────────────────────
 
-describeFs('cleanupCodexAuth', () => {
-  test('removes the temp directory', () => {
+describe('cleanupCodexAuth', () => {
+  fsTest('removes the temp directory', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'codex-test-'));
     writeFileSync(join(tempDir, 'auth.json'), '{}');
 
@@ -102,7 +121,7 @@ describeFs('cleanupCodexAuth', () => {
     expect(existsSync(tempDir)).toBe(false);
   });
 
-  test('is idempotent (no throw on already-removed dir)', () => {
+  fsTest('is idempotent (no throw on already-removed dir)', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'codex-test-'));
     rmSync(tempDir, { recursive: true, force: true });
 
@@ -112,7 +131,7 @@ describeFs('cleanupCodexAuth', () => {
 
 // ─── CodexBackend.resolveApiKey with access_token ────────────────────────────
 
-describeFs('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
+describe('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
   let tempDir: string | null = null;
 
   afterEach(() => {
@@ -128,37 +147,37 @@ describeFs('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
     return tempDir;
   }
 
-  test('resolves api_key from auth.json (legacy API key flow)', async () => {
+  fsTest('resolves api_key from auth.json (legacy API key flow)', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ api_key: 'sk-legacy-key' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('sk-legacy-key');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth.apiKey).toBe('sk-legacy-key');
   });
 
-  test('resolves access_token from auth.json (OAuth device-code flow)', async () => {
+  fsTest('resolves access_token from auth.json (OAuth device-code flow)', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ access_token: 'oat_access_token', refresh_token: 'oat_refresh', account_id: 'acct1' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('oat_access_token');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth).toMatchObject({ codexHome: dir, type: 'oauth' });
   });
 
-  test('api_key takes precedence over access_token if both present', async () => {
+  fsTest('api_key takes precedence over access_token if both present', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ api_key: 'sk-key', access_token: 'oat_token' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('sk-key');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth.apiKey).toBe('sk-key');
   });
 
-  test('falls back to OPENAI_API_KEY env var when auth.json has no recognised key', async () => {
+  fsTest('falls back to OPENAI_API_KEY env var when auth.json has no recognised key', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ other_field: 'value' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({
+    const auth = (backend as any).resolveAuth({
       env: { CODEX_HOME: dir, OPENAI_API_KEY: 'sk-from-env' },
     });
-    expect(key).toBe('sk-from-env');
+    expect(auth.apiKey).toBe('sk-from-env');
   });
 });

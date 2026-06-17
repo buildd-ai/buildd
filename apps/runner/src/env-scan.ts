@@ -35,7 +35,7 @@ const DEFAULT_ENV_KEYS = [
   'GITHUB_TOKEN', 'GITHUB_ACTIONS', 'CI',
   'GITLAB_TOKEN', 'BITBUCKET_TOKEN',
   // AI
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME',
   // Messaging
   'SLACK_TOKEN', 'SLACK_WEBHOOK_URL', 'DISCORD_TOKEN',
   // General
@@ -187,9 +187,11 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
+  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+
   return {
     tools,
-    envKeys: scanEnvKeys(config?.extraEnvKeys),
+    envKeys,
     mcp: scanMcpServers(),
     mcpServers,
     labels: {
