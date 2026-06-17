@@ -611,7 +611,7 @@ export class WorkerManager {
       // in explicitly so a multi-workspace OAuth token is allowed to claim the
       // next pending task across all accessible workspaces (server ranks/picks),
       // rather than being rejected by the ambiguous-claim guard.
-      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true);
+      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -711,7 +711,7 @@ export class WorkerManager {
     // fabricate a bogus 'project/unknown' directory (no origin/<branch>), so
     // worktree setup fails with "invalid reference: origin/<branch>". Resolve
     // from the full task instead — matching the polling path (claimPendingTasks).
-    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
+    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
@@ -1464,6 +1464,7 @@ export class WorkerManager {
         ...(maxTurns ? { maxTurns } : {}),
         sandboxMode: taskSandboxMode,
         env: cleanEnv,
+        ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
@@ -1576,7 +1577,20 @@ If something is missing or incomplete, describe what and fix it now.`;
           continue; // Don't break — keep streaming the agent's response
         }
 
-        // event.type === 'progress': detailed handling already done in onProgress
+        if (event.type === 'progress' && event.message) {
+          const lines = event.message.split('\n');
+          for (const line of lines) {
+            if (line.trim()) {
+              worker.output.push(line);
+              if (worker.output.length > 100) worker.output.shift();
+              this.emit({ type: 'output', workerId: worker.id, line });
+            }
+          }
+          worker.currentAction = event.message.slice(0, 120);
+          worker.hasNewActivity = true;
+          this.emit({ type: 'worker_update', worker });
+        }
+
         // event.type === 'complete': backend loop ended naturally — break out
       }
 

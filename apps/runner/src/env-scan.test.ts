@@ -99,6 +99,25 @@ describe('scanEnvironment', () => {
     }
   });
 
+  it('advertises backend:codex without leaking Codex auth', () => {
+    const originalOpenAI = process.env.OPENAI_API_KEY;
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.OPENAI_API_KEY = 'sk-openai-secret';
+    delete process.env.CODEX_HOME;
+
+    try {
+      const env = scanEnvironment();
+      expect(env.envKeys).toContain('OPENAI_API_KEY');
+      expect(env.envKeys).toContain('backend:codex');
+      expect(JSON.stringify(env)).not.toContain('sk-openai-secret');
+    } finally {
+      if (originalOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAI;
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+  });
+
   it('ignores empty env keys', () => {
     const original = process.env.SLACK_TOKEN;
     process.env.SLACK_TOKEN = '';
@@ -114,7 +133,7 @@ describe('scanEnvironment', () => {
 
   it('reads MCP servers from settings files', () => {
     mockReadFileSync.mockImplementation((path: string) => {
-      if (typeof path === 'string' && path.includes('.claude/settings.json')) {
+      if (typeof path === 'string' && path.includes('.claude') && path.includes('settings.json')) {
         return JSON.stringify({
           mcpServers: {
             slack: { command: 'npx', args: ['slack-mcp'] },

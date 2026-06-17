@@ -84,10 +84,13 @@ export class BuilddClient {
     }
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = { maxTasks, workspaceId, taskId, runner: runner || 'runner' };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;
+    }
+    if (environment) {
+      body.environment = environment;
     }
     // Multi-workspace runner: explicitly opt in to claiming across all accessible
     // workspaces when no specific workspaceId is targeted (the autonomous poll).

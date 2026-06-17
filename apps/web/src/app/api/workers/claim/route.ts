@@ -318,6 +318,7 @@ export async function POST(req: NextRequest) {
 
   // Filter by capabilities
   const filteredTasks = claimableTasks.filter((task) => {
+    if ((task as any).backend === 'codex' && !capabilities.includes('backend:codex')) return false;
     if (capabilities.length === 0) return true;
     const reqCaps = task.requiredCapabilities || [];
     if (reqCaps.length === 0) return true;

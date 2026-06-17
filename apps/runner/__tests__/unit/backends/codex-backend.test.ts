@@ -1,69 +1,43 @@
-/**
- * Unit tests for CodexBackend.
- *
- * Tests cover:
- * - auth.json loading from CODEX_HOME (config option and env var)
- * - fallback to OPENAI_API_KEY when auth.json is absent
- * - error thrown when no auth is found
- * - sandbox mode mapping ('read-only' → 'read-only', default → 'workspace-write')
- * - BackendEvent mapping from codex-sdk stream events
- *
- * @openai/codex-sdk is mocked via mock.module so it does not need to be installed.
- * auth.json tests use real temp directories via Bun.spawnSync (avoids the fs module
- * so they're not affected by other test files' mock.module('fs') calls).
- *
- * When running as part of the full unit suite alongside tests that mock the `fs`
- * module, the auth-resolution describe block is automatically skipped. Run in
- * isolation to exercise those tests:
- *   bun test apps/runner/__tests__/unit/backends/
- *
- * Run: bun test apps/runner/__tests__/unit/backends/
- */
-
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// ─── Detect fs mock ───────────────────────────────────────────────────────────
-// Several other unit test files (e.g. agent-teams.test.ts) call mock.module('fs')
-// without including rmSync. When running the full unit suite, that mocked fs
-// replaces the real one process-wide. We detect this so we can skip auth.json
-// tests (which need real filesystem writes) and avoid import errors from
-// fs functions the mock omits.
-//
-// Real fs: existsSync('/') === true.  Mocked fs (in this codebase): always false.
 const FS_IS_MOCKED = !existsSync('/');
 
-// ─── Mock @openai/codex-sdk ──────────────────────────────────────────────────
-// Must be before any import that transitively pulls in the module.
-
 let mockCodexStreamEvents: any[] = [];
-const mockRunStreamed = mock(async (_prompt: any, _opts: any) => {
-  const events = [...mockCodexStreamEvents];
-  let idx = 0;
-  return {
-    [Symbol.asyncIterator]() {
-      return {
-        async next() {
-          if (idx < events.length) return { value: events[idx++], done: false };
-          return { value: undefined, done: true };
-        },
-      };
-    },
-  };
-});
+let mockCodexConstructor: ReturnType<typeof mock>;
+let mockStartThread: ReturnType<typeof mock>;
+let mockRunStreamed: ReturnType<typeof mock>;
 
-mock.module('@openai/codex-sdk', () => ({
+function makeEventStream(events: any[]): AsyncIterable<any> {
+  return (async function* () {
+    for (const event of events) yield event;
+  })();
+}
+
+mockRunStreamed = mock(async (_prompt: string) => ({
+  events: makeEventStream([...mockCodexStreamEvents]),
+}));
+
+mockStartThread = mock((_opts: any) => ({
   runStreamed: mockRunStreamed,
 }));
 
-// ─── Imports (after mock setup) ───────────────────────────────────────────────
+mockCodexConstructor = mock((_opts: any) => ({
+  startThread: mockStartThread,
+}));
+
+mock.module('@openai/codex-sdk', () => ({
+  Codex: class {
+    constructor(opts: any) {
+      return mockCodexConstructor(opts) as any;
+    }
+  },
+}));
 
 import { CodexBackend } from '../../../src/backends/codex-backend';
 import type { BackendEvent } from '../../../src/backends/types';
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const BASE_RUN_OPTS = {
   prompt: 'do something',
@@ -73,7 +47,7 @@ const BASE_RUN_OPTS = {
 
 async function collectEvents(
   events: any[],
-  opts: Partial<typeof BASE_RUN_OPTS> & { env?: Record<string, string> } = {},
+  opts: Partial<typeof BASE_RUN_OPTS> & { env?: Record<string, string>; maxBudgetUsd?: number; outputSchema?: Record<string, unknown>; model?: string } = {},
   config: ConstructorParameters<typeof CodexBackend>[0] = {},
 ): Promise<BackendEvent[]> {
   mockCodexStreamEvents = events;
@@ -85,201 +59,189 @@ async function collectEvents(
   return result;
 }
 
-/** Create a temp directory with an auth.json file; returns the dir path.
- *  Uses Bun.spawnSync for mkdir so it bypasses the mocked 'fs' module. */
 function makeTmpCodexHome(content: object): string {
-  const dir = join(tmpdir(), `codex-test-${process.pid}-${Date.now()}`);
-  // Use OS commands instead of fs module (which may be mocked in the test suite)
-  Bun.spawnSync(['mkdir', '-p', dir]);
+  const dir = join(tmpdir(), `codex-test-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'auth.json'), JSON.stringify(content));
   return dir;
 }
 
-// ─── Auth resolution ─────────────────────────────────────────────────────────
-// These tests write real files and rely on the real fs.existsSync / readFileSync.
-// When running alongside other unit tests that mock 'fs', they are skipped.
+function resetMocks() {
+  mockCodexStreamEvents = [];
+  mockRunStreamed.mockClear();
+  mockStartThread.mockClear();
+  mockCodexConstructor.mockClear();
+  mockRunStreamed.mockImplementation(async (_prompt: string) => ({
+    events: makeEventStream([...mockCodexStreamEvents]),
+  }));
+}
 
 const describeAuth = FS_IS_MOCKED ? describe.skip : describe;
 
 describeAuth('CodexBackend auth resolution', () => {
-  let tmpDir: string | null = null;
+  let tmpDirs: string[] = [];
 
   beforeEach(() => {
-    mockCodexStreamEvents = [];
-    mockRunStreamed.mockClear();
-    tmpDir = null;
+    resetMocks();
+    tmpDirs = [];
     delete process.env.CODEX_HOME;
     delete process.env.OPENAI_API_KEY;
   });
 
   afterEach(() => {
-    // Use Bun.spawnSync for cleanup — avoids the 'fs' module (which may be mocked)
-    if (tmpDir) {
-      Bun.spawnSync(['rm', '-rf', tmpDir]);
-      tmpDir = null;
-    }
+    for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
     delete process.env.CODEX_HOME;
     delete process.env.OPENAI_API_KEY;
   });
 
   test('reads api_key from auth.json in codexHome config option', async () => {
-    tmpDir = makeTmpCodexHome({ api_key: 'sk-from-config-codex-home' });
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({ codexHome: tmpDir });
+    const tmpDir = makeTmpCodexHome({ api_key: 'sk-from-config-codex-home' });
+    tmpDirs.push(tmpDir);
+    mockCodexStreamEvents = [];
 
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
+    for await (const _ of new CodexBackend({ codexHome: tmpDir }).runStreamed(BASE_RUN_OPTS)) {}
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-from-config-codex-home');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-from-config-codex-home');
   });
 
-  test('reads apiKey (camelCase) from auth.json', async () => {
-    tmpDir = makeTmpCodexHome({ apiKey: 'sk-camel-key' });
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({ codexHome: tmpDir });
+  test('reads apiKey from auth.json', async () => {
+    const tmpDir = makeTmpCodexHome({ apiKey: 'sk-camel-key' });
+    tmpDirs.push(tmpDir);
 
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
+    for await (const _ of new CodexBackend({ codexHome: tmpDir }).runStreamed(BASE_RUN_OPTS)) {}
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-camel-key');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-camel-key');
   });
 
-  test('reads api_key from auth.json when CODEX_HOME process env var is set', async () => {
-    tmpDir = makeTmpCodexHome({ api_key: 'sk-from-env-codex-home' });
-    process.env.CODEX_HOME = tmpDir;
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({});
+  test('reads nested tokens from raw Codex auth.json', async () => {
+    const tmpDir = makeTmpCodexHome({ tokens: { access_token: 'oauth-token' } });
+    tmpDirs.push(tmpDir);
+    mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
+      events: (async function* () {
+        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_HOME || '' } };
+      })(),
+    }));
 
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
+    const events: BackendEvent[] = [];
+    for await (const event of new CodexBackend({ codexHome: tmpDir }).runStreamed(BASE_RUN_OPTS)) {
+      events.push(event);
+    }
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-from-env-codex-home');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBeUndefined();
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: tmpDir });
   });
 
   test('CODEX_HOME in task env takes priority over process env', async () => {
-    const envDir = makeTmpCodexHome({ api_key: 'sk-from-task-env' });
+    const taskDir = makeTmpCodexHome({ api_key: 'sk-from-task-env' });
     const processDir = makeTmpCodexHome({ api_key: 'sk-from-process-env' });
-    tmpDir = envDir;
+    tmpDirs.push(taskDir, processDir);
     process.env.CODEX_HOME = processDir;
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({});
 
-    for await (const _ of backend.runStreamed({
+    for await (const _ of new CodexBackend({}).runStreamed({
       ...BASE_RUN_OPTS,
-      env: { CODEX_HOME: envDir },
+      env: { CODEX_HOME: taskDir },
     })) {}
 
-    Bun.spawnSync(['rm', '-rf', processDir]);
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-from-task-env');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-from-task-env');
   });
 
-  test('falls back to OPENAI_API_KEY when no auth.json found', async () => {
+  test('falls back to OPENAI_API_KEY when no auth.json exists', async () => {
     process.env.OPENAI_API_KEY = 'sk-openai-fallback';
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({});
 
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
+    for await (const _ of new CodexBackend({}).runStreamed(BASE_RUN_OPTS)) {}
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-openai-fallback');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-openai-fallback');
   });
 
   test('OPENAI_API_KEY in task env is used when no CODEX_HOME', async () => {
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({});
-
-    for await (const _ of backend.runStreamed({
+    for await (const _ of new CodexBackend({}).runStreamed({
       ...BASE_RUN_OPTS,
       env: { OPENAI_API_KEY: 'sk-from-task-env-openai' },
     })) {}
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-from-task-env-openai');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-from-task-env-openai');
   });
 
   test('throws when no auth source is available', async () => {
-    const backend = new CodexBackend({});
-    const gen = backend.runStreamed(BASE_RUN_OPTS);
+    const gen = new CodexBackend({}).runStreamed(BASE_RUN_OPTS);
     await expect(gen.next()).rejects.toThrow(/No Codex auth found/);
   });
 
   test('falls through to OPENAI_API_KEY when auth.json is malformed JSON', async () => {
-    tmpDir = join(tmpdir(), `codex-bad-json-${process.pid}-${Date.now()}`);
-    Bun.spawnSync(['mkdir', '-p', tmpDir]);
+    const tmpDir = makeTmpCodexHome({});
+    tmpDirs.push(tmpDir);
     writeFileSync(join(tmpDir, 'auth.json'), '{ not json }');
     process.env.OPENAI_API_KEY = 'sk-fallback-after-bad-json';
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    const backend = new CodexBackend({ codexHome: tmpDir });
 
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
+    for await (const _ of new CodexBackend({ codexHome: tmpDir }).runStreamed(BASE_RUN_OPTS)) {}
 
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.api_key).toBe('sk-fallback-after-bad-json');
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBe('sk-fallback-after-bad-json');
   });
 });
 
-// ─── Sandbox mode mapping ─────────────────────────────────────────────────────
-
-describe('CodexBackend sandbox mode mapping', () => {
+describe('CodexBackend SDK options', () => {
   beforeEach(() => {
-    mockCodexStreamEvents = [{ type: 'session.completed' }];
-    mockRunStreamed.mockClear();
+    resetMocks();
     process.env.OPENAI_API_KEY = 'sk-test';
   });
 
   afterEach(() => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.CODEX_ENV_TEST;
   });
 
-  test('"read-only" → sends read-only to SDK', async () => {
-    const backend = new CodexBackend({});
-    for await (const _ of backend.runStreamed({
-      ...BASE_RUN_OPTS,
-      sandboxMode: 'read-only',
-    })) {}
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.sandbox).toBe('read-only');
+  test('"read-only" maps to startThread sandboxMode', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({ ...BASE_RUN_OPTS, sandboxMode: 'read-only' })) {}
+    expect(mockStartThread.mock.calls[0]?.[0]?.sandboxMode).toBe('read-only');
   });
 
-  test('"workspace-write" → sends workspace-write to SDK', async () => {
-    const backend = new CodexBackend({});
-    for await (const _ of backend.runStreamed({
-      ...BASE_RUN_OPTS,
-      sandboxMode: 'workspace-write',
-    })) {}
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.sandbox).toBe('workspace-write');
+  test('"workspace-write" maps to startThread sandboxMode', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({ ...BASE_RUN_OPTS, sandboxMode: 'workspace-write' })) {}
+    expect(mockStartThread.mock.calls[0]?.[0]?.sandboxMode).toBe('workspace-write');
   });
 
   test('undefined sandboxMode defaults to workspace-write', async () => {
-    const backend = new CodexBackend({});
-    for await (const _ of backend.runStreamed(BASE_RUN_OPTS)) {}
-    const callOpts = mockRunStreamed.mock.calls[0]?.[1] as any;
-    expect(callOpts?.sandbox).toBe('workspace-write');
+    for await (const _ of new CodexBackend({}).runStreamed(BASE_RUN_OPTS)) {}
+    expect(mockStartThread.mock.calls[0]?.[0]?.sandboxMode).toBe('workspace-write');
   });
 
-  test('mapSandboxMode: read-only passthrough', () => {
-    const backend = new CodexBackend({});
-    expect((backend as any).mapSandboxMode('read-only')).toBe('read-only');
+  test('passes model, workingDirectory, and skipGitRepoCheck to startThread', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({ ...BASE_RUN_OPTS, model: 'gpt-5-codex' })) {}
+    expect(mockStartThread.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gpt-5-codex',
+      workingDirectory: '/tmp',
+      skipGitRepoCheck: true,
+    });
   });
 
-  test('mapSandboxMode: workspace-write passthrough', () => {
-    const backend = new CodexBackend({});
-    expect((backend as any).mapSandboxMode('workspace-write')).toBe('workspace-write');
+  test('passes baseUrl from OPENAI_BASE_URL', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      env: { OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: 'https://example.test/v1' },
+    })) {}
+
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.baseUrl).toBe('https://example.test/v1');
   });
 
-  test('mapSandboxMode: undefined → workspace-write', () => {
-    const backend = new CodexBackend({});
-    expect((backend as any).mapSandboxMode(undefined)).toBe('workspace-write');
+  test('task env is present when Codex generator starts', async () => {
+    mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
+      events: (async function* () {
+        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_ENV_TEST || '' } };
+      })(),
+    }));
+
+    const events = await collectEvents([], {
+      env: { OPENAI_API_KEY: 'sk-test', CODEX_ENV_TEST: 'visible-at-spawn' },
+    });
+
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'visible-at-spawn' });
+    expect(process.env.CODEX_ENV_TEST).toBeUndefined();
   });
 });
 
-// ─── BackendEvent mapping ────────────────────────────────────────────────────
-
 describe('CodexBackend BackendEvent mapping', () => {
   beforeEach(() => {
-    mockRunStreamed.mockClear();
+    resetMocks();
     process.env.OPENAI_API_KEY = 'sk-test';
   });
 
@@ -287,170 +249,99 @@ describe('CodexBackend BackendEvent mapping', () => {
     delete process.env.OPENAI_API_KEY;
   });
 
-  test('item.completed (type field) → progress event', async () => {
+  test('agent_message item.completed maps to progress and complete summary', async () => {
     const events = await collectEvents([
-      { type: 'item.completed', content: 'tool finished' },
-      { type: 'session.completed' },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'All done' } },
     ]);
 
-    const progress = events.filter(e => e.type === 'progress');
-    expect(progress.length).toBe(1);
-    expect((progress[0] as any).message).toBe('tool finished');
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'All done' });
+    expect(events.at(-1)).toEqual({ type: 'complete', summary: 'All done' });
   });
 
-  test('item.completed (event field) → progress event', async () => {
+  test('command execution item maps to progress', async () => {
     const events = await collectEvents([
-      { event: 'item.completed', content: 'via event field' },
-      { type: 'session.completed' },
+      { type: 'item.completed', item: { type: 'command_execution', status: 'completed', command: 'bun test' } },
     ]);
 
-    const progress = events.filter(e => e.type === 'progress');
-    expect(progress.length).toBe(1);
-    expect((progress[0] as any).message).toBe('via event field');
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'completed: bun test' });
   });
 
-  test('item.completed uses message field as fallback when content absent', async () => {
-    const events = await collectEvents([
-      { type: 'item.completed', message: 'fallback message' },
-      { type: 'session.completed' },
-    ]);
+  test('turn.completed maps usage including cached input and result metadata', async () => {
+    const progressEvents: any[] = [];
+    const backend = new CodexBackend({});
+    mockCodexStreamEvents = [
+      { type: 'turn.completed', usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 80 } },
+    ];
 
-    const progress = events.filter(e => e.type === 'progress');
-    expect((progress[0] as any).message).toBe('fallback message');
-  });
-
-  test('turn.completed (type field) → turn_complete event', async () => {
-    const events = await collectEvents([
-      {
-        type: 'turn.completed',
-        usage: { input_tokens: 200, output_tokens: 80 },
-      },
-      { type: 'session.completed' },
-    ]);
+    const events: BackendEvent[] = [];
+    for await (const event of backend.runStreamed({
+      ...BASE_RUN_OPTS,
+      model: 'gpt-5-codex',
+      onProgress: (raw) => { progressEvents.push(raw); },
+    })) {
+      events.push(event);
+    }
 
     const tc = events.find(e => e.type === 'turn_complete') as any;
-    expect(tc).toBeDefined();
-    expect(tc.usage?.inputTokens).toBe(200);
-    expect(tc.usage?.outputTokens).toBe(80);
+    expect(tc?.usage).toEqual({ inputTokens: 250, outputTokens: 80 });
+    const result = progressEvents.find(e => e.type === 'result');
+    expect(result?.usage?.byModel?.['gpt-5-codex']).toMatchObject({
+      inputTokens: 200,
+      cacheReadInputTokens: 50,
+      outputTokens: 80,
+    });
   });
 
-  test('turn.completed (event field) → turn_complete event', async () => {
+  test('structured output is parsed from final agent JSON text', async () => {
     const events = await collectEvents([
-      { event: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } },
-      { type: 'session.completed' },
+      { type: 'item.completed', item: { type: 'agent_message', text: '{"ok":true}' } },
+      { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+    ], { outputSchema: { type: 'object' } });
+
+    expect((events.find(e => e.type === 'turn_complete') as any)?.structuredOutput).toEqual({ ok: true });
+    expect((events.at(-1) as any)?.structuredOutput).toEqual({ ok: true });
+  });
+
+  test('turn.failed maps to error event', async () => {
+    const events = await collectEvents([
+      { type: 'turn.failed', error: { message: 'bad auth' } },
     ]);
+
+    expect(events).toEqual([{ type: 'error', error: 'bad auth' }]);
+  });
+
+  test('budget harness emits budget error after usage exceeds maxBudgetUsd', async () => {
+    const progressEvents: any[] = [];
+    const backend = new CodexBackend({});
+    mockCodexStreamEvents = [
+      { type: 'turn.completed', usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 10_000 } },
+    ];
+
+    const events: BackendEvent[] = [];
+    for await (const event of backend.runStreamed({
+      ...BASE_RUN_OPTS,
+      maxBudgetUsd: 0.0001,
+      onProgress: (raw) => { progressEvents.push(raw); },
+    })) {
+      events.push(event);
+    }
 
     expect(events.some(e => e.type === 'turn_complete')).toBe(true);
+    expect((events.at(-1) as any).type).toBe('error');
+    expect((events.at(-1) as any).error).toContain('Budget limit exceeded');
+    expect(progressEvents.find(e => e.subtype === 'error_max_budget_usd')).toBeDefined();
   });
 
-  test('turn.completed with camelCase usage fields', async () => {
-    const events = await collectEvents([
-      {
-        type: 'turn.completed',
-        usage: { inputTokens: 150, outputTokens: 60 },
-      },
-      { type: 'session.completed' },
-    ]);
+  test('non-text prompts are rejected explicitly', async () => {
+    async function* promptParts() {
+      yield { type: 'text', text: 'hi' };
+    }
 
-    const tc = events.find(e => e.type === 'turn_complete') as any;
-    expect(tc?.usage?.inputTokens).toBe(150);
-    expect(tc?.usage?.outputTokens).toBe(60);
-  });
+    const gen = new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      prompt: promptParts(),
+    });
 
-  test('turn.completed with structured_output propagates to turn_complete', async () => {
-    const events = await collectEvents([
-      {
-        type: 'turn.completed',
-        structured_output: { result: 'done' },
-      },
-      { type: 'session.completed' },
-    ]);
-
-    const tc = events.find(e => e.type === 'turn_complete') as any;
-    expect(tc?.structuredOutput).toEqual({ result: 'done' });
-  });
-
-  test('session.completed breaks the loop and emits complete', async () => {
-    const events = await collectEvents([
-      { type: 'item.completed', content: 'step 1' },
-      { type: 'session.completed', output: 'All done' },
-      // These would only appear if the loop did not break:
-      { type: 'item.completed', content: 'should not appear' },
-    ]);
-
-    expect(events.filter(e => e.type === 'progress').length).toBe(1);
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete?.summary).toBe('All done');
-  });
-
-  test('run.completed also breaks the loop', async () => {
-    const events = await collectEvents([
-      { type: 'item.completed', content: 'step 1' },
-      { type: 'run.completed', output: 'Run summary' },
-      { type: 'item.completed', content: 'should not appear' },
-    ]);
-
-    expect(events.filter(e => e.type === 'progress').length).toBe(1);
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete?.summary).toBe('Run summary');
-  });
-
-  test('event=done also breaks the loop', async () => {
-    const events = await collectEvents([
-      { event: 'done', summary: 'Done via event' },
-    ]);
-
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete).toBeDefined();
-  });
-
-  test('complete event is always the last event yielded', async () => {
-    const events = await collectEvents([
-      { type: 'item.completed', content: 'step' },
-      { type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 2 } },
-      { type: 'session.completed' },
-    ]);
-
-    const last = events[events.length - 1];
-    expect(last?.type).toBe('complete');
-  });
-
-  test('complete.summary comes from session.completed output field', async () => {
-    const events = await collectEvents([
-      { type: 'session.completed', output: 'Final output text' },
-    ]);
-
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete?.summary).toBe('Final output text');
-  });
-
-  test('complete.summary comes from session.completed summary field', async () => {
-    const events = await collectEvents([
-      { type: 'session.completed', summary: 'Summary text' },
-    ]);
-
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete?.summary).toBe('Summary text');
-  });
-
-  test('complete carries structuredOutput from last turn', async () => {
-    const events = await collectEvents([
-      { type: 'turn.completed', structured_output: { x: 1 } },
-      { type: 'session.completed' },
-    ]);
-
-    const complete = events.find(e => e.type === 'complete') as any;
-    expect(complete?.structuredOutput).toEqual({ x: 1 });
-  });
-
-  test('progress message is truncated to 200 chars', async () => {
-    const longContent = 'a'.repeat(300);
-    const events = await collectEvents([
-      { type: 'item.completed', content: longContent },
-      { type: 'session.completed' },
-    ]);
-
-    const progress = events.find(e => e.type === 'progress') as any;
-    expect(progress?.message.length).toBe(200);
+    await expect(gen.next()).rejects.toThrow(/does not support non-text prompts/);
   });
 });

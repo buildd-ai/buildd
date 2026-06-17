@@ -638,6 +638,84 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers).toEqual([]);
   });
 
+  it('does not claim codex tasks without backend:codex capability', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        backend: 'codex',
+        requiredCapabilities: [],
+        workspace: { id: 'ws-1' },
+      },
+    ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toEqual([]);
+    expect(data.diagnostics.reason).toBe('capability_mismatch');
+  });
+
+  it('claims codex tasks when environment advertises backend:codex', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Codex task',
+        backend: 'codex',
+        requiredCapabilities: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        runner: 'test-runner',
+        environment: {
+          tools: [],
+          envKeys: ['backend:codex'],
+          mcp: [],
+          labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+          scannedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+  });
+
   // --- Dependency filtering tests ---
 
   it('filters out tasks with unresolved dependsOn dependencies', async () => {
