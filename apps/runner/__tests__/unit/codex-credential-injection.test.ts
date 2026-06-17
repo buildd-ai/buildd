@@ -132,33 +132,33 @@ describeFs('CodexBackend resolveApiKey — OAuth (access_token) flow', () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ api_key: 'sk-legacy-key' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('sk-legacy-key');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth.apiKey).toBe('sk-legacy-key');
   });
 
   test('resolves access_token from auth.json (OAuth device-code flow)', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ access_token: 'oat_access_token', refresh_token: 'oat_refresh', account_id: 'acct1' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('oat_access_token');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth).toMatchObject({ codexHome: dir, type: 'oauth' });
   });
 
   test('api_key takes precedence over access_token if both present', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ api_key: 'sk-key', access_token: 'oat_token' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({ env: { CODEX_HOME: dir } });
-    expect(key).toBe('sk-key');
+    const auth = (backend as any).resolveAuth({ env: { CODEX_HOME: dir } });
+    expect(auth.apiKey).toBe('sk-key');
   });
 
   test('falls back to OPENAI_API_KEY env var when auth.json has no recognised key', async () => {
     const { CodexBackend } = await import('../../src/backends/index');
     const dir = makeAuthDir({ other_field: 'value' });
     const backend = new CodexBackend();
-    const key = (backend as any).resolveApiKey({
+    const auth = (backend as any).resolveAuth({
       env: { CODEX_HOME: dir, OPENAI_API_KEY: 'sk-from-env' },
     });
-    expect(key).toBe('sk-from-env');
+    expect(auth.apiKey).toBe('sk-from-env');
   });
 });

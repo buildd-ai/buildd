@@ -4,7 +4,6 @@ import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
-const CODEX_CLIENT_ID = process.env.CODEX_OAUTH_CLIENT_ID ?? 'app_client_id';
 const PURPOSE = 'codex_credential' as const;
 
 export interface CodexAuthJson {
@@ -122,6 +121,19 @@ function expiryFromAuthJson(authJson: CodexAuthJson): Date | null {
   return null;
 }
 
+function codexOAuthClientId(): string {
+  const clientId = process.env.CODEX_OAUTH_CLIENT_ID;
+  if (!clientId || clientId === 'app_client_id') {
+    throw new Error('CODEX_OAUTH_CLIENT_ID is not configured');
+  }
+  return clientId;
+}
+
+function credentialUsable(row: { tokenExpiresAt: Date | string | null }): boolean {
+  if (!row.tokenExpiresAt) return true;
+  return new Date(row.tokenExpiresAt).getTime() > Date.now();
+}
+
 /** Exact-scope match (NULL-aware) for accountId + workspaceId. */
 function scopeMatch(scope: CodexScope) {
   return and(
@@ -179,13 +191,14 @@ export async function resolveCodexCredential(opts: {
     ),
     columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
   });
-  if (rows.length === 0) return null;
+  const usableRows = rows.filter(credentialUsable);
+  if (usableRows.length === 0) return null;
 
   // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
+  const best = usableRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   const blob = decodeBlob(best.encryptedValue);
   return {
@@ -195,6 +208,24 @@ export async function resolveCodexCredential(opts: {
     tokenExpiresAt: best.tokenExpiresAt ?? null,
     lastRefreshedAt: best.lastRefreshedAt ?? null,
   };
+}
+
+/** True when an unexpired Codex credential exists for this task scope. Does not decrypt token values. */
+export async function hasCodexCredential(opts: {
+  teamId: string;
+  accountId?: string | null;
+  workspaceId?: string | null;
+}): Promise<boolean> {
+  const rows = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.teamId, opts.teamId),
+      eq(secrets.purpose, PURPOSE),
+      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
+      or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
+    ),
+    columns: { tokenExpiresAt: true },
+  });
+  return rows.some(credentialUsable);
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */
@@ -280,7 +311,7 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
       body: new URLSearchParams({
         grant_type: 'refresh_token',
         refresh_token: currentRefreshToken,
-        client_id: CODEX_CLIENT_ID,
+        client_id: codexOAuthClientId(),
       }).toString(),
     });
 

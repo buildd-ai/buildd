@@ -702,7 +702,7 @@ describe('POST /api/workers/claim', () => {
         runner: 'test-runner',
         environment: {
           tools: [],
-          envKeys: ['backend:codex'],
+          envKeys: ['backend:codex', 'CODEX_HOME'],
           mcp: [],
           labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
           scannedAt: '2026-01-01T00:00:00.000Z',

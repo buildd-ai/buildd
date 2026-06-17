@@ -125,7 +125,7 @@ export class CodexBackend implements AgentBackend {
           ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
         };
 
-        if (opts.maxBudgetUsd !== undefined && totalCostUsd > opts.maxBudgetUsd) {
+        if (auth.type !== 'oauth' && opts.maxBudgetUsd !== undefined && totalCostUsd > opts.maxBudgetUsd) {
           await opts.onProgress?.(this.resultEvent('error_max_budget_usd', modelUsage, turnCount, totalCostUsd));
           yield {
             type: 'error',
@@ -144,7 +144,7 @@ export class CodexBackend implements AgentBackend {
     };
   }
 
-  private resolveAuth(opts: RunStreamedOpts): { apiKey?: string; codexHome?: string } {
+  private resolveAuth(opts: RunStreamedOpts): { apiKey?: string; codexHome?: string; type: 'api_key' | 'oauth' } {
     const codexHome =
       this.config.codexHome ||
       opts.env?.CODEX_HOME ||
@@ -156,17 +156,17 @@ export class CodexBackend implements AgentBackend {
         try {
           const auth = JSON.parse(readFileSync(authPath, 'utf-8'));
           const tokens = auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : auth;
-          if (tokens.api_key || tokens.apiKey) return { apiKey: tokens.api_key || tokens.apiKey, codexHome };
-          if (tokens.access_token) return { codexHome };
-          if (auth.api_key || auth.apiKey) return { apiKey: auth.api_key || auth.apiKey, codexHome };
-          if (auth.access_token) return { codexHome };
+          if (tokens.api_key || tokens.apiKey) return { apiKey: tokens.api_key || tokens.apiKey, codexHome, type: 'api_key' };
+          if (tokens.access_token) return { codexHome, type: 'oauth' };
+          if (auth.api_key || auth.apiKey) return { apiKey: auth.api_key || auth.apiKey, codexHome, type: 'api_key' };
+          if (auth.access_token) return { codexHome, type: 'oauth' };
         } catch {
         }
       }
     }
 
     const apiKey = opts.env?.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-    if (apiKey) return { apiKey };
+    if (apiKey) return { apiKey, type: 'api_key' };
 
     throw new Error(
       'No Codex auth found. Set CODEX_HOME (pointing to a directory with auth.json) or OPENAI_API_KEY.',

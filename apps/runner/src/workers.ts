@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, cleanupCodexAuth } from './codex-auth.js';
+import { materializeCodexAuth, materializeCodexHome, writeCodexMcpConfig, cleanupCodexAuth } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
@@ -1208,6 +1208,8 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
       }
 
+      const isCodexTask = (task.backend || 'claude') === 'codex';
+
       // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
       // codexHome is captured as a local (not only on the session object) so the
       // finally block cleans up the correct dir even if the session is superseded
@@ -1219,6 +1221,28 @@ export class WorkerManager {
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
+      }
+
+      // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
+      // queryOptions. For temp Codex homes, write Buildd MCP config with the
+      // bearer token supplied via env so it never lands in config.toml.
+      if (isCodexTask) {
+        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        if (!codexHome && !cleanEnv.CODEX_HOME) {
+          const { codexHome: _ch } = materializeCodexHome(worker.id);
+          codexHome = _ch;
+          cleanEnv.CODEX_HOME = codexHome;
+        }
+        if (codexHome) {
+          writeCodexMcpConfig(codexHome, {
+            builddServer: this.config.builddServer,
+            workspaceId: task.workspaceId,
+            workerId: worker.id,
+            bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+          });
+        } else if (cleanEnv.CODEX_HOME) {
+          console.warn(`[Worker ${worker.id}] Using existing CODEX_HOME; Buildd MCP config must already be present for Codex tools`);
+        }
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
