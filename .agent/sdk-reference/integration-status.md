@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-16
-**SDK in package.json**: `^0.3.178` (up to date)
+**Last updated**: 2026-06-17
+**SDK in package.json**: `^0.3.179` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,7 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-06-17 | ^0.3.179 | 0.3.179 | pending |
 | 2026-06-16 | ^0.3.178 | 0.3.178 | pending |
 | 2026-06-14 | ^0.3.177 | 0.3.177 | #820 |
 | 2026-06-11 | ^0.3.173 | 0.3.173 | #818 |
@@ -56,6 +57,14 @@
 - Credit amounts: $20 (Pro), $100 (Max 5x), $200 (Max 20x), $0 (Enterprise — use API key)
 - Action: Dashboard banner for workspace owners, docs update, recommend Enterprise users switch to API key billing
 - Location: Dashboard UI, docs, potentially task detail page (credit consumption estimate)
+
+### P2 — Medium Priority (new in 0.3.179)
+
+**Use `tool_use_meta` for human-readable tool labels in dashboard (v0.3.179)**
+- New: Optional `tool_use_meta` sidecar attached to assistant messages; provides display-friendly names for each tool call instead of raw wire names
+- Benefit: Buildd's task detail view could display readable tool labels (e.g. "Read file" instead of `Read`) without custom mapping logic
+- Location: `packages/core/worker-runner.ts` (message processing loop), dashboard task detail component
+- Effort: Low (read `tool_use_meta` from assistant messages; pass to Pusher progress event)
 
 ### P1 — High Priority (new in 0.3.163–0.3.178)
 
