@@ -12,7 +12,6 @@ import { tmpdir } from 'os';
 // shapes: existsSync-always-false (real '/' fails) and existsSync-always-true
 // (a guaranteed-absent path returns true). The disk-dependent auth tests run
 // only when fs is real (i.e. when this file runs in isolation).
-let fsIsReal = false;
 function probeFsIsReal(): boolean {
   try {
     return existsSync('/') && !existsSync(join(tmpdir(), `__codex_fs_probe_${process.pid}_${Math.random().toString(16).slice(2)}`));
@@ -97,7 +96,7 @@ function resetMocks() {
 // CI run where a sibling suite has mocked fs.
 function authTest(name: string, fn: () => Promise<void>) {
   test(name, async () => {
-    if (!fsIsReal) {
+    if (!probeFsIsReal()) {
       console.warn(`[codex-backend.test] skipping "${name}" — fs is mocked by a sibling suite (covered when run in isolation)`);
       return;
     }
@@ -110,7 +109,6 @@ describe('CodexBackend auth resolution', () => {
 
   beforeEach(() => {
     resetMocks();
-    fsIsReal = probeFsIsReal();
     tmpDirs = [];
     delete process.env.CODEX_HOME;
     delete process.env.OPENAI_API_KEY;
@@ -360,7 +358,7 @@ describe('CodexBackend BackendEvent mapping', () => {
     expect(progressEvents.find(e => e.subtype === 'error_max_budget_usd')).toBeDefined();
   });
 
-  test('OAuth CODEX_HOME reports usage but does not enforce fabricated budget', async () => {
+  authTest('OAuth CODEX_HOME reports usage but does not enforce fabricated budget', async () => {
     const tmpDir = makeTmpCodexHome({ access_token: 'oauth-token', refresh_token: 'refresh', account_id: 'acct' });
     mockCodexStreamEvents = [
       { type: 'turn.completed', usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 10_000 } },
