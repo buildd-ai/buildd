@@ -1,13 +1,19 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-16
-**Covering**: v0.2.114 → v0.3.178
+**Last updated**: 2026-06-17
+**Covering**: v0.2.114 → v0.3.179
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.178 (2026-06-15) — current latest
+### v0.3.179 (2026-06-16) — current latest
+- **Parity with Claude Code v2.1.179**
+- **`tool_use_meta` sidecar on assistant messages**: Optional field attached to assistant messages with display-friendly names for tool calls — SDK consumers can render human-readable labels instead of raw wire names (relevant to Buildd dashboard tool display)
+- **Bug fix (Buildd-relevant)**: `-p` mode no longer exits before a completed background agent's notification is delivered — previously interim text could ship as the final result
+- **Bug fix (Buildd-relevant)**: Remote (stream-json) sessions no longer appear busy for the full duration of a background workflow — turn result is now emitted at the turn boundary; session reports idle while background tasks continue
+
+### v0.3.178 (2026-06-15)
 - **Parity with Claude Code v2.1.178**
 - **`Tool(param:value)` permission rule syntax**: Match tool calls by input parameter value, e.g. `Agent(model:opus)` to block Opus subagents, `Bash(command:rm*)` to deny `rm` commands — adds fine-grained PreToolUse control beyond tool name
 - **Skills in nested `.claude/skills` directories**: Skills now load when working on files in nested directories; name clash resolved with `<dir>:<name>` prefix — relevant to Buildd's skill delivery in nested worktrees
