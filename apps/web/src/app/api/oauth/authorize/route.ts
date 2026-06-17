@@ -18,6 +18,38 @@ function plainError(message: string, status = 400) {
   return new NextResponse(message, { status, headers: { 'content-type': 'text/plain' } });
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: string): boolean {
+  if (registeredUris.includes(requestedUri)) return true;
+
+  let requested: URL;
+  try {
+    requested = new URL(requestedUri);
+  } catch {
+    return false;
+  }
+
+  if (!LOOPBACK_HOSTS.has(requested.hostname)) return false;
+
+  return registeredUris.some((registeredUri) => {
+    let registered: URL;
+    try {
+      registered = new URL(registeredUri);
+    } catch {
+      return false;
+    }
+
+    return (
+      LOOPBACK_HOSTS.has(registered.hostname) &&
+      registered.protocol === requested.protocol &&
+      registered.port === requested.port &&
+      registered.pathname === requested.pathname &&
+      registered.search === requested.search
+    );
+  });
+}
+
 /**
  * Returns workspaces the user can access through team membership.
  * Used to populate the workspace selector during OAuth consent.
@@ -66,7 +98,7 @@ export async function GET(req: NextRequest) {
   if (!client) {
     return plainError('unknown client_id', 400);
   }
-  if (!client.redirectUris.includes(redirectUri)) {
+  if (!isRegisteredRedirectUri(client.redirectUris, redirectUri)) {
     return plainError('redirect_uri not registered for this client', 400);
   }
 
