@@ -1,13 +1,19 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-17
-**Covering**: v0.2.114 → v0.3.179
+**Last updated**: 2026-06-18
+**Covering**: v0.2.114 → v0.3.181
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.179 (2026-06-16) — current latest
+### v0.3.181 (2026-06-17) — current latest
+- **Parity with Claude Code v2.1.181**
+- **`SDKRateLimitInfo` enhanced fields**: `errorCode`, `canUserPurchaseCredits`, and `hasChargeableSavedPaymentMethod` added to rate limit info — allows callers to detect when a session is blocked due to insufficient credits vs. API overload, and whether the user can resolve it by purchasing credits
+- **`tool_use_meta.icon_url`**: Assistant messages with `tool_use_meta` sidecar now include an `icon_url` per tool call, populated from MCP server directory metadata — enables dashboard display of MCP tool icons alongside human-readable labels (extends the v0.3.179 `tool_use_meta` feature)
+- **Bug fix**: SDK-hosted Remote Control sessions no longer drop `file_attachments` from inbound user messages
+
+### v0.3.179 (2026-06-16)
 - **Parity with Claude Code v2.1.179**
 - **`tool_use_meta` sidecar on assistant messages**: Optional field attached to assistant messages with display-friendly names for tool calls — SDK consumers can render human-readable labels instead of raw wire names (relevant to Buildd dashboard tool display)
 - **Bug fix (Buildd-relevant)**: `-p` mode no longer exits before a completed background agent's notification is delivered — previously interim text could ship as the final result
