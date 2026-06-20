@@ -1,27 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, githubInstallations } from '@buildd/core/db/schema';
+import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
-import { githubApi, isGitHubAppConfigured } from '@/lib/github';
+import { isGitHubAppConfigured } from '@/lib/github';
+import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { resolveReleaseTarget } from '@/lib/release/target';
+import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
 
 /**
- * Trigger the `release.yml` workflow_dispatch on a target repo. Uses the
- * existing GitHub App installation token resolved by repo owner — same
- * auth path as the health watcher.
+ * Trigger a release on a workspace's repo. The workspace declares HOW it
+ * releases via `releaseConfig.strategy` — buildd no longer hardcodes dev→main /
+ * release.yml. This route resolves that strategy and dispatches accordingly:
  *
- * Body: { repo: "owner/name", ref?: "dev", workflowFile?: "release.yml", force?: false }
+ *   - workflow_dispatch: dispatch the repo's own release workflow + read the run back.
+ *   - branch_merge:      runs automatically on task completion (executeRelease),
+ *                        not via this standalone trigger — it needs a worker branch.
+ *   - script:            not yet implemented.
  *
- * Auth: admin-level token only (API key or session). Releases are a
- * sensitive action — every other admin-only buildd MCP action gates the
- * same way (manage_missions, manage_workspaces, manage_secrets).
+ * Identify the target by `workspaceId` or `repo` ("owner/name"). For an
+ * unconfigured workspace, pass `workflowFile` + `ref` explicitly (an ad-hoc
+ * dispatch) — there is no buildd-specific default.
+ *
+ * Auth: admin-level token only — same gate as manage_missions / manage_secrets.
  */
 
 interface TriggerBody {
+  workspaceId?: string;
   repo?: string;
   ref?: string;
   workflowFile?: string;
+  inputs?: Record<string, string>;
   force?: boolean;
 }
 
@@ -34,9 +44,6 @@ async function isAdmin(req: NextRequest): Promise<boolean> {
     });
     return account?.level === 'admin';
   }
-  // Session auth: trust workspace access checks elsewhere; release-trigger is
-  // always API-key-gated for now. (A future change could enable session
-  // dispatch for team admins.)
   const user = await getCurrentUser();
   return Boolean(user);
 }
@@ -56,45 +63,77 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  if (!body.repo || typeof body.repo !== 'string') {
-    return NextResponse.json({ error: 'repo is required (owner/name)' }, { status: 400 });
-  }
-  const [owner, name] = body.repo.split('/');
-  if (!owner || !name) {
-    return NextResponse.json({ error: 'repo must be in "owner/name" form' }, { status: 400 });
+  if (!body.workspaceId && !body.repo) {
+    return NextResponse.json({ error: 'workspaceId or repo is required' }, { status: 400 });
   }
 
-  const ref = body.ref ?? 'dev';
-  const workflowFile = body.workflowFile ?? 'release.yml';
-  const force = body.force === true ? 'true' : 'false';
+  const targetResult = await resolveReleaseTarget({ workspaceId: body.workspaceId, repo: body.repo });
+  if (!targetResult.ok) {
+    return NextResponse.json({ error: targetResult.error }, { status: targetResult.status });
+  }
+  const target = targetResult.target;
 
-  const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.accountLogin, owner),
-  });
-  if (!installation) {
-    return NextResponse.json({ error: `No GitHub App installation found for ${owner}` }, { status: 404 });
+  const overrides = {
+    ref: body.ref,
+    workflowFile: body.workflowFile,
+    inputs: body.inputs,
+    force: body.force,
+  };
+  const resolution = resolveReleaseStrategy(target.releaseConfig, overrides);
+
+  // Resolve a concrete workflow_dispatch even when the workspace isn't configured,
+  // PROVIDED the caller passed workflowFile + ref explicitly (ad-hoc dispatch).
+  // This keeps an escape hatch without reintroducing a buildd-specific default.
+  let strategy = resolution.ok ? resolution.strategy : null;
+  if (!resolution.ok && resolution.reason === 'not_configured' && body.workflowFile && body.ref) {
+    const inputs: Record<string, string> = { ...(body.inputs ?? {}) };
+    if (body.force !== undefined) inputs.force = body.force ? 'true' : 'false';
+    strategy = { kind: 'workflow_dispatch', workflowFile: body.workflowFile, ref: body.ref, inputs };
   }
 
+  if (!strategy) {
+    const message = resolution.ok
+      ? 'Unresolved release strategy'
+      : resolution.reason === 'not_configured'
+        ? 'Workspace is not configured for releases. Set releaseConfig, or pass workflowFile + ref explicitly.'
+        : resolution.message;
+    const status = !resolution.ok && resolution.reason === 'disabled' ? 409 : 422;
+    return NextResponse.json({ ok: false, error: message }, { status });
+  }
+
+  if (strategy.kind === 'branch_merge') {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          'This workspace uses the branch_merge strategy, which releases automatically on task completion — not via the standalone trigger.',
+      },
+      { status: 422 },
+    );
+  }
+
+  if (strategy.kind === 'script') {
+    return NextResponse.json(
+      { ok: false, error: 'The script release strategy is not yet implemented.' },
+      { status: 501 },
+    );
+  }
+
+  // workflow_dispatch
   try {
-    // workflow_dispatch returns 204 on success.
-    await githubApi(installation.installationId, `/repos/${owner}/${name}/actions/workflows/${workflowFile}/dispatches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref, inputs: { force } }),
+    const result = await dispatchWorkflowRelease(target.installationId, target.owner, target.name, {
+      workflowFile: strategy.workflowFile,
+      ref: strategy.ref,
+      inputs: strategy.inputs,
+    });
+    return NextResponse.json({
+      ok: true,
+      strategy: 'workflow_dispatch',
+      repo: target.repoFullName,
+      ...result,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Most common failure: workflow file doesn't exist in target repo, or
-    // App lacks actions:write permission. Surface the GH error verbatim.
     return NextResponse.json({ ok: false, error: message }, { status: 502 });
   }
-
-  return NextResponse.json({
-    ok: true,
-    repo: body.repo,
-    workflowFile,
-    ref,
-    force: body.force === true,
-    runsUrl: `https://github.com/${body.repo}/actions/workflows/${workflowFile}`,
-  });
 }
