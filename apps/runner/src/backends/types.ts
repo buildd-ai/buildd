@@ -12,6 +12,7 @@ export interface RunStreamedOpts {
   sandboxMode?: 'read-only' | 'workspace-write'
   outputSchema?: Record<string, unknown>
   env?: Record<string, string>
+  maxBudgetUsd?: number
   onProgress?: (event: unknown) => void | Promise<void>
 }
 

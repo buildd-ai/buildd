@@ -11,7 +11,7 @@ import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
-import { resolveCodexCredential } from '@/lib/codex-credential';
+import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -316,8 +316,30 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  const runnerHasCodexBackend = capabilities.includes('backend:codex');
+  const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
+  const serverCredentialTaskIds = new Set<string>();
+  if (runnerHasCodexBackend && !runnerHasLocalCodexAuth && process.env.ENCRYPTION_KEY) {
+    await Promise.all(claimableTasks.map(async (task) => {
+      if ((task as any).backend !== 'codex') return;
+      const teamId = (task as any).workspace?.teamId;
+      if (!teamId) return;
+      try {
+        if (await hasCodexCredential({ teamId, accountId: account.id, workspaceId: task.workspaceId })) {
+          serverCredentialTaskIds.add(task.id);
+        }
+      } catch (err) {
+        console.warn(`[claim] Failed to check Codex credential for task ${task.id}:`, err);
+      }
+    }));
+  }
+
   // Filter by capabilities
   const filteredTasks = claimableTasks.filter((task) => {
+    if ((task as any).backend === 'codex') {
+      if (!runnerHasCodexBackend) return false;
+      if (!runnerHasLocalCodexAuth && !serverCredentialTaskIds.has(task.id)) return false;
+    }
     if (capabilities.length === 0) return true;
     const reqCaps = task.requiredCapabilities || [];
     if (reqCaps.length === 0) return true;

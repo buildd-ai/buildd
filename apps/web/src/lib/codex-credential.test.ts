@@ -52,6 +52,7 @@ mock.module('drizzle-orm', () => ({
 // ── imports (after mocks) ─────────────────────────────────────────────────────
 
 import {
+  hasCodexCredential,
   refreshCodexCredential,
   resolveCodexCredential,
   storeCodexCredential,
@@ -192,6 +193,38 @@ describe('resolveCodexCredential', () => {
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
     expect(result?.accessToken).toBe('teamAT');
   });
+
+  it('includes expired credentials — Codex CLI auto-refreshes via refresh_token', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
+      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    // Workspace-scoped credential wins on specificity even when expired.
+    expect(result?.accessToken).toBe('expiredAT');
+  });
+
+  it('returns expired credential when it is the only one available', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    expect(result?.accessToken).toBe('expiredAT');
+  });
+});
+
+describe('hasCodexCredential', () => {
+  beforeEach(() => mockDbFindMany.mockReset());
+
+  it('returns true for an unexpired credential without decrypting', async () => {
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() + 3600_000) }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
+  });
+
+  it('returns true for an expired credential — CLI can refresh the token', async () => {
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
+  });
 });
 
 describe('getCodexStatus', () => {
@@ -226,12 +259,14 @@ describe('refreshCodexCredential', () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
+    process.env.CODEX_OAUTH_CLIENT_ID = 'codex-client-test';
     mockDbUpdate.mockReset();
     mockDbFindFirst.mockReset();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    delete process.env.CODEX_OAUTH_CLIENT_ID;
   });
 
   it('persists rotated refresh token from refresh response', async () => {

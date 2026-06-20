@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, cleanupCodexAuth } from './codex-auth.js';
+import { materializeCodexAuth, materializeCodexHome, writeCodexMcpConfig, cleanupCodexAuth } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
@@ -611,7 +611,7 @@ export class WorkerManager {
       // in explicitly so a multi-workspace OAuth token is allowed to claim the
       // next pending task across all accessible workspaces (server ranks/picks),
       // rather than being rejected by the ambiguous-claim guard.
-      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true);
+      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -711,7 +711,7 @@ export class WorkerManager {
     // fabricate a bogus 'project/unknown' directory (no origin/<branch>), so
     // worktree setup fails with "invalid reference: origin/<branch>". Resolve
     // from the full task instead — matching the polling path (claimPendingTasks).
-    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id);
+    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
@@ -1208,6 +1208,8 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
       }
 
+      const isCodexTask = (task.backend || 'claude') === 'codex';
+
       // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
       // codexHome is captured as a local (not only on the session object) so the
       // finally block cleans up the correct dir even if the session is superseded
@@ -1219,6 +1221,39 @@ export class WorkerManager {
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
+      }
+
+      // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
+      // queryOptions. For temp Codex homes, write Buildd MCP config with the
+      // bearer token supplied via env so it never lands in config.toml.
+      if (isCodexTask) {
+        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        if (!codexHome && !cleanEnv.CODEX_HOME) {
+          const { codexHome: _ch } = materializeCodexHome(worker.id);
+          codexHome = _ch;
+          cleanEnv.CODEX_HOME = codexHome;
+        }
+        if (codexHome) {
+          writeCodexMcpConfig(codexHome, {
+            builddServer: this.config.builddServer,
+            workspaceId: task.workspaceId,
+            workerId: worker.id,
+            bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+          });
+        } else if (cleanEnv.CODEX_HOME) {
+          console.warn(`[Worker ${worker.id}] Using existing CODEX_HOME; Buildd MCP config must already be present for Codex tools`);
+        }
+      }
+
+      // Preflight: fail fast with a clear message if no Codex auth is available.
+      // After the fix, worker.codexCredential is set whenever a credential row exists
+      // (even if expired — the CLI refreshes it). A null here means no credential was
+      // ever stored for this team/workspace. The runner's own OPENAI_API_KEY is an
+      // alternative path (API key auth).
+      if (isCodexTask && !worker.codexCredential && !cleanEnv.OPENAI_API_KEY) {
+        throw new Error(
+          'No Codex credential configured. Connect a ChatGPT / OpenAI account in Settings → Credentials before running Codex tasks.',
+        );
       }
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
@@ -1464,6 +1499,7 @@ export class WorkerManager {
         ...(maxTurns ? { maxTurns } : {}),
         sandboxMode: taskSandboxMode,
         env: cleanEnv,
+        ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
@@ -1576,7 +1612,20 @@ If something is missing or incomplete, describe what and fix it now.`;
           continue; // Don't break — keep streaming the agent's response
         }
 
-        // event.type === 'progress': detailed handling already done in onProgress
+        if (event.type === 'progress' && event.message) {
+          const lines = event.message.split('\n');
+          for (const line of lines) {
+            if (line.trim()) {
+              worker.output.push(line);
+              if (worker.output.length > 100) worker.output.shift();
+              this.emit({ type: 'output', workerId: worker.id, line });
+            }
+          }
+          worker.currentAction = event.message.slice(0, 120);
+          worker.hasNewActivity = true;
+          this.emit({ type: 'worker_update', worker });
+        }
+
         // event.type === 'complete': backend loop ended naturally — break out
       }
 

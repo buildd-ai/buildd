@@ -35,6 +35,34 @@ export function materializeCodexAuth(workerId: string, credential: CodexCredenti
   return { codexHome };
 }
 
+export interface CodexMcpConfig {
+  builddServer: string;
+  workspaceId: string;
+  workerId: string;
+  bearerTokenEnvVar: string;
+}
+
+/** Create a temporary CODEX_HOME for runs that only need transient Codex config. */
+export function materializeCodexHome(workerId: string): { codexHome: string } {
+  const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
+  console.log(`[Worker ${workerId}] Materialized Codex config dir at ${codexHome}`);
+  return { codexHome };
+}
+
+/** Write Buildd MCP configuration into a temp CODEX_HOME/config.toml. */
+export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): void {
+  fs.mkdirSync(codexHome, { recursive: true });
+  const mcpUrl = `${config.builddServer}/api/mcp?workspace=${encodeURIComponent(config.workspaceId)}&worker=${encodeURIComponent(config.workerId)}`;
+  const content = [
+    '[mcp_servers.buildd]',
+    `url = ${tomlString(mcpUrl)}`,
+    `bearer_token_env_var = ${tomlString(config.bearerTokenEnvVar)}`,
+    'enabled = true',
+    '',
+  ].join('\n');
+  fs.writeFileSync(join(codexHome, 'config.toml'), content);
+}
+
 /** Remove the temp CODEX_HOME directory created by materializeCodexAuth. */
 export function cleanupCodexAuth(workerId: string, codexHome: string): void {
   try {
@@ -43,4 +71,8 @@ export function cleanupCodexAuth(workerId: string, codexHome: string): void {
   } catch (err) {
     console.warn(`[Worker ${workerId}] Failed to clean up Codex auth dir:`, err);
   }
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
 }

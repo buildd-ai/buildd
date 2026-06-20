@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-16
-**SDK in package.json**: `^0.3.178` (up to date)
+**Last updated**: 2026-06-18
+**SDK in package.json**: `^0.3.181` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,8 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-06-18 | ^0.3.181 | 0.3.181 | pending |
+| 2026-06-17 | ^0.3.179 | 0.3.179 | #861 |
 | 2026-06-16 | ^0.3.178 | 0.3.178 | pending |
 | 2026-06-14 | ^0.3.177 | 0.3.177 | #820 |
 | 2026-06-11 | ^0.3.173 | 0.3.173 | #818 |
@@ -56,6 +58,20 @@
 - Credit amounts: $20 (Pro), $100 (Max 5x), $200 (Max 20x), $0 (Enterprise — use API key)
 - Action: Dashboard banner for workspace owners, docs update, recommend Enterprise users switch to API key billing
 - Location: Dashboard UI, docs, potentially task detail page (credit consumption estimate)
+
+### P2 — Medium Priority (new in 0.3.181)
+
+**Surface `SDKRateLimitInfo` credit fields in task error UX (v0.3.181)**
+- New: `errorCode`, `canUserPurchaseCredits`, and `hasChargeableSavedPaymentMethod` added to rate limit events
+- Benefit: Buildd can distinguish "API overloaded" from "user out of credits" — show actionable message ("Add credits to resume this task") instead of a generic rate-limit error; conditionally surface a "Purchase credits" CTA
+- Location: `packages/core/worker-runner.ts` (rate-limit event handler), task error display in dashboard
+- Effort: Low (read new fields from rate-limit messages; thread through to Pusher progress/error event)
+
+**Use `tool_use_meta` for human-readable tool labels + icons in dashboard (v0.3.179/0.3.181)**
+- New (v0.3.179): Optional `tool_use_meta` sidecar on assistant messages with display-friendly tool names; New (v0.3.181): also includes `icon_url` per tool call, populated from MCP server directory metadata
+- Benefit: Buildd's task detail view could display readable tool labels and MCP tool icons without custom mapping logic
+- Location: `packages/core/worker-runner.ts` (message processing loop), dashboard task detail component
+- Effort: Low (read `tool_use_meta` from assistant messages including `icon_url`; pass to Pusher progress event)
 
 ### P1 — High Priority (new in 0.3.163–0.3.178)
 
