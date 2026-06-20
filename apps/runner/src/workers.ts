@@ -2127,11 +2127,15 @@ If something is missing or incomplete, describe what and fix it now.`;
           // Add to unified timeline
           this.addChatMessage(worker, { type: 'tool_use', name: toolName, input, timestamp: Date.now() });
 
-          // Track tool calls (keep last 200)
+          // Track tool calls (keep last 200). Persist the tool_use block id
+          // (R2) so a later tool_result can be correlated back to its source
+          // tool for error-trace scanning (see the `user`/tool_result branch).
+          const toolUseId = (block.id as string | undefined) || undefined;
           worker.toolCalls.push({
             name: toolName,
             timestamp: Date.now(),
             input: input,
+            ...(toolUseId ? { toolUseId } : {}),
           });
           if (worker.toolCalls.length > 200) {
             worker.toolCalls.shift();

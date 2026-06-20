@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
+import { mapCodexEventToSdkMessages } from './codex-events.js';
 
 export interface CodexBackendConfig {
   /** Path to CODEX_HOME directory for auth.json (overrides env var) */
@@ -58,11 +59,26 @@ export class CodexBackend implements AgentBackend {
     let lastStructuredOutput: unknown;
     let turnCount = 0;
     let totalCostUsd = 0;
+    let threadId: string | undefined;
     const modelUsage = new Map<string, UsageTotals>();
 
     for await (const event of events) {
-      await opts.onProgress?.(event);
       const eventAny = event as any;
+
+      // Capture the thread id so the adapter can stamp the synthetic init.
+      if (eventAny.type === 'thread.started' && typeof eventAny.thread_id === 'string') {
+        threadId = eventAny.thread_id;
+      }
+
+      // Channel 2: translate the Codex event into Claude-shaped SDKMessages and
+      // feed each into handleMessage (via onProgress). This drives all rich
+      // worker-state tracking (toolCalls, commits, milestones, loop detection,
+      // MCP-failure tracking, the PR/artifact output-requirement gate, error
+      // traces). Replaces the old raw `onProgress?.(event)` passthrough — the
+      // raw Codex event shapes matched nothing in handleMessage.
+      for (const sdkMsg of mapCodexEventToSdkMessages(event, { threadId })) {
+        await opts.onProgress?.(sdkMsg);
+      }
 
       if (eventAny.type === 'error') {
         yield { type: 'error', error: String(eventAny.message || 'Codex stream error') };
@@ -87,7 +103,16 @@ export class CodexBackend implements AgentBackend {
           if (item.type === 'agent_message') {
             lastStructuredOutput = this.tryParseStructuredOutput(item.text, opts.outputSchema);
           }
-          yield { type: 'progress', message: message.slice(0, 200) };
+          // R8 — dedupe worker.output writes. handleMessage's assistant-text
+          // branch now pushes agent_message text to worker.output (via the
+          // channel-2 adapter above). Yielding a channel-1 `progress` for the
+          // same agent_message would double-write those lines, so skip it for
+          // agent_message. Other item types (commands, file changes, etc.) keep
+          // their live-progress yield — handleMessage maps those to tool_use,
+          // not output lines, so there's no duplication.
+          if (item.type !== 'agent_message') {
+            yield { type: 'progress', message: message.slice(0, 200) };
+          }
         }
       }
 
