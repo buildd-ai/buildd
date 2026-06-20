@@ -191,14 +191,14 @@ export async function resolveCodexCredential(opts: {
     ),
     columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
   });
-  const usableRows = rows.filter(credentialUsable);
-  if (usableRows.length === 0) return null;
+  if (rows.length === 0) return null;
 
   // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  const best = usableRows.reduce((a, b) => (score(b) > score(a) ? b : a));
+  // Expired credentials are still injected — the Codex CLI refreshes via refresh_token.
+  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   const blob = decodeBlob(best.encryptedValue);
   return {
@@ -225,7 +225,8 @@ export async function hasCodexCredential(opts: {
     ),
     columns: { tokenExpiresAt: true },
   });
-  return rows.some(credentialUsable);
+  // Any stored credential counts — Codex CLI refreshes expired tokens via refresh_token.
+  return rows.length > 0;
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */

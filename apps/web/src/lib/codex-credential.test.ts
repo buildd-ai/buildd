@@ -194,13 +194,22 @@ describe('resolveCodexCredential', () => {
     expect(result?.accessToken).toBe('teamAT');
   });
 
-  it('ignores expired credentials when resolving', async () => {
+  it('includes expired credentials — Codex CLI auto-refreshes via refresh_token', async () => {
     mockDbFindMany.mockResolvedValue([
       { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
       { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
     ]);
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('teamAT');
+    // Workspace-scoped credential wins on specificity even when expired.
+    expect(result?.accessToken).toBe('expiredAT');
+  });
+
+  it('returns expired credential when it is the only one available', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    expect(result?.accessToken).toBe('expiredAT');
   });
 });
 
@@ -212,9 +221,9 @@ describe('hasCodexCredential', () => {
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
   });
 
-  it('returns false when only expired credentials match', async () => {
+  it('returns true for an expired credential — CLI can refresh the token', async () => {
     mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(false);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
   });
 });
 
