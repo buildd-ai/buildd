@@ -74,15 +74,23 @@ export async function POST(
         if (body.releaseConfig !== undefined) {
             const rc = body.releaseConfig;
             let releaseConfig: WorkspaceReleaseConfig | null = null;
-            if (rc && typeof rc === 'object' && typeof rc.prodBranch === 'string') {
+            if (rc && typeof rc === 'object') {
                 releaseConfig = {
                     enabled: Boolean(rc.enabled ?? true),
-                    prodBranch: rc.prodBranch,
+                    ...(typeof rc.strategy === 'string' ? { strategy: rc.strategy } : {}),
+                    // workflow_dispatch
+                    ...(typeof rc.workflowFile === 'string' ? { workflowFile: rc.workflowFile } : {}),
+                    ...(typeof rc.ref === 'string' ? { ref: rc.ref } : {}),
+                    ...(rc.inputs && typeof rc.inputs === 'object' ? { inputs: rc.inputs } : {}),
+                    // branch_merge
+                    ...(typeof rc.prodBranch === 'string' ? { prodBranch: rc.prodBranch } : {}),
                     ...(rc.deployTarget && rc.deployTarget.type === 'vercel'
                         ? { deployTarget: { type: 'vercel', projectId: rc.deployTarget.projectId, teamId: rc.deployTarget.teamId } }
                         : {}),
                     ...(Array.isArray(rc.postDeployHooks) ? { postDeployHooks: rc.postDeployHooks } : {}),
                     ...(typeof rc.verificationUrl === 'string' ? { verificationUrl: rc.verificationUrl } : {}),
+                    // script
+                    ...(typeof rc.command === 'string' ? { command: rc.command } : {}),
                 };
             }
             await db

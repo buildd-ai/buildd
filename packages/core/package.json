@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.108.0",
+  "version": "0.109.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -24,7 +24,9 @@
     "./file-reservations": "./file-reservations.ts",
     "./memory-client": "./memory-client.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
-    "./mission-helpers": "./mission-helpers.ts"
+    "./mission-helpers": "./mission-helpers.ts",
+    "./release-strategy": "./release-strategy.ts",
+    "./knowledge-store": "./knowledge-store/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.181",

@@ -3,6 +3,7 @@ import { tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema'
 import type { WorkspaceReleaseConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 
 // Vercel deployment readback — polls until terminal state
 async function pollVercelDeployment(
@@ -194,25 +195,31 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
   }
 
-  if (!releaseConfig || !releaseConfig.enabled) {
+  // Resolve the workspace's declared strategy. executeRelease is the
+  // on-task-completion merge path, so it only handles 'branch_merge'; other
+  // strategies (workflow_dispatch/script) run via the standalone trigger.
+  const resolution = resolveReleaseStrategy(releaseConfig);
+  if (!resolution.ok) {
     if (releaseFlag === 'true') {
-      // Explicit request but no config — fail loudly
+      // Explicit request but unusable config — fail loudly.
       return {
         status: 'failed',
-        message: 'Release: FAILED — task requested release but workspace has no release config. Set releaseConfig.enabled=true on the workspace.',
-        error: 'No release config on workspace',
+        message: `Release: FAILED — task requested release but ${resolution.message}.`,
+        error: resolution.message,
       };
     }
-    return { status: 'not_configured', message: 'Release: project not configured for releases' };
+    return { status: 'not_configured', message: `Release: ${resolution.message}` };
   }
 
-  // release = true OR (inherit + workspace.releaseConfig.enabled)
-  const shouldRelease = releaseFlag === 'true' || releaseConfig.enabled;
-  if (!shouldRelease) {
-    return { status: 'skipped', message: 'Release: not requested' };
+  if (resolution.strategy.kind !== 'branch_merge') {
+    return {
+      status: 'skipped',
+      message: `Release: workspace uses the ${resolution.strategy.kind} strategy — not run on task completion (use trigger_release).`,
+    };
   }
 
-  const { prodBranch } = releaseConfig;
+  const branchMerge = resolution.strategy;
+  const { prodBranch } = branchMerge;
 
   // Step 1: Merge into prodBranch
   let mergedAt: string | undefined;
@@ -259,8 +266,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   let deployUrl: string | null = null;
   let deployState: string | undefined;
 
-  if (releaseConfig.deployTarget?.type === 'vercel') {
-    const { projectId, teamId } = releaseConfig.deployTarget;
+  if (branchMerge.deployTarget?.type === 'vercel') {
+    const { projectId, teamId } = branchMerge.deployTarget;
     if (!projectId) {
       return {
         status: 'failed',
@@ -303,8 +310,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   const hooksRan: NonNullable<ReleaseResult['hooksRan']> = [];
   let hookFailed = false;
 
-  if (releaseConfig.postDeployHooks && releaseConfig.postDeployHooks.length > 0) {
-    for (const hook of releaseConfig.postDeployHooks) {
+  if (branchMerge.postDeployHooks && branchMerge.postDeployHooks.length > 0) {
+    for (const hook of branchMerge.postDeployHooks) {
       const result = await runHook(hook);
       hooksRan.push(result);
       if (!result.success) hookFailed = true;

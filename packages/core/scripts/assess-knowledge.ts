@@ -1,0 +1,84 @@
+/**
+ * Assess KnowledgeStore retrieval quality on the LIVE corpus (single model).
+ *
+ * This is NOT a model bake-off — it measures absolute retrieval health for a
+ * workspace's namespace: sample indexed chunks, use each chunk's own
+ * title/first line as a query, and check whether that chunk comes back
+ * (recall@k + MRR). High recall = embeddings + indexing are working and the
+ * corpus is self-consistent; a sudden drop flags a broken embed/index/model.
+ *
+ * It's a proxy (self-retrieval), not labeled relevance — but it's the cheap,
+ * dependency-free "is retrieval any good?" signal to run after a backfill.
+ *
+ * Usage:
+ *   DATABASE_URL=... VOYAGE_API_KEY=... \
+ *   bun packages/core/scripts/assess-knowledge.ts <workspaceId> [corpus] [sampleSize] [k]
+ */
+import { db } from '../db/index';
+import { sql } from 'drizzle-orm';
+import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
+import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
+import { getVoyageReranker } from '../knowledge-store/reranker';
+import type { Corpus } from '../knowledge-store/types';
+
+/** Derive a realistic query from a chunk: first meaningful, de-marked-down line. */
+function queryFromChunk(text: string): string {
+  const lines = text
+    .split('\n')
+    .map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean);
+  return (lines[0] || text).slice(0, 200);
+}
+
+async function main() {
+  const [workspaceId, corpusArg, sampleArg, kArg] = process.argv.slice(2);
+  if (!workspaceId) {
+    console.error('Usage: assess-knowledge.ts <workspaceId> [corpus=memory] [sampleSize=25] [k=5]');
+    process.exit(1);
+  }
+  const corpus = (corpusArg || 'memory') as Corpus;
+  const sampleSize = parseInt(sampleArg || '25', 10);
+  const k = parseInt(kArg || '5', 10);
+
+  const embedder = getVoyageEmbedder();
+  if (!embedder) console.warn('[assess] VOYAGE_API_KEY not set — lexical-only assessment');
+  const store = new PgVectorStore(embedder, getVoyageReranker());
+  const ns = buildNamespace(workspaceId, corpus);
+
+  const sample = await db.execute(sql`
+    SELECT source_id, content, lexical_text
+    FROM knowledge_chunks
+    WHERE namespace = ${ns}
+    ORDER BY random()
+    LIMIT ${sampleSize}
+  `);
+  const rows = sample.rows as Array<{ source_id: string; content: string; lexical_text: string | null }>;
+  if (rows.length === 0) {
+    console.log(`[assess] no chunks in namespace ${ns} — nothing to assess`);
+    process.exit(0);
+  }
+
+  let hits = 0;
+  let mrrSum = 0;
+  for (const r of rows) {
+    const q = queryFromChunk(r.lexical_text || r.content);
+    const results = await store.query(ns, { text: q, topK: k });
+    const rank = results.findIndex(x => x.id === r.source_id);
+    if (rank >= 0) {
+      hits++;
+      mrrSum += 1 / (rank + 1);
+    }
+  }
+
+  const recall = hits / rows.length;
+  const mrr = mrrSum / rows.length;
+  console.log(`\n[assess] namespace=${ns}  sample=${rows.length}  k=${k}`);
+  console.log(`  recall@${k}: ${(recall * 100).toFixed(1)}%   (fraction of items retrievable by their own title/first line)`);
+  console.log(`  MRR@${k}:    ${mrr.toFixed(3)}   (mean reciprocal rank of the source chunk)`);
+  process.exit(0);
+}
+
+main().catch(err => {
+  console.error('[assess] Error:', err);
+  process.exit(1);
+});

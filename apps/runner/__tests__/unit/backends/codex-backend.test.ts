@@ -144,7 +144,9 @@ describe('CodexBackend auth resolution', () => {
     tmpDirs.push(tmpDir);
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {
-        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_HOME || '' } };
+        // Probe the spawn-time env via a command_execution item — agent_message
+        // no longer yields a channel-1 `progress` (R8 dedupe), but commands do.
+        yield { type: 'item.completed', item: { id: 'p1', type: 'command_execution', status: 'completed', command: process.env.CODEX_HOME || '' } };
       })(),
     }));
 
@@ -154,7 +156,7 @@ describe('CodexBackend auth resolution', () => {
     }
 
     expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBeUndefined();
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: tmpDir });
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: `completed: ${tmpDir}` });
   });
 
   authTest('CODEX_HOME in task env takes priority over process env', async () => {
@@ -249,10 +251,32 @@ describe('CodexBackend SDK options', () => {
     expect(mockCodexConstructor.mock.calls[0]?.[0]?.baseUrl).toBe('https://example.test/v1');
   });
 
+  test('passes codexPathOverride from CODEX_PATH_OVERRIDE env (use host codex binary)', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      env: { OPENAI_API_KEY: 'sk-test', CODEX_PATH_OVERRIDE: '/usr/local/bin/codex' },
+    })) {}
+
+    // The bundled SDK binary's version gates which account models are accepted; a
+    // host with a newer codex CLI can run newer models via this override.
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.codexPathOverride).toBe('/usr/local/bin/codex');
+  });
+
+  test('omits codexPathOverride when unset', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      env: { OPENAI_API_KEY: 'sk-test' },
+    })) {}
+
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.codexPathOverride).toBeUndefined();
+  });
+
   test('task env is present when Codex generator starts', async () => {
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {
-        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_ENV_TEST || '' } };
+        // command_execution carries the spawn-time env into a channel-1 progress
+        // (agent_message no longer yields progress — R8 dedupe).
+        yield { type: 'item.completed', item: { id: 'p1', type: 'command_execution', status: 'completed', command: process.env.CODEX_ENV_TEST || '' } };
       })(),
     }));
 
@@ -260,7 +284,7 @@ describe('CodexBackend SDK options', () => {
       env: { OPENAI_API_KEY: 'sk-test', CODEX_ENV_TEST: 'visible-at-spawn' },
     });
 
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'visible-at-spawn' });
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'completed: visible-at-spawn' });
     expect(process.env.CODEX_ENV_TEST).toBeUndefined();
   });
 });
@@ -275,13 +299,22 @@ describe('CodexBackend BackendEvent mapping', () => {
     delete process.env.OPENAI_API_KEY;
   });
 
-  test('agent_message item.completed maps to progress and complete summary', async () => {
+  test('agent_message item.completed drives complete summary but no channel-1 progress (R8 dedupe)', async () => {
+    const progressEvents: any[] = [];
     const events = await collectEvents([
-      { type: 'item.completed', item: { type: 'agent_message', text: 'All done' } },
-    ]);
+      { type: 'item.completed', item: { id: 'a1', type: 'agent_message', text: 'All done' } },
+    ], {
+      onProgress: (raw: any) => { progressEvents.push(raw); },
+    } as any);
 
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'All done' });
+    // R8: agent text is surfaced via the channel-2 adapter (assistant text →
+    // worker.output in handleMessage), so codex-backend no longer yields a
+    // duplicate channel-1 `progress` for agent_message.
+    expect(events.find(e => e.type === 'progress')).toBeUndefined();
     expect(events.at(-1)).toEqual({ type: 'complete', summary: 'All done' });
+    // The adapter still feeds an assistant text message through onProgress.
+    const assistant = progressEvents.find((m) => m.type === 'assistant');
+    expect(assistant?.message?.content?.[0]).toMatchObject({ type: 'text', text: 'All done' });
   });
 
   test('command execution item maps to progress', async () => {
@@ -326,6 +359,67 @@ describe('CodexBackend BackendEvent mapping', () => {
 
     expect((events.find(e => e.type === 'turn_complete') as any)?.structuredOutput).toEqual({ ok: true });
     expect((events.at(-1) as any)?.structuredOutput).toEqual({ ok: true });
+  });
+
+  test('reasoning_output_tokens are folded into output usage + cost (Phase 3)', async () => {
+    // Real turn.completed.usage (confirmed live, codex-cli 0.140) includes
+    // reasoning_output_tokens that bill as output. The estimator must count them.
+    const progressEvents: any[] = [];
+    const backend = new CodexBackend({});
+    mockCodexStreamEvents = [
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 100, reasoning_output_tokens: 900 },
+      },
+    ];
+
+    const events: BackendEvent[] = [];
+    for await (const event of backend.runStreamed({
+      ...BASE_RUN_OPTS,
+      model: 'gpt-5-codex',
+      // Pin output price to a clean number: $10/M output → 1000 output tokens = $0.01.
+      env: {
+        OPENAI_API_KEY: 'sk-test',
+        CODEX_INPUT_USD_PER_M_TOKENS: '0',
+        CODEX_CACHED_INPUT_USD_PER_M_TOKENS: '0',
+        CODEX_OUTPUT_USD_PER_M_TOKENS: '10',
+      },
+      onProgress: (raw) => { progressEvents.push(raw); },
+    })) {
+      events.push(event);
+    }
+
+    // turn_complete usage reports output = output_tokens + reasoning_output_tokens.
+    const tc = events.find(e => e.type === 'turn_complete') as any;
+    expect(tc?.usage).toEqual({ inputTokens: 0, outputTokens: 1000 });
+
+    // Aggregate output usage includes reasoning tokens.
+    const result = progressEvents.find(e => e.type === 'result');
+    expect(result?.usage?.byModel?.['gpt-5-codex']).toMatchObject({ outputTokens: 1000 });
+    // Cost counts all 1000 output tokens at $10/M = $0.01 (not just the 100).
+    expect(result?.total_cost_usd).toBeCloseTo(0.01, 6);
+  });
+
+  test('reasoning tokens cost is added when reasoning_output_tokens is absent (no NaN/double-count)', async () => {
+    const progressEvents: any[] = [];
+    const backend = new CodexBackend({});
+    mockCodexStreamEvents = [
+      { type: 'turn.completed', usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 1000 } },
+    ];
+    for await (const _ of backend.runStreamed({
+      ...BASE_RUN_OPTS,
+      model: 'gpt-5-codex',
+      env: {
+        OPENAI_API_KEY: 'sk-test',
+        CODEX_INPUT_USD_PER_M_TOKENS: '0',
+        CODEX_CACHED_INPUT_USD_PER_M_TOKENS: '0',
+        CODEX_OUTPUT_USD_PER_M_TOKENS: '10',
+      },
+      onProgress: (raw) => { progressEvents.push(raw); },
+    })) {}
+    const result = progressEvents.find(e => e.type === 'result');
+    expect(result?.total_cost_usd).toBeCloseTo(0.01, 6);
+    expect(result?.usage?.byModel?.['gpt-5-codex']).toMatchObject({ outputTokens: 1000 });
   });
 
   test('turn.failed maps to error event', async () => {
@@ -378,6 +472,6 @@ describe('CodexBackend BackendEvent mapping', () => {
       prompt: promptParts(),
     });
 
-    await expect(gen.next()).rejects.toThrow(/does not support non-text prompts/);
+    await expect(gen.next()).rejects.toThrow(/does not support image or other non-text prompts/);
   });
 });

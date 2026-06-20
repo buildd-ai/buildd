@@ -1,6 +1,19 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType
 } from 'drizzle-orm/pg-core';
+
+// Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
+const vectorType = customType<{ data: number[]; driverData: string; config: { dimensions: number } }>({
+  dataType(config) {
+    return `vector(${config?.dimensions ?? 1536})`;
+  },
+  fromDriver(value: string): number[] {
+    return value.slice(1, -1).split(',').map(Number);
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(',')}]`;
+  },
+});
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 import { relations } from 'drizzle-orm';
@@ -144,6 +157,11 @@ export interface WorkspaceGitConfig {
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
 
+  // Default agent backend for tasks in this workspace, when neither the task
+  // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
+  // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
+  defaultBackend?: 'claude' | 'codex';
+
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
@@ -221,13 +239,39 @@ export interface WorkspaceGitConfig {
 
 }
 
-// Release configuration for a workspace — controls whether/how tasks trigger a prod deploy
+// How a workspace performs a release. buildd owns the envelope (resolve →
+// preflight → dispatch → readback); each workspace declares the steps here.
+// Absent ⇒ 'branch_merge' for backward-compat (the original, pre-strategy shape).
+//   - workflow_dispatch: dispatch the repo's own release workflow (most general;
+//     release semantics live in the repo's Actions). buildd's own dev→main is
+//     just one workspace configured this way — nothing special about it.
+//   - branch_merge: buildd merges a source ref into prodBranch via the GitHub
+//     API, then verifies the deploy + runs hooks. For repos with no workflow.
+//   - script: spawn a worker task that runs the repo's own release command.
+export type ReleaseStrategy = 'workflow_dispatch' | 'branch_merge' | 'script';
+
+// Release configuration for a workspace — controls whether/how releases happen.
+// Stored as jsonb, so this is a free-form shape (no migration on change). All
+// step-specific fields are optional; `resolveReleaseStrategy` validates them
+// per the chosen strategy.
 export interface WorkspaceReleaseConfig {
   // Whether this workspace is configured for releases. Projects without this never release.
   enabled: boolean;
 
+  // Which strategy this workspace uses. Absent ⇒ 'branch_merge' (legacy default).
+  strategy?: ReleaseStrategy;
+
+  // ── strategy: 'workflow_dispatch' ──────────────────────────────────────────
+  // Workflow file to dispatch on the target repo, e.g. 'release.yml'.
+  workflowFile?: string;
+  // Git ref the workflow runs on, e.g. 'dev'.
+  ref?: string;
+  // Extra workflow_dispatch inputs (string-valued, per the GitHub API).
+  inputs?: Record<string, string>;
+
+  // ── strategy: 'branch_merge' (legacy default) ──────────────────────────────
   // The production branch to merge changes into (e.g., 'main')
-  prodBranch: string;
+  prodBranch?: string;
 
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
@@ -254,6 +298,10 @@ export interface WorkspaceReleaseConfig {
 
   // Optional URL to GET after deploy to verify prod is healthy (expects 2xx)
   verificationUrl?: string;
+
+  // ── strategy: 'script' ─────────────────────────────────────────────────────
+  // Shell command a spawned worker task runs to release (e.g. 'bun run release').
+  command?: string;
 }
 
 // Result of a release sequence — stored in tasks.release_result
@@ -914,6 +962,38 @@ export const deviceCodes = pgTable('device_codes', {
   deviceTokenIdx: uniqueIndex('device_codes_device_token_idx').on(t.deviceToken),
   statusIdx: index('device_codes_status_idx').on(t.status),
   expiresAtIdx: index('device_codes_expires_at_idx').on(t.expiresAt),
+}));
+
+// Knowledge chunks — unified semantic + lexical retrieval store.
+// namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
+// HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
+export const knowledgeChunks = pgTable('knowledge_chunks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Source id (e.g. memoryId) — stable, used for idempotent upsert
+  sourceId: text('source_id').notNull(),
+  // "{workspaceId}:{corpus}"
+  namespace: text('namespace').notNull(),
+  // Column is plain `text`, so widening this union needs NO DB migration.
+  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
+  sourceType: text('source_type').notNull(),
+  sourcePath: text('source_path'),
+  sourceUrl: text('source_url'),
+  content: text('content').notNull(),
+  // Separate field for BM25/tsvector search (may be title + content for memories)
+  lexicalText: text('lexical_text'),
+  // pgvector embedding (voyage-code-3: 1024 dims; stored as string "[0.1,...]")
+  embedding: vectorType('embedding', { dimensions: 1024 }),
+  // Model name + dim stored so re-embeds are detectable
+  embeddingModel: text('embedding_model'),
+  metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
+  // SHA-256 of content for idempotency — skip re-embed when unchanged
+  contentHash: text('content_hash'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
+  // Unique per (namespace, sourceId) — enforces one chunk per source entity per namespace
+  sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
+  contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
 }));
 
 // Relations

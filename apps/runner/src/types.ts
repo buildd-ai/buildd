@@ -59,6 +59,13 @@ export interface ToolCall {
   name: string;
   timestamp: number;
   input?: any;
+  /**
+   * The originating tool_use block id (Claude SDK `block.id`, or the Codex
+   * `item.id` surfaced by the codex-events adapter). Used to correlate a later
+   * `tool_result`'s `tool_use_id` back to the source tool for error-trace
+   * scanning (workers.ts handleMessage `user`/tool_result branch).
+   */
+  toolUseId?: string;
 }
 
 // File checkpoint (from SDK files_persisted events)
@@ -142,6 +149,11 @@ export interface LocalWorker {
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
   sessionId?: string;
+  // Codex thread id (Phase 1C / R5). Captured from the Codex `thread.started`
+  // event (surfaced by the adapter as system:init.session_id) and persisted so a
+  // follow-up resumes the prior thread via the backend's resumeThreadId. Kept
+  // SEPARATE from sessionId so the Claude-vs-Codex resume branch stays explicit.
+  codexThreadId?: string;
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
   teamState?: TeamState;  // Set when agent spawns a team

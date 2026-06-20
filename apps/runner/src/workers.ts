@@ -5,12 +5,19 @@ import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, materializeCodexHome, writeCodexMcpConfig, cleanupCodexAuth } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
+import {
+  buildCodexInstructionDoc,
+  writeCodexAgentsMd,
+  restoreCodexAgentsMd,
+  DONE_SENTINEL,
+  type AgentsMdWriteResult,
+} from './codex-instructions.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, ContextBreaker } from './claim-breaker';
@@ -469,6 +476,9 @@ export class WorkerManager {
         this.workerAuthContexts.delete(id);
         clearWorkerThrottle(id);
         storeDeleteWorker(id);
+        // Terminal teardown: now safe to delete the stable Codex home (and its
+        // resumable sessions) — the worker is fully purged, no follow-up possible.
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(id);
         count++;
       }
     }
@@ -476,6 +486,7 @@ export class WorkerManager {
     for (const worker of loadAllWorkers()) {
       if (worker.status === 'done' || worker.status === 'error') {
         storeDeleteWorker(worker.id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id);
         count++;
       }
     }
@@ -1021,6 +1032,10 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
+    // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
+    // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
+    // and avoid dirtying the repo.
+    let codexAgentsMd: AgentsMdWriteResult | undefined;
 
     try {
       // Fetch workspace git config from server
@@ -1210,12 +1225,59 @@ export class WorkerManager {
 
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
-      // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
-      // codexHome is captured as a local (not only on the session object) so the
-      // finally block cleans up the correct dir even if the session is superseded
-      // by a newer generation (in that case this.sessions.get(worker.id) would
-      // return the new session, not this one).
-      if (worker.codexCredential) {
+      // Phase 1C / R5: Codex tasks use a STABLE per-worker CODEX_HOME (keyed by
+      // worker id) instead of a throwaway temp dir, so the `sessions/` rollouts
+      // survive across runs/restarts and `resumeThread()` can find them. We
+      // re-seed auth.json and rewrite config.toml on EVERY start (idempotent;
+      // neither touches `sessions/`). The home is torn down ONLY on true terminal
+      // teardown (purge past the follow-up TTL) — never in the finally block.
+      //
+      // For non-Codex tasks that still carry a codexCredential (legacy/transient),
+      // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
+      if (isCodexTask) {
+        const { codexHome: _ch } = worker.codexCredential
+          ? materializeStableCodexHome(worker.id, worker.codexCredential)
+          : ensureStableCodexHome(worker.id);
+        // No server-injected credential: fall back to the operator's local Codex
+        // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
+        // the stable home so resolveAuth/codex can authenticate. This matches the
+        // claim route, which already advertises CODEX_HOME as a local-auth capability
+        // — without this, a runner with only local OAuth creds passes the claim gate
+        // but dies at the spawn guard below.
+        if (!worker.codexCredential) {
+          const localHome = process.env.CODEX_HOME;
+          if (localHome && localHome !== _ch) {
+            const localAuth = join(localHome, 'auth.json');
+            if (existsSync(localAuth)) {
+              copyFileSync(localAuth, join(_ch, 'auth.json'));
+            }
+          }
+        }
+        cleanEnv.CODEX_HOME = _ch;
+        const session = this.sessions.get(worker.id);
+        if (session) (session as any).codexHome = _ch;
+
+        // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
+        // queryOptions. Rewrite it each run with the bearer token supplied via env
+        // so it never lands in config.toml. Does not touch `sessions/`.
+        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        // Phase 3C: map buildd's configuredEffort → config.toml model_reasoning_effort
+        // (ThreadOptions has no reasoning-effort field). task.context.effort wins
+        // over the workspace gitConfig.effort, mirroring the Claude path below.
+        const codexEffort = ((task.context as any)?.effort ?? gitConfig?.effort) as
+          | 'low' | 'medium' | 'high' | 'max' | undefined;
+        writeCodexMcpConfig(_ch, {
+          builddServer: this.config.builddServer,
+          workspaceId: task.workspaceId,
+          workerId: worker.id,
+          bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+          ...(codexEffort ? { effort: codexEffort } : {}),
+        });
+        // NOTE: deliberately NOT assigning the local `codexHome` var here — that
+        // var drives the finally-block teardown, which must not delete a stable
+        // home (would destroy resumable sessions).
+      } else if (worker.codexCredential) {
+        // Non-Codex task with a Codex credential: transient temp home, cleaned up.
         const { codexHome: _ch } = materializeCodexAuth(worker.id, worker.codexCredential);
         codexHome = _ch;
         cleanEnv.CODEX_HOME = codexHome;
@@ -1223,34 +1285,17 @@ export class WorkerManager {
         if (session) (session as any).codexHome = codexHome;
       }
 
-      // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
-      // queryOptions. For temp Codex homes, write Buildd MCP config with the
-      // bearer token supplied via env so it never lands in config.toml.
-      if (isCodexTask) {
-        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
-        if (!codexHome && !cleanEnv.CODEX_HOME) {
-          const { codexHome: _ch } = materializeCodexHome(worker.id);
-          codexHome = _ch;
-          cleanEnv.CODEX_HOME = codexHome;
-        }
-        if (codexHome) {
-          writeCodexMcpConfig(codexHome, {
-            builddServer: this.config.builddServer,
-            workspaceId: task.workspaceId,
-            workerId: worker.id,
-            bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
-          });
-        } else if (cleanEnv.CODEX_HOME) {
-          console.warn(`[Worker ${worker.id}] Using existing CODEX_HOME; Buildd MCP config must already be present for Codex tools`);
-        }
-      }
-
       // Preflight: fail fast with a clear message if no Codex auth is available.
-      // After the fix, worker.codexCredential is set whenever a credential row exists
-      // (even if expired — the CLI refreshes it). A null here means no credential was
-      // ever stored for this team/workspace. The runner's own OPENAI_API_KEY is an
-      // alternative path (API key auth).
-      if (isCodexTask && !worker.codexCredential && !cleanEnv.OPENAI_API_KEY) {
+      // worker.codexCredential is set whenever a server credential row exists (even
+      // if expired — the CLI refreshes it). Otherwise accept a local fallback that
+      // resolveAuth can actually use: the runner's OPENAI_API_KEY (API-key auth) or a
+      // local CODEX_HOME/auth.json (OAuth) seeded into the stable home above. This
+      // mirrors the claim route's local-auth capability check.
+      const codexAuthAvailable =
+        Boolean(worker.codexCredential) ||
+        Boolean(cleanEnv.OPENAI_API_KEY) ||
+        (Boolean(cleanEnv.CODEX_HOME) && existsSync(join(cleanEnv.CODEX_HOME, 'auth.json')));
+      if (isCodexTask && !codexAuthAvailable) {
         throw new Error(
           'No Codex credential configured. Connect a ChatGPT / OpenAI account in Settings → Credentials before running Codex tasks.',
         );
@@ -1407,8 +1452,11 @@ export class WorkerManager {
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
-        // Resume previous session if provided (loads full conversation history from disk)
-        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+        // Resume previous session if provided (loads full conversation history from disk).
+        // Claude-only: the Codex backend resumes via runStreamed's resumeThreadId
+        // (R5), not this query option. resumeSessionId carries the Codex thread id
+        // for Codex tasks, so don't feed it to Claude's resume there.
+        ...(resumeSessionId && (task.backend || 'claude') !== 'codex' ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls — validated against model capabilities below
@@ -1445,6 +1493,62 @@ export class WorkerManager {
         ConfigChange: [{ hooks: [this.hookFactory.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
       };
 
+      // Phase 2A — Codex role/skills/context via AGENTS.md.
+      //
+      // Claude receives its persona via systemPrompt.append, skills via the
+      // Skill() allowlist, and CLAUDE.md via settingSources. Codex's ThreadOptions
+      // has none of these (no instructions/system-prompt option in codex-sdk@0.44.0),
+      // and there is no Skill tool. We therefore compose a single instruction
+      // document — role persona + INLINED skill content + (optionally) project
+      // CLAUDE.md + the <promise>DONE</promise> completion convention — and deliver
+      // it through Codex's native AGENTS.md, which it re-reads from cwd on every
+      // turn (durable across PR2's multi-turn review/nudge/steering loop, unlike a
+      // first-turn-only prompt preamble). The DONE instruction is what lets PR2's
+      // review-loop exit gate actually fire for Codex (R1). Must run before
+      // promptArg is built so the prompt pointer below is included.
+      if (isCodexTask) {
+        try {
+          // Role persona = the role's CLAUDE.md (the same text Claude loads from
+          // the role dir via settingSources). Builder roles don't overlay it into
+          // the repo, so read it straight from the synced role dir.
+          let rolePersona: string | undefined;
+          if (worker.roleConfig) {
+            const rolePersonaPath = join(getRoleDir(worker.roleConfig.slug), 'CLAUDE.md');
+            if (existsSync(rolePersonaPath)) {
+              rolePersona = readFileSync(rolePersonaPath, 'utf-8');
+            }
+          }
+
+          // Project instructions: include repo CLAUDE.md content when the workspace
+          // opts into CLAUDE.md (mirrors Claude's settingSources project). We read
+          // CLAUDE.md only — not a pre-existing AGENTS.md, which writeCodexAgentsMd
+          // appends to (reading it back would duplicate content into our section).
+          let projectInstructions: string | undefined;
+          if (useClaudeMd) {
+            const claudeMdPath = join(cwd, 'CLAUDE.md');
+            if (existsSync(claudeMdPath)) {
+              projectInstructions = readFileSync(claudeMdPath, 'utf-8');
+            }
+          }
+
+          const instructionBody = buildCodexInstructionDoc({
+            rolePersona,
+            skillBundles: (skillBundles || []).map(b => ({ slug: b.slug, name: b.name, content: b.content })),
+            projectInstructions,
+          });
+
+          codexAgentsMd = await writeCodexAgentsMd(cwd, instructionBody);
+          console.log(`[Worker ${worker.id}] Wrote Codex AGENTS.md (${codexAgentsMd.existed ? 'appended to existing' : 'created'}) at ${codexAgentsMd.path}`);
+
+          // Short pointer in the prompt so the very first turn is anchored to the
+          // file even before the model decides to read it. AGENTS.md carries the
+          // durable detail; this is just a nudge.
+          promptText = `Read AGENTS.md in the working directory for your role, applicable skills, and completion criteria (emit ${DONE_SENTINEL} when fully done).\n\n${promptText}`;
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Failed to write Codex AGENTS.md:`, err);
+        }
+      }
+
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
       const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
@@ -1479,7 +1583,12 @@ export class WorkerManager {
             extendedContext,
           }, this.config.model, (e: any) => this.emit(e));
         },
-      } : {});
+      } : {
+        // Codex branch: wire the shared MessageStream so review/nudge/steering
+        // enqueues drive multi-turn runs on a persistent Codex thread (Phase 1B),
+        // mirroring how the Claude branch consumes `inputStream` via streamInput.
+        inputStream,
+      });
 
       // Stream responses with ralph loop (prompt-based self-review)
       let resultSubtype: string | undefined;
@@ -1491,14 +1600,29 @@ export class WorkerManager {
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
+      // Codex rejects Claude model ids ("claude-* not supported with a ChatGPT
+      // account"). The runner's configured model is Claude by default, so for Codex
+      // tasks strip a Claude model id and let Codex use the account default (or a
+      // genuine codex model id passes through). Claude tasks are unaffected.
+      const backendModel = isCodexTask && /^claude/i.test(this.config.model || '')
+        ? undefined
+        : this.config.model;
+
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
         sessionId: worker.id,
         cwd,
-        model: this.config.model,
+        ...(backendModel ? { model: backendModel } : {}),
         ...(maxTurns ? { maxTurns } : {}),
         sandboxMode: taskSandboxMode,
         env: cleanEnv,
+        // R3: the Claude backend bakes abortController into its query options;
+        // the Codex backend reads this signal to break its turn loop (no SDK
+        // interrupt exists — breaking the event for-await kills `codex exec`).
+        signal: abortController.signal,
+        // R5: a Codex follow-up resumes the prior thread by id. resumeSessionId
+        // carries worker.codexThreadId for Codex tasks (set by resumeSession).
+        ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         onProgress: async (msg: unknown) => {
@@ -1879,6 +2003,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           cleanupCodexAuth(worker.id, codexHome);
         }
 
+        // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
+        // leave the repo dirty: delete it if we created it, restore the original
+        // verbatim if we appended to a pre-existing one. Best-effort.
+        if (codexAgentsMd) {
+          await restoreCodexAgentsMd(session.cwd, codexAgentsMd);
+        }
+
         this.sessions.delete(worker.id);
       }
 
@@ -1946,9 +2077,16 @@ If something is missing or incomplete, describe what and fix it now.`;
     this.probedWorkers.delete(worker.id);
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
-      worker.sessionId = msg.session_id;
+      // Codex (R5): the adapter surfaces the Codex thread id as session_id on the
+      // synthetic init. Keep it in codexThreadId — NOT sessionId — so the resume
+      // branch (recovery.ts) stays unambiguous between Claude and Codex.
+      if (worker.taskBackend === 'codex') {
+        worker.codexThreadId = msg.session_id;
+      } else {
+        worker.sessionId = msg.session_id;
+      }
       this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
-      // Immediately persist sessionId (critical for resume)
+      // Immediately persist the captured id (critical for resume)
       storeSaveWorker(worker);
     }
 
@@ -2092,6 +2230,16 @@ If something is missing or incomplete, describe what and fix it now.`;
         if (block.type === 'text') {
           const text = block.text.trim();
           if (text) {
+            // R1: track the latest assistant text as worker.lastAssistantMessage.
+            // For Claude this is also set authoritatively by the Stop hook
+            // (hook-factory.ts), but Codex has no Stop hook — its agent_message
+            // text arrives only through this channel-2 adapter path. Without
+            // this, the review-loop DONE gate (workers.ts ~1567) and the
+            // completion summary (~1758) stay empty for Codex, so every task
+            // burns all review iterations and exits with no summary. Setting it
+            // per text block (last write wins) is harmless for Claude.
+            worker.lastAssistantMessage = text;
+
             // Add to unified timeline
             this.addChatMessage(worker, { type: 'text', content: text, timestamp: Date.now() });
 
@@ -2127,11 +2275,15 @@ If something is missing or incomplete, describe what and fix it now.`;
           // Add to unified timeline
           this.addChatMessage(worker, { type: 'tool_use', name: toolName, input, timestamp: Date.now() });
 
-          // Track tool calls (keep last 200)
+          // Track tool calls (keep last 200). Persist the tool_use block id
+          // (R2) so a later tool_result can be correlated back to its source
+          // tool for error-trace scanning (see the `user`/tool_result branch).
+          const toolUseId = (block.id as string | undefined) || undefined;
           worker.toolCalls.push({
             name: toolName,
             timestamp: Date.now(),
             input: input,
+            ...(toolUseId ? { toolUseId } : {}),
           });
           if (worker.toolCalls.length > 200) {
             worker.toolCalls.shift();

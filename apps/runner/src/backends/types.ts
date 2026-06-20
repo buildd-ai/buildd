@@ -14,6 +14,22 @@ export interface RunStreamedOpts {
   env?: Record<string, string>
   maxBudgetUsd?: number
   onProgress?: (event: unknown) => void | Promise<void>
+  /**
+   * Abort signal (R3). The Claude backend bakes its own `abortController` into
+   * the query options; the Codex backend reads this signal to break its turn
+   * loop. The Codex SDK exposes no interrupt method, so breaking the
+   * `for await` over the event stream is what terminates the spawned
+   * `codex exec` child (the SDK's generator `finally` calls `child.kill()`).
+   */
+  signal?: AbortSignal
+  /**
+   * Codex thread id to resume (Phase 1C / R5). When set, the Codex backend calls
+   * `codex.resumeThread(resumeThreadId)` instead of `startThread()` so a
+   * follow-up continues the prior thread (located by id against the stable,
+   * per-worker CODEX_HOME). Ignored by the Claude backend, which resumes via its
+   * own `resume:` query option keyed on `worker.sessionId`.
+   */
+  resumeThreadId?: string
 }
 
 export type BackendEvent =

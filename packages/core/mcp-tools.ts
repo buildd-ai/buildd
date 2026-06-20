@@ -37,6 +37,11 @@ export interface ActionContext {
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
   appBaseUrl?: string;
+  // Optional KnowledgeStore wiring for best-effort auto-indexing of agent work
+  // product (completed tasks, PRs, artifacts, approved plans). Mirrored writes
+  // never block or fail the underlying action.
+  knowledgeStore?: KnowledgeStore;
+  embedder?: Embedder | null;
 }
 
 export type ToolResult = {
@@ -81,12 +86,13 @@ export const adminActions = [
   'manage_workspaces',
   'manage_watched_projects',
   'trigger_release',
+  'release_status',
   'send_agent_message',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
 
-export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete'] as const;
+export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete', 'query_knowledge'] as const;
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
@@ -127,9 +133,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
-    trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
+    trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
+    release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
@@ -155,6 +162,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
+    query_knowledge: '{ query (required), corpus? (memory|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search over indexed knowledge chunks; returns ranked results with sourceUrl',
   };
 
   const lines = actions
@@ -380,6 +388,30 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
     return errorResult(`Action '${action}' requires a worker or admin token. Trigger tokens can only use: ${triggerActions.join(', ')}`);
   }
   return null;
+}
+
+/**
+ * Best-effort mirror of an agent work-product "card" into the KnowledgeStore.
+ *
+ * Mirrors the memory-mirroring pattern from `handleMemoryAction`: resolve the
+ * workspace, build the namespace, upsert one chunk — and swallow every error so
+ * a failed index never breaks the underlying action. No-ops when the store or
+ * workspace is unavailable.
+ */
+async function mirrorWorkProduct(
+  ctx: ActionContext,
+  corpus: Corpus,
+  chunk: UpsertChunk,
+): Promise<void> {
+  if (!ctx.knowledgeStore) return;
+  try {
+    const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
+    if (!wsId) return;
+    const ns = buildNamespace(wsId, corpus);
+    await ctx.knowledgeStore.upsert(ns, [chunk]);
+  } catch {
+    // Best-effort — never fail the underlying action if indexing fails.
+  }
 }
 
 export async function handleBuilddAction(
@@ -673,7 +705,7 @@ export async function handleBuilddAction(
       if (mcpCallCount > 0) effortParts.push(`${mcpCallCount} tool calls`);
       const effortSuffix = effortParts.length > 0 ? ` (${effortParts.join(', ')})` : '';
 
-      // Fetch release result from the task (set by workers route after release execution)
+      // Fetch release result + task details (set by workers route after release execution)
       let releaseLine = '';
       if (params.workerId || ctx.workerId) {
         try {
@@ -688,6 +720,18 @@ export async function handleBuilddAction(
             } else if (taskData?.result?.releaseSummary) {
               releaseLine = `\n\n${taskData.result.releaseSummary}`;
             }
+
+            // Mirror the completed task into the KnowledgeStore (best-effort).
+            const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
+            await mirrorWorkProduct(ctx, 'task', buildTaskCard({
+              taskId,
+              title: taskData?.title ?? null,
+              description: taskData?.description ?? null,
+              summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+              success: true,
+              prUrl,
+              missionId: taskData?.missionId ?? null,
+            }));
           }
         } catch { /* non-fatal */ }
       }
@@ -713,6 +757,26 @@ export async function handleBuilddAction(
           prUrl: params.prUrl,
         }),
       });
+
+      // Mirror the PR into the KnowledgeStore (best-effort). Resolve task/mission
+      // linkage from the worker without failing the action if it can't be found.
+      try {
+        let taskId: string | null = null;
+        let missionId: string | null = null;
+        try {
+          const workerData = await api(`/api/workers/${workerId}`);
+          taskId = workerData?.taskId ?? null;
+          missionId = workerData?.task?.missionId ?? workerData?.missionId ?? null;
+        } catch { /* linkage is optional */ }
+        await mirrorWorkProduct(ctx, 'pr', buildPrCard({
+          prNumber: data.pr.number,
+          title: data.pr.title ?? (params.title as string),
+          body: (params.body as string) ?? null,
+          url: data.pr.url ?? (params.prUrl as string) ?? null,
+          taskId,
+          missionId,
+        }));
+      } catch { /* non-fatal */ }
 
       return text(`Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
     }
@@ -1503,6 +1567,19 @@ export async function handleBuilddAction(
 
       const art = artifactData.artifact;
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
+
+      // Mirror the artifact into the KnowledgeStore (best-effort).
+      await mirrorWorkProduct(ctx, 'artifact', buildArtifactCard({
+        artifactId: art.id,
+        title: art.title,
+        artifactType: art.type ?? (params.type as string),
+        content: (params.content as string) ?? art.content ?? null,
+        url: (params.url as string) ?? art.url ?? null,
+        shareUrl: art.shareUrl ?? null,
+        taskId: art.taskId ?? null,
+        missionId: (params.missionId as string) ?? art.missionId ?? null,
+      }));
+
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
     }
 
@@ -1799,6 +1876,24 @@ export async function handleBuilddAction(
       });
 
       const taskIds = data.tasks || [];
+
+      // Mirror the approved plan into the KnowledgeStore (best-effort).
+      // Only fetch the plan detail when there's actually a store to index into.
+      if (ctx.knowledgeStore) {
+        try {
+          const taskData = await api(`/api/tasks/${params.taskId}`);
+          const planText = renderPlanText(taskData?.result?.structuredOutput?.plan);
+          if (planText) {
+            await mirrorWorkProduct(ctx, 'plan', buildPlanCard({
+              taskId: params.taskId as string,
+              title: taskData?.title ?? null,
+              plan: planText,
+              missionId: taskData?.missionId ?? null,
+            }));
+          }
+        } catch { /* non-fatal */ }
+      }
+
       return text(`Plan approved! Created ${taskIds.length} child task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
     }
 
@@ -2121,11 +2216,14 @@ export async function handleBuilddAction(
     case 'trigger_release': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.repo) throw new Error('repo is required (owner/name)');
+      if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
-      const body: Record<string, unknown> = { repo: params.repo };
+      const body: Record<string, unknown> = {};
+      if (params.workspaceId !== undefined) body.workspaceId = params.workspaceId;
+      if (params.repo !== undefined) body.repo = params.repo;
       if (params.ref !== undefined) body.ref = params.ref;
       if (params.workflowFile !== undefined) body.workflowFile = params.workflowFile;
+      if (params.inputs !== undefined) body.inputs = params.inputs;
       if (params.force !== undefined) body.force = params.force;
 
       const data = await api('/api/releases/trigger', {
@@ -2133,9 +2231,48 @@ export async function handleBuilddAction(
         body: JSON.stringify(body),
       });
       if (!data.ok) {
-        return errorResult(`Release dispatch failed: ${data.error}`);
+        return errorResult(`Release trigger failed: ${data.error}`);
       }
-      return text(`Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}${data.force ? ', force=true' : ''}).\nFollow: ${data.runsUrl}`);
+      const runLine = data.runUrl
+        ? `\nRun: ${data.runUrl} (status: ${data.runStatus ?? 'unknown'}${data.runConclusion ? `, ${data.runConclusion}` : ''})`
+        : `\nFollow: ${data.runsUrl}`;
+      return text(
+        `Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}).${runLine}\n` +
+          `Note: this opens the release PR — it does not deploy. Prod ships when that PR passes CI and merges.`,
+      );
+    }
+
+    case 'release_status': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
+
+      const qs = new URLSearchParams();
+      if (params.workspaceId) qs.set('workspaceId', String(params.workspaceId));
+      if (params.repo) qs.set('repo', String(params.repo));
+      if (params.ref) qs.set('ref', String(params.ref));
+      if (params.prodBranch) qs.set('prodBranch', String(params.prodBranch));
+
+      const data = await api(`/api/releases/status?${qs.toString()}`);
+      if (!data.ok) {
+        return errorResult(`Release status failed: ${data.error}`);
+      }
+      const ci =
+        data.ciState === 'failing'
+          ? `failing (${(data.failingChecks ?? []).join(', ') || 'unknown checks'})`
+          : data.ciState;
+      const prLine = data.openReleasePr
+        ? `\nOpen release PR: #${data.openReleasePr.number} — ${data.openReleasePr.url}`
+        : '\nNo open release PR.';
+      const commits = (data.shippableCommits ?? [])
+        .slice(0, 15)
+        .map((c: { sha: string; message: string }) => `  - ${c.sha} ${c.message}`)
+        .join('\n');
+      return text(
+        `Release preflight for ${data.repo} (${data.ref} → ${data.prodBranch}):\n` +
+          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${prLine}` +
+          (commits ? `\nWould ship:\n${commits}` : '\nNothing to ship.'),
+      );
     }
 
     // ── Agent-Facing Interactive Actions ─────────────────────────────────────
@@ -2256,12 +2393,27 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
+import type { KnowledgeStore, Embedder, Corpus, UpsertChunk } from './knowledge-store/types';
+import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
+import {
+  buildTaskCard,
+  buildPrCard,
+  buildArtifactCard,
+  buildPlanCard,
+  renderPlanText,
+} from './knowledge-store/cards';
 
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
   action: string,
   params: Record<string, unknown>,
-  ctx: { project?: string; workerId?: string },
+  ctx: {
+    project?: string;
+    workerId?: string;
+    workspaceId?: string;
+    knowledgeStore?: KnowledgeStore;
+    embedder?: Embedder | null;
+  },
 ): Promise<ToolResult> {
   switch (action) {
     case 'context': {
@@ -2328,6 +2480,21 @@ export async function handleMemoryAction(
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
       });
 
+      // Mirror into KnowledgeStore for hybrid retrieval
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        const m = data.memory;
+        const lexicalText = `${m.title}\n\n${m.content}`;
+        await ctx.knowledgeStore.upsert(ns, [{
+          id: m.id,
+          content: m.content,
+          lexicalText,
+          sourceType: 'memory',
+          sourceUrl: `/app/memory/${m.id}`,
+          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
+        }]).catch(() => {}); // Best-effort — don't fail the memory save if indexing fails
+      }
+
       return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
     }
 
@@ -2361,13 +2528,63 @@ export async function handleMemoryAction(
       }
 
       const data = await memoryClient.update(params.id as string, updateFields);
+
+      // Mirror update into KnowledgeStore
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        const m = data.memory;
+        const lexicalText = `${m.title}\n\n${m.content}`;
+        await ctx.knowledgeStore.upsert(ns, [{
+          id: m.id,
+          content: m.content,
+          lexicalText,
+          sourceType: 'memory',
+          sourceUrl: `/app/memory/${m.id}`,
+          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
+        }]).catch(() => {});
+      }
+
       return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
     }
 
     case 'delete': {
       if (!params.id) throw new Error('id is required');
       await memoryClient.delete(params.id as string);
+
+      // Remove from KnowledgeStore
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        await ctx.knowledgeStore.delete(ns, [params.id as string]).catch(() => {});
+      }
+
       return text(`Memory deleted: ${params.id}`);
+    }
+
+    case 'query_knowledge': {
+      if (!params.query) throw new Error('query is required');
+      if (!ctx.workspaceId) throw new Error('workspaceId required for query_knowledge');
+
+      const corpus = ((params.corpus as string) || 'memory') as Corpus;
+      const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
+      const topK = Math.min((params.topK as number) || 10, 50);
+      const ns = buildNamespace(ctx.workspaceId, corpus);
+
+      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+      const results = await ks.query(ns, {
+        text: params.query as string,
+        mode,
+        topK,
+      });
+
+      if (results.length === 0) {
+        return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
+      }
+
+      const formatted = results.map((r, i) =>
+        `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}\n\n${r.content}`
+      ).join('\n\n---\n\n');
+
+      return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }
 
     default:
