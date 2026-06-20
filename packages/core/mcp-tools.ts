@@ -86,7 +86,7 @@ export const adminActions = [
 
 export const allActions = [...workerActions, ...adminActions] as const;
 
-export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete'] as const;
+export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete', 'query_knowledge'] as const;
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
@@ -155,6 +155,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
+    query_knowledge: '{ query (required), corpus? (memory|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search over indexed knowledge chunks; returns ranked results with sourceUrl',
   };
 
   const lines = actions
@@ -2256,12 +2257,20 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
+import type { KnowledgeStore, Embedder, Corpus } from './knowledge-store/types';
+import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
   action: string,
   params: Record<string, unknown>,
-  ctx: { project?: string; workerId?: string },
+  ctx: {
+    project?: string;
+    workerId?: string;
+    workspaceId?: string;
+    knowledgeStore?: KnowledgeStore;
+    embedder?: Embedder | null;
+  },
 ): Promise<ToolResult> {
   switch (action) {
     case 'context': {
@@ -2328,6 +2337,21 @@ export async function handleMemoryAction(
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
       });
 
+      // Mirror into KnowledgeStore for hybrid retrieval
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        const m = data.memory;
+        const lexicalText = `${m.title}\n\n${m.content}`;
+        await ctx.knowledgeStore.upsert(ns, [{
+          id: m.id,
+          content: m.content,
+          lexicalText,
+          sourceType: 'memory',
+          sourceUrl: `/app/memory/${m.id}`,
+          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
+        }]).catch(() => {}); // Best-effort — don't fail the memory save if indexing fails
+      }
+
       return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
     }
 
@@ -2361,13 +2385,63 @@ export async function handleMemoryAction(
       }
 
       const data = await memoryClient.update(params.id as string, updateFields);
+
+      // Mirror update into KnowledgeStore
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        const m = data.memory;
+        const lexicalText = `${m.title}\n\n${m.content}`;
+        await ctx.knowledgeStore.upsert(ns, [{
+          id: m.id,
+          content: m.content,
+          lexicalText,
+          sourceType: 'memory',
+          sourceUrl: `/app/memory/${m.id}`,
+          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
+        }]).catch(() => {});
+      }
+
       return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
     }
 
     case 'delete': {
       if (!params.id) throw new Error('id is required');
       await memoryClient.delete(params.id as string);
+
+      // Remove from KnowledgeStore
+      if (ctx.workspaceId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.workspaceId, 'memory');
+        await ctx.knowledgeStore.delete(ns, [params.id as string]).catch(() => {});
+      }
+
       return text(`Memory deleted: ${params.id}`);
+    }
+
+    case 'query_knowledge': {
+      if (!params.query) throw new Error('query is required');
+      if (!ctx.workspaceId) throw new Error('workspaceId required for query_knowledge');
+
+      const corpus = ((params.corpus as string) || 'memory') as Corpus;
+      const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
+      const topK = Math.min((params.topK as number) || 10, 50);
+      const ns = buildNamespace(ctx.workspaceId, corpus);
+
+      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+      const results = await ks.query(ns, {
+        text: params.query as string,
+        mode,
+        topK,
+      });
+
+      if (results.length === 0) {
+        return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
+      }
+
+      const formatted = results.map((r, i) =>
+        `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}\n\n${r.content}`
+      ).join('\n\n---\n\n');
+
+      return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }
 
     default:
