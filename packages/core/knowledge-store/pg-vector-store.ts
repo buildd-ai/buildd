@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, Corpus } from './types';
+import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
+import { applyRerank } from './reranker';
 import { createHash } from 'crypto';
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
@@ -63,7 +64,10 @@ interface ChunkRow {
 // ── PgVectorStore ────────────────────────────────────────────────────────────
 
 export class PgVectorStore implements KnowledgeStore {
-  constructor(private readonly embedder: Embedder | null) {}
+  constructor(
+    private readonly embedder: Embedder | null,
+    private readonly reranker: Reranker | null = null,
+  ) {}
 
   async upsert(namespace: string, chunks: UpsertChunk[]): Promise<void> {
     if (chunks.length === 0) return;
@@ -136,6 +140,9 @@ export class PgVectorStore implements KnowledgeStore {
     const { text, mode = 'hybrid', topK = 10, filters } = params;
     const db = await getDb();
     const limit = Math.min(topK, 50);
+    // When a reranker is configured, retrieve a wider candidate pool so the
+    // cross-encoder has more to work with, then trim back to `limit`.
+    const candidateLimit = this.reranker ? Math.min(limit * 5, 100) : limit;
 
     // Apply optional corpus/sourceType filter as SQL
     const filterClause = filters?.corpus
@@ -167,11 +174,11 @@ export class PgVectorStore implements KnowledgeStore {
 
       if (mode === 'vector') {
         // Vector-only: fetch full rows for top results
-        const ids = vectorRanked.slice(0, limit).map(r => r.id);
+        const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
         const scoreMap = new Map(vectorRanked.map(r => [r.id, r.score]));
-        return this._toResults(rows, scoreMap, ids);
+        return this._finalize(this._toResults(rows, scoreMap, ids), text, limit);
       }
 
       // Hybrid: also run lexical, then fuse
@@ -191,13 +198,13 @@ export class PgVectorStore implements KnowledgeStore {
       const lexicalRanked = (lexicalRes.rows as Array<{ id: string; score: number }>)
         .map(r => ({ id: r.id, score: Number(r.score) }));
 
-      const fused = reciprocalRankFusion(vectorRanked, lexicalRanked).slice(0, limit);
+      const fused = reciprocalRankFusion(vectorRanked, lexicalRanked).slice(0, candidateLimit);
       rrfScores = new Map(fused.map(r => [r.id, r.score]));
 
       const ids = fused.map(r => r.id);
       if (ids.length === 0) return [];
       const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
-      return this._toResults(rows, rrfScores, ids);
+      return this._finalize(this._toResults(rows, rrfScores, ids), text, limit);
     }
 
     // Lexical-only
@@ -211,7 +218,7 @@ export class PgVectorStore implements KnowledgeStore {
             @@ websearch_to_tsquery('english', ${text})
         ${filterClause}
       ORDER BY score DESC
-      LIMIT ${limit}
+      LIMIT ${candidateLimit}
     `);
 
     const lexRanked = (lexOnlyRes.rows as Array<{ id: string; score: number }>)
@@ -221,7 +228,17 @@ export class PgVectorStore implements KnowledgeStore {
     const ids = lexRanked.map(r => r.id);
     const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
     const scoreMap = new Map(lexRanked.map(r => [r.id, r.score]));
-    return this._toResults(rows, scoreMap, ids);
+    return this._finalize(this._toResults(rows, scoreMap, ids), text, limit);
+  }
+
+  /**
+   * Apply the optional reranker, then trim to `limit`. When no reranker is
+   * configured this is just a slice, so the RRF/vector/lexical order stands.
+   */
+  private async _finalize(results: QueryResult[], text: string, limit: number): Promise<QueryResult[]> {
+    if (!this.reranker || results.length <= 1) return results.slice(0, limit);
+    const reranked = await applyRerank(this.reranker, text, results, limit);
+    return reranked.slice(0, limit);
   }
 
   async delete(namespace: string, ids: string[]): Promise<void> {
@@ -234,6 +251,22 @@ export class PgVectorStore implements KnowledgeStore {
         WHERE namespace = ${namespace} AND source_id = ${id}
       `);
     }
+  }
+
+  async deleteBySource(
+    namespace: string,
+    selector: { sourcePath?: string; sourceType?: string },
+  ): Promise<void> {
+    if (!selector.sourcePath && !selector.sourceType) return;
+    const db = await getDb();
+    const pathClause = selector.sourcePath ? sql`AND source_path = ${selector.sourcePath}` : sql``;
+    const typeClause = selector.sourceType ? sql`AND source_type = ${selector.sourceType}` : sql``;
+    await db.execute(sql`
+      DELETE FROM knowledge_chunks
+      WHERE namespace = ${namespace}
+        ${pathClause}
+        ${typeClause}
+    `);
   }
 
   async listNamespaces(): Promise<string[]> {
