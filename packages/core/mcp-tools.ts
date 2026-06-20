@@ -37,6 +37,11 @@ export interface ActionContext {
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
   appBaseUrl?: string;
+  // Optional KnowledgeStore wiring for best-effort auto-indexing of agent work
+  // product (completed tasks, PRs, artifacts, approved plans). Mirrored writes
+  // never block or fail the underlying action.
+  knowledgeStore?: KnowledgeStore;
+  embedder?: Embedder | null;
 }
 
 export type ToolResult = {
@@ -385,6 +390,30 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
   return null;
 }
 
+/**
+ * Best-effort mirror of an agent work-product "card" into the KnowledgeStore.
+ *
+ * Mirrors the memory-mirroring pattern from `handleMemoryAction`: resolve the
+ * workspace, build the namespace, upsert one chunk — and swallow every error so
+ * a failed index never breaks the underlying action. No-ops when the store or
+ * workspace is unavailable.
+ */
+async function mirrorWorkProduct(
+  ctx: ActionContext,
+  corpus: Corpus,
+  chunk: UpsertChunk,
+): Promise<void> {
+  if (!ctx.knowledgeStore) return;
+  try {
+    const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
+    if (!wsId) return;
+    const ns = buildNamespace(wsId, corpus);
+    await ctx.knowledgeStore.upsert(ns, [chunk]);
+  } catch {
+    // Best-effort — never fail the underlying action if indexing fails.
+  }
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
@@ -676,7 +705,7 @@ export async function handleBuilddAction(
       if (mcpCallCount > 0) effortParts.push(`${mcpCallCount} tool calls`);
       const effortSuffix = effortParts.length > 0 ? ` (${effortParts.join(', ')})` : '';
 
-      // Fetch release result from the task (set by workers route after release execution)
+      // Fetch release result + task details (set by workers route after release execution)
       let releaseLine = '';
       if (params.workerId || ctx.workerId) {
         try {
@@ -691,6 +720,18 @@ export async function handleBuilddAction(
             } else if (taskData?.result?.releaseSummary) {
               releaseLine = `\n\n${taskData.result.releaseSummary}`;
             }
+
+            // Mirror the completed task into the KnowledgeStore (best-effort).
+            const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
+            await mirrorWorkProduct(ctx, 'task', buildTaskCard({
+              taskId,
+              title: taskData?.title ?? null,
+              description: taskData?.description ?? null,
+              summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+              success: true,
+              prUrl,
+              missionId: taskData?.missionId ?? null,
+            }));
           }
         } catch { /* non-fatal */ }
       }
@@ -716,6 +757,26 @@ export async function handleBuilddAction(
           prUrl: params.prUrl,
         }),
       });
+
+      // Mirror the PR into the KnowledgeStore (best-effort). Resolve task/mission
+      // linkage from the worker without failing the action if it can't be found.
+      try {
+        let taskId: string | null = null;
+        let missionId: string | null = null;
+        try {
+          const workerData = await api(`/api/workers/${workerId}`);
+          taskId = workerData?.taskId ?? null;
+          missionId = workerData?.task?.missionId ?? workerData?.missionId ?? null;
+        } catch { /* linkage is optional */ }
+        await mirrorWorkProduct(ctx, 'pr', buildPrCard({
+          prNumber: data.pr.number,
+          title: data.pr.title ?? (params.title as string),
+          body: (params.body as string) ?? null,
+          url: data.pr.url ?? (params.prUrl as string) ?? null,
+          taskId,
+          missionId,
+        }));
+      } catch { /* non-fatal */ }
 
       return text(`Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
     }
@@ -1506,6 +1567,19 @@ export async function handleBuilddAction(
 
       const art = artifactData.artifact;
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
+
+      // Mirror the artifact into the KnowledgeStore (best-effort).
+      await mirrorWorkProduct(ctx, 'artifact', buildArtifactCard({
+        artifactId: art.id,
+        title: art.title,
+        artifactType: art.type ?? (params.type as string),
+        content: (params.content as string) ?? art.content ?? null,
+        url: (params.url as string) ?? art.url ?? null,
+        shareUrl: art.shareUrl ?? null,
+        taskId: art.taskId ?? null,
+        missionId: (params.missionId as string) ?? art.missionId ?? null,
+      }));
+
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
     }
 
@@ -1802,6 +1876,24 @@ export async function handleBuilddAction(
       });
 
       const taskIds = data.tasks || [];
+
+      // Mirror the approved plan into the KnowledgeStore (best-effort).
+      // Only fetch the plan detail when there's actually a store to index into.
+      if (ctx.knowledgeStore) {
+        try {
+          const taskData = await api(`/api/tasks/${params.taskId}`);
+          const planText = renderPlanText(taskData?.result?.structuredOutput?.plan);
+          if (planText) {
+            await mirrorWorkProduct(ctx, 'plan', buildPlanCard({
+              taskId: params.taskId as string,
+              title: taskData?.title ?? null,
+              plan: planText,
+              missionId: taskData?.missionId ?? null,
+            }));
+          }
+        } catch { /* non-fatal */ }
+      }
+
       return text(`Plan approved! Created ${taskIds.length} child task(s):\n${taskIds.map((id: string) => `- ${id}`).join('\n')}`);
     }
 
@@ -2301,8 +2393,15 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
-import type { KnowledgeStore, Embedder, Corpus } from './knowledge-store/types';
+import type { KnowledgeStore, Embedder, Corpus, UpsertChunk } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
+import {
+  buildTaskCard,
+  buildPrCard,
+  buildArtifactCard,
+  buildPlanCard,
+  renderPlanText,
+} from './knowledge-store/cards';
 
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
