@@ -11,6 +11,13 @@ import { homedir } from 'os';
 import { materializeCodexAuth, materializeCodexHome, writeCodexMcpConfig, cleanupCodexAuth } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
+import {
+  buildCodexInstructionDoc,
+  writeCodexAgentsMd,
+  restoreCodexAgentsMd,
+  DONE_SENTINEL,
+  type AgentsMdWriteResult,
+} from './codex-instructions.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, ContextBreaker } from './claim-breaker';
@@ -1021,6 +1028,10 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
+    // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
+    // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
+    // and avoid dirtying the repo.
+    let codexAgentsMd: AgentsMdWriteResult | undefined;
 
     try {
       // Fetch workspace git config from server
@@ -1444,6 +1455,62 @@ export class WorkerManager {
         Stop: [{ hooks: [this.hookFactory.createStopHook(worker)] }],
         ConfigChange: [{ hooks: [this.hookFactory.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
       };
+
+      // Phase 2A — Codex role/skills/context via AGENTS.md.
+      //
+      // Claude receives its persona via systemPrompt.append, skills via the
+      // Skill() allowlist, and CLAUDE.md via settingSources. Codex's ThreadOptions
+      // has none of these (no instructions/system-prompt option in codex-sdk@0.44.0),
+      // and there is no Skill tool. We therefore compose a single instruction
+      // document — role persona + INLINED skill content + (optionally) project
+      // CLAUDE.md + the <promise>DONE</promise> completion convention — and deliver
+      // it through Codex's native AGENTS.md, which it re-reads from cwd on every
+      // turn (durable across PR2's multi-turn review/nudge/steering loop, unlike a
+      // first-turn-only prompt preamble). The DONE instruction is what lets PR2's
+      // review-loop exit gate actually fire for Codex (R1). Must run before
+      // promptArg is built so the prompt pointer below is included.
+      if (isCodexTask) {
+        try {
+          // Role persona = the role's CLAUDE.md (the same text Claude loads from
+          // the role dir via settingSources). Builder roles don't overlay it into
+          // the repo, so read it straight from the synced role dir.
+          let rolePersona: string | undefined;
+          if (worker.roleConfig) {
+            const rolePersonaPath = join(getRoleDir(worker.roleConfig.slug), 'CLAUDE.md');
+            if (existsSync(rolePersonaPath)) {
+              rolePersona = readFileSync(rolePersonaPath, 'utf-8');
+            }
+          }
+
+          // Project instructions: include repo CLAUDE.md content when the workspace
+          // opts into CLAUDE.md (mirrors Claude's settingSources project). We read
+          // CLAUDE.md only — not a pre-existing AGENTS.md, which writeCodexAgentsMd
+          // appends to (reading it back would duplicate content into our section).
+          let projectInstructions: string | undefined;
+          if (useClaudeMd) {
+            const claudeMdPath = join(cwd, 'CLAUDE.md');
+            if (existsSync(claudeMdPath)) {
+              projectInstructions = readFileSync(claudeMdPath, 'utf-8');
+            }
+          }
+
+          const instructionBody = buildCodexInstructionDoc({
+            rolePersona,
+            skillBundles: (skillBundles || []).map(b => ({ slug: b.slug, name: b.name, content: b.content })),
+            projectInstructions,
+          });
+
+          codexAgentsMd = await writeCodexAgentsMd(cwd, instructionBody);
+          console.log(`[Worker ${worker.id}] Wrote Codex AGENTS.md (${codexAgentsMd.existed ? 'appended to existing' : 'created'}) at ${codexAgentsMd.path}`);
+
+          // Short pointer in the prompt so the very first turn is anchored to the
+          // file even before the model decides to read it. AGENTS.md carries the
+          // durable detail; this is just a nudge.
+          promptText = `Read AGENTS.md in the working directory for your role, applicable skills, and completion criteria (emit ${DONE_SENTINEL} when fully done).\n\n${promptText}`;
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Failed to write Codex AGENTS.md:`, err);
+        }
+      }
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
@@ -1886,6 +1953,13 @@ If something is missing or incomplete, describe what and fix it now.`;
         // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
+        }
+
+        // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
+        // leave the repo dirty: delete it if we created it, restore the original
+        // verbatim if we appended to a pre-existing one. Best-effort.
+        if (codexAgentsMd) {
+          await restoreCodexAgentsMd(session.cwd, codexAgentsMd);
         }
 
         this.sessions.delete(worker.id);
