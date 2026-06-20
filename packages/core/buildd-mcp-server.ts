@@ -98,12 +98,22 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
     filteredActions = filteredActions.filter(a => a !== 'create_task');
   }
 
+  // KnowledgeStore for best-effort auto-indexing of agent work product
+  // (completed tasks, PRs, artifacts, approved plans). Same store the memory
+  // tool uses; null embedder falls back to lexical-only indexing.
+  const ctxEmbedder = getVoyageEmbedder();
+  const ctxKnowledgeStore = workspaceId
+    ? new PgVectorStore(ctxEmbedder, getVoyageReranker())
+    : undefined;
+
   const ctx: ActionContext = {
     workerId,
     workspaceId,
     getWorkspaceId: async () => workspaceId || null,
     getLevel: () => getAccountLevel(serverUrl, apiKey),
     appBaseUrl: opts.appBaseUrl,
+    knowledgeStore: ctxKnowledgeStore,
+    embedder: ctxEmbedder,
   };
 
   return createSdkMcpServer({

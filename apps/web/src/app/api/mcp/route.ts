@@ -184,6 +184,13 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     return null;
   };
 
+  // KnowledgeStore for best-effort auto-indexing of agent work product
+  // (completed tasks, PRs, artifacts, approved plans). The namespace's
+  // workspaceId is resolved lazily inside the mirror, so the store can be
+  // constructed unconditionally; null embedder falls back to lexical indexing.
+  const ctxEmbedder = getVoyageEmbedder();
+  const ctxKnowledgeStore = new PgVectorStore(ctxEmbedder, getVoyageReranker());
+
   const ctx: ActionContext = {
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
@@ -191,6 +198,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     getWorkspaceId,
     getLevel: async () => accountLevel,
     appBaseUrl,
+    knowledgeStore: ctxKnowledgeStore,
+    embedder: ctxEmbedder,
   };
 
   const server = new Server(

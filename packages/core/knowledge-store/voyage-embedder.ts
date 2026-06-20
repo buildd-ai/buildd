@@ -1,7 +1,7 @@
-import type { Embedder } from './types';
+import type { Embedder, EmbedInputType } from './types';
 
 const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings';
-const DEFAULT_MODEL = 'voyage-code-3';
+const DEFAULT_MODEL = 'voyage-4-large';
 const DEFAULT_DIMENSIONS = 1024;
 
 interface VoyageResponse {
@@ -11,8 +11,11 @@ interface VoyageResponse {
 }
 
 /**
- * Embedder backed by Voyage AI. Uses voyage-code-3 (1024 dims) which handles
+ * Embedder backed by Voyage AI. Uses voyage-4-large (1024 dims) which handles
  * both natural language and code well.
+ *
+ * Supports asymmetric retrieval via `input_type`: pass `'query'` when embedding
+ * search text and `'document'` (the default) when embedding stored chunks.
  *
  * Requires VOYAGE_API_KEY env var. Returns null from getVoyageEmbedder() when
  * the key is not present; callers should fall back to lexical-only mode.
@@ -30,7 +33,7 @@ export class VoyageEmbedder implements Embedder {
     this.dimensions = dimensions;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], inputType: EmbedInputType = 'document'): Promise<number[][]> {
     if (texts.length === 0) return [];
 
     const res = await fetch(VOYAGE_API_URL, {
@@ -42,7 +45,7 @@ export class VoyageEmbedder implements Embedder {
       body: JSON.stringify({
         model: this.model,
         input: texts,
-        input_type: 'document',
+        input_type: inputType,
       }),
     });
 

@@ -155,7 +155,9 @@ export class PgVectorStore implements KnowledgeStore {
     let rrfScores: Map<string, number> | null = null;
 
     if (mode === 'vector' || (mode === 'hybrid' && this.embedder)) {
-      const [queryEmbedding] = await this.embedder!.embed([text]);
+      // Asymmetric retrieval: embed the query with input_type='query' while
+      // stored chunks were embedded as 'document' (the upsert default).
+      const [queryEmbedding] = await this.embedder!.embed([text], 'query');
       const embeddingStr = vectorToString(queryEmbedding);
 
       const vectorRes = await db.execute(sql`

@@ -1,9 +1,16 @@
 // ── Embedder ─────────────────────────────────────────────────────────────────
 
+/**
+ * Asymmetric retrieval input type. Voyage embeds documents and queries with
+ * different prefixes; using `'query'` for the search text and `'document'` for
+ * stored chunks is a real recall win. Defaults to `'document'`.
+ */
+export type EmbedInputType = 'document' | 'query';
+
 export interface Embedder {
   readonly model: string;
   readonly dimensions: number;
-  embed(texts: string[]): Promise<number[][]>;
+  embed(texts: string[], inputType?: EmbedInputType): Promise<number[][]>;
 }
 
 // ── Reranker ─────────────────────────────────────────────────────────────────
@@ -24,7 +31,15 @@ export interface Reranker {
 
 // ── Chunk types ───────────────────────────────────────────────────────────────
 
-export type Corpus = 'memory' | 'code' | 'docs';
+export type Corpus =
+  | 'memory'
+  | 'code'
+  | 'docs'
+  | 'task'
+  | 'artifact'
+  | 'pr'
+  | 'plan'
+  | 'session';
 export type QueryMode = 'hybrid' | 'vector' | 'lexical';
 
 export interface UpsertChunk {
