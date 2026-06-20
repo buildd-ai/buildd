@@ -6,6 +6,22 @@ export interface Embedder {
   embed(texts: string[]): Promise<number[][]>;
 }
 
+// ── Reranker ─────────────────────────────────────────────────────────────────
+
+/**
+ * Cross-encoder reranker. Given a query and a candidate document set, returns
+ * document indices with relevance scores in descending order. Optional in the
+ * pipeline — when absent, RRF order stands.
+ */
+export interface Reranker {
+  readonly model: string;
+  rerank(
+    query: string,
+    documents: string[],
+    topK?: number,
+  ): Promise<Array<{ index: number; score: number }>>;
+}
+
 // ── Chunk types ───────────────────────────────────────────────────────────────
 
 export type Corpus = 'memory' | 'code' | 'docs';
@@ -57,4 +73,14 @@ export interface KnowledgeStore {
   query(namespace: string, params: QueryParams): Promise<QueryResult[]>;
   delete(namespace: string, ids: string[]): Promise<void>;
   listNamespaces(): Promise<string[]>;
+  /**
+   * Delete every chunk for a given source file (all `path#idx` chunks).
+   * Used by code/docs ingestion to clean up before re-chunking a file, so a
+   * file that shrank doesn't leave orphaned tail chunks. Optional — stores that
+   * predate multi-chunk sources may omit it.
+   */
+  deleteBySource?(
+    namespace: string,
+    selector: { sourcePath?: string; sourceType?: string },
+  ): Promise<void>;
 }

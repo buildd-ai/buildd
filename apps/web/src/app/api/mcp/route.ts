@@ -39,7 +39,7 @@ import {
   type ActionContext,
 } from "@buildd/core/mcp-tools";
 import { MemoryClient } from "@buildd/core/memory-client";
-import { PgVectorStore, getVoyageEmbedder } from "@buildd/core/knowledge-store";
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -312,7 +312,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
         const embedder = getVoyageEmbedder();
-        const knowledgeStore = wsId ? new PgVectorStore(embedder) : undefined;
+        const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
         return await handleMemoryAction(memClient, action, params, {
           project: repoName,
           workerId,

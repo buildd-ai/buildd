@@ -19,7 +19,7 @@ import {
   type ActionContext,
 } from './mcp-tools';
 import { MemoryClient } from './memory-client';
-import { PgVectorStore, getVoyageEmbedder } from './knowledge-store/index';
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from './knowledge-store/index';
 
 export interface BuilddMcpServerOptions {
   /** Buildd API server URL */
@@ -156,7 +156,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
             }
             const params = (args.params || {}) as Record<string, unknown>;
             const embedder = getVoyageEmbedder();
-            const ks = workspaceId ? new PgVectorStore(embedder) : undefined;
+            const ks = workspaceId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
             return await handleMemoryAction(memClient, args.action, params, {
               project: memoryProject,
               workerId,
