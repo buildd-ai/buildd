@@ -59,6 +59,13 @@ export interface ToolCall {
   name: string;
   timestamp: number;
   input?: any;
+  /**
+   * The originating tool_use block id (Claude SDK `block.id`, or the Codex
+   * `item.id` surfaced by the codex-events adapter). Used to correlate a later
+   * `tool_result`'s `tool_use_id` back to the source tool for error-trace
+   * scanning (workers.ts handleMessage `user`/tool_result branch).
+   */
+  toolUseId?: string;
 }
 
 // File checkpoint (from SDK files_persisted events)

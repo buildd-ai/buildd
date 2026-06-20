@@ -144,7 +144,9 @@ describe('CodexBackend auth resolution', () => {
     tmpDirs.push(tmpDir);
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {
-        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_HOME || '' } };
+        // Probe the spawn-time env via a command_execution item — agent_message
+        // no longer yields a channel-1 `progress` (R8 dedupe), but commands do.
+        yield { type: 'item.completed', item: { id: 'p1', type: 'command_execution', status: 'completed', command: process.env.CODEX_HOME || '' } };
       })(),
     }));
 
@@ -154,7 +156,7 @@ describe('CodexBackend auth resolution', () => {
     }
 
     expect(mockCodexConstructor.mock.calls[0]?.[0]?.apiKey).toBeUndefined();
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: tmpDir });
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: `completed: ${tmpDir}` });
   });
 
   authTest('CODEX_HOME in task env takes priority over process env', async () => {
@@ -252,7 +254,9 @@ describe('CodexBackend SDK options', () => {
   test('task env is present when Codex generator starts', async () => {
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {
-        yield { type: 'item.completed', item: { type: 'agent_message', text: process.env.CODEX_ENV_TEST || '' } };
+        // command_execution carries the spawn-time env into a channel-1 progress
+        // (agent_message no longer yields progress — R8 dedupe).
+        yield { type: 'item.completed', item: { id: 'p1', type: 'command_execution', status: 'completed', command: process.env.CODEX_ENV_TEST || '' } };
       })(),
     }));
 
@@ -260,7 +264,7 @@ describe('CodexBackend SDK options', () => {
       env: { OPENAI_API_KEY: 'sk-test', CODEX_ENV_TEST: 'visible-at-spawn' },
     });
 
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'visible-at-spawn' });
+    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'completed: visible-at-spawn' });
     expect(process.env.CODEX_ENV_TEST).toBeUndefined();
   });
 });
@@ -275,13 +279,22 @@ describe('CodexBackend BackendEvent mapping', () => {
     delete process.env.OPENAI_API_KEY;
   });
 
-  test('agent_message item.completed maps to progress and complete summary', async () => {
+  test('agent_message item.completed drives complete summary but no channel-1 progress (R8 dedupe)', async () => {
+    const progressEvents: any[] = [];
     const events = await collectEvents([
-      { type: 'item.completed', item: { type: 'agent_message', text: 'All done' } },
-    ]);
+      { type: 'item.completed', item: { id: 'a1', type: 'agent_message', text: 'All done' } },
+    ], {
+      onProgress: (raw: any) => { progressEvents.push(raw); },
+    } as any);
 
-    expect(events.find(e => e.type === 'progress')).toEqual({ type: 'progress', message: 'All done' });
+    // R8: agent text is surfaced via the channel-2 adapter (assistant text →
+    // worker.output in handleMessage), so codex-backend no longer yields a
+    // duplicate channel-1 `progress` for agent_message.
+    expect(events.find(e => e.type === 'progress')).toBeUndefined();
     expect(events.at(-1)).toEqual({ type: 'complete', summary: 'All done' });
+    // The adapter still feeds an assistant text message through onProgress.
+    const assistant = progressEvents.find((m) => m.type === 'assistant');
+    expect(assistant?.message?.content?.[0]).toMatchObject({ type: 'text', text: 'All done' });
   });
 
   test('command execution item maps to progress', async () => {
