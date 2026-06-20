@@ -872,6 +872,33 @@ describe('POST /api/tasks', () => {
     expect(captured().backend).toBeUndefined();
   });
 
+  it('falls back to the workspace gitConfig.defaultBackend when task and role do not specify', async () => {
+    const captured = backendCase();
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { defaultBackend: 'codex' } });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('role default takes precedence over the workspace default', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { defaultBackend: 'codex' } });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+  });
+
   // ── outputRequirement inheritance from missions ──────────────────────
 
   it('inherits outputRequirement from mission when not explicitly set', async () => {

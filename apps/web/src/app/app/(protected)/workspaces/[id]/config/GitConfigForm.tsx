@@ -31,6 +31,7 @@ interface GitConfig {
     debugFile?: string;
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
+    defaultBackend?: 'claude' | 'codex';
     autoMergePR?: boolean;
     autoMergeOnGreenCI?: boolean;
     defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
@@ -85,6 +86,9 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [defaultRunnerPreference, setDefaultRunnerPreference] = useState<'any' | 'user' | 'service' | 'action'>(
         initialConfig?.defaultRunnerPreference || 'any'
     );
+    const [defaultBackend, setDefaultBackend] = useState<'default' | 'claude' | 'codex'>(
+        initialConfig?.defaultBackend || 'default'
+    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -126,6 +130,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         : { type: thinkingType },
                     effort: effort === 'none' ? undefined : effort,
                     defaultRunnerPreference: defaultRunnerPreference !== 'any' ? defaultRunnerPreference : undefined,
+                    defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
                 }),
             });
 
@@ -595,6 +600,22 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Default runner preference for new tasks in this workspace. Only runners matching this type can claim tasks. Can be overridden per-task.
+                        </p>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Default Agent Backend</label>
+                        <Select
+                            value={defaultBackend}
+                            onChange={(v) => setDefaultBackend(v as typeof defaultBackend)}
+                            options={[
+                                { value: 'default', label: 'Claude (platform default)' },
+                                { value: 'claude', label: 'Claude' },
+                                { value: 'codex', label: 'Codex (OpenAI)' },
+                            ]}
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Default agent engine for new tasks in this workspace. Resolution order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks require a connected ChatGPT/OpenAI credential.
                         </p>
                     </div>
                 </div>
