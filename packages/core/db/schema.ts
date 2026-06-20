@@ -157,6 +157,11 @@ export interface WorkspaceGitConfig {
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
 
+  // Default agent backend for tasks in this workspace, when neither the task
+  // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
+  // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
+  defaultBackend?: 'claude' | 'codex';
+
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached

@@ -330,8 +330,9 @@ export async function POST(req: NextRequest) {
       outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
     }
 
-    // Resolve agent backend: explicit task.backend wins, else inherit the role's
-    // defaultBackend (a hint), else fall through to the schema default ('claude').
+    // Resolve agent backend. Precedence (most specific wins):
+    //   task.backend → role.defaultBackend → workspace gitConfig.defaultBackend →
+    //   schema default ('claude').
     let resolvedBackend: 'claude' | 'codex' | undefined =
       ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
     if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
@@ -344,6 +345,14 @@ export async function POST(req: NextRequest) {
         columns: { defaultBackend: true },
       });
       if (role?.defaultBackend) resolvedBackend = role.defaultBackend;
+    }
+    if (!resolvedBackend) {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+        columns: { gitConfig: true },
+      });
+      const wsDefault = ws?.gitConfig?.defaultBackend;
+      if (wsDefault === 'claude' || wsDefault === 'codex') resolvedBackend = wsDefault;
     }
 
     const [task] = await db
