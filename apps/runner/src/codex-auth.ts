@@ -58,6 +58,13 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
     `url = ${tomlString(mcpUrl)}`,
     `bearer_token_env_var = ${tomlString(config.bearerTokenEnvVar)}`,
     'enabled = true',
+    // Headless `codex exec` runs with approval policy "never", which AUTO-CANCELS
+    // every MCP tool call ("user cancelled MCP tool call") because there is no TTY
+    // to grant approval. The Codex SDK exposes no approval flag, so the only lever
+    // is this per-server setting in config.toml. "approve" auto-grants tool calls
+    // for the buildd server only — scoped, so we don't loosen approvals globally.
+    // Key verified against codex-cli 0.140 (`--strict-config` accepts it).
+    'default_tools_approval_mode = "approve"',
     '',
   ].join('\n');
   fs.writeFileSync(join(codexHome, 'config.toml'), content);
