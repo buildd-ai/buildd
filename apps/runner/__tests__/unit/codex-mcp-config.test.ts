@@ -72,6 +72,16 @@ describe('writeCodexMcpConfig', () => {
     expect(content).toContain('default_tools_approval_mode = "approve"');
   });
 
+  fsTest('enables sandbox network access so the remote buildd MCP + git push work', () => {
+    const content = write();
+    // Codex's workspace-write sandbox disables outbound network by default, which
+    // makes the remote buildd HTTP MCP unreachable (no create_pr / update_progress)
+    // and blocks `git push`. Verified against codex-cli 0.140 (--strict-config prints
+    // "network access enabled").
+    expect(content).toContain('[sandbox_workspace_write]');
+    expect(content).toContain('network_access = true');
+  });
+
   fsTest('the approval setting lives inside the buildd server block (not a stray top-level key)', () => {
     const content = write();
     const serverIdx = content.indexOf('[mcp_servers.buildd]');

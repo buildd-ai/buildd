@@ -48,10 +48,16 @@ export class CodexBackend implements AgentBackend {
     const prompt = await this.resolvePrompt(opts.prompt);
     const modelId = opts.model || 'codex';
     const signal = opts.signal;
+    // Allow pointing at a specific `codex` binary (CODEX_PATH_OVERRIDE) instead of
+    // the one bundled with @openai/codex-sdk. The bundled binary's version gates
+    // which models are accepted; a host with a newer codex CLI can run newer
+    // account models (e.g. gpt-5.5) that the bundled binary rejects.
+    const codexPathOverride = opts.env?.CODEX_PATH_OVERRIDE || process.env.CODEX_PATH_OVERRIDE;
     const codex = new Codex({
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
       workingDirectory: opts.cwd,
       ...(opts.env?.OPENAI_BASE_URL ? { baseUrl: opts.env.OPENAI_BASE_URL } : {}),
+      ...(codexPathOverride ? { codexPathOverride } : {}),
     });
     const threadOpts = {
       workingDirectory: opts.cwd,
