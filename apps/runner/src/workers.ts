@@ -1245,6 +1245,17 @@ export class WorkerManager {
         }
       }
 
+      // Preflight: fail fast with a clear message if no Codex auth is available.
+      // After the fix, worker.codexCredential is set whenever a credential row exists
+      // (even if expired — the CLI refreshes it). A null here means no credential was
+      // ever stored for this team/workspace. The runner's own OPENAI_API_KEY is an
+      // alternative path (API key auth).
+      if (isCodexTask && !worker.codexCredential && !cleanEnv.OPENAI_API_KEY) {
+        throw new Error(
+          'No Codex credential configured. Connect a ChatGPT / OpenAI account in Settings → Credentials before running Codex tasks.',
+        );
+      }
+
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
