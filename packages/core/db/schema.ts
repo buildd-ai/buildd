@@ -1,6 +1,19 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType
 } from 'drizzle-orm/pg-core';
+
+// Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
+const vectorType = customType<{ data: number[]; driverData: string; config: { dimensions: number } }>({
+  dataType(config) {
+    return `vector(${config?.dimensions ?? 1536})`;
+  },
+  fromDriver(value: string): number[] {
+    return value.slice(1, -1).split(',').map(Number);
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(',')}]`;
+  },
+});
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 import { relations } from 'drizzle-orm';
@@ -914,6 +927,37 @@ export const deviceCodes = pgTable('device_codes', {
   deviceTokenIdx: uniqueIndex('device_codes_device_token_idx').on(t.deviceToken),
   statusIdx: index('device_codes_status_idx').on(t.status),
   expiresAtIdx: index('device_codes_expires_at_idx').on(t.expiresAt),
+}));
+
+// Knowledge chunks — unified semantic + lexical retrieval store.
+// namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
+// HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
+export const knowledgeChunks = pgTable('knowledge_chunks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Source id (e.g. memoryId) — stable, used for idempotent upsert
+  sourceId: text('source_id').notNull(),
+  // "{workspaceId}:{corpus}"
+  namespace: text('namespace').notNull(),
+  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs'>(),
+  sourceType: text('source_type').notNull(),
+  sourcePath: text('source_path'),
+  sourceUrl: text('source_url'),
+  content: text('content').notNull(),
+  // Separate field for BM25/tsvector search (may be title + content for memories)
+  lexicalText: text('lexical_text'),
+  // pgvector embedding (voyage-code-3: 1024 dims; stored as string "[0.1,...]")
+  embedding: vectorType('embedding', { dimensions: 1024 }),
+  // Model name + dim stored so re-embeds are detectable
+  embeddingModel: text('embedding_model'),
+  metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
+  // SHA-256 of content for idempotency — skip re-embed when unchanged
+  contentHash: text('content_hash'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
+  // Unique per (namespace, sourceId) — enforces one chunk per source entity per namespace
+  sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
+  contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
 }));
 
 // Relations
