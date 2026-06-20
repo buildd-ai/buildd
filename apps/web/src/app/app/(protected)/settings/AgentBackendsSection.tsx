@@ -249,6 +249,8 @@ interface CodexStatus {
   expired: boolean;
   accountId: string | null;
   lastRefreshedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
   scope: 'team' | 'workspace' | null;
 }
 
@@ -256,6 +258,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteValue, setPasteValue] = useState('');
   const [pasteError, setPasteError] = useState<string | null>(null);
@@ -288,14 +291,31 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
   function validate(raw: string): string | null {
     let parsed: unknown;
     try { parsed = JSON.parse(raw); } catch { return 'Must be valid JSON'; }
-    if (!parsed || typeof parsed !== 'object') return 'Must be a JSON object';
-    const root = parsed as Record<string, unknown>;
-    // Codex CLI nests fields under `tokens`; accept that or a flat object.
-    const a = (root.tokens && typeof root.tokens === 'object' ? root.tokens : root) as Record<string, unknown>;
+    const a = parsed as Record<string, unknown>;
     if (typeof a.access_token !== 'string' || typeof a.refresh_token !== 'string' || typeof a.account_id !== 'string') {
-      return 'auth.json must contain access_token, refresh_token, and account_id';
+      return 'JSON must contain access_token, refresh_token, and account_id fields';
     }
     return null;
+  }
+
+  async function verify() {
+    setVerifying(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}/verify${q}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Verification failed');
+      if (data.status) setStatus(data.status);
+      if (data.verified) {
+        setMsg({ type: 'success', text: 'Verified — credential authenticated successfully.' });
+      } else {
+        setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'unknown error'}` });
+      }
+    } catch (e) {
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Verification failed' });
+    } finally {
+      setVerifying(false);
+    }
   }
 
   async function connect() {
@@ -315,7 +335,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
       setStatus(data);
       setPasteValue('');
       setPasteOpen(false);
-      setMsg({ type: 'success', text: 'Codex credential connected.' });
+      setMsg({ type: 'success', text: 'Saved — not yet verified. Tap "Verify" to confirm workers can authenticate.' });
     } catch (e) {
       setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
@@ -347,7 +367,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     try {
       const res = await fetch(`${base}${q}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 204) throw new Error('Delete failed');
-      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, scope: null });
+      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -370,32 +390,38 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : status?.connected ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            {status.expired ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs refresh
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-              </span>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Verification status badge — primary state indicator */}
+            <CodexVerificationBadge status={status} />
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
           </div>
 
           <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
             {status.accountId && <div>Account: <span className="font-mono text-text-primary">{status.accountId}</span></div>}
             {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
+            {status.lastVerifiedAt && (
+              <div>Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}</div>
+            )}
+            {status.lastVerificationError && (
+              <div className="text-status-error">Error: {status.lastVerificationError}</div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-              {busy ? 'Refreshing…' : 'Refresh now'}
+            <button
+              onClick={verify}
+              disabled={busy || verifying}
+              className="h-8 px-3 rounded-lg text-xs font-medium border border-status-info text-status-info disabled:opacity-50 transition-colors"
+            >
+              {verifying ? 'Verifying…' : 'Verify'}
             </button>
-            <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+            <button onClick={refresh} disabled={busy || verifying} className="text-sm font-medium text-status-info disabled:opacity-50">
+              Refresh token
+            </button>
+            <button onClick={revoke} disabled={busy || verifying} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
             {!pasteOpen && (
-              <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
-                Replace credential
+              <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} disabled={busy || verifying} className="text-sm font-medium text-text-secondary disabled:opacity-50">
+                Replace
               </button>
             )}
           </div>
@@ -408,7 +434,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
       ) : (
         <div className="space-y-3">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
-            <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
+            <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not configured
           </span>
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} />
         </div>
@@ -418,6 +444,35 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
     </div>
+  );
+}
+
+function CodexVerificationBadge({ status }: { status: CodexStatus }) {
+  if (status.expired) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs refresh
+      </span>
+    );
+  }
+  if (!status.lastVerifiedAt) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-secondary border border-border-default">
+        <span className="w-1.5 h-1.5 rounded-full bg-text-secondary" /> Saved — not yet verified
+      </span>
+    );
+  }
+  if (status.lastVerificationError) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-error/10 text-status-error border border-status-error/30">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-error" /> Failed
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+      <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Verified
+    </span>
   );
 }
 

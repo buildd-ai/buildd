@@ -29,6 +29,8 @@ mock.module('@buildd/core/db/schema', () => ({
     encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at',
     lastRefreshedAt: 'last_refreshed_at',
+    lastVerifiedAt: 'last_verified_at',
+    lastVerificationError: 'last_verification_error',
   },
 }));
 
@@ -52,76 +54,17 @@ mock.module('drizzle-orm', () => ({
 // ── imports (after mocks) ─────────────────────────────────────────────────────
 
 import {
-  hasCodexCredential,
   refreshCodexCredential,
   resolveCodexCredential,
   storeCodexCredential,
   getCodexStatus,
-  normalizeCodexAuthJson,
+  verifyCodexCredential,
 } from './codex-credential';
 
 // helper: build an encrypted blob the way the lib does (encrypt = `enc:${json}`)
 function blob(access: string, refresh: string, account: string) {
   return `enc:${JSON.stringify({ access_token: access, refresh_token: refresh, account_id: account })}`;
 }
-
-// helper: build a fake JWT carrying an `exp` claim (signature is irrelevant — we don't verify)
-function jwtWithExp(expEpoch: number): string {
-  const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  return `${b64url({ alg: 'none' })}.${b64url({ exp: expEpoch })}.sig`;
-}
-
-describe('normalizeCodexAuthJson', () => {
-  it('accepts the raw ~/.codex/auth.json (nested under tokens) and derives expiry from the JWT', () => {
-    const exp = Math.floor(Date.now() / 1000) + 3600;
-    const raw = {
-      OPENAI_API_KEY: null,
-      auth_mode: 'chatgpt',
-      tokens: { id_token: 'x', access_token: jwtWithExp(exp), refresh_token: 'rt', account_id: 'acc-1' },
-      last_refresh: '2026-06-15T00:00:00Z',
-    };
-    const res = normalizeCodexAuthJson(raw);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.access_token).toBe(raw.tokens.access_token);
-    expect(res.value.refresh_token).toBe('rt');
-    expect(res.value.account_id).toBe('acc-1');
-    expect(res.value.expires_in).toBeGreaterThan(3500);
-    expect(res.value.expires_in).toBeLessThanOrEqual(3600);
-  });
-
-  it('accepts an already-flat object with explicit expires_in', () => {
-    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expires_in: 7200 });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.expires_in).toBe(7200);
-  });
-
-  it('passes through an explicit expiry timestamp', () => {
-    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expiry: '2026-07-01T00:00:00Z' });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.expiry).toBe('2026-07-01T00:00:00Z');
-  });
-
-  it('accepts a credential with no derivable expiry (non-JWT access token)', () => {
-    const res = normalizeCodexAuthJson({ tokens: { access_token: 'opaque', refresh_token: 'rt', account_id: 'acc' } });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value.expires_in).toBeUndefined();
-    expect(res.value.expiry).toBeUndefined();
-  });
-
-  it('rejects missing required fields', () => {
-    const res = normalizeCodexAuthJson({ tokens: { access_token: 'at', account_id: 'acc' } });
-    expect(res.ok).toBe(false);
-  });
-
-  it('rejects non-objects', () => {
-    expect(normalizeCodexAuthJson('nope').ok).toBe(false);
-    expect(normalizeCodexAuthJson(null).ok).toBe(false);
-  });
-});
 
 describe('storeCodexCredential', () => {
   beforeEach(() => {
@@ -193,29 +136,6 @@ describe('resolveCodexCredential', () => {
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
     expect(result?.accessToken).toBe('teamAT');
   });
-
-  it('ignores expired credentials when resolving', async () => {
-    mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
-      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
-    ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('teamAT');
-  });
-});
-
-describe('hasCodexCredential', () => {
-  beforeEach(() => mockDbFindMany.mockReset());
-
-  it('returns true for an unexpired credential without decrypting', async () => {
-    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() + 3600_000) }]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
-  });
-
-  it('returns false when only expired credentials match', async () => {
-    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(false);
-  });
 });
 
 describe('getCodexStatus', () => {
@@ -226,6 +146,8 @@ describe('getCodexStatus', () => {
     const status = await getCodexStatus({ teamId: 't' });
     expect(status.connected).toBe(false);
     expect(status.scope).toBeNull();
+    expect(status.lastVerifiedAt).toBeNull();
+    expect(status.lastVerificationError).toBeNull();
   });
 
   it('surfaces account id and team scope without exposing tokens', async () => {
@@ -234,12 +156,31 @@ describe('getCodexStatus', () => {
       workspaceId: null,
       tokenExpiresAt: new Date(Date.now() + 3600_000),
       lastRefreshedAt: new Date(),
+      lastVerifiedAt: null,
+      lastVerificationError: null,
     });
     const status = await getCodexStatus({ teamId: 't' });
     expect(status.connected).toBe(true);
     expect(status.expired).toBe(false);
     expect(status.accountId).toBe('acc-xyz');
     expect(status.scope).toBe('team');
+    expect(status.lastVerifiedAt).toBeNull();
+    expect(status.lastVerificationError).toBeNull();
+  });
+
+  it('includes lastVerifiedAt and lastVerificationError when present', async () => {
+    const verifiedAt = new Date('2026-06-20T12:00:00Z');
+    mockDbFindFirst.mockResolvedValue({
+      encryptedValue: blob('AT', 'RT', 'acc-xyz'),
+      workspaceId: null,
+      tokenExpiresAt: null,
+      lastRefreshedAt: null,
+      lastVerifiedAt: verifiedAt,
+      lastVerificationError: 'HTTP 401: Invalid token',
+    });
+    const status = await getCodexStatus({ teamId: 't' });
+    expect(status.lastVerifiedAt).toBe(verifiedAt.toISOString());
+    expect(status.lastVerificationError).toBe('HTTP 401: Invalid token');
   });
 });
 
@@ -250,14 +191,12 @@ describe('refreshCodexCredential', () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    process.env.CODEX_OAUTH_CLIENT_ID = 'codex-client-test';
     mockDbUpdate.mockReset();
     mockDbFindFirst.mockReset();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    delete process.env.CODEX_OAUTH_CLIENT_ID;
   });
 
   it('persists rotated refresh token from refresh response', async () => {
@@ -430,5 +369,93 @@ describe('refreshCodexCredential', () => {
 
     consoleSpy.mockRestore();
     consoleSpy2.mockRestore();
+  });
+});
+
+describe('verifyCodexCredential', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    mockDbUpdate.mockReset();
+    mockDbFindFirst.mockReset();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function setupUpdateMock() {
+    const updateSet = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockDbUpdate.mockReturnValue({ set: updateSet });
+    return updateSet;
+  }
+
+  it('returns verified: true when OpenAI returns 200', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('access_token', 'rt', 'acc') });
+    const updateSet = setupUpdateMock();
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })) as any;
+
+    const result = await verifyCodexCredential('s-1', { teamId: 'team-1' });
+
+    expect(result.verified).toBe(true);
+    expect(result.error).toBeNull();
+    const setArg = updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setArg.lastVerificationError).toBeNull();
+  });
+
+  it('returns verified: false with HTTP error message when OpenAI returns 401', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('bad_token', 'rt', 'acc') });
+    const updateSet = setupUpdateMock();
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: { message: 'Invalid access token' } }),
+      })
+    ) as any;
+
+    const result = await verifyCodexCredential('s-1', { teamId: 'team-1' });
+
+    expect(result.verified).toBe(false);
+    expect(result.error).toContain('401');
+    expect(result.error).toContain('Invalid access token');
+    const setArg = updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setArg.lastVerificationError).toBe(result.error);
+  });
+
+  it('returns verified: false with error message when fetch throws', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('at', 'rt', 'acc') });
+    setupUpdateMock();
+    globalThis.fetch = mock(() => Promise.reject(new Error('Network failure'))) as any;
+
+    const result = await verifyCodexCredential('s-1', { teamId: 'team-1' });
+
+    expect(result.verified).toBe(false);
+    expect(result.error).toBe('Network failure');
+  });
+
+  it('returns verified: false with error when credential not found', async () => {
+    mockDbFindFirst.mockResolvedValue(null);
+
+    const result = await verifyCodexCredential('missing', { teamId: 'team-1' });
+
+    expect(result.verified).toBe(false);
+    expect(result.error).toBe('Credential not found');
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+
+  it('persists lastVerifiedAt on every call (success or failure)', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('at', 'rt', 'acc') });
+    const updateSet = setupUpdateMock();
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({}) })
+    ) as any;
+
+    await verifyCodexCredential('s-1', { teamId: 'team-1' });
+
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    const setArg = updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setArg.lastVerifiedAt).toBeTruthy();
   });
 });

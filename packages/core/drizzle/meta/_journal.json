@@ -351,6 +351,13 @@
       "when": 1781617019231,
       "tag": "0049_lumpy_yellowjacket",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1781917911711,
+      "tag": "0050_codex_verification_columns",
+      "breakpoints": true
     }
   ]
 }

@@ -803,10 +803,6 @@ export const workspaceSkills = pgTable('workspace_skills', {
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   // Role config
   model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
-  // Default agent backend for tasks routed to this role (a hint — an explicit task.backend wins).
-  // null = no preference → falls back to 'claude'. Model selection stays independent: when this is
-  // 'codex', the Claude-only `model` field above is ignored. See docs/credentials-architecture.md.
-  defaultBackend: agentBackendEnum('default_backend'),
   allowedTools: jsonb('allowed_tools').notNull().default([]).$type<string[]>(), // empty = all tools
   canDelegateTo: jsonb('can_delegate_to').notNull().default([]).$type<string[]>(), // slugs of other skills
   background: boolean('background').notNull().default(false),
@@ -889,6 +885,10 @@ export const secrets = pgTable('secrets', {
   // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
   lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  // Verification lifecycle (codex_credential only): records the last time the credential was
+  // smoke-tested against the real API, and any error string if it failed.
+  lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+  lastVerificationError: text('last_verification_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
