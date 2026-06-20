@@ -14,8 +14,14 @@
  * Run: bun test apps/runner/__tests__/unit/codex-last-assistant-message.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock, setDefaultTimeout } from 'bun:test';
 import { mapCodexEventToSdkMessages } from '../../src/backends/codex-events';
+
+// WorkerManager construction starts several background intervals; give setup/
+// teardown headroom and destroy the manager after each test (mirrors
+// worker-manager-state.test.ts). Without the afterEach teardown the intervals
+// leak across tests and a CI hook eventually times out.
+setDefaultTimeout(15_000);
 
 // ─── Mocks (mirror worker-manager-state.test.ts) ───────────────────────────────
 
@@ -137,6 +143,10 @@ describe('R1 — Codex agent_message populates worker.lastAssistantMessage', () 
   beforeEach(() => {
     manager = new WorkerManager(makeConfig());
     worker = makeWorker();
+  });
+
+  afterEach(() => {
+    manager?.destroy();
   });
 
   test('lastAssistantMessage is set from a Codex agent_message item', () => {
