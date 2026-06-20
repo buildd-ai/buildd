@@ -71,6 +71,32 @@ MEMORY_API_URL=... VOYAGE_API_KEY=... DATABASE_URL=... \
   bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId]
 ```
 
+## Design decision: why buildd, not the memory service
+
+Retrieval lives in buildd core, not in the standalone `memory` service. The
+memory service stays the source of truth for memories; buildd mirrors them into
+`knowledge_chunks` (best-effort on save/update/delete, with the backfill script
+to repair drift). Rationale:
+
+- **Cross-corpus.** KnowledgeStore spans `memory`, `code`, and `docs`. Code and
+  docs are buildd concepts (repos, workspaces) with no home in the memory
+  service. Splitting vectors across two services would mean two stores and no
+  unified `query_knowledge`.
+- **Namespace = workspace.** The namespace key is `workspaceId` — a buildd
+  concept. The memory service is scoped by `teamId`/project and doesn't model
+  workspaces.
+- **Infra already here.** buildd's Neon DB has pgvector + HNSW + tsvector.
+  Moving retrieval into the memory service would re-create embeddings, reranking,
+  and migrations there from scratch.
+
+The cost is one mirrored copy of low-volume, low-churn memory data — acceptable.
+
+**Revisit only if** `memory.buildd.dev` becomes a shared service that other
+products need semantic memory search from. Even then, the memory service would
+own only the memory corpus; buildd keeps code/docs, and the `KnowledgeStore`
+interface lets the memory corpus be delegated out with zero call-site changes.
+Nothing built now is wasted.
+
 ## Phase status
 
 | Phase | Scope | Status |
