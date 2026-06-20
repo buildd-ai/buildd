@@ -25,6 +25,7 @@
     "./memory-client": "./memory-client.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./release-strategy": "./release-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts"
   },
   "dependencies": {

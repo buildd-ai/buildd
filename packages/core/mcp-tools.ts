@@ -81,6 +81,7 @@ export const adminActions = [
   'manage_workspaces',
   'manage_watched_projects',
   'trigger_release',
+  'release_status',
   'send_agent_message',
 ] as const;
 
@@ -127,9 +128,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, prodBranch: string, deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string } } — manage workspaces and bootstrap new projects. New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
-    trigger_release: '{ repo (required, owner/name), ref? (default "dev"), workflowFile? (default "release.yml"), force? (default false — bypass "no shippable commits" check) } — trigger a release on a target repo by dispatching its release workflow. Uses the buildd GitHub App installation token, so the App must be installed on the owner. Returns the Actions runs URL so you can follow the run. Cheap and idempotent — re-running while a release PR is already open is a no-op in the workflow. [admin]',
+    trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
+    release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
@@ -2122,11 +2124,14 @@ export async function handleBuilddAction(
     case 'trigger_release': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('This operation requires an admin-level token');
-      if (!params.repo) throw new Error('repo is required (owner/name)');
+      if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
-      const body: Record<string, unknown> = { repo: params.repo };
+      const body: Record<string, unknown> = {};
+      if (params.workspaceId !== undefined) body.workspaceId = params.workspaceId;
+      if (params.repo !== undefined) body.repo = params.repo;
       if (params.ref !== undefined) body.ref = params.ref;
       if (params.workflowFile !== undefined) body.workflowFile = params.workflowFile;
+      if (params.inputs !== undefined) body.inputs = params.inputs;
       if (params.force !== undefined) body.force = params.force;
 
       const data = await api('/api/releases/trigger', {
@@ -2134,9 +2139,48 @@ export async function handleBuilddAction(
         body: JSON.stringify(body),
       });
       if (!data.ok) {
-        return errorResult(`Release dispatch failed: ${data.error}`);
+        return errorResult(`Release trigger failed: ${data.error}`);
       }
-      return text(`Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}${data.force ? ', force=true' : ''}).\nFollow: ${data.runsUrl}`);
+      const runLine = data.runUrl
+        ? `\nRun: ${data.runUrl} (status: ${data.runStatus ?? 'unknown'}${data.runConclusion ? `, ${data.runConclusion}` : ''})`
+        : `\nFollow: ${data.runsUrl}`;
+      return text(
+        `Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}).${runLine}\n` +
+          `Note: this opens the release PR — it does not deploy. Prod ships when that PR passes CI and merges.`,
+      );
+    }
+
+    case 'release_status': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
+      if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
+
+      const qs = new URLSearchParams();
+      if (params.workspaceId) qs.set('workspaceId', String(params.workspaceId));
+      if (params.repo) qs.set('repo', String(params.repo));
+      if (params.ref) qs.set('ref', String(params.ref));
+      if (params.prodBranch) qs.set('prodBranch', String(params.prodBranch));
+
+      const data = await api(`/api/releases/status?${qs.toString()}`);
+      if (!data.ok) {
+        return errorResult(`Release status failed: ${data.error}`);
+      }
+      const ci =
+        data.ciState === 'failing'
+          ? `failing (${(data.failingChecks ?? []).join(', ') || 'unknown checks'})`
+          : data.ciState;
+      const prLine = data.openReleasePr
+        ? `\nOpen release PR: #${data.openReleasePr.number} — ${data.openReleasePr.url}`
+        : '\nNo open release PR.';
+      const commits = (data.shippableCommits ?? [])
+        .slice(0, 15)
+        .map((c: { sha: string; message: string }) => `  - ${c.sha} ${c.message}`)
+        .join('\n');
+      return text(
+        `Release preflight for ${data.repo} (${data.ref} → ${data.prodBranch}):\n` +
+          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${prLine}` +
+          (commits ? `\nWould ship:\n${commits}` : '\nNothing to ship.'),
+      );
     }
 
     // ── Agent-Facing Interactive Actions ─────────────────────────────────────

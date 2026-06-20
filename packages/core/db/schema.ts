@@ -234,13 +234,39 @@ export interface WorkspaceGitConfig {
 
 }
 
-// Release configuration for a workspace — controls whether/how tasks trigger a prod deploy
+// How a workspace performs a release. buildd owns the envelope (resolve →
+// preflight → dispatch → readback); each workspace declares the steps here.
+// Absent ⇒ 'branch_merge' for backward-compat (the original, pre-strategy shape).
+//   - workflow_dispatch: dispatch the repo's own release workflow (most general;
+//     release semantics live in the repo's Actions). buildd's own dev→main is
+//     just one workspace configured this way — nothing special about it.
+//   - branch_merge: buildd merges a source ref into prodBranch via the GitHub
+//     API, then verifies the deploy + runs hooks. For repos with no workflow.
+//   - script: spawn a worker task that runs the repo's own release command.
+export type ReleaseStrategy = 'workflow_dispatch' | 'branch_merge' | 'script';
+
+// Release configuration for a workspace — controls whether/how releases happen.
+// Stored as jsonb, so this is a free-form shape (no migration on change). All
+// step-specific fields are optional; `resolveReleaseStrategy` validates them
+// per the chosen strategy.
 export interface WorkspaceReleaseConfig {
   // Whether this workspace is configured for releases. Projects without this never release.
   enabled: boolean;
 
+  // Which strategy this workspace uses. Absent ⇒ 'branch_merge' (legacy default).
+  strategy?: ReleaseStrategy;
+
+  // ── strategy: 'workflow_dispatch' ──────────────────────────────────────────
+  // Workflow file to dispatch on the target repo, e.g. 'release.yml'.
+  workflowFile?: string;
+  // Git ref the workflow runs on, e.g. 'dev'.
+  ref?: string;
+  // Extra workflow_dispatch inputs (string-valued, per the GitHub API).
+  inputs?: Record<string, string>;
+
+  // ── strategy: 'branch_merge' (legacy default) ──────────────────────────────
   // The production branch to merge changes into (e.g., 'main')
-  prodBranch: string;
+  prodBranch?: string;
 
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
@@ -267,6 +293,10 @@ export interface WorkspaceReleaseConfig {
 
   // Optional URL to GET after deploy to verify prod is healthy (expects 2xx)
   verificationUrl?: string;
+
+  // ── strategy: 'script' ─────────────────────────────────────────────────────
+  // Shell command a spawned worker task runs to release (e.g. 'bun run release').
+  command?: string;
 }
 
 // Result of a release sequence — stored in tasks.release_result
