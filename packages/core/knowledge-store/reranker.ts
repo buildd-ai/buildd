@@ -1,7 +1,7 @@
 import type { Reranker, QueryResult } from './types';
 
 const VOYAGE_RERANK_URL = 'https://api.voyageai.com/v1/rerank';
-const DEFAULT_MODEL = 'rerank-2';
+const DEFAULT_MODEL = 'rerank-2.5';
 
 interface VoyageRerankResponse {
   data: Array<{ index: number; relevance_score: number }>;
@@ -10,7 +10,7 @@ interface VoyageRerankResponse {
 }
 
 /**
- * Cross-encoder reranker backed by Voyage AI (`rerank-2`). RRF gives a good
+ * Cross-encoder reranker backed by Voyage AI (`rerank-2.5`). RRF gives a good
  * candidate set from two cheap signals; a reranker scores each candidate
  * against the full query text and is the single biggest precision win for the
  * top few results. Injectable via the `Reranker` interface so it can be swapped

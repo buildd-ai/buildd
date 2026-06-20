@@ -20,7 +20,7 @@ ingest-knowledge.ts (code+docs) ────────────►  Knowled
   then an optional cross-encoder rerank. Falls back to lexical-only when no
   embedder is configured.
 - **`VoyageEmbedder`** (`voyage-code-3`, 1024 dims) and **`VoyageReranker`**
-  (`rerank-2`) — injectable via the `Embedder` / `Reranker` interfaces. Both
+  (`rerank-2.5`) — injectable via the `Embedder` / `Reranker` interfaces. Both
   return `null` from their `get*()` factory when `VOYAGE_API_KEY` is unset.
 
 ### Retrieval pipeline
@@ -30,7 +30,7 @@ ingest-knowledge.ts (code+docs) ────────────►  Knowled
 3. **RRF fusion** — items in both lists score highest; vector-only hits still
    surface. Produces a candidate pool (widened to `topK*5` when a reranker is
    present).
-4. **Rerank** (optional) — `rerank-2` scores each candidate against the full
+4. **Rerank** (optional) — `rerank-2.5` scores each candidate against the full
    query and trims to `topK`. Biggest precision win for the top results.
 
 When `VOYAGE_API_KEY` is absent, steps 1 and 4 are skipped and `query_knowledge`
@@ -103,7 +103,7 @@ Nothing built now is wasted.
 |-------|-------|--------|
 | 1 | Store interface, PgVectorStore (vector+BM25+RRF), VoyageEmbedder, `knowledge_chunks` table, memory ingestion, `query_knowledge` | ✅ shipped (#865) |
 | 2 | Code + docs chunking, multi-chunk sources, `deleteBySource`, ingestion CLI | ✅ this change |
-| 3 | Cross-encoder reranking (`rerank-2`), wider candidate pool | ✅ this change |
+| 3 | Cross-encoder reranking (`rerank-2.5`), wider candidate pool | ✅ this change |
 | 4 | `TurbopufferStore` — alternate backend, new class, zero call-site changes | ⬜ deferred (interface is ready) |
 
 ## Operational notes
