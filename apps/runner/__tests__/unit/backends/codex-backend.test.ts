@@ -251,6 +251,26 @@ describe('CodexBackend SDK options', () => {
     expect(mockCodexConstructor.mock.calls[0]?.[0]?.baseUrl).toBe('https://example.test/v1');
   });
 
+  test('passes codexPathOverride from CODEX_PATH_OVERRIDE env (use host codex binary)', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      env: { OPENAI_API_KEY: 'sk-test', CODEX_PATH_OVERRIDE: '/usr/local/bin/codex' },
+    })) {}
+
+    // The bundled SDK binary's version gates which account models are accepted; a
+    // host with a newer codex CLI can run newer models via this override.
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.codexPathOverride).toBe('/usr/local/bin/codex');
+  });
+
+  test('omits codexPathOverride when unset', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed({
+      ...BASE_RUN_OPTS,
+      env: { OPENAI_API_KEY: 'sk-test' },
+    })) {}
+
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.codexPathOverride).toBeUndefined();
+  });
+
   test('task env is present when Codex generator starts', async () => {
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {

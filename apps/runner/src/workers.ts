@@ -5,7 +5,7 @@ import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome } from './codex-auth.js';
@@ -1238,6 +1238,21 @@ export class WorkerManager {
         const { codexHome: _ch } = worker.codexCredential
           ? materializeStableCodexHome(worker.id, worker.codexCredential)
           : ensureStableCodexHome(worker.id);
+        // No server-injected credential: fall back to the operator's local Codex
+        // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
+        // the stable home so resolveAuth/codex can authenticate. This matches the
+        // claim route, which already advertises CODEX_HOME as a local-auth capability
+        // — without this, a runner with only local OAuth creds passes the claim gate
+        // but dies at the spawn guard below.
+        if (!worker.codexCredential) {
+          const localHome = process.env.CODEX_HOME;
+          if (localHome && localHome !== _ch) {
+            const localAuth = join(localHome, 'auth.json');
+            if (existsSync(localAuth)) {
+              copyFileSync(localAuth, join(_ch, 'auth.json'));
+            }
+          }
+        }
         cleanEnv.CODEX_HOME = _ch;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = _ch;
@@ -1271,11 +1286,16 @@ export class WorkerManager {
       }
 
       // Preflight: fail fast with a clear message if no Codex auth is available.
-      // After the fix, worker.codexCredential is set whenever a credential row exists
-      // (even if expired — the CLI refreshes it). A null here means no credential was
-      // ever stored for this team/workspace. The runner's own OPENAI_API_KEY is an
-      // alternative path (API key auth).
-      if (isCodexTask && !worker.codexCredential && !cleanEnv.OPENAI_API_KEY) {
+      // worker.codexCredential is set whenever a server credential row exists (even
+      // if expired — the CLI refreshes it). Otherwise accept a local fallback that
+      // resolveAuth can actually use: the runner's OPENAI_API_KEY (API-key auth) or a
+      // local CODEX_HOME/auth.json (OAuth) seeded into the stable home above. This
+      // mirrors the claim route's local-auth capability check.
+      const codexAuthAvailable =
+        Boolean(worker.codexCredential) ||
+        Boolean(cleanEnv.OPENAI_API_KEY) ||
+        (Boolean(cleanEnv.CODEX_HOME) && existsSync(join(cleanEnv.CODEX_HOME, 'auth.json')));
+      if (isCodexTask && !codexAuthAvailable) {
         throw new Error(
           'No Codex credential configured. Connect a ChatGPT / OpenAI account in Settings → Credentials before running Codex tasks.',
         );
@@ -1580,11 +1600,19 @@ export class WorkerManager {
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
+      // Codex rejects Claude model ids ("claude-* not supported with a ChatGPT
+      // account"). The runner's configured model is Claude by default, so for Codex
+      // tasks strip a Claude model id and let Codex use the account default (or a
+      // genuine codex model id passes through). Claude tasks are unaffected.
+      const backendModel = isCodexTask && /^claude/i.test(this.config.model || '')
+        ? undefined
+        : this.config.model;
+
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
         sessionId: worker.id,
         cwd,
-        model: this.config.model,
+        ...(backendModel ? { model: backendModel } : {}),
         ...(maxTurns ? { maxTurns } : {}),
         sandboxMode: taskSandboxMode,
         env: cleanEnv,

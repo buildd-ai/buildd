@@ -163,6 +163,14 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
     // Key verified against codex-cli 0.140 (`--strict-config` accepts it).
     'default_tools_approval_mode = "approve"',
     '',
+    // Codex's `workspace-write` sandbox DISABLES outbound network by default, which
+    // makes the remote buildd HTTP MCP unreachable (no create_pr / update_progress)
+    // AND blocks `git push`. Enable network access so a Codex worker can actually
+    // report progress and open PRs. Key verified against codex-cli 0.140 via
+    // `--strict-config` (CLI prints "network access enabled").
+    '[sandbox_workspace_write]',
+    'network_access = true',
+    '',
   ].join('\n');
   fs.writeFileSync(join(codexHome, 'config.toml'), content);
 }
