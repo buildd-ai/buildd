@@ -10,6 +10,86 @@ export interface CodexCredential {
 }
 
 /**
+ * Root for STABLE per-worker CODEX_HOME directories (Phase 1C / R5).
+ *
+ * Unlike the temp `mkdtemp` homes, a stable home is keyed by worker id and
+ * survives across runs/restarts so `codex exec ... resume <thread_id>` can find
+ * the rollout under `$CODEX_HOME/sessions/`. Override with CODEX_HOME_ROOT for a
+ * persistent location; defaults under the OS temp dir (good enough — only torn
+ * down on true terminal teardown, past the follow-up TTL).
+ */
+function codexHomeRoot(): string {
+  return process.env.CODEX_HOME_ROOT || join(tmpdir(), 'buildd-codex-homes');
+}
+
+/** Absolute path of the stable per-worker CODEX_HOME (not created here). */
+export function stableCodexHomePath(workerId: string): string {
+  // Sanitize the worker id so it can never escape the root dir.
+  const safe = workerId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return join(codexHomeRoot(), safe);
+}
+
+/**
+ * Ensure a STABLE per-worker CODEX_HOME exists and (re)seed auth.json into it,
+ * WITHOUT touching the `sessions/` subtree (so resumable rollouts survive a
+ * re-run/restart). Idempotent: safe to call on every start.
+ *
+ * Returns the codexHome path so the caller can set cleanEnv.CODEX_HOME before
+ * spawning the backend. The dir is created 0o700; auth.json is written 0o600.
+ */
+export function materializeStableCodexHome(
+  workerId: string,
+  credential: CodexCredential,
+): { codexHome: string } {
+  const codexHome = stableCodexHomePath(workerId);
+  // recursive mkdir is a no-op if it already exists — sessions/ is untouched.
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  // Re-chmod in case it pre-existed with a looser mode.
+  try { fs.chmodSync(codexHome, 0o700); } catch {}
+  writeCodexAuthJson(codexHome, credential);
+  console.log(`[Worker ${workerId}] Stable Codex home ready at ${codexHome} (sessions preserved)`);
+  return { codexHome };
+}
+
+/**
+ * Ensure a STABLE per-worker CODEX_HOME exists for runs that only need transient
+ * Codex config (no OAuth credential — e.g. API-key auth via OPENAI_API_KEY).
+ * Idempotent; preserves `sessions/`.
+ */
+export function ensureStableCodexHome(workerId: string): { codexHome: string } {
+  const codexHome = stableCodexHomePath(workerId);
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(codexHome, 0o700); } catch {}
+  return { codexHome };
+}
+
+/** (Re)write auth.json into an existing CODEX_HOME. Idempotent. */
+export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
+  const authJson = {
+    access_token: credential.accessToken,
+    refresh_token: credential.refreshToken,
+    account_id: credential.accountId,
+  };
+  const authPath = join(codexHome, 'auth.json');
+  fs.writeFileSync(authPath, JSON.stringify(authJson));
+  fs.chmodSync(authPath, 0o600);
+}
+
+/**
+ * Tear down a stable per-worker CODEX_HOME. Call ONLY when the worker is truly
+ * terminal (purged past the follow-up TTL) — never on normal run cleanup, or
+ * resumable sessions would be destroyed. Idempotent and non-throwing.
+ */
+export function teardownStableCodexHome(workerId: string): void {
+  const codexHome = stableCodexHomePath(workerId);
+  try {
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`[Worker ${workerId}] Failed to tear down stable Codex home:`, err);
+  }
+}
+
+/**
  * Write a temporary CODEX_HOME directory containing auth.json for the given
  * credential. Returns the path to the temp dir so the caller can set
  * cleanEnv.CODEX_HOME = codexHome before spawning the backend.
@@ -21,16 +101,9 @@ export interface CodexCredential {
 export function materializeCodexAuth(workerId: string, credential: CodexCredential): { codexHome: string } {
   // mkdtempSync guarantees 0o700 on POSIX — no need to re-chmod the dir.
   const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
-  const authJson = {
-    access_token: credential.accessToken,
-    refresh_token: credential.refreshToken,
-    account_id: credential.accountId,
-  };
-  const authPath = join(codexHome, 'auth.json');
   // Write first (no mode option — avoids a Bun 1.3.x bug where writeFileSync
   // with { mode } silently fails to create the file), then chmod explicitly.
-  fs.writeFileSync(authPath, JSON.stringify(authJson));
-  fs.chmodSync(authPath, 0o600);
+  writeCodexAuthJson(codexHome, credential);
   console.log(`[Worker ${workerId}] Materialized Codex auth.json at ${codexHome}`);
   return { codexHome };
 }

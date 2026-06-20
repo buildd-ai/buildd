@@ -3,13 +3,26 @@ const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirS
 import { join } from 'path';
 import { homedir } from 'os';
 import type { LocalWorker, CheckpointEventType } from './types';
+import { teardownStableCodexHome } from './codex-auth';
+
+/**
+ * Best-effort terminal teardown of a Codex worker's stable CODEX_HOME when its
+ * persisted file is being expired/removed. Only fires for Codex workers; no-op
+ * (and never throws) otherwise. This is the truest terminal point — past the
+ * 24h follow-up TTL, the resumable sessions are no longer needed.
+ */
+function teardownCodexHomeForExpired(data: { id?: unknown; taskBackend?: unknown }): void {
+  if (data.taskBackend === 'codex' && typeof data.id === 'string') {
+    teardownStableCodexHome(data.id);
+  }
+}
 
 const WORKERS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
-  'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'workspaceId', 'workspaceName',
-  'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId',
+  'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'taskBackend', 'workspaceId', 'workspaceName',
+  'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId', 'codexThreadId',
   'waitingFor',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
@@ -134,6 +147,7 @@ export function loadAllWorkers(): LocalWorker[] {
       // Skip files older than 24h
       if (data._savedAt && now - data._savedAt > MAX_AGE_MS) {
         try { unlinkSync(filePath); } catch {}
+        teardownCodexHomeForExpired(data);
         continue;
       }
 
@@ -161,11 +175,13 @@ export function loadAllWorkers(): LocalWorker[] {
         workspaceName: data.workspaceName as string,
         branch: data.branch as string,
         status: data.status as LocalWorker['status'],
+        taskBackend: data.taskBackend as LocalWorker['taskBackend'],
         error: data.error as string | undefined,
         completedAt: data.completedAt as number | undefined,
         startedAt: (data.startedAt as number) || (data.lastActivity as number),  // Fallback for workers saved before startedAt existed
         lastActivity: data.lastActivity as number,
         sessionId: data.sessionId as string | undefined,
+        codexThreadId: data.codexThreadId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
         messages: (data.messages as LocalWorker['messages']) || [],
         milestones: (data.milestones as LocalWorker['milestones']) || [],
@@ -214,6 +230,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
     // Skip if expired
     if (data._savedAt && Date.now() - data._savedAt > MAX_AGE_MS) {
       try { unlinkSync(filePath); } catch {}
+      teardownCodexHomeForExpired(data);
       return null;
     }
 
@@ -227,11 +244,13 @@ export function loadWorker(workerId: string): LocalWorker | null {
       workspaceName: data.workspaceName as string,
       branch: data.branch as string,
       status: data.status as LocalWorker['status'],
+      taskBackend: data.taskBackend as LocalWorker['taskBackend'],
       error: data.error as string | undefined,
       completedAt: data.completedAt as number | undefined,
       startedAt: (data.startedAt as number) || (data.lastActivity as number),
       lastActivity: data.lastActivity as number,
       sessionId: data.sessionId as string | undefined,
+      codexThreadId: data.codexThreadId as string | undefined,
       waitingFor: data.waitingFor as LocalWorker['waitingFor'],
       messages: (data.messages as LocalWorker['messages']) || [],
       milestones: (data.milestones as LocalWorker['milestones']) || [],

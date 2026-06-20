@@ -184,3 +184,26 @@ describe('R1 — Codex agent_message populates worker.lastAssistantMessage', () 
     expect(lastMsg.includes('<promise>DONE</promise>')).toBe(false);
   });
 });
+
+describe('Phase 1C — Codex thread.started captured into codexThreadId (R5)', () => {
+  let manager: any;
+
+  beforeEach(() => {
+    manager = new WorkerManager(makeConfig());
+  });
+
+  test('Codex worker: system:init session_id lands in codexThreadId, NOT sessionId', () => {
+    const worker = { ...makeWorker(), taskBackend: 'codex' };
+    feed(manager, worker, { type: 'thread.started', thread_id: 'thread-xyz' });
+    expect(worker.codexThreadId).toBe('thread-xyz');
+    expect(worker.sessionId).toBeUndefined();
+  });
+
+  test('Claude worker: system:init session_id lands in sessionId, NOT codexThreadId', () => {
+    const worker = { ...makeWorker(), taskBackend: 'claude' };
+    // The Claude SDK emits system:init directly (no Codex adapter needed).
+    manager.handleMessage(worker, { type: 'system', subtype: 'init', session_id: 'claude-sess' });
+    expect(worker.sessionId).toBe('claude-sess');
+    expect(worker.codexThreadId).toBeUndefined();
+  });
+});

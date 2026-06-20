@@ -376,7 +376,11 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
   /**
    * Resume a completed worker session with automatic fallback.
    *
-   * Layer 1: SDK resume via sessionId (full context preserved on disk)
+   * Layer 1: SDK resume via the backend-appropriate id (full context preserved):
+   *   - Claude: `worker.sessionId` → query `resume:` option.
+   *   - Codex (R5): `worker.codexThreadId` → backend `resumeThreadId` →
+   *     `codex.resumeThread()` against the stable per-worker CODEX_HOME.
+   *   `startSession` reads `worker.taskBackend` to route the id correctly.
    * Layer 2: Reconstructed context (text summary of previous session)
    *
    * Each layer is logged via sessionLog for production diagnostics.
@@ -384,10 +388,16 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
   async resumeSession(worker: LocalWorker, sessionCwd: string, message: string) {
     sessionLog(worker.id, 'info', 'resume_requested', `Follow-up on ${worker.status} worker`, worker.taskId);
 
-    // Layer 1: Try SDK resume with sessionId (preserves full conversation history)
-    if (worker.sessionId) {
-      sessionLog(worker.id, 'info', 'resume_layer1_attempt', `SDK resume with sessionId ${worker.sessionId}`, worker.taskId);
-      console.log(`[Worker ${worker.id}] Layer 1: Resuming session ${worker.sessionId} (cwd: ${sessionCwd})`);
+    // Pick the backend-appropriate resume id. Codex follow-ups MUST resume the
+    // prior thread (not start fresh) — keyed on codexThreadId, never sessionId.
+    const isCodex = worker.taskBackend === 'codex';
+    const resumeId = isCodex ? worker.codexThreadId : worker.sessionId;
+
+    // Layer 1: Try SDK resume with the resume id (preserves full history)
+    if (resumeId) {
+      const idLabel = isCodex ? `codexThreadId ${resumeId}` : `sessionId ${resumeId}`;
+      sessionLog(worker.id, 'info', 'resume_layer1_attempt', `SDK resume with ${idLabel}`, worker.taskId);
+      console.log(`[Worker ${worker.id}] Layer 1: Resuming ${idLabel} (cwd: ${sessionCwd})`);
 
       const task = {
         id: worker.taskId,
@@ -400,7 +410,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       };
 
       try {
-        await this.deps.startSession(worker, sessionCwd, task as any, worker.sessionId);
+        await this.deps.startSession(worker, sessionCwd, task as any, resumeId);
         return; // Layer 1 succeeded
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -414,8 +424,8 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
         // Fall through to Layer 2
       }
     } else {
-      sessionLog(worker.id, 'info', 'resume_layer1_skipped', 'No sessionId available', worker.taskId);
-      console.log(`[Worker ${worker.id}] No sessionId — skipping Layer 1`);
+      sessionLog(worker.id, 'info', 'resume_layer1_skipped', `No ${isCodex ? 'codexThreadId' : 'sessionId'} available`, worker.taskId);
+      console.log(`[Worker ${worker.id}] No resume id — skipping Layer 1`);
     }
 
     // Layer 2: Reconstructed context (text summary of previous session)

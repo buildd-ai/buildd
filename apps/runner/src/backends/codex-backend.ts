@@ -53,12 +53,17 @@ export class CodexBackend implements AgentBackend {
       workingDirectory: opts.cwd,
       ...(opts.env?.OPENAI_BASE_URL ? { baseUrl: opts.env.OPENAI_BASE_URL } : {}),
     });
-    const thread = codex.startThread({
+    const threadOpts = {
       workingDirectory: opts.cwd,
       ...(opts.model ? { model: opts.model } : {}),
       sandboxMode: sandbox,
       skipGitRepoCheck: true,
-    });
+    };
+    // Phase 1C / R5: a follow-up resumes the prior Codex thread by id (located
+    // against the stable per-worker CODEX_HOME). Otherwise start a fresh thread.
+    const thread = opts.resumeThreadId
+      ? codex.resumeThread(opts.resumeThreadId, threadOpts)
+      : codex.startThread(threadOpts);
 
     const spawnEnv = auth.codexHome
       ? { ...(opts.env || {}), CODEX_HOME: auth.codexHome }
