@@ -22,6 +22,14 @@ export interface RunStreamedOpts {
    * `codex exec` child (the SDK's generator `finally` calls `child.kill()`).
    */
   signal?: AbortSignal
+  /**
+   * Codex thread id to resume (Phase 1C / R5). When set, the Codex backend calls
+   * `codex.resumeThread(resumeThreadId)` instead of `startThread()` so a
+   * follow-up continues the prior thread (located by id against the stable,
+   * per-worker CODEX_HOME). Ignored by the Claude backend, which resumes via its
+   * own `resume:` query option keyed on `worker.sessionId`.
+   */
+  resumeThreadId?: string
 }
 
 export type BackendEvent =

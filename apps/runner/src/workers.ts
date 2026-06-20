@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, materializeCodexHome, writeCodexMcpConfig, cleanupCodexAuth } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
@@ -469,6 +469,9 @@ export class WorkerManager {
         this.workerAuthContexts.delete(id);
         clearWorkerThrottle(id);
         storeDeleteWorker(id);
+        // Terminal teardown: now safe to delete the stable Codex home (and its
+        // resumable sessions) — the worker is fully purged, no follow-up possible.
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(id);
         count++;
       }
     }
@@ -476,6 +479,7 @@ export class WorkerManager {
     for (const worker of loadAllWorkers()) {
       if (worker.status === 'done' || worker.status === 'error') {
         storeDeleteWorker(worker.id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id);
         count++;
       }
     }
@@ -1210,39 +1214,43 @@ export class WorkerManager {
 
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
-      // Materialize Codex credential as CODEX_HOME/auth.json before spawning the backend.
-      // codexHome is captured as a local (not only on the session object) so the
-      // finally block cleans up the correct dir even if the session is superseded
-      // by a newer generation (in that case this.sessions.get(worker.id) would
-      // return the new session, not this one).
-      if (worker.codexCredential) {
+      // Phase 1C / R5: Codex tasks use a STABLE per-worker CODEX_HOME (keyed by
+      // worker id) instead of a throwaway temp dir, so the `sessions/` rollouts
+      // survive across runs/restarts and `resumeThread()` can find them. We
+      // re-seed auth.json and rewrite config.toml on EVERY start (idempotent;
+      // neither touches `sessions/`). The home is torn down ONLY on true terminal
+      // teardown (purge past the follow-up TTL) — never in the finally block.
+      //
+      // For non-Codex tasks that still carry a codexCredential (legacy/transient),
+      // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
+      if (isCodexTask) {
+        const { codexHome: _ch } = worker.codexCredential
+          ? materializeStableCodexHome(worker.id, worker.codexCredential)
+          : ensureStableCodexHome(worker.id);
+        cleanEnv.CODEX_HOME = _ch;
+        const session = this.sessions.get(worker.id);
+        if (session) (session as any).codexHome = _ch;
+
+        // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
+        // queryOptions. Rewrite it each run with the bearer token supplied via env
+        // so it never lands in config.toml. Does not touch `sessions/`.
+        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        writeCodexMcpConfig(_ch, {
+          builddServer: this.config.builddServer,
+          workspaceId: task.workspaceId,
+          workerId: worker.id,
+          bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+        });
+        // NOTE: deliberately NOT assigning the local `codexHome` var here — that
+        // var drives the finally-block teardown, which must not delete a stable
+        // home (would destroy resumable sessions).
+      } else if (worker.codexCredential) {
+        // Non-Codex task with a Codex credential: transient temp home, cleaned up.
         const { codexHome: _ch } = materializeCodexAuth(worker.id, worker.codexCredential);
         codexHome = _ch;
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
-      }
-
-      // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
-      // queryOptions. For temp Codex homes, write Buildd MCP config with the
-      // bearer token supplied via env so it never lands in config.toml.
-      if (isCodexTask) {
-        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
-        if (!codexHome && !cleanEnv.CODEX_HOME) {
-          const { codexHome: _ch } = materializeCodexHome(worker.id);
-          codexHome = _ch;
-          cleanEnv.CODEX_HOME = codexHome;
-        }
-        if (codexHome) {
-          writeCodexMcpConfig(codexHome, {
-            builddServer: this.config.builddServer,
-            workspaceId: task.workspaceId,
-            workerId: worker.id,
-            bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
-          });
-        } else if (cleanEnv.CODEX_HOME) {
-          console.warn(`[Worker ${worker.id}] Using existing CODEX_HOME; Buildd MCP config must already be present for Codex tools`);
-        }
       }
 
       // Preflight: fail fast with a clear message if no Codex auth is available.
@@ -1407,8 +1415,11 @@ export class WorkerManager {
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
         },
-        // Resume previous session if provided (loads full conversation history from disk)
-        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+        // Resume previous session if provided (loads full conversation history from disk).
+        // Claude-only: the Codex backend resumes via runStreamed's resumeThreadId
+        // (R5), not this query option. resumeSessionId carries the Codex thread id
+        // for Codex tasks, so don't feed it to Claude's resume there.
+        ...(resumeSessionId && (task.backend || 'claude') !== 'codex' ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls — validated against model capabilities below
@@ -1508,6 +1519,9 @@ export class WorkerManager {
         // the Codex backend reads this signal to break its turn loop (no SDK
         // interrupt exists — breaking the event for-await kills `codex exec`).
         signal: abortController.signal,
+        // R5: a Codex follow-up resumes the prior thread by id. resumeSessionId
+        // carries worker.codexThreadId for Codex tasks (set by resumeSession).
+        ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         onProgress: async (msg: unknown) => {
@@ -1955,9 +1969,16 @@ If something is missing or incomplete, describe what and fix it now.`;
     this.probedWorkers.delete(worker.id);
 
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
-      worker.sessionId = msg.session_id;
+      // Codex (R5): the adapter surfaces the Codex thread id as session_id on the
+      // synthetic init. Keep it in codexThreadId — NOT sessionId — so the resume
+      // branch (recovery.ts) stays unambiguous between Claude and Codex.
+      if (worker.taskBackend === 'codex') {
+        worker.codexThreadId = msg.session_id;
+      } else {
+        worker.sessionId = msg.session_id;
+      }
       this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
-      // Immediately persist sessionId (critical for resume)
+      // Immediately persist the captured id (critical for resume)
       storeSaveWorker(worker);
     }
 
