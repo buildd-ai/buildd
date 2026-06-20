@@ -1479,7 +1479,12 @@ export class WorkerManager {
             extendedContext,
           }, this.config.model, (e: any) => this.emit(e));
         },
-      } : {});
+      } : {
+        // Codex branch: wire the shared MessageStream so review/nudge/steering
+        // enqueues drive multi-turn runs on a persistent Codex thread (Phase 1B),
+        // mirroring how the Claude branch consumes `inputStream` via streamInput.
+        inputStream,
+      });
 
       // Stream responses with ralph loop (prompt-based self-review)
       let resultSubtype: string | undefined;
@@ -1499,6 +1504,10 @@ export class WorkerManager {
         ...(maxTurns ? { maxTurns } : {}),
         sandboxMode: taskSandboxMode,
         env: cleanEnv,
+        // R3: the Claude backend bakes abortController into its query options;
+        // the Codex backend reads this signal to break its turn loop (no SDK
+        // interrupt exists — breaking the event for-await kills `codex exec`).
+        signal: abortController.signal,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         onProgress: async (msg: unknown) => {
@@ -2092,6 +2101,16 @@ If something is missing or incomplete, describe what and fix it now.`;
         if (block.type === 'text') {
           const text = block.text.trim();
           if (text) {
+            // R1: track the latest assistant text as worker.lastAssistantMessage.
+            // For Claude this is also set authoritatively by the Stop hook
+            // (hook-factory.ts), but Codex has no Stop hook — its agent_message
+            // text arrives only through this channel-2 adapter path. Without
+            // this, the review-loop DONE gate (workers.ts ~1567) and the
+            // completion summary (~1758) stay empty for Codex, so every task
+            // burns all review iterations and exits with no summary. Setting it
+            // per text block (last write wins) is harmless for Claude.
+            worker.lastAssistantMessage = text;
+
             // Add to unified timeline
             this.addChatMessage(worker, { type: 'text', content: text, timestamp: Date.now() });
 

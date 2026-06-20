@@ -6,6 +6,15 @@ import { mapCodexEventToSdkMessages } from './codex-events.js';
 export interface CodexBackendConfig {
   /** Path to CODEX_HOME directory for auth.json (overrides env var) */
   codexHome?: string;
+  /**
+   * Multi-turn input stream (Phase 1B). When provided, the backend runs the
+   * initial prompt then parks on `inputStream.next()` between turns: each
+   * message that arrives (a Claude-shaped SDKUserMessage) is run as another
+   * turn on the SAME persistent Codex `Thread`; when the stream ends the
+   * backend yields `complete`. This is how workers.ts's review/nudge/steering
+   * enqueues reach Codex, mirroring the Claude path's `streamInput`.
+   */
+  inputStream?: AsyncIterable<unknown>;
 }
 
 interface UsageTotals {
@@ -38,6 +47,7 @@ export class CodexBackend implements AgentBackend {
     const sandbox = this.mapSandboxMode(opts.sandboxMode);
     const prompt = await this.resolvePrompt(opts.prompt);
     const modelId = opts.model || 'codex';
+    const signal = opts.signal;
     const codex = new Codex({
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
       workingDirectory: opts.cwd,
@@ -50,11 +60,13 @@ export class CodexBackend implements AgentBackend {
       skipGitRepoCheck: true,
     });
 
-    const streamed = await thread.runStreamed(prompt);
     const spawnEnv = auth.codexHome
       ? { ...(opts.env || {}), CODEX_HOME: auth.codexHome }
       : opts.env;
-    const events = this.withInitialSpawnEnv(streamed.events as AsyncIterable<unknown>, spawnEnv);
+
+    // Usage/cost accumulate ACROSS turns so the synthetic `result` (R4) is
+    // emitted exactly once at the end with aggregate totals — never per turn,
+    // or worker.resultMeta would over-count.
     let lastSummary = '';
     let lastStructuredOutput: unknown;
     let turnCount = 0;
@@ -62,111 +74,199 @@ export class CodexBackend implements AgentBackend {
     let threadId: string | undefined;
     const modelUsage = new Map<string, UsageTotals>();
 
-    for await (const event of events) {
-      const eventAny = event as any;
-
-      // Capture the thread id so the adapter can stamp the synthetic init.
-      if (eventAny.type === 'thread.started' && typeof eventAny.thread_id === 'string') {
-        threadId = eventAny.thread_id;
-      }
-
-      // Channel 2: translate the Codex event into Claude-shaped SDKMessages and
-      // feed each into handleMessage (via onProgress). This drives all rich
-      // worker-state tracking (toolCalls, commits, milestones, loop detection,
-      // MCP-failure tracking, the PR/artifact output-requirement gate, error
-      // traces). Replaces the old raw `onProgress?.(event)` passthrough — the
-      // raw Codex event shapes matched nothing in handleMessage.
-      for (const sdkMsg of mapCodexEventToSdkMessages(event, { threadId })) {
-        await opts.onProgress?.(sdkMsg);
-      }
-
-      if (eventAny.type === 'error') {
-        yield { type: 'error', error: String(eventAny.message || 'Codex stream error') };
-        return;
-      }
-
-      if (eventAny.type === 'turn.failed') {
-        yield { type: 'error', error: String(eventAny.error?.message || 'Codex turn failed') };
-        return;
-      }
-
-      if (eventAny.type === 'item.completed') {
-        const item = eventAny.item || {};
-        if (item.type === 'error') {
-          yield { type: 'error', error: String(item.message || 'Codex item failed') };
-          return;
-        }
-
-        const message = this.progressMessageForItem(item);
-        if (message) {
-          lastSummary = message.slice(0, 500);
-          if (item.type === 'agent_message') {
-            lastStructuredOutput = this.tryParseStructuredOutput(item.text, opts.outputSchema);
-          }
-          // R8 — dedupe worker.output writes. handleMessage's assistant-text
-          // branch now pushes agent_message text to worker.output (via the
-          // channel-2 adapter above). Yielding a channel-1 `progress` for the
-          // same agent_message would double-write those lines, so skip it for
-          // agent_message. Other item types (commands, file changes, etc.) keep
-          // their live-progress yield — handleMessage maps those to tool_use,
-          // not output lines, so there's no duplication.
-          if (item.type !== 'agent_message') {
-            yield { type: 'progress', message: message.slice(0, 200) };
-          }
-        }
-      }
-
-      if (eventAny.type === 'turn.completed') {
-        turnCount++;
-        const usage = eventAny.usage;
-        let inputTokens: number | undefined;
-        let outputTokens: number | undefined;
-        if (usage) {
-          inputTokens = (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
-          outputTokens = usage.output_tokens ?? 0;
-          const usageCost = this.estimateCostUsd(modelId, {
-            inputTokens: usage.input_tokens ?? 0,
-            cachedInputTokens: usage.cached_input_tokens ?? 0,
-            outputTokens,
-          }, opts.env);
-          totalCostUsd += usageCost;
-          const existing = modelUsage.get(modelId) || {
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheReadInputTokens: 0,
-            cacheCreationInputTokens: 0,
-            costUSD: 0,
-          };
-          existing.inputTokens += usage.input_tokens ?? 0;
-          existing.cacheReadInputTokens += usage.cached_input_tokens ?? 0;
-          existing.outputTokens += outputTokens;
-          existing.costUSD += usageCost;
-          modelUsage.set(modelId, existing);
-        }
-
-        yield {
-          type: 'turn_complete',
-          ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
-          ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
-        };
-
-        if (auth.type !== 'oauth' && opts.maxBudgetUsd !== undefined && totalCostUsd > opts.maxBudgetUsd) {
-          await opts.onProgress?.(this.resultEvent('error_max_budget_usd', modelUsage, turnCount, totalCostUsd));
-          yield {
-            type: 'error',
-            error: `Budget limit exceeded (maxBudgetUsd): $${totalCostUsd.toFixed(4)} > $${opts.maxBudgetUsd.toFixed(4)}`,
-          };
-          return;
-        }
-      }
+    // R3: if the caller already aborted before we start, run nothing.
+    if (signal?.aborted) {
+      return;
     }
 
+    // Multi-turn loop (Phase 1B). The first iteration runs the initial prompt.
+    // After each turn completes we park on the input-stream iterator: a message
+    // drives another turn on the SAME thread; stream-end (or no stream) yields
+    // `complete` and returns. workers.ts breaking the consuming `for await`
+    // (DONE gate / error / exhausted) triggers THIS generator's implicit
+    // `.return()`, unwinding even while parked on `it.next()` (R6) — and on the
+    // first turn the SDK's own generator `finally` then kills `codex exec`.
+    const it = this.config.inputStream?.[Symbol.asyncIterator]();
+    let prompt_ = prompt;
+
+    while (true) {
+      const streamed = await thread.runStreamed(prompt_);
+      const events = this.withInitialSpawnEnv(streamed.events as AsyncIterable<unknown>, spawnEnv);
+
+      // Track whether THIS turn ended via turn.completed (vs. abort/stream-end)
+      // so we only consult the input stream after a real turn boundary.
+      let turnCompleted = false;
+
+      for await (const event of events) {
+        // R3: stop consuming events the moment we're aborted. Breaking the
+        // `for await` closes the SDK event generator, whose `finally` calls
+        // child.kill() on the spawned `codex exec` process.
+        if (signal?.aborted) {
+          return;
+        }
+
+        const eventAny = event as any;
+
+        // Capture the thread id so the adapter can stamp the synthetic init.
+        if (eventAny.type === 'thread.started' && typeof eventAny.thread_id === 'string') {
+          threadId = eventAny.thread_id;
+        }
+
+        // Channel 2: translate the Codex event into Claude-shaped SDKMessages
+        // and feed each into handleMessage (via onProgress). This drives all
+        // rich worker-state tracking (toolCalls, commits, milestones, loop
+        // detection, MCP-failure tracking, the PR/artifact output-requirement
+        // gate, error traces, and R1's worker.lastAssistantMessage).
+        for (const sdkMsg of mapCodexEventToSdkMessages(event, { threadId })) {
+          await opts.onProgress?.(sdkMsg);
+        }
+
+        if (eventAny.type === 'error') {
+          yield { type: 'error', error: String(eventAny.message || 'Codex stream error') };
+          return;
+        }
+
+        if (eventAny.type === 'turn.failed') {
+          yield { type: 'error', error: String(eventAny.error?.message || 'Codex turn failed') };
+          return;
+        }
+
+        if (eventAny.type === 'item.completed') {
+          const item = eventAny.item || {};
+          if (item.type === 'error') {
+            yield { type: 'error', error: String(item.message || 'Codex item failed') };
+            return;
+          }
+
+          const message = this.progressMessageForItem(item);
+          if (message) {
+            lastSummary = message.slice(0, 500);
+            if (item.type === 'agent_message') {
+              lastStructuredOutput = this.tryParseStructuredOutput(item.text, opts.outputSchema);
+            }
+            // R8 — dedupe worker.output writes. handleMessage's assistant-text
+            // branch pushes agent_message text to worker.output (via the
+            // channel-2 adapter above). A channel-1 `progress` for the same
+            // agent_message would double-write, so skip it. Other item types
+            // map to tool_use, not output lines — keep their live progress.
+            if (item.type !== 'agent_message') {
+              yield { type: 'progress', message: message.slice(0, 200) };
+            }
+          }
+        }
+
+        if (eventAny.type === 'turn.completed') {
+          turnCount++;
+          turnCompleted = true;
+          const usage = eventAny.usage;
+          let inputTokens: number | undefined;
+          let outputTokens: number | undefined;
+          if (usage) {
+            inputTokens = (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
+            outputTokens = usage.output_tokens ?? 0;
+            const usageCost = this.estimateCostUsd(modelId, {
+              inputTokens: usage.input_tokens ?? 0,
+              cachedInputTokens: usage.cached_input_tokens ?? 0,
+              outputTokens,
+            }, opts.env);
+            totalCostUsd += usageCost;
+            const existing = modelUsage.get(modelId) || {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              costUSD: 0,
+            };
+            existing.inputTokens += usage.input_tokens ?? 0;
+            existing.cacheReadInputTokens += usage.cached_input_tokens ?? 0;
+            existing.outputTokens += outputTokens;
+            existing.costUSD += usageCost;
+            modelUsage.set(modelId, existing);
+          }
+
+          yield {
+            type: 'turn_complete',
+            ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
+            ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
+          };
+
+          if (auth.type !== 'oauth' && opts.maxBudgetUsd !== undefined && totalCostUsd > opts.maxBudgetUsd) {
+            await opts.onProgress?.(this.resultEvent('error_max_budget_usd', modelUsage, turnCount, totalCostUsd));
+            yield {
+              type: 'error',
+              error: `Budget limit exceeded (maxBudgetUsd): $${totalCostUsd.toFixed(4)} > $${opts.maxBudgetUsd.toFixed(4)}`,
+            };
+            return;
+          }
+
+          // The event stream for a turn typically ends right after
+          // turn.completed. Stop draining and decide on the next turn below.
+          break;
+        }
+      }
+
+      // Aborted while draining (signal flipped after the inner break check, or
+      // the stream ended without turn.completed under abort): stop, no result.
+      if (signal?.aborted) {
+        return;
+      }
+
+      // No multi-turn input stream → single-shot semantics: complete now.
+      // Also: if the turn did NOT complete (stream ended early / no usage),
+      // there's nothing to continue from, so complete.
+      if (!it || !turnCompleted) {
+        break;
+      }
+
+      // R6: park here until workers.ts enqueues a review/nudge/steering message
+      // (drives another turn) or ends the stream (we complete). If workers.ts
+      // has already `break`ed its consuming loop, the runtime calls this
+      // generator's `.return()` and execution unwinds from this await — it does
+      // NOT resume past it — so no `complete` leaks out after an early break.
+      const next = await it.next();
+      if (next.done) {
+        break;
+      }
+      // Aborted while parked.
+      if (signal?.aborted) {
+        return;
+      }
+      prompt_ = this.extractPromptText(next.value);
+    }
+
+    // Final completion: emit the synthetic `result` exactly once (R4) with
+    // aggregate usage, then yield `complete` (the only place we do so).
     await opts.onProgress?.(this.resultEvent('success', modelUsage, turnCount, totalCostUsd));
     yield {
       type: 'complete',
       summary: lastSummary,
       ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
     };
+  }
+
+  /**
+   * Extract plain text from an input-stream message. workers.ts enqueues
+   * Claude-shaped SDKUserMessages (`{ type:'user', message:{ content:[{type:'text',text}] } }`);
+   * Codex `Input` is a plain string, so we flatten text blocks. Falls back to
+   * common shapes and finally to `String(value)` so an unexpected payload still
+   * drives a turn rather than throwing.
+   */
+  private extractPromptText(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (!value || typeof value !== 'object') return String(value ?? '');
+    const v = value as any;
+    const content = v.message?.content ?? v.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const text = content
+        .filter((b: any) => b && (b.type === 'text' || typeof b.text === 'string'))
+        .map((b: any) => String(b.text ?? ''))
+        .join('\n')
+        .trim();
+      if (text) return text;
+    }
+    if (typeof v.text === 'string') return v.text;
+    return '';
   }
 
   private resolveAuth(opts: RunStreamedOpts): { apiKey?: string; codexHome?: string; type: 'api_key' | 'oauth' } {

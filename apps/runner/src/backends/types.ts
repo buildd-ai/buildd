@@ -14,6 +14,14 @@ export interface RunStreamedOpts {
   env?: Record<string, string>
   maxBudgetUsd?: number
   onProgress?: (event: unknown) => void | Promise<void>
+  /**
+   * Abort signal (R3). The Claude backend bakes its own `abortController` into
+   * the query options; the Codex backend reads this signal to break its turn
+   * loop. The Codex SDK exposes no interrupt method, so breaking the
+   * `for await` over the event stream is what terminates the spawned
+   * `codex exec` child (the SDK's generator `finally` calls `child.kill()`).
+   */
+  signal?: AbortSignal
 }
 
 export type BackendEvent =
