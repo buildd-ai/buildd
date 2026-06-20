@@ -94,6 +94,13 @@ export class CodexBackend implements AgentBackend {
     const it = this.config.inputStream?.[Symbol.asyncIterator]();
     let prompt_ = prompt;
 
+    // Phase 3A — structured-output repair. The Codex SDK has no schema param, so
+    // we JSON.parse + (lightly) validate the agent's final text. When a schema is
+    // expected but the output fails to parse/validate, we self-drive a bounded
+    // number of repair turns asking the agent to re-emit valid JSON.
+    const MAX_REPAIR_ATTEMPTS = 2;
+    let repairAttempts = 0;
+
     while (true) {
       const streamed = await thread.runStreamed(prompt_);
       const events = this.withInitialSpawnEnv(streamed.events as AsyncIterable<unknown>, spawnEnv);
@@ -168,7 +175,10 @@ export class CodexBackend implements AgentBackend {
           let outputTokens: number | undefined;
           if (usage) {
             inputTokens = (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
-            outputTokens = usage.output_tokens ?? 0;
+            // Reasoning tokens (confirmed live, codex-cli 0.140) bill as OUTPUT
+            // but arrive in a separate `reasoning_output_tokens` field that the
+            // estimator previously ignored — under-counting cost. Fold them in.
+            outputTokens = (usage.output_tokens ?? 0) + (usage.reasoning_output_tokens ?? 0);
             const usageCost = this.estimateCostUsd(modelId, {
               inputTokens: usage.input_tokens ?? 0,
               cachedInputTokens: usage.cached_input_tokens ?? 0,
@@ -214,6 +224,20 @@ export class CodexBackend implements AgentBackend {
       // the stream ended without turn.completed under abort): stop, no result.
       if (signal?.aborted) {
         return;
+      }
+
+      // Phase 3A — structured-output repair. If a schema was requested but the
+      // turn's output didn't parse/validate, self-drive a bounded repair turn
+      // (independent of the external review/nudge inputStream) before completing.
+      if (
+        turnCompleted &&
+        opts.outputSchema &&
+        lastStructuredOutput === undefined &&
+        repairAttempts < MAX_REPAIR_ATTEMPTS
+      ) {
+        repairAttempts++;
+        prompt_ = this.buildRepairPrompt(opts.outputSchema);
+        continue;
       }
 
       // No multi-turn input stream → single-shot semantics: complete now.
@@ -310,7 +334,14 @@ export class CodexBackend implements AgentBackend {
 
   private async resolvePrompt(prompt: string | AsyncIterable<unknown>): Promise<string> {
     if (typeof prompt === 'string') return prompt;
-    throw new Error('Codex backend does not support non-text prompts yet.');
+    // Phase 3B — images/multimodal are unsupported by design: the Codex SDK's
+    // turn input is `Input = string` (codex-sdk 0.44, no image/content-block
+    // input). Tasks with image attachments arrive here as a non-text prompt;
+    // route them to the Claude backend instead. This is a non-goal until the
+    // Codex SDK adds multimodal input.
+    throw new Error(
+      'Codex backend does not support image or other non-text prompts (codex-sdk 0.44 accepts only a text string). Route image-attachment tasks to the Claude backend.',
+    );
   }
 
   private progressMessageForItem(item: any): string {
@@ -342,11 +373,79 @@ export class CodexBackend implements AgentBackend {
 
   private tryParseStructuredOutput(text: unknown, outputSchema?: Record<string, unknown>): unknown {
     if (!outputSchema || typeof text !== 'string') return undefined;
+    let parsed: unknown;
     try {
-      return JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
-      return undefined;
+      // Tolerate prose around the JSON (e.g. ```json fences) by extracting the
+      // first balanced object/array, then re-parsing.
+      const extracted = this.extractJsonCandidate(text);
+      if (extracted === undefined) return undefined;
+      try {
+        parsed = JSON.parse(extracted);
+      } catch {
+        return undefined;
+      }
     }
+    // Lightweight schema validation (Phase 3A): the SDK gives us a JSON Schema,
+    // not a zod schema, and a full JSON-Schema→zod conversion is out of scope.
+    // We check the load-bearing constraints (top-level `type` + `required`) so a
+    // syntactically-valid-but-wrong-shape payload still triggers a repair turn.
+    if (!this.validateAgainstSchema(parsed, outputSchema)) return undefined;
+    return parsed;
+  }
+
+  /** Extract the first balanced top-level {…} or […] from free-form text. */
+  private extractJsonCandidate(text: string): string | undefined {
+    for (const [open, close] of [['{', '}'], ['[', ']']] as const) {
+      const start = text.indexOf(open);
+      if (start === -1) continue;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === '\\') escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') inString = true;
+        else if (ch === open) depth++;
+        else if (ch === close) {
+          depth--;
+          if (depth === 0) return text.slice(start, i + 1);
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /** Minimal JSON-Schema check: top-level `type` and `required` keys only. */
+  private validateAgainstSchema(value: unknown, schema: Record<string, unknown>): boolean {
+    const type = schema.type;
+    if (type === 'object') {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+      const required = schema.required;
+      if (Array.isArray(required)) {
+        for (const key of required) {
+          if (typeof key === 'string' && !(key in (value as Record<string, unknown>))) return false;
+        }
+      }
+    } else if (type === 'array') {
+      if (!Array.isArray(value)) return false;
+    }
+    return true;
+  }
+
+  /** Build the one-shot repair nudge sent when structured output fails (3A). */
+  private buildRepairPrompt(outputSchema: Record<string, unknown>): string {
+    return [
+      'Your previous response did not contain valid JSON matching the required output schema.',
+      'Respond now with ONLY the JSON value (no prose, no code fences) that conforms to this JSON Schema:',
+      JSON.stringify(outputSchema),
+    ].join('\n');
   }
 
   private resultEvent(
