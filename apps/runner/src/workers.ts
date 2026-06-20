@@ -1246,11 +1246,17 @@ export class WorkerManager {
         // queryOptions. Rewrite it each run with the bearer token supplied via env
         // so it never lands in config.toml. Does not touch `sessions/`.
         cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        // Phase 3C: map buildd's configuredEffort → config.toml model_reasoning_effort
+        // (ThreadOptions has no reasoning-effort field). task.context.effort wins
+        // over the workspace gitConfig.effort, mirroring the Claude path below.
+        const codexEffort = ((task.context as any)?.effort ?? gitConfig?.effort) as
+          | 'low' | 'medium' | 'high' | 'max' | undefined;
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
           workerId: worker.id,
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+          ...(codexEffort ? { effort: codexEffort } : {}),
         });
         // NOTE: deliberately NOT assigning the local `codexHome` var here — that
         // var drives the finally-block teardown, which must not delete a stable

@@ -113,6 +113,25 @@ export interface CodexMcpConfig {
   workspaceId: string;
   workerId: string;
   bearerTokenEnvVar: string;
+  /**
+   * Reasoning effort (Phase 3C). `ThreadOptions` has no reasoning-effort field,
+   * so buildd's configuredEffort is mapped to the codex-cli top-level config key
+   * `model_reasoning_effort`. buildd's `max` collapses to codex `high` (codex
+   * supports minimal|low|medium|high only). When omitted, no key is emitted and
+   * the model uses its default effort.
+   */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+}
+
+/**
+ * Map buildd's effort scale to a codex `model_reasoning_effort` value.
+ * Verified against codex-cli 0.140 via `codex exec --strict-config`:
+ *   - `model_reasoning_effort = "high"` is accepted (CLI prints `reasoning effort: high`).
+ *   - `reasoning_effort` (no `model_` prefix) is rejected as an unknown field.
+ * Codex has no `max`, so buildd `max` → codex `high`.
+ */
+function codexReasoningEffort(effort: 'low' | 'medium' | 'high' | 'max'): 'low' | 'medium' | 'high' {
+  return effort === 'max' ? 'high' : effort;
 }
 
 /** Create a temporary CODEX_HOME for runs that only need transient Codex config. */
@@ -127,6 +146,11 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
   fs.mkdirSync(codexHome, { recursive: true });
   const mcpUrl = `${config.builddServer}/api/mcp?workspace=${encodeURIComponent(config.workspaceId)}&worker=${encodeURIComponent(config.workerId)}`;
   const content = [
+    // Reasoning effort (Phase 3C) MUST be a TOP-LEVEL key emitted BEFORE any
+    // `[table]` header — otherwise TOML scopes it INTO the table
+    // (`mcp_servers.buildd.model_reasoning_effort`), which `--strict-config`
+    // rejects as an unknown field. Verified live against codex-cli 0.140.
+    ...(config.effort ? [`model_reasoning_effort = ${tomlString(codexReasoningEffort(config.effort))}`, ''] : []),
     '[mcp_servers.buildd]',
     `url = ${tomlString(mcpUrl)}`,
     `bearer_token_env_var = ${tomlString(config.bearerTokenEnvVar)}`,
