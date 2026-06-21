@@ -73,20 +73,19 @@ export async function getTeamChannel(teamId: string): Promise<TeamChannel> {
 }
 
 /**
- * Pushover is stored as an encrypted JSON blob `{ userKey, appToken? }` (per the
- * multi-field-credential pattern in docs/credentials-architecture.md). Legacy
- * rows that stored a bare user-key string are still accepted.
+ * Pushover is stored as an encrypted JSON blob `{ appToken, userKey }` (per the
+ * multi-field-credential pattern in docs/credentials-architecture.md). Both
+ * fields are required — a blob missing either is treated as not configured.
  */
 function decodePushoverBlob(value: string | null): PushoverChannel | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as Partial<PushoverChannel>;
-    if (parsed && typeof parsed.userKey === 'string' && parsed.userKey) {
-      return { userKey: parsed.userKey, appToken: typeof parsed.appToken === 'string' ? parsed.appToken : null };
+    if (parsed && typeof parsed.appToken === 'string' && parsed.appToken && typeof parsed.userKey === 'string' && parsed.userKey) {
+      return { appToken: parsed.appToken, userKey: parsed.userKey };
     }
   } catch {
-    // Not JSON — treat the whole string as a bare user key (back-compat).
-    return { userKey: value, appToken: null };
+    // Malformed blob — not a usable channel.
   }
   return null;
 }
@@ -119,19 +118,18 @@ export async function getTeamPreferences(teamId: string): Promise<Record<NotifyE
 const PUSHOVER_API = 'https://api.pushover.net/1/messages.json';
 
 /**
- * Send via the team's Pushover channel. The user/group key always comes from the
- * team; the app token is the team's own if they provided one, otherwise buildd's
- * shared app token (env PUSHOVER_TOKEN — already set in prod).
+ * Send via the team's OWN Pushover app + user key. buildd's env PUSHOVER_TOKEN is
+ * deliberately NOT used here — that app belongs to the platform and must not
+ * deliver another tenant's alerts. resolveNotifyPlan guarantees both fields are
+ * present before this is called.
  */
 async function sendPushover(channel: PushoverChannel, event: NotifyEvent, payload: NotifyPayload): Promise<void> {
-  const token = channel.appToken || process.env.PUSHOVER_TOKEN;
-  if (!token) return; // no team token and platform has none — nothing we can send with
   try {
     await fetch(PUSHOVER_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        token,
+        token: channel.appToken,
         user: channel.userKey,
         title: payload.title,
         message: payload.message,
@@ -217,12 +215,15 @@ async function setTeamChannel(teamId: string, purpose: ChannelPurpose, value: st
 }
 
 /**
- * Save a team's Pushover channel: their user/group key (required) and an OPTIONAL
- * own app token. Stored as a JSON blob so both fields live in one encrypted row.
- * When no app token is given, buildd sends via env PUSHOVER_TOKEN.
+ * Save a team's Pushover channel: their OWN application token AND their user/group
+ * key — both required (we never send via buildd's app). Stored as a JSON blob so
+ * both fields live in one encrypted row.
  */
-export async function setTeamPushover(teamId: string, userKey: string, appToken?: string | null): Promise<void> {
-  const blob: PushoverChannel = { userKey, appToken: appToken && appToken.trim() ? appToken.trim() : null };
+export async function setTeamPushover(teamId: string, appToken: string, userKey: string): Promise<void> {
+  const blob: PushoverChannel = { appToken: appToken.trim(), userKey: userKey.trim() };
+  if (!blob.appToken || !blob.userKey) {
+    throw new Error('Pushover requires both an app token and a user/group key');
+  }
   await setTeamChannel(teamId, 'pushover', JSON.stringify(blob));
 }
 
@@ -241,15 +242,12 @@ export async function deleteTeamChannel(teamId: string, purpose: ChannelPurpose)
   ));
 }
 
-/**
- * Which channels are configured for a team (no secret values). `pushoverAppToken`
- * reflects whether the team supplied their OWN app token vs. relying on buildd's.
- */
-export async function getTeamChannelStatus(teamId: string): Promise<{ pushover: boolean; pushoverOwnAppToken: boolean; webhook: boolean }> {
+/** Which channels are configured for a team (booleans only — never the values). */
+export async function getTeamChannelStatus(teamId: string): Promise<{ pushover: boolean; webhook: boolean }> {
   const channel = await getTeamChannel(teamId);
   return {
-    pushover: !!channel.pushover?.userKey,
-    pushoverOwnAppToken: !!channel.pushover?.appToken,
+    // getTeamChannel only returns `pushover` when BOTH app token + user key are set.
+    pushover: !!channel.pushover,
     webhook: !!channel.webhookUrl,
   };
 }

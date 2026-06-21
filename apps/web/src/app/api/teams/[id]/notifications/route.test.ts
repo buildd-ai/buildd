@@ -6,7 +6,7 @@ const mockGetUserTeamsWithDetails = mock(() => Promise.resolve([] as any[]));
 
 const mockGetTeamPreferences = mock(() => Promise.resolve({ taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true }));
 const mockSetTeamPreferences = mock((_t: string, p: any) => Promise.resolve(p));
-const mockGetTeamChannelStatus = mock(() => Promise.resolve({ pushover: false, pushoverOwnAppToken: false, webhook: false }));
+const mockGetTeamChannelStatus = mock(() => Promise.resolve({ pushover: false, webhook: false }));
 const mockSetTeamPushover = mock(() => Promise.resolve());
 const mockSetTeamWebhook = mock(() => Promise.resolve());
 const mockDeleteTeamChannel = mock(() => Promise.resolve());
@@ -50,7 +50,7 @@ describe('/api/teams/[id]/notifications', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamsWithDetails.mockResolvedValue([{ id: 'team-1' }]);
-    mockGetTeamChannelStatus.mockResolvedValue({ pushover: false, pushoverOwnAppToken: false, webhook: false });
+    mockGetTeamChannelStatus.mockResolvedValue({ pushover: false, webhook: false });
     mockGetTeamPreferences.mockResolvedValue({ taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true });
     mockSetTeamPreferences.mockImplementation((_t: string, p: any) => Promise.resolve(p));
   });
@@ -71,24 +71,30 @@ describe('/api/teams/[id]/notifications', () => {
     const res = await GET(getReq(), ctx);
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.channels).toEqual({ pushover: false, pushoverOwnAppToken: false, webhook: false });
+    expect(data.channels).toEqual({ pushover: false, webhook: false });
     expect(data.preferences.taskFailed).toBe(true);
   });
 
-  it('PUT stores a pushover key (no app token → buildd sends via its own app)', async () => {
+  it('PUT stores pushover with the team\'s own app token + user key', async () => {
+    const res = await PUT(putReq({ pushoverAppToken: 'aTOKEN', pushoverUserKey: 'uABC' }), ctx);
+    expect(res.status).toBe(200);
+    expect(mockSetTeamPushover).toHaveBeenCalledWith('team-1', 'aTOKEN', 'uABC');
+  });
+
+  it('PUT rejects pushover with only a user key (no app token → would use buildd\'s app)', async () => {
     const res = await PUT(putReq({ pushoverUserKey: 'uABC' }), ctx);
-    expect(res.status).toBe(200);
-    expect(mockSetTeamPushover).toHaveBeenCalledWith('team-1', 'uABC', null);
+    expect(res.status).toBe(400);
+    expect(mockSetTeamPushover).not.toHaveBeenCalled();
   });
 
-  it('PUT stores a pushover key with an optional own app token', async () => {
-    const res = await PUT(putReq({ pushoverUserKey: 'uABC', pushoverAppToken: 'aTOKEN' }), ctx);
-    expect(res.status).toBe(200);
-    expect(mockSetTeamPushover).toHaveBeenCalledWith('team-1', 'uABC', 'aTOKEN');
+  it('PUT rejects pushover with only an app token', async () => {
+    const res = await PUT(putReq({ pushoverAppToken: 'aTOKEN' }), ctx);
+    expect(res.status).toBe(400);
+    expect(mockSetTeamPushover).not.toHaveBeenCalled();
   });
 
-  it('PUT clears the pushover channel when the user key is null', async () => {
-    const res = await PUT(putReq({ pushoverUserKey: null }), ctx);
+  it('PUT clears the pushover channel when both fields are null', async () => {
+    const res = await PUT(putReq({ pushoverAppToken: null, pushoverUserKey: null }), ctx);
     expect(res.status).toBe(200);
     expect(mockDeleteTeamChannel).toHaveBeenCalledWith('team-1', 'pushover');
     expect(mockSetTeamPushover).not.toHaveBeenCalled();

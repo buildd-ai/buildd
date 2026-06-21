@@ -16,7 +16,7 @@ interface Props {
 type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
 
 interface NotificationsState {
-  channels: { pushover: boolean; pushoverOwnAppToken: boolean; webhook: boolean };
+  channels: { pushover: boolean; webhook: boolean };
   preferences: Record<NotifyEvent, boolean>;
 }
 
@@ -28,10 +28,10 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
 ];
 
 /**
- * Per-team notification settings. Alerts route to THIS team's own channel — a
- * Pushover user/group key (plus an optional own app token) and/or a webhook URL
- * — and each event type can be toggled. Teams with no channel get nothing.
- * Mirrors the AgentBackendsSection team selector conventions.
+ * Per-team notification settings. Alerts route to THIS team's own channel — the
+ * team's own Pushover app token + user/group key, and/or a webhook URL — and each
+ * event type can be toggled. Teams with no channel get nothing. Mirrors the
+ * AgentBackendsSection team selector conventions.
  */
 export default function NotificationsSection({ workspaces, currentTeamId }: Props) {
   const teamWorkspaces = useMemo(
@@ -92,10 +92,16 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
 
   async function saveChannels() {
     const body: Record<string, unknown> = {};
-    if (pushoverKey.trim()) {
-      body.pushoverUserKey = pushoverKey.trim();
-      // App token is optional — only send it alongside a user key.
-      body.pushoverAppToken = pushoverAppToken.trim() || null;
+    const appToken = pushoverAppToken.trim();
+    const userKey = pushoverKey.trim();
+    if (appToken || userKey) {
+      // Pushover needs BOTH — guard here so we don't send a half-set channel.
+      if (!appToken || !userKey) {
+        setMsg({ type: 'error', text: 'Pushover needs both an app token and a user/group key.' });
+        return;
+      }
+      body.pushoverAppToken = appToken;
+      body.pushoverUserKey = userKey;
     }
     if (webhookUrl.trim()) body.webhookUrl = webhookUrl.trim();
     if (Object.keys(body).length === 0) return;
@@ -106,7 +112,10 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
   }
 
   async function clearChannel(which: 'pushover' | 'webhook') {
-    await put(which === 'pushover' ? { pushoverUserKey: null } : { webhookUrl: null }, 'Channel removed.');
+    await put(
+      which === 'pushover' ? { pushoverAppToken: null, pushoverUserKey: null } : { webhookUrl: null },
+      'Channel removed.',
+    );
   }
 
   async function toggle(event: NotifyEvent, value: boolean) {
@@ -142,43 +151,36 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
               <h3 className="text-sm font-medium text-text-primary">Channels</h3>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-text-secondary">Pushover user/group key</label>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-text-secondary">Pushover (your own app)</span>
                   {hasPushover && (
-                    <span className="inline-flex items-center gap-1.5 text-xs">
-                      <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Configured
+                    <span className="inline-flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Configured
+                      </span>
+                      <button onClick={() => clearChannel('pushover')} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
+                        Remove
+                      </button>
                     </span>
-                  )}
-                  {hasPushover && (
-                    <button onClick={() => clearChannel('pushover')} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
-                      Remove
-                    </button>
                   )}
                 </div>
                 <input
                   type="password"
-                  value={pushoverKey}
-                  onChange={(e) => setPushoverKey(e.target.value)}
-                  placeholder={hasPushover ? 'Replace key…' : 'u… (Pushover user or group key)'}
-                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
-                />
-                <p className="text-xs text-text-muted">
-                  Your Pushover user or group key (from your Pushover dashboard). Notifications send via buildd&apos;s own
-                  Pushover app — you only need the key.
-                </p>
-
-                <label className="text-xs font-medium text-text-secondary block pt-1">
-                  Pushover app token <span className="text-text-muted font-normal">(optional)</span>
-                </label>
-                <input
-                  type="password"
                   value={pushoverAppToken}
                   onChange={(e) => setPushoverAppToken(e.target.value)}
-                  placeholder={state?.channels.pushoverOwnAppToken ? 'Replace app token…' : 'Leave blank to use buildd’s app'}
+                  placeholder={hasPushover ? 'Replace app token…' : 'App token (your Pushover application)'}
+                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+                />
+                <input
+                  type="password"
+                  value={pushoverKey}
+                  onChange={(e) => setPushoverKey(e.target.value)}
+                  placeholder={hasPushover ? 'Replace user/group key…' : 'u… (user or group key)'}
                   className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
                 />
                 <p className="text-xs text-text-muted">
-                  Only needed if you want alerts to appear under your own Pushover application instead of buildd&apos;s.
+                  Both come from your own Pushover account — create an application to get the app token, and use your user
+                  or group key as the recipient. Alerts send through your app, not buildd&apos;s.
                 </p>
               </div>
 
@@ -207,7 +209,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
 
               <button
                 onClick={saveChannels}
-                disabled={busy || (!pushoverKey.trim() && !webhookUrl.trim())}
+                disabled={busy || (!pushoverAppToken.trim() && !pushoverKey.trim() && !webhookUrl.trim())}
                 className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
               >
                 {busy ? 'Saving…' : 'Save channel'}
