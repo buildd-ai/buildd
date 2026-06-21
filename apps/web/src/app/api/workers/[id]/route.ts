@@ -336,8 +336,8 @@ export async function PATCH(
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
       where: eq(tasks.id, worker.taskId),
-      columns: { context: true, workspaceId: true },
-      with: { workspace: { columns: { teamId: true } } },
+      columns: { context: true, workspaceId: true, title: true, backend: true },
+      with: { workspace: { columns: { teamId: true, name: true } } },
     });
     const budgetTaskCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
     const tenantCtx = budgetTaskCtx.tenantContext as { tenantId?: string } | undefined;
@@ -394,6 +394,20 @@ export async function PATCH(
       .where(eq(tasks.id, worker.taskId));
 
     isBudgetReset = true;
+
+    // Distinct alert: this is a budget/rate-limit PAUSE (task reset to pending,
+    // auto-retries on reset) — not a generic failure. The normal completion-notify
+    // block below is skipped for budget resets, so alert here with the backend +
+    // reset time so the operator sees "paused until X", not a misleading failure.
+    const backendLabel = (taskForBudget as any)?.backend === 'codex' ? 'Codex' : 'Claude';
+    notify({
+      app: 'alerts',
+      title: `⏳ ${backendLabel} budget/rate-limit hit`,
+      message: `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
+      url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+      urlTitle: 'View task',
+      priority: 0,
+    });
   }
 
   let shouldAutoRetry = false;
