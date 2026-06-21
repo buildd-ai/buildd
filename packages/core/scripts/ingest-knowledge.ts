@@ -24,7 +24,14 @@ const CODE_EXT = new Set([
   '.py', '.go', '.rs', '.java', '.rb', '.php', '.c', '.h', '.cc', '.cpp', '.hpp',
   '.cs', '.swift', '.kt', '.scala', '.sh', '.sql', '.css', '.scss',
 ]);
-const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'coverage', '.turbo', '.vercel']);
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.next', 'dist', 'build', 'coverage', '.turbo', '.vercel',
+  // Caller-supplied extra dirs (comma-separated), e.g. INGEST_SKIP_DIRS=drizzle,__tests__
+  ...(process.env.INGEST_SKIP_DIRS?.split(',').map(s => s.trim()).filter(Boolean) ?? []),
+]);
+// When set, drop test/spec files from the corpus (history, not current-state truth).
+const SKIP_TESTS = !!process.env.INGEST_SKIP_TESTS;
+const TEST_FILE_RE = /\.(test|spec)\.[tj]sx?$/;
 const MAX_FILE_BYTES = 512 * 1024; // skip very large files (minified bundles, lockfiles)
 const BATCH = 50;
 
@@ -91,8 +98,9 @@ async function main() {
   const all: string[] = [];
   await walk(root, root, all);
 
-  const docFiles = all.filter(f => DOC_EXT.has(path.extname(f).toLowerCase()));
-  const codeFiles = all.filter(f => CODE_EXT.has(path.extname(f).toLowerCase()));
+  const keep = (f: string) => !(SKIP_TESTS && TEST_FILE_RE.test(path.basename(f)));
+  const docFiles = all.filter(f => DOC_EXT.has(path.extname(f).toLowerCase())).filter(keep);
+  const codeFiles = all.filter(f => CODE_EXT.has(path.extname(f).toLowerCase())).filter(keep);
 
   console.log(`[ingest] ${root}: ${codeFiles.length} code, ${docFiles.length} doc files`);
 
