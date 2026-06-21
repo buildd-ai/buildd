@@ -240,11 +240,17 @@ export async function PATCH(
   // gh pr create without using the buildd create_pr action.
   let outputWarning: string | undefined;
   if (status === 'completed') {
-    // Fetch task to check outputRequirement
-    const task = worker.taskId
-      ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId) })
-      : null;
-    const outputReq = (task as any)?.outputRequirement ?? 'auto';
+    // Fetch task to check outputRequirement. Explicit select (not the
+    // relational query builder): `tasks` has a `workers` relation and the RQB
+    // can intermittently emit "missing FROM-clause entry for table workers".
+    const taskRow = worker.taskId
+      ? await db
+          .select({ outputRequirement: tasks.outputRequirement })
+          .from(tasks)
+          .where(eq(tasks.id, worker.taskId))
+          .limit(1)
+      : [];
+    const outputReq = taskRow[0]?.outputRequirement ?? 'auto';
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
@@ -640,10 +646,11 @@ export async function PATCH(
       try {
         // Log triage outcome for planning tasks (evaluation telemetry)
         if (status === 'completed' && body.structuredOutput?.triageOutcome) {
-          const taskForTriage = await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
-            columns: { mode: true, missionId: true, context: true },
-          });
+          const [taskForTriage] = await db
+            .select({ mode: tasks.mode, missionId: tasks.missionId, context: tasks.context })
+            .from(tasks)
+            .where(eq(tasks.id, worker.taskId))
+            .limit(1);
           if (taskForTriage?.mode === 'planning' && taskForTriage.missionId) {
             const ctx = (taskForTriage.context || {}) as Record<string, unknown>;
             const planArr = body.structuredOutput.plan as unknown[] | undefined;
@@ -662,10 +669,11 @@ export async function PATCH(
 
         // Auto-create/upsert artifact from structured output or summary
         if (status === 'completed') {
-          const taskForArtifact = await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
-            columns: { context: true, missionId: true, title: true },
-          });
+          const [taskForArtifact] = await db
+            .select({ context: tasks.context, missionId: tasks.missionId, title: tasks.title })
+            .from(tasks)
+            .where(eq(tasks.id, worker.taskId))
+            .limit(1);
           const ctx = (taskForArtifact?.context || {}) as Record<string, unknown>;
           const structuredOutput = body.structuredOutput;
           const summary = body.summary;

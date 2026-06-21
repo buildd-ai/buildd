@@ -23,6 +23,23 @@ const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 
+// Explicit `db.select(...)` (added to dodge the RQB "missing FROM-clause" bug)
+// is used for the task-row fetches in the handler. The chain is fully thenable
+// and resolves to the same task object the tests already set on
+// mockTasksFindFirst, wrapped in an array — so existing `outputRequirement`
+// setups drive both the relational and the select-based reads.
+const mockSelect = mock(() => {
+  const chain: any = {
+    from: () => chain,
+    where: () => chain,
+    limit: () => chain,
+    orderBy: () => chain,
+    then: (resolve: any, reject: any) =>
+      mockTasksFindFirst().then((row: any) => (row ? [row] : [])).then(resolve, reject),
+  };
+  return chain;
+});
+
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
@@ -59,6 +76,7 @@ mock.module('@buildd/core/db', () => ({
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockTenantBudgetsInsert(),
+    select: mockSelect,
   },
 }));
 

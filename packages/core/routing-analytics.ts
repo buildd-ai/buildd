@@ -12,6 +12,7 @@
 import { db } from './db';
 import { taskOutcomes, tasks } from './db/schema';
 import { eq } from 'drizzle-orm';
+import { reportOps } from './report-ops';
 
 export interface TaskOutcomeInput {
   taskId: string;
@@ -34,16 +35,22 @@ export interface TaskOutcomeInput {
  */
 export async function recordTaskOutcome(input: TaskOutcomeInput): Promise<boolean> {
   try {
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, input.taskId),
-      columns: {
-        id: true,
-        kind: true,
-        complexity: true,
-        classifiedBy: true,
-        predictedModel: true,
-      },
-    });
+    // Explicit select (not the relational query builder): `tasks` has a
+    // `workers: many(workers)` relation, and the RQB can emit references to
+    // related tables under some runtime paths, producing intermittent
+    // "missing FROM-clause entry for table workers" errors. A plain select
+    // structurally cannot reference workers.
+    const [task] = await db
+      .select({
+        id: tasks.id,
+        kind: tasks.kind,
+        complexity: tasks.complexity,
+        classifiedBy: tasks.classifiedBy,
+        predictedModel: tasks.predictedModel,
+      })
+      .from(tasks)
+      .where(eq(tasks.id, input.taskId))
+      .limit(1);
     if (!task) return false;
 
     // Skip tasks that never went through the router (legacy/untagged).
@@ -68,7 +75,9 @@ export async function recordTaskOutcome(input: TaskOutcomeInput): Promise<boolea
     });
     return true;
   } catch (err) {
-    console.warn('[routing-analytics] recordTaskOutcome failed:', err instanceof Error ? err.message : err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[routing-analytics] recordTaskOutcome failed:', msg);
+    void reportOps({ source: 'routing-analytics', message: 'recordTaskOutcome failed', detail: msg });
     return false;
   }
 }
