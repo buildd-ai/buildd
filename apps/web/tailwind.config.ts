@@ -70,7 +70,7 @@ const config: Config = {
         xl: '0',
         '2xl': '0',
         '3xl': '0',
-        full: '9999px',
+        full: '0',
       },
       // Brutalist: every shadow utility is a hard offset (themed via --border-strong), no blur.
       boxShadow: {

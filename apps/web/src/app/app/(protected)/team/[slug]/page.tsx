@@ -22,10 +22,10 @@ function RoleAvatar({ name, color, size = 48 }: { name: string; color: string; s
   const initial = name[0]?.toUpperCase() || '?';
   return (
     <div
-      className="rounded-full flex items-center justify-center flex-shrink-0"
-      style={{ width: size, height: size, backgroundColor: color }}
+      className="flex items-center justify-center flex-shrink-0 border border-border-strong"
+      style={{ width: size, height: size }}
     >
-      <span className="text-white font-bold" style={{ fontSize: size * 0.4 }}>
+      <span className="text-text-primary font-bold" style={{ fontSize: size * 0.4 }}>
         {initial}
       </span>
     </div>
