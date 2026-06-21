@@ -12,8 +12,11 @@
  * credential-cache.test.ts; this file covers the WorkerManager wiring.
  */
 
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, setDefaultTimeout } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
+
+// CI runners are slower than local; give construction + async claim headroom.
+setDefaultTimeout(30_000);
 
 // ─── Mocks (must precede importing workers.ts) ──────────────────────────────
 
@@ -93,6 +96,14 @@ mock.module('../../src/worker-store', () => ({
 }));
 
 mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
+
+// Stub the environment scan — the real one shells out to discover installed
+// CLIs/tools (~1.5s) which is pure construction overhead irrelevant to these
+// tests and a source of CI timeout flakiness.
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [], mcpServers: [] }),
+  checkMcpPreFlight: async () => ({}),
+}));
 
 const { WorkerManager, teamKeyOf } = await import('../../src/workers');
 
