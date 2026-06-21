@@ -6,8 +6,9 @@ const mockGetUserTeamsWithDetails = mock(() => Promise.resolve([] as any[]));
 
 const mockGetTeamPreferences = mock(() => Promise.resolve({ taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true }));
 const mockSetTeamPreferences = mock((_t: string, p: any) => Promise.resolve(p));
-const mockGetTeamChannelStatus = mock(() => Promise.resolve({ pushover: false, webhook: false }));
-const mockSetTeamChannel = mock(() => Promise.resolve());
+const mockGetTeamChannelStatus = mock(() => Promise.resolve({ pushover: false, pushoverOwnAppToken: false, webhook: false }));
+const mockSetTeamPushover = mock(() => Promise.resolve());
+const mockSetTeamWebhook = mock(() => Promise.resolve());
 const mockDeleteTeamChannel = mock(() => Promise.resolve());
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
@@ -16,7 +17,8 @@ mock.module('@/lib/notify', () => ({
   getTeamPreferences: mockGetTeamPreferences,
   setTeamPreferences: mockSetTeamPreferences,
   getTeamChannelStatus: mockGetTeamChannelStatus,
-  setTeamChannel: mockSetTeamChannel,
+  setTeamPushover: mockSetTeamPushover,
+  setTeamWebhook: mockSetTeamWebhook,
   deleteTeamChannel: mockDeleteTeamChannel,
 }));
 
@@ -39,7 +41,8 @@ describe('/api/teams/[id]/notifications', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamsWithDetails.mockReset();
-    mockSetTeamChannel.mockReset();
+    mockSetTeamPushover.mockReset();
+    mockSetTeamWebhook.mockReset();
     mockDeleteTeamChannel.mockReset();
     mockSetTeamPreferences.mockReset();
     mockGetTeamChannelStatus.mockReset();
@@ -47,7 +50,7 @@ describe('/api/teams/[id]/notifications', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamsWithDetails.mockResolvedValue([{ id: 'team-1' }]);
-    mockGetTeamChannelStatus.mockResolvedValue({ pushover: false, webhook: false });
+    mockGetTeamChannelStatus.mockResolvedValue({ pushover: false, pushoverOwnAppToken: false, webhook: false });
     mockGetTeamPreferences.mockResolvedValue({ taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true });
     mockSetTeamPreferences.mockImplementation((_t: string, p: any) => Promise.resolve(p));
   });
@@ -68,17 +71,30 @@ describe('/api/teams/[id]/notifications', () => {
     const res = await GET(getReq(), ctx);
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.channels).toEqual({ pushover: false, webhook: false });
+    expect(data.channels).toEqual({ pushover: false, pushoverOwnAppToken: false, webhook: false });
     expect(data.preferences.taskFailed).toBe(true);
   });
 
-  it('PUT stores a pushover key', async () => {
+  it('PUT stores a pushover key (no app token → buildd sends via its own app)', async () => {
     const res = await PUT(putReq({ pushoverUserKey: 'uABC' }), ctx);
     expect(res.status).toBe(200);
-    expect(mockSetTeamChannel).toHaveBeenCalledWith('team-1', 'pushover', 'uABC');
+    expect(mockSetTeamPushover).toHaveBeenCalledWith('team-1', 'uABC', null);
   });
 
-  it('PUT clears a channel when value is null', async () => {
+  it('PUT stores a pushover key with an optional own app token', async () => {
+    const res = await PUT(putReq({ pushoverUserKey: 'uABC', pushoverAppToken: 'aTOKEN' }), ctx);
+    expect(res.status).toBe(200);
+    expect(mockSetTeamPushover).toHaveBeenCalledWith('team-1', 'uABC', 'aTOKEN');
+  });
+
+  it('PUT clears the pushover channel when the user key is null', async () => {
+    const res = await PUT(putReq({ pushoverUserKey: null }), ctx);
+    expect(res.status).toBe(200);
+    expect(mockDeleteTeamChannel).toHaveBeenCalledWith('team-1', 'pushover');
+    expect(mockSetTeamPushover).not.toHaveBeenCalled();
+  });
+
+  it('PUT clears the webhook when value is null', async () => {
     const res = await PUT(putReq({ webhookUrl: null }), ctx);
     expect(res.status).toBe(200);
     expect(mockDeleteTeamChannel).toHaveBeenCalledWith('team-1', 'notify_webhook');
@@ -87,7 +103,7 @@ describe('/api/teams/[id]/notifications', () => {
   it('PUT rejects a non-http webhook URL', async () => {
     const res = await PUT(putReq({ webhookUrl: 'ftp://nope' }), ctx);
     expect(res.status).toBe(400);
-    expect(mockSetTeamChannel).not.toHaveBeenCalled();
+    expect(mockSetTeamWebhook).not.toHaveBeenCalled();
   });
 
   it('PUT updates only provided event preferences', async () => {

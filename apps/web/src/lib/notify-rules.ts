@@ -16,10 +16,21 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
   credentialExpired: true,
 };
 
+/** The team's Pushover channel: their user/group key, plus an OPTIONAL own app token. */
+export interface PushoverChannel {
+  /** Pushover user or group key (required — identifies who receives the alert). */
+  userKey: string;
+  /**
+   * Optional Pushover application token. When omitted, buildd sends via its own
+   * app token (env PUSHOVER_TOKEN) — so a user only needs to paste their user key.
+   */
+  appToken?: string | null;
+}
+
 /** The team's resolved channel. Either, both, or neither may be present. */
 export interface TeamChannel {
-  /** Pushover user/group key (buildd sends via its own app token). */
-  pushoverUserKey?: string | null;
+  /** Pushover channel (user key + optional app token). */
+  pushover?: PushoverChannel | null;
   /** URL buildd POSTs the alert JSON to. */
   webhookUrl?: string | null;
 }
@@ -44,7 +55,7 @@ export function resolveNotifyPlan(
   prefs: Record<NotifyEvent, boolean>,
 ): NotifyPlan {
   const enabled = prefs[event] ?? DEFAULT_NOTIFICATION_PREFERENCES[event];
-  const hasPushover = !!channel?.pushoverUserKey;
+  const hasPushover = !!channel?.pushover?.userKey;
   const hasWebhook = !!channel?.webhookUrl;
 
   if (!enabled || (!hasPushover && !hasWebhook)) {

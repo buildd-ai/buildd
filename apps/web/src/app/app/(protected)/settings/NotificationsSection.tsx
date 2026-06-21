@@ -16,7 +16,7 @@ interface Props {
 type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
 
 interface NotificationsState {
-  channels: { pushover: boolean; webhook: boolean };
+  channels: { pushover: boolean; pushoverOwnAppToken: boolean; webhook: boolean };
   preferences: Record<NotifyEvent, boolean>;
 }
 
@@ -29,8 +29,8 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
 
 /**
  * Per-team notification settings. Alerts route to THIS team's own channel — a
- * Pushover user/group key (buildd sends via its own app token) and/or a webhook
- * URL — and each event type can be toggled. Teams with no channel get nothing.
+ * Pushover user/group key (plus an optional own app token) and/or a webhook URL
+ * — and each event type can be toggled. Teams with no channel get nothing.
  * Mirrors the AgentBackendsSection team selector conventions.
  */
 export default function NotificationsSection({ workspaces, currentTeamId }: Props) {
@@ -44,6 +44,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pushoverKey, setPushoverKey] = useState('');
+  const [pushoverAppToken, setPushoverAppToken] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -63,6 +64,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
 
   useEffect(() => {
     setPushoverKey('');
+    setPushoverAppToken('');
     setWebhookUrl('');
     void load();
   }, [load]);
@@ -90,11 +92,16 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
 
   async function saveChannels() {
     const body: Record<string, unknown> = {};
-    if (pushoverKey.trim()) body.pushoverUserKey = pushoverKey.trim();
+    if (pushoverKey.trim()) {
+      body.pushoverUserKey = pushoverKey.trim();
+      // App token is optional — only send it alongside a user key.
+      body.pushoverAppToken = pushoverAppToken.trim() || null;
+    }
     if (webhookUrl.trim()) body.webhookUrl = webhookUrl.trim();
     if (Object.keys(body).length === 0) return;
     await put(body, 'Channel saved.');
     setPushoverKey('');
+    setPushoverAppToken('');
     setWebhookUrl('');
   }
 
@@ -155,6 +162,24 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                   placeholder={hasPushover ? 'Replace key…' : 'u… (Pushover user or group key)'}
                   className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
                 />
+                <p className="text-xs text-text-muted">
+                  Your Pushover user or group key (from your Pushover dashboard). Notifications send via buildd&apos;s own
+                  Pushover app — you only need the key.
+                </p>
+
+                <label className="text-xs font-medium text-text-secondary block pt-1">
+                  Pushover app token <span className="text-text-muted font-normal">(optional)</span>
+                </label>
+                <input
+                  type="password"
+                  value={pushoverAppToken}
+                  onChange={(e) => setPushoverAppToken(e.target.value)}
+                  placeholder={state?.channels.pushoverOwnAppToken ? 'Replace app token…' : 'Leave blank to use buildd’s app'}
+                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+                />
+                <p className="text-xs text-text-muted">
+                  Only needed if you want alerts to appear under your own Pushover application instead of buildd&apos;s.
+                </p>
               </div>
 
               <div className="space-y-2">

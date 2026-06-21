@@ -5,10 +5,10 @@ import {
   getTeamPreferences,
   setTeamPreferences,
   getTeamChannelStatus,
-  setTeamChannel,
+  setTeamPushover,
+  setTeamWebhook,
   deleteTeamChannel,
   type NotifyEvent,
-  type ChannelPurpose,
 } from '@/lib/notify';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -39,8 +39,13 @@ export async function GET(_req: NextRequest, { params }: RouteContext) {
 }
 
 // PUT /api/teams/[id]/notifications — set channel secret(s) and/or event prefs.
-// Body: { pushoverUserKey?: string|null, webhookUrl?: string|null, preferences?: Partial<Record<NotifyEvent, boolean>> }
-// A channel field of '' or null clears it; omitting it leaves it unchanged.
+// Body: {
+//   pushoverUserKey?: string|null,   // Pushover user/group key. '' or null clears the Pushover channel.
+//   pushoverAppToken?: string|null,  // OPTIONAL own app token; omit to send via buildd's app token.
+//   webhookUrl?: string|null,        // '' or null clears the webhook.
+//   preferences?: Partial<Record<NotifyEvent, boolean>>,
+// }
+// Omitting a field leaves it unchanged.
 export async function PUT(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   const auth = await authorize(id);
@@ -51,22 +56,27 @@ export async function PUT(req: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  // Channel secrets — never logged. Empty/null clears; undefined leaves as-is.
-  const channelUpdates: Array<{ purpose: ChannelPurpose; value: string | null }> = [];
+  // Pushover: a user key clears or sets the whole channel; app token is optional.
+  // Channel secrets are never logged.
   if ('pushoverUserKey' in body) {
-    channelUpdates.push({ purpose: 'pushover', value: normalizeChannelValue(body.pushoverUserKey) });
-  }
-  if ('webhookUrl' in body) {
-    const v = normalizeChannelValue(body.webhookUrl);
-    if (v && !/^https?:\/\//i.test(v)) {
-      return NextResponse.json({ error: 'webhookUrl must be an http(s) URL' }, { status: 400 });
+    const userKey = normalizeChannelValue(body.pushoverUserKey);
+    if (userKey === null) {
+      await deleteTeamChannel(id, 'pushover');
+    } else {
+      const appToken = 'pushoverAppToken' in body ? normalizeChannelValue(body.pushoverAppToken) : null;
+      await setTeamPushover(id, userKey, appToken);
     }
-    channelUpdates.push({ purpose: 'notify_webhook', value: v });
   }
 
-  for (const u of channelUpdates) {
-    if (u.value === null) await deleteTeamChannel(id, u.purpose);
-    else await setTeamChannel(id, u.purpose, u.value);
+  if ('webhookUrl' in body) {
+    const url = normalizeChannelValue(body.webhookUrl);
+    if (url === null) {
+      await deleteTeamChannel(id, 'notify_webhook');
+    } else if (!/^https?:\/\//i.test(url)) {
+      return NextResponse.json({ error: 'webhookUrl must be an http(s) URL' }, { status: 400 });
+    } else {
+      await setTeamWebhook(id, url);
+    }
   }
 
   // Event preferences — only known boolean keys are accepted.
