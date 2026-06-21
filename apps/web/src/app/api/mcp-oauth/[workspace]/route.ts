@@ -37,6 +37,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from '@buildd/core/mcp-tools';
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryClientForTeam } from '@/lib/memory-helper';
@@ -84,10 +85,14 @@ function createApi(jwt: string): ApiFn {
 function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string) {
   const actions = [...allActionsList];
 
+  const embedder = getVoyageEmbedder();
   const ctx: ActionContext = {
     workspaceId,
+    teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,
     getLevel: async () => 'admin',
+    knowledgeStore: new PgVectorStore(embedder, getVoyageReranker()),
+    embedder,
   };
 
   const server = new Server(
@@ -173,7 +178,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         if (!memClient) {
           return { content: [{ type: 'text' as const, text: 'Memory service not configured on this server.' }], isError: true };
         }
-        return await handleMemoryAction(memClient, action, params, {});
+        return await handleMemoryAction(memClient, action, params, ctx);
       }
       throw new Error(`Unknown tool: ${name}`);
     } catch (error) {

@@ -1634,6 +1634,37 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockAccountsUpdate).toHaveBeenCalled();
     });
 
+    it('fires a distinct budget/rate-limit alert (backend + reset) instead of "Task failed"', async () => {
+      mockNotify.mockClear();
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      // One object satisfies both the budget-detection query and the notify query.
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1', name: 'buildd-docs' },
+        title: 'T', backend: 'codex',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const budgetAlert = mockNotify.mock.calls.find(
+        (c: any) => typeof c[0]?.title === 'string' && c[0].title.includes('budget/rate-limit hit'),
+      );
+      expect(budgetAlert).toBeTruthy();
+      expect(budgetAlert![0].title).toContain('Codex');
+      // Must NOT also fire the misleading generic failure alert.
+      expect(mockNotify.mock.calls.some((c: any) => c[0]?.title === 'Task failed')).toBe(false);
+    });
+
     it('detects budget error from error message string (fallback)', async () => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',

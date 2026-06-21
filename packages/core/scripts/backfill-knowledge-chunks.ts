@@ -1,12 +1,15 @@
 /**
  * Backfill existing buildd memories into knowledge_chunks.
  *
- * Usage:
- *   MEMORY_API_URL=... MEMORY_API_KEY=... VOYAGE_API_KEY=... \
- *   DATABASE_URL=... bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId]
+ * Memories are a TEAM-level resource (the memory service is team-scoped), so the
+ * `memory` corpus is namespaced by teamId — one pass per team, not per
+ * workspace. Passing a workspaceId backfills that workspace's team.
  *
- * If no workspaceId is provided, backfills memories for ALL workspaces that
- * have a memoryApiKey configured.
+ * Usage:
+ *   MEMORY_API_URL=... VOYAGE_API_KEY=... DATABASE_URL=... \
+ *   bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId|teamId]
+ *
+ * With no id, backfills every team that has a memoryApiKey configured.
  */
 import { db } from '../db/index';
 import { teams, workspaces } from '../db/schema';
@@ -17,13 +20,13 @@ import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 
 const BATCH_SIZE = 20;
 
-async function backfillWorkspace(
-  workspaceId: string,
+async function backfillTeam(
+  teamId: string,
   memoryClient: MemoryClient,
   store: PgVectorStore,
 ) {
-  console.log(`[backfill] workspace ${workspaceId} — fetching memories...`);
-  const ns = buildNamespace(workspaceId, 'memory');
+  console.log(`[backfill] team ${teamId} — fetching memories...`);
+  const ns = buildNamespace(teamId, 'memory');
   let offset = 0;
   let total = 0;
 
@@ -54,12 +57,26 @@ async function backfillWorkspace(
 
     await store.upsert(ns, chunks);
     offset += results.length;
-    console.log(`[backfill] workspace ${workspaceId} — upserted ${offset}/${total}`);
+    console.log(`[backfill] team ${teamId} — upserted ${offset}/${total}`);
 
     if (offset >= total) break;
   }
 
-  console.log(`[backfill] workspace ${workspaceId} — done (${total} memories)`);
+  console.log(`[backfill] team ${teamId} — done (${total} memories)`);
+}
+
+/** Resolve a CLI arg that may be a workspaceId or a teamId into a teamId. */
+async function resolveTeamId(arg: string): Promise<string | null> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, arg),
+    columns: { teamId: true },
+  });
+  if (ws?.teamId) return ws.teamId;
+  const team = await db.query.teams.findFirst({
+    where: eq(teams.id, arg),
+    columns: { id: true },
+  });
+  return team?.id ?? null;
 }
 
 async function main() {
@@ -69,7 +86,7 @@ async function main() {
   }
 
   const store = new PgVectorStore(embedder);
-  const targetWorkspaceId = process.argv[2];
+  const targetArg = process.argv[2];
   const memoryApiUrl = process.env.MEMORY_API_URL;
 
   if (!memoryApiUrl) {
@@ -77,39 +94,33 @@ async function main() {
     process.exit(1);
   }
 
-  if (targetWorkspaceId) {
-    // Single workspace
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, targetWorkspaceId),
-      columns: { id: true, teamId: true },
-    });
-    if (!ws) {
-      console.error(`[backfill] Workspace not found: ${targetWorkspaceId}`);
+  if (targetArg) {
+    // Single team (resolved from a workspaceId or teamId)
+    const teamId = await resolveTeamId(targetArg);
+    if (!teamId) {
+      console.error(`[backfill] Could not resolve a team from: ${targetArg}`);
       process.exit(1);
     }
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, ws.teamId),
+      where: eq(teams.id, teamId),
       columns: { memoryApiKey: true },
     });
     if (!team?.memoryApiKey) {
-      console.error('[backfill] No memoryApiKey for this workspace\'s team');
+      console.error('[backfill] No memoryApiKey configured for this team');
       process.exit(1);
     }
     const client = new MemoryClient(memoryApiUrl, team.memoryApiKey);
-    await backfillWorkspace(targetWorkspaceId, client, store);
+    await backfillTeam(teamId, client, store);
   } else {
-    // All workspaces
+    // All teams with a memory key — one pass each
     const teamsWithKey = await db.query.teams.findMany({
       where: isNotNull(teams.memoryApiKey),
       columns: { id: true, memoryApiKey: true },
-      with: { workspaces: { columns: { id: true } } },
     });
 
     for (const team of teamsWithKey) {
       const client = new MemoryClient(memoryApiUrl, team.memoryApiKey!);
-      for (const ws of (team as any).workspaces ?? []) {
-        await backfillWorkspace(ws.id, client, store);
-      }
+      await backfillTeam(team.id, client, store);
     }
   }
 

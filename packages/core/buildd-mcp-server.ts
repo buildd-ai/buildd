@@ -85,6 +85,14 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
 
   // Determine account level once at creation for dynamic toolset
   const level = await getAccountLevel(serverUrl, apiKey);
+
+  // Resolve the owning team — memories are team-scoped, so the `memory` corpus
+  // is namespaced by teamId. Best-effort; memory mirroring no-ops without it.
+  let resolvedTeamId: string | undefined;
+  try {
+    const me = await apiCall(serverUrl, apiKey, '/api/accounts/me');
+    resolvedTeamId = me?.teamId;
+  } catch { /* best-effort */ }
   let filteredActions = level === 'admin'
     ? [...allActionsList]
     : level === 'trigger'
@@ -109,6 +117,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
   const ctx: ActionContext = {
     workerId,
     workspaceId,
+    teamId: resolvedTeamId,
     getWorkspaceId: async () => workspaceId || null,
     getLevel: () => getAccountLevel(serverUrl, apiKey),
     appBaseUrl: opts.appBaseUrl,
@@ -171,6 +180,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
               project: memoryProject,
               workerId,
               workspaceId,
+              teamId: resolvedTeamId,
               knowledgeStore: ks,
               embedder,
             });
