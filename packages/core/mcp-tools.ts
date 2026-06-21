@@ -1466,7 +1466,8 @@ export async function handleBuilddAction(
         const data = await api('/api/secrets', {
           method: 'POST',
           body: JSON.stringify({
-            value: params.value,
+            // Trim so a pasted value with a trailing newline isn't stored invalid.
+            value: typeof params.value === 'string' ? params.value.trim() : params.value,
             purpose: params.purpose || 'mcp_credential',
             label: params.label,
           }),

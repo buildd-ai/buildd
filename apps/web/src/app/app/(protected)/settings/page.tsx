@@ -116,6 +116,7 @@ export default async function SettingsPage() {
         <AgentBackendsSection
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
           currentTeamId={currentTeamId}
+          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
         />
 
         {/* Teams */}

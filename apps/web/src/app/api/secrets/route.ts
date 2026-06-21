@@ -72,9 +72,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   }
 
+  // Trim surrounding whitespace/newlines — a pasted token with a trailing
+  // newline is silently invalid and causes 401s at the agent backend.
+  const trimmedValue = typeof value === 'string' ? value.trim() : value;
+
   try {
     const provider = getSecretsProvider();
-    const id = await provider.set(null, value, {
+    const id = await provider.set(null, trimmedValue, {
       teamId: targetTeamId,
       // MCP credentials are team-wide (shared with all runners), so don't scope to account
       accountId: purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId),

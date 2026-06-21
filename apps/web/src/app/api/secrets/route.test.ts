@@ -115,6 +115,25 @@ describe('POST /api/secrets', () => {
     expect(res.status).toBe(200);
   });
 
+  it('trims surrounding whitespace/newlines from the value before storing', async () => {
+    const res = await POST(createPostRequest({
+      value: '  sk-ant-oat01-secret\n',
+      purpose: 'oauth_token',
+      accountId: 'account-1',
+    }));
+    expect(res.status).toBe(200);
+
+    // The value passed to provider.set must be trimmed — a trailing newline
+    // makes the token invalid and causes 401s at the agent backend.
+    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'sk-ant-oat01-secret', {
+      teamId: 'team-1',
+      accountId: 'account-1',
+      workspaceId: undefined,
+      purpose: 'oauth_token',
+      label: undefined,
+    });
+  });
+
   it('accepts all valid purpose values', async () => {
     for (const purpose of ['anthropic_api_key', 'oauth_token', 'webhook_token', 'custom']) {
       mockSecretsSet.mockResolvedValue('secret-1');
