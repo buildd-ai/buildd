@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.113.0",
+  "version": "0.114.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -20,6 +20,8 @@
     "./budget-alerts": "./budget-alerts.ts",
     "./task-classifier": "./task-classifier.ts",
     "./routing-analytics": "./routing-analytics.ts",
+    "./report-ops": "./report-ops.ts",
+    "./runner-health": "./runner-health.ts",
     "./secrets": "./secrets/index.ts",
     "./file-reservations": "./file-reservations.ts",
     "./memory-client": "./memory-client.ts",
