@@ -929,7 +929,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -1136,6 +1136,27 @@ export const secretsRelations = relations(secrets, ({ one }) => ({
   team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
+}));
+
+// Per-team notification preferences (config, not a credential — the channel
+// itself lives in `secrets` as purpose 'pushover' / 'notify_webhook').
+// One row per team; each boolean toggles an event type. Defaults preserve the
+// previous always-on behaviour while making each event individually muteable.
+export const notificationPreferences = pgTable('notification_preferences', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull().unique(),
+  taskClaimed: boolean('task_claimed').default(true).notNull(),
+  taskCompleted: boolean('task_completed').default(true).notNull(),
+  taskFailed: boolean('task_failed').default(true).notNull(),
+  credentialExpired: boolean('credential_expired').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: uniqueIndex('notification_preferences_team_idx').on(t.teamId),
+}));
+
+export const notificationPreferencesRelations = relations(notificationPreferences, ({ one }) => ({
+  team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
 // User feedback on AI-generated content (thumbs up/down + dismiss)
