@@ -546,8 +546,8 @@ export default async function HomePage() {
                           </span>
                           <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
                         </div>
-                        <div className="space-y-2">
-                          {items.map((mission) => {
+                        <div className={isCompact ? "card" : "space-y-2"}>
+                          {items.map((mission, idx) => {
                             const healthDisplay = HEALTH_DISPLAY[mission.health];
                             const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
                             const isHibernating = nextRun.urgency === 'far';
@@ -557,10 +557,10 @@ export default async function HomePage() {
                                 <Link
                                   key={mission.id}
                                   href={`/app/missions/${mission.id}`}
-                                  className={`block card card-interactive mission-card mission-card-compact ${GROUP_ACCENT_CLASS[groupKey]} px-4 py-3 hover:bg-surface-3/50 transition-colors`}
+                                  className={`flex items-center justify-between gap-3 mission-card ${GROUP_ACCENT_CLASS[groupKey]} px-4 py-2.5 hover:bg-surface-3/50 transition-colors ${idx < items.length - 1 ? 'border-b border-border-default' : ''}`}
                                 >
                                   <div className="flex items-center gap-2 min-w-0">
-                                    <span className="text-[14px] font-medium text-text-secondary truncate">
+                                    <span className="text-[13px] text-text-secondary truncate">
                                       {mission.title}
                                     </span>
                                     <span className={`health-pill ${healthDisplay.colorClass}`}>
@@ -568,9 +568,9 @@ export default async function HomePage() {
                                     </span>
                                   </div>
                                   {mission.totalTasks > 0 && (
-                                    <div className="text-[11px] text-text-muted mt-1">
-                                      {mission.completedTasks}/{mission.totalTasks} tasks
-                                    </div>
+                                    <span className="text-[11px] text-text-muted tabular-nums shrink-0">
+                                      {mission.completedTasks}/{mission.totalTasks}
+                                    </span>
                                   )}
                                 </Link>
                               );
