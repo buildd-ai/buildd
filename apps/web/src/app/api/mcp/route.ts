@@ -88,6 +88,22 @@ async function getAccountLevel(api: ApiFn): Promise<'trigger' | 'worker' | 'admi
 
 // ── Memory Helper ────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the team that owns a workspace's memories. Memories are team-scoped,
+ * so the `memory` KnowledgeStore namespace keys on this id. Mirrors the same
+ * workspace→team→fallback resolution as getMemoryClientForTeam.
+ */
+async function resolveTeamId(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<string | null> {
+  if (workspaceId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { teamId: true },
+    });
+    if (ws?.teamId) return ws.teamId;
+  }
+  return fallbackTeamId ?? null;
+}
+
 async function getMemoryClientForTeam(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<MemoryClient | null> {
   const url = process.env.MEMORY_API_URL;
   if (!url) return null;
@@ -322,10 +338,12 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         }
         const embedder = getVoyageEmbedder();
         const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+        const memTeamId = await resolveTeamId(wsId, accountTeamId);
         return await handleMemoryAction(memClient, action, params, {
           project: repoName,
           workerId,
           workspaceId: wsId ?? undefined,
+          teamId: memTeamId ?? undefined,
           knowledgeStore,
           embedder,
         });

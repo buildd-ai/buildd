@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, handleMemoryAction, type ApiFn, type ActionContext } from '../mcp-tools';
 import type { KnowledgeStore, UpsertChunk } from '../knowledge-store/types';
 
 const MOCK_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
+const MOCK_TEAM_ID = '00000000-0000-0000-0000-0000000000aa';
 
 // ── Mock KnowledgeStore that records upserts ─────────────────────────────────
 
@@ -253,5 +254,47 @@ describe('knowledge mirror — no store configured', () => {
     };
     const res = await handleBuilddAction(api, 'create_artifact', { type: 'summary', title: 'T' }, ctx);
     expect(res.isError).toBeFalsy();
+  });
+});
+
+// ── memory corpus is team-scoped (regression for workspace-namespace bug) ────
+
+function mockMemoryClient(): any {
+  const mem = (over: any = {}) => ({ id: 'mem-1', title: 'T', content: 'C', type: 'gotcha', tags: [], files: [], project: null, ...over });
+  return {
+    async save(input: any) { return { memory: mem(input) }; },
+    async update(_id: string, fields: any) { return { memory: mem(fields) }; },
+    async delete() {},
+  };
+}
+
+describe('knowledge mirror — memory is team-scoped', () => {
+  it('save upserts to {teamId}:memory, never the workspace namespace', async () => {
+    const store = makeRecordingStore();
+    const ctx: ActionContext = {
+      workspaceId: MOCK_WORKSPACE_ID,
+      teamId: MOCK_TEAM_ID,
+      getWorkspaceId: async () => MOCK_WORKSPACE_ID,
+      getLevel: async () => 'worker',
+      knowledgeStore: store,
+      embedder: null,
+    };
+    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, ctx);
+    expect(store.upserts).toHaveLength(1);
+    expect(store.upserts[0].namespace).toBe(`${MOCK_TEAM_ID}:memory`);
+    expect(store.upserts[0].namespace).not.toContain(MOCK_WORKSPACE_ID);
+  });
+
+  it('does not mirror memory when teamId is absent (no workspace fallback)', async () => {
+    const store = makeRecordingStore();
+    const ctx: ActionContext = {
+      workspaceId: MOCK_WORKSPACE_ID,
+      getWorkspaceId: async () => MOCK_WORKSPACE_ID,
+      getLevel: async () => 'worker',
+      knowledgeStore: store,
+      embedder: null,
+    };
+    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, ctx);
+    expect(store.upserts).toHaveLength(0);
   });
 });
