@@ -13,6 +13,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
+import { buildKnowledgeContext } from '@/lib/knowledge-context';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -850,6 +851,27 @@ export async function POST(req: NextRequest) {
       if (r.status === "rejected") {
         console.warn("[claim] context provider failed:", r.reason?.message || r.reason);
       }
+    }
+  }
+
+  // Inject related prior work into the agent's prompt at claim time — the worker
+  // analog of the orchestrator's plan-time injection. Retrieved knowledge rides
+  // the existing resolvedContextProviders rail into buildPrompt (no runner
+  // change). Best-effort: buildKnowledgeContext returns [] on any failure.
+  for (const cw of claimedWorkers) {
+    const task = filteredTasks.find(t => t.id === cw.taskId);
+    if (!task) continue;
+    const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
+    const teamId = (task as any).workspace?.teamId;
+    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId);
+    if (parts.length === 0) continue;
+
+    const block = parts.join('\n');
+    (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), block];
+    const taskObj = cw.task as any;
+    if (taskObj) {
+      taskObj.context = taskObj.context ?? {};
+      taskObj.context.resolvedContextProviders = [...(taskObj.context.resolvedContextProviders ?? []), block];
     }
   }
 
