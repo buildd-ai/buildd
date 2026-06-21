@@ -5,6 +5,11 @@ on:
     branches: [dev]
   pull_request:
     branches: [main, dev]
+  # Live-agent E2E (the `changes`/`integration` jobs) runs manual-only — those
+  # paths are stable, and a real-agent run burns model tokens + the OAuth seat
+  # quota for low marginal value on every release. Fire it deliberately when you
+  # touch runner/claim/execution code or before a risky release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -73,37 +78,21 @@ jobs:
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    # Manual-only: this job (and the integration job that `needs` it) no longer
+    # runs on release PRs. On manual dispatch we run the full live-agent E2E.
+    if: github.event_name == 'workflow_dispatch'
     outputs:
       api: ${{ steps.filter.outputs.api }}
       runner: ${{ steps.filter.outputs.runner }}
       needs_server: ${{ steps.filter.outputs.needs_server }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect changed paths
+      - name: Run all integration/E2E groups (manual dispatch)
         id: filter
         run: |
-          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          echo "Changed files:"
-          echo "$CHANGED"
-
-          # API/server changes — triggers integration tests
-          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|packages/core/|packages/shared/)' && echo "true" || echo "false")
-
-          # Runner changes — triggers E2E tests
-          RUNNER=$(echo "$CHANGED" | grep -qE '^(apps/runner/)' && echo "true" || echo "false")
-
-          # Either requires the server infrastructure
-          NEEDS_SERVER=$( [[ "$API" == "true" || "$RUNNER" == "true" ]] && echo "true" || echo "false" )
-
-          echo "api=$API" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
-          echo "needs_server=$NEEDS_SERVER" >> "$GITHUB_OUTPUT"
-
-          echo "::notice::api=$API runner=$RUNNER needs_server=$NEEDS_SERVER"
+          echo "api=true" >> "$GITHUB_OUTPUT"
+          echo "runner=true" >> "$GITHUB_OUTPUT"
+          echo "needs_server=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::workflow_dispatch — running full integration + E2E suite"
 
   # Shared infrastructure: Neon branch + Tailscale + preview server + runner
   # Only spins up when API or runner code changed
