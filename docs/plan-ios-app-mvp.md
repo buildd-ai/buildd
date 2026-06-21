@@ -3,6 +3,9 @@
 **Status**: Draft — mockups complete, ready for implementation
 **Created**: 2026-03-22
 
+> **Visual design — source of truth: [`docs/design/mobile-feed-spec.md`](design/mobile-feed-spec.md).**
+> The app uses the **brutalist / editorial** direction (IBM Plex Mono, warm paper + ink, single teal accent, hard offset shadows, corner-bracket panels) on the canonical artboard `Brutalist — Missions Feed` (`CZXce`) in `buildd-mobile.pen`. The earlier dark+copper mockups (nodes `w7I0O`/`6MKTT`/`k8Qwv`/`sa91X`/`byzyJ`) document **screen structure and flows** only — for tokens, type, and component measurements defer to the spec.
+
 ---
 
 ## Goal
@@ -64,8 +67,8 @@ Create a new mission from phone.
 - **"Create Mission" CTA** at bottom
 
 ### Navigation
-- 3-tab pill bar: **Feed** | **Missions** | **Create**
-- Create opens as modal overlay
+- 4-tab bordered tab bar (not a glass pill): **Feed** | **Missions** | **Create** | **Activity** — see the Tab bar component in the spec (1.5px ink top border, teal top-indicator on the active tab)
+- Create opens as a modal overlay
 - Agent Input is a push from Feed or Mission Detail
 
 ---
@@ -142,34 +145,39 @@ BuilddApp/
 │   └── Auth/
 │       └── LoginView.swift
 └── Design/
-    ├── Theme.swift              # Colors, fonts, spacing from design tokens
+    ├── Theme.swift              # Tokens from mobile-feed-spec.md §1 (ink/paper/teal, Plex Mono)
     └── Components/
-        ├── AccentBarCard.swift   # Reusable card with left color bar
-        ├── SectionLabel.swift    # "NEEDS ATTENTION  2" style headers
-        └── PillTabBar.swift     # Bottom navigation
+        ├── HardShadow.swift      # Solid offset shadow modifier (sibling rect — NOT .shadow)
+        ├── TaskCard.swift        # Bordered card, optional teal accent + progress
+        ├── StatusChip.swift      # solid / outline / teal / muted / tint variants
+        ├── CornerBracketPanel.swift # Fixed-height panel with 4 corner brackets
+        ├── SectionHeader.swift   # "01  RUNNING NOW            3 active"
+        └── BorderedTabBar.swift  # Bottom nav, ink top border + teal active indicator
 ```
 
 ---
 
-## Design Tokens (from mockups)
+## Design Tokens
+
+**Authoritative table: [`docs/design/mobile-feed-spec.md` §1](design/mobile-feed-spec.md#1-design-tokens).** The brutalist/editorial direction below replaces the earlier dark+copper values.
 
 ```swift
-// Colors
-static let bgPrimary = Color(hex: "#130f0b")
-static let bgCard = Color(hex: "#1e1914")
-static let bgCardMuted = Color(hex: "#1a1611")
-static let bgTabBar = Color(hex: "#1a1611")
-static let textPrimary = Color(hex: "#f5ebe0")
-static let textSecondary = Color(hex: "#8a827a")
-static let textMuted = Color(hex: "#5e5850")
-static let accent = Color(hex: "#d4956b")
-static let success = Color(hex: "#5ec495")
-static let info = Color(hex: "#7aacca")
-static let warning = Color(hex: "#e8845a")
+// Colors — ink / paper / teal only
+static let ink       = Color(hex: "#101216")  // text, borders, masthead bg, hard shadow
+static let inkSoft   = Color(hex: "#3a414c")
+static let inkFaint  = Color(hex: "#6b7280")
+static let paper     = Color(hex: "#f4f3ee")  // app background
+static let card      = Color(hex: "#ffffff")
+static let hair      = Color(hex: "#d9d8d0")  // hairlines, progress track
+static let teal      = Color(hex: "#0e8f84")  // the single accent
+static let tealDeep  = Color(hex: "#0a655d")  // teal text on light
+static let tealTint  = Color(hex: "#e8f4f2")
+// on-ink greys: eyebrow #9bb8b3, sub #c7ccc9, meta #9aa2a0, meta-b #d3d7d4, rule #2c333c
 
-// Typography
-static let fontUI = "Inter"
+// Typography — IBM Plex Mono everywhere (no Inter for app-owned UI)
 static let fontMono = "IBM Plex Mono"
+
+// Geometry — square corners (radius 0), 1.5px ink borders, hard offset shadow (blur 0)
 ```
 
 ---
@@ -225,10 +233,12 @@ Minimal — the API is mostly ready:
 
 | What | Where |
 |------|-------|
-| iOS mockups | `buildd-mobile.pen` — nodes w7I0O, 6MKTT, k8Qwv, sa91X, byzyJ |
+| Visual design spec (source of truth) | `docs/design/mobile-feed-spec.md` |
+| Canonical artboard | `buildd-mobile.pen` — `Brutalist — Missions Feed` (node `CZXce`) |
+| iOS flow mockups (structure only) | `buildd-mobile.pen` — nodes w7I0O, 6MKTT, k8Qwv, sa91X, byzyJ |
 | API routes | `apps/web/src/app/api/` |
 | Shared types | `packages/shared/src/types.ts` |
 | Pusher config | `apps/web/src/lib/pusher.ts` |
 | Worker instruct endpoint | `apps/web/src/app/api/workers/[id]/instruct/route.ts` |
 | Mission types | `packages/shared/src/types.ts` — MissionStatus, TaskStatus |
-| Design tokens | `.claude/skills/ui_designer/` |
+| Design tokens | `docs/design/mobile-feed-spec.md` §1 (brand reference: `.claude/skills/ui_designer/`) |

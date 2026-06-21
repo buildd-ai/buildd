@@ -7,8 +7,8 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['var(--font-outfit)', 'system-ui', 'sans-serif'],
-        display: ['var(--font-fraunces)', 'Georgia', 'serif'],
+        sans: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
+        display: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
         mono: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
       },
       colors: {
@@ -61,10 +61,10 @@ const config: Config = {
         },
       },
       borderRadius: {
-        sm: '6px',
-        md: '10px',
-        lg: '16px',
-        xl: '24px',
+        sm: '0',
+        md: '0',
+        lg: '0',
+        xl: '0',
       },
       animation: {
         'pulse-border': 'pulse-border 2s ease-in-out infinite',
@@ -77,8 +77,8 @@ const config: Config = {
       },
       keyframes: {
         'pulse-border': {
-          '0%, 100%': { boxShadow: '0 0 0 0 rgba(200, 149, 106, 0)' },
-          '50%': { boxShadow: '0 0 0 4px rgba(200, 149, 106, 0.3)' },
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(244, 129, 31, 0)' },
+          '50%': { boxShadow: '0 0 0 4px rgba(244, 129, 31, 0.3)' },
         },
         'card-enter': {
           '0%': { opacity: '0', transform: 'translateY(20px)' },
