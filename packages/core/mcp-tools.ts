@@ -166,7 +166,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search over indexed knowledge chunks; returns ranked results with sourceUrl',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use it before planning or starting work to find what was tried before, what shipped, and what failed. Returns ranked results with sourceUrl.',
   };
 
   const lines = actions

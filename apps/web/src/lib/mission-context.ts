@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
+import { buildKnowledgeContext } from './knowledge-context';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -520,21 +521,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
   }
 
-  // TODO: Memory bridge — inject relevant memories when memory-client module is available.
-  // Non-fatal: memory service may be unavailable. Example:
-  // try {
-  //   const { getMemoryClient } = await import('./memory-client');
-  //   const memClient = getMemoryClient();
-  //   if (memClient && mission.title) {
-  //     const results = await memClient.search({ query: mission.title, limit: 5 });
-  //     if (results?.results?.length) {
-  //       descParts.push('\n## Relevant Team Memory');
-  //       for (const m of results.results.slice(0, 3)) {
-  //         descParts.push(`- **[${m.type}] ${m.title}**: ${m.content?.split('\n')[0] || ''}`);
-  //       }
-  //     }
-  //   }
-  // } catch { /* non-fatal */ }
+  // Knowledge bridge — inject relevant prior work (team memory, prior plans,
+  // past task outcomes) retrieved from the KnowledgeStore. Best-effort.
+  const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
+  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId);
+  descParts.push(...knowledgeParts);
 
   // Fetch available roles for orchestrator context — query ALL team workspaces,
   // not just the mission's workspace. Missions often start in __coordination which
