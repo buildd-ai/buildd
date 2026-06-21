@@ -622,10 +622,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         key={opt.slug}
                         type="button"
                         onClick={() => toggleDelegate(opt.slug)}
-                        className={`px-3 py-1 rounded-full text-[12px] font-medium border transition-colors ${
+                        className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
                           active
-                            ? 'bg-status-success/10 border-status-success text-status-success'
-                            : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
+                            ? 'bg-text-primary border-text-primary text-surface-1'
+                            : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
                         }`}
                       >
                         {opt.name}
@@ -717,7 +717,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         delete next[key];
                         setEnvVars(next);
                       }}
-                      className="ml-auto text-text-muted hover:text-status-error text-[12px]"
+                      className="ml-auto w-5 h-5 flex items-center justify-center border-2 border-border-strong text-text-primary hover:bg-text-primary hover:text-surface-1 text-[13px] leading-none transition-colors"
+                      aria-label={`Remove ${key}`}
                     >
                       &times;
                     </button>

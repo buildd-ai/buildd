@@ -678,7 +678,7 @@ export default async function HomePage() {
                     <Link
                       key={role.id}
                       href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--card)] border border-border-default hover:bg-surface-3 transition-colors"
+                      className="flex items-center gap-2 px-3 py-1.5 bg-[var(--card)] border border-border-strong hover:bg-surface-3 transition-colors"
                     >
                       <div
                         className={`w-5 h-5 flex items-center justify-center flex-shrink-0 border border-border-strong ${role.isActive ? 'ring-2 ring-accent/50' : ''}`}
@@ -701,19 +701,17 @@ export default async function HomePage() {
                 No recent activity yet.
               </p>
             ) : (
-              <div className="space-y-4">
-                {recentActivity.map((event) => {
+              <div className="card">
+                {recentActivity.map((event, i) => {
                   const dotColor = event.type === 'completed'
                     ? 'bg-text-muted'
                     : 'bg-accent';
 
                   return (
-                    <div key={event.id} className="flex items-start gap-3">
-                      <div className="flex flex-col items-center pt-1.5">
-                        <div className={`w-[7px] h-[7px] rounded-full ${dotColor} flex-shrink-0`} />
-                      </div>
+                    <div key={event.id} className={`flex items-start gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`}>
+                      <div className={`w-[7px] h-[7px] ${dotColor} flex-shrink-0 mt-1.5`} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-[14px] text-text-primary truncate">
+                        <div className="text-[13px] text-text-primary truncate">
                           {event.title}
                         </div>
                         <div className="text-[10px] text-text-muted mt-0.5">
