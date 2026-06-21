@@ -24,8 +24,10 @@
  *   OPS_THROTTLE_MS      — dedup window per source+message (default 1h)
  *
  * Severity → Pushover priority: warning = -2 (badge only, no notification),
- * error = 0 (normal notification). Dedup state lives in the systemCache table
- * (atomic insert/claim) so it survives across stateless serverless invocations.
+ * error = 0 (normal notification), critical = 1 (high-priority, bypasses the
+ * recipient's quiet hours — reserve for systemic breakage). Dedup state lives in
+ * the systemCache table (atomic insert/claim) so it survives across stateless
+ * serverless invocations.
  */
 
 import { createHash } from 'crypto';
@@ -33,14 +35,21 @@ import { lt } from 'drizzle-orm';
 import { db } from './db';
 import { systemCache } from './db/schema';
 
-export type OpsSeverity = 'warning' | 'error';
+export type OpsSeverity = 'warning' | 'error' | 'critical';
+
+/** Pushover priority for each severity. */
+const SEVERITY_PRIORITY: Record<OpsSeverity, -2 | 0 | 1> = {
+  warning: -2, // badge only, no notification
+  error: 0, // normal notification
+  critical: 1, // high-priority, bypasses quiet hours
+};
 
 export interface ReportOpsInput {
   /** Short stable identifier for the call site, e.g. 'routing-analytics'. */
   source: string;
   /** Human-readable summary (kept stable for dedup; put variable bits in detail). */
   message: string;
-  /** 'warning' (silent, default) or 'error' (normal notification). */
+  /** 'warning' (silent, default), 'error' (normal), or 'critical' (high-priority). */
   severity?: OpsSeverity;
   /** Optional extra context (error.message, ids) — not part of the dedup key. */
   detail?: string;
@@ -80,7 +89,7 @@ async function claimSlot(key: string, now: Date, expiresAt: Date, payload: unkno
   return claimed.length > 0;
 }
 
-async function sendPushover(title: string, message: string, priority: -2 | 0): Promise<void> {
+async function sendPushover(title: string, message: string, priority: -2 | 0 | 1): Promise<void> {
   const user = process.env.PUSHOVER_USER;
   const token = process.env.PUSHOVER_TOKEN_ALERT || process.env.PUSHOVER_TOKEN;
   if (!user || !token) return;
@@ -117,7 +126,7 @@ export async function reportOps(input: ReportOpsInput): Promise<boolean> {
 
     const title = `[ops] ${input.source}`;
     const message = input.detail ? `${input.message}\n${input.detail}` : input.message;
-    await sendPushover(title, message, severity === 'error' ? 0 : -2);
+    await sendPushover(title, message, SEVERITY_PRIORITY[severity]);
     return true;
   } catch {
     // Never let ops alerting break the caller's path.

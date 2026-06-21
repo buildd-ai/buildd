@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
+import { reportOps } from '@buildd/core/report-ops';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -581,6 +582,13 @@ export async function GET(req: NextRequest) {
       } catch (error) {
         errors++;
         console.error(`Schedule ${schedule.id} error:`, error);
+        void reportOps({
+          source: 'cron-schedules',
+          severity: 'error',
+          message: 'schedule processing failed',
+          detail: `schedule ${schedule.id}: ${error instanceof Error ? error.message : String(error)}`,
+          dedupeKey: `cron-schedules:${schedule.id}`,
+        });
 
         // Increment consecutive failures
         const newFailures = schedule.consecutiveFailures + 1;
