@@ -433,10 +433,9 @@ export default async function HomePage() {
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-2 border border-border-default"
                         >
                           <div
-                            className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
-                            style={{ backgroundColor: role.color }}
+                            className="w-4 h-4 flex items-center justify-center flex-shrink-0 border border-border-strong"
                           >
-                            <span className="text-white text-[8px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                            <span className="text-text-primary text-[8px] font-bold">{role.name[0]?.toUpperCase()}</span>
                           </div>
                           <span className="text-[11px] text-text-muted">{role.name}</span>
                           <span className="text-[10px] text-text-muted/60">idle</span>
@@ -468,10 +467,7 @@ export default async function HomePage() {
                           </div>
                           {role && (
                             <span className="flex items-center gap-1.5 shrink-0">
-                              <span
-                                className="w-2 h-2 rounded-full"
-                                style={{ backgroundColor: role.color }}
-                              />
+                              <span className="w-2 h-2 bg-text-muted" />
                               <span className="text-[11px] text-text-muted">{role.name}</span>
                             </span>
                           )}
@@ -545,7 +541,7 @@ export default async function HomePage() {
                     return (
                       <div key={groupKey} className="space-y-2">
                         <div className="flex items-center gap-2">
-                          <span className="section-label-missions" style={{ color: section.color }}>
+                          <span className="section-label-missions text-text-muted">
                             {section.label}
                           </span>
                           <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
@@ -596,7 +592,7 @@ export default async function HomePage() {
                                     </span>
                                   </div>
                                   {mission.progress > 0 && (
-                                    <span className="text-[20px] font-semibold text-status-success tabular-nums flex-shrink-0">
+                                    <span className="text-[20px] font-semibold text-accent-text tabular-nums flex-shrink-0">
                                       {mission.progress}%
                                     </span>
                                   )}
@@ -613,7 +609,7 @@ export default async function HomePage() {
                                         className="h-full rounded-full transition-all duration-500"
                                         style={{
                                           width: `${mission.progress}%`,
-                                          background: 'linear-gradient(90deg, var(--status-success), #7ad4aa)',
+                                          background: 'var(--accent)',
                                         }}
                                       />
                                     </div>
@@ -626,7 +622,7 @@ export default async function HomePage() {
                                   {mission.activeWorkers > 0 && (
                                     <>
                                       <span className="mx-0.5">&middot;</span>
-                                      <span className="text-status-success font-medium">
+                                      <span className="text-accent-text font-medium">
                                         {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
                                       </span>
                                     </>
@@ -685,14 +681,13 @@ export default async function HomePage() {
                       className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--card)] border border-border-default hover:bg-surface-3 transition-colors"
                     >
                       <div
-                        className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${role.isActive ? 'ring-2 ring-status-success/50' : ''}`}
-                        style={{ backgroundColor: role.color }}
+                        className={`w-5 h-5 flex items-center justify-center flex-shrink-0 border border-border-strong ${role.isActive ? 'ring-2 ring-accent/50' : ''}`}
                       >
-                        <span className="text-white text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                        <span className="text-text-primary text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
                       </div>
                       <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
                       {role.isActive && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
+                        <span className="w-1.5 h-1.5 bg-accent animate-pulse" />
                       )}
                     </Link>
                   ))}
@@ -709,8 +704,8 @@ export default async function HomePage() {
               <div className="space-y-4">
                 {recentActivity.map((event) => {
                   const dotColor = event.type === 'completed'
-                    ? 'bg-status-success'
-                    : 'bg-status-error';
+                    ? 'bg-text-muted'
+                    : 'bg-accent';
 
                   return (
                     <div key={event.id} className="flex items-start gap-3">
