@@ -29,6 +29,10 @@ export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
 export interface ActionContext {
   workerId?: string;
   workspaceId?: string;
+  // Team that owns this context. Memories are a team-level resource (the memory
+  // service is team-scoped), so the `memory` corpus is namespaced by teamId —
+  // every other corpus is workspace-scoped. See knowledgeNamespace().
+  teamId?: string;
   // Discriminator for the multi-workspace guard: OAuth tokens can have access
   // to multiple workspaces; API keys are workspace-scoped at creation. Only
   // OAuth tokens need the "explicit workspaceId required" guard for ambiguous
@@ -2403,6 +2407,16 @@ import {
   renderPlanText,
 } from './knowledge-store/cards';
 
+/**
+ * Resolve the KnowledgeStore namespace for a corpus. Memory is team-scoped
+ * (the memory service is team-level), so it uses `{teamId}:memory`; every other
+ * corpus is workspace-scoped. Returns null when the required id is missing.
+ */
+function knowledgeNamespace(ctx: { workspaceId?: string; teamId?: string }, corpus: Corpus): string | null {
+  if (corpus === 'memory') return ctx.teamId ? buildNamespace(ctx.teamId, 'memory') : null;
+  return ctx.workspaceId ? buildNamespace(ctx.workspaceId, corpus) : null;
+}
+
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
   action: string,
@@ -2411,6 +2425,7 @@ export async function handleMemoryAction(
     project?: string;
     workerId?: string;
     workspaceId?: string;
+    teamId?: string;
     knowledgeStore?: KnowledgeStore;
     embedder?: Embedder | null;
   },
@@ -2480,9 +2495,10 @@ export async function handleMemoryAction(
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
       });
 
-      // Mirror into KnowledgeStore for hybrid retrieval
-      if (ctx.workspaceId && ctx.knowledgeStore) {
-        const ns = buildNamespace(ctx.workspaceId, 'memory');
+      // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
+      // belong to a team, not a workspace).
+      if (ctx.teamId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
         await ctx.knowledgeStore.upsert(ns, [{
@@ -2529,9 +2545,9 @@ export async function handleMemoryAction(
 
       const data = await memoryClient.update(params.id as string, updateFields);
 
-      // Mirror update into KnowledgeStore
-      if (ctx.workspaceId && ctx.knowledgeStore) {
-        const ns = buildNamespace(ctx.workspaceId, 'memory');
+      // Mirror update into KnowledgeStore (team-scoped)
+      if (ctx.teamId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
         await ctx.knowledgeStore.upsert(ns, [{
@@ -2551,9 +2567,9 @@ export async function handleMemoryAction(
       if (!params.id) throw new Error('id is required');
       await memoryClient.delete(params.id as string);
 
-      // Remove from KnowledgeStore
-      if (ctx.workspaceId && ctx.knowledgeStore) {
-        const ns = buildNamespace(ctx.workspaceId, 'memory');
+      // Remove from KnowledgeStore (team-scoped)
+      if (ctx.teamId && ctx.knowledgeStore) {
+        const ns = buildNamespace(ctx.teamId, 'memory');
         await ctx.knowledgeStore.delete(ns, [params.id as string]).catch(() => {});
       }
 
@@ -2562,12 +2578,16 @@ export async function handleMemoryAction(
 
     case 'query_knowledge': {
       if (!params.query) throw new Error('query is required');
-      if (!ctx.workspaceId) throw new Error('workspaceId required for query_knowledge');
 
       const corpus = ((params.corpus as string) || 'memory') as Corpus;
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
-      const ns = buildNamespace(ctx.workspaceId, corpus);
+      const ns = knowledgeNamespace(ctx, corpus);
+      if (!ns) {
+        throw new Error(corpus === 'memory'
+          ? 'teamId required for memory query_knowledge'
+          : 'workspaceId required for query_knowledge');
+      }
 
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
       const results = await ks.query(ns, {

@@ -15,7 +15,8 @@
  *   bun packages/core/scripts/assess-knowledge.ts <workspaceId> [corpus] [sampleSize] [k]
  */
 import { db } from '../db/index';
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
+import { workspaces } from '../db/schema';
 import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 import { getVoyageReranker } from '../knowledge-store/reranker';
@@ -43,7 +44,18 @@ async function main() {
   const embedder = getVoyageEmbedder();
   if (!embedder) console.warn('[assess] VOYAGE_API_KEY not set — lexical-only assessment');
   const store = new PgVectorStore(embedder, getVoyageReranker());
-  const ns = buildNamespace(workspaceId, corpus);
+
+  // Memory is team-scoped; resolve the team for the memory corpus. Other
+  // corpora are workspace-scoped.
+  let scopeId = workspaceId;
+  if (corpus === 'memory') {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { teamId: true },
+    });
+    scopeId = ws?.teamId ?? workspaceId;
+  }
+  const ns = buildNamespace(scopeId, corpus);
 
   const sample = await db.execute(sql`
     SELECT source_id, content, lexical_text
