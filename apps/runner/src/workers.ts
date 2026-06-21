@@ -138,6 +138,31 @@ const MAX_SIMILAR_TOOL_CALLS = 8;    // Abort after 8 similar calls (same tool, 
 
 // Check if Claude Code credentials exist (OAuth or API key)
 // We don't validate - just check if credentials exist
+/**
+ * Pick the server-managed credentials (delivered inline on the claim response)
+ * that the worker should use.
+ *
+ * Regression guard for the prod outage where Claude-backend tasks failed with
+ * `401 Invalid authentication credentials`: these credentials MUST be captured
+ * whenever the claim response carries them, independent of whether the runner
+ * has any local credentials. A stale/invalid local credential (an expired
+ * `~/.claude.json` oauthAccount, a leftover `.credentials.json`, etc.) makes
+ * `hasClaudeCredentials()` return true even when those creds no longer work, so
+ * gating capture on `!hasCredentials` silently dropped the valid server token.
+ *
+ * Final precedence (explicitly-set env var wins) is enforced downstream at
+ * injection time via the `!cleanEnv.X` guards; this only decides what to carry.
+ */
+export function selectServerCredentials(claimed: {
+  serverApiKey?: string;
+  serverOauthToken?: string;
+}): { serverApiKey?: string; serverOauthToken?: string } {
+  return {
+    serverApiKey: claimed.serverApiKey || undefined,
+    serverOauthToken: claimed.serverOauthToken || undefined,
+  };
+}
+
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
   const credentialsPath = join(homedir(), '.claude', '.credentials.json');
@@ -782,18 +807,26 @@ export class WorkerManager {
     // Fire-and-forget — non-fatal if it fails.
     this.sendHeartbeat();
 
-    // Use server-managed secrets (delivered inline during claim)
-    let serverApiKey: string | undefined;
-    let serverOauthToken: string | undefined;
-    if (!this.hasCredentials) {
-      if (claimedWorker.serverApiKey) {
-        serverApiKey = claimedWorker.serverApiKey;
-        console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
-      }
-      if (claimedWorker.serverOauthToken) {
-        serverOauthToken = claimedWorker.serverOauthToken;
-        console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
-      }
+    // Use server-managed secrets (delivered inline during claim).
+    //
+    // These are ALWAYS captured when present — we must NOT gate them behind
+    // `!this.hasCredentials`. A leftover/stale local credential (e.g. an
+    // expired `~/.claude.json` oauthAccount or a `.credentials.json` from a
+    // previous login) makes `hasClaudeCredentials()` return true even when
+    // those creds are invalid; gating here silently dropped the valid
+    // server-managed OAuth token and the worker spawned with broken local
+    // auth, failing with `401 Invalid authentication credentials`.
+    //
+    // Precedence is enforced safely at injection time: the server-managed
+    // values only fill an env var that isn't already explicitly set, so a
+    // genuinely-configured ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN still
+    // wins. Capturing them unconditionally just guarantees a working fallback.
+    const { serverApiKey, serverOauthToken } = selectServerCredentials(claimedWorker);
+    if (serverApiKey) {
+      console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
+    }
+    if (serverOauthToken) {
+      console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
     }
 
     // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
