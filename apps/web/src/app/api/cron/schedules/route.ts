@@ -379,10 +379,16 @@ export async function GET(req: NextRequest) {
             eq(tasks.externalId, externalId),
             inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
           ] as const;
-          const existing = await db.query.tasks.findFirst({
-            where: and(...dedupConditions),
-          });
-          if (existing) {
+          // Explicit select (not the relational query builder): `tasks` has a
+          // `workers` relation and the RQB can intermittently emit "missing
+          // FROM-clause entry for table workers", which would silently skip
+          // this dedup check and create duplicate scheduled tasks.
+          const existing = await db
+            .select({ id: tasks.id })
+            .from(tasks)
+            .where(and(...dedupConditions))
+            .limit(1);
+          if (existing.length > 0) {
             skipped++;
             continue;
           }
