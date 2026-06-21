@@ -67,10 +67,10 @@
 
 /* Day — Warm Linen */
 [data-theme="light"] {
-  --surface-1: #f7f4f0;
-  --surface-2: #eee9e3;
-  --surface-3: #e5dfd8;
-  --surface-4: #dbd4cc;
+  --surface-1: #f1ece3;
+  --surface-2: #e8e0d4;
+  --surface-3: #ddd4c6;
+  --surface-4: #d2c8b8;
 
   --card: #ffffff;
   --card-hover: #fdfcfa;
@@ -84,7 +84,7 @@
   --text-muted: #b0a89e;
   --text-desc: #8a827a;
 
-  --border: rgba(0, 0, 0, 0.16);
+  --border: rgba(0, 0, 0, 0.22);
   --border-strong: #2a2520;
 
   --accent: #f4811f;
@@ -112,8 +112,8 @@
   --cat-infra: #d96e12;
   --cat-design: #d96e12;
 
-  --chrome-bg: rgba(247, 244, 240, 0.92);
-  --chrome-sidebar: #eee9e3;
+  --chrome-bg: rgba(241, 236, 227, 0.92);
+  --chrome-sidebar: #f1ece3;
 
   color-scheme: light;
 }
