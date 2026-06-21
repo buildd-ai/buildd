@@ -22,7 +22,7 @@ describe('resolveNotifyPlan', () => {
   });
 
   it('sends to Pushover when a key is set and the event is enabled', () => {
-    const plan = resolveNotifyPlan('taskClaimed', { pushoverUserKey: 'uXXXX' }, ALL_ON);
+    const plan = resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'uXXXX' } }, ALL_ON);
     expect(plan.noop).toBe(false);
     expect(plan.pushover).toBe(true);
     expect(plan.webhook).toBe(false);
@@ -36,7 +36,7 @@ describe('resolveNotifyPlan', () => {
   });
 
   it('sends to both channels when both are configured', () => {
-    const plan = resolveNotifyPlan('taskCompleted', { pushoverUserKey: 'u', webhookUrl: 'https://x.test/h' }, ALL_ON);
+    const plan = resolveNotifyPlan('taskCompleted', { pushover: { userKey: 'u' }, webhookUrl: 'https://x.test/h' }, ALL_ON);
     expect(plan.pushover).toBe(true);
     expect(plan.webhook).toBe(true);
     expect(plan.noop).toBe(false);
@@ -44,7 +44,7 @@ describe('resolveNotifyPlan', () => {
 
   it('no-ops when the event is disabled even if a channel exists', () => {
     const prefs = { ...ALL_ON, taskClaimed: false };
-    const plan = resolveNotifyPlan('taskClaimed', { pushoverUserKey: 'u', webhookUrl: 'https://x.test/h' }, prefs);
+    const plan = resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'u' }, webhookUrl: 'https://x.test/h' }, prefs);
     expect(plan.noop).toBe(true);
     expect(plan.pushover).toBe(false);
     expect(plan.webhook).toBe(false);
@@ -57,13 +57,13 @@ describe('resolveNotifyPlan', () => {
       taskFailed: true,
       credentialExpired: true,
     };
-    expect(resolveNotifyPlan('taskClaimed', { pushoverUserKey: 'u' }, prefs).noop).toBe(true);
-    expect(resolveNotifyPlan('taskFailed', { pushoverUserKey: 'u' }, prefs).noop).toBe(false);
-    expect(resolveNotifyPlan('credentialExpired', { pushoverUserKey: 'u' }, prefs).pushover).toBe(true);
+    expect(resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'u' } }, prefs).noop).toBe(true);
+    expect(resolveNotifyPlan('taskFailed', { pushover: { userKey: 'u' } }, prefs).noop).toBe(false);
+    expect(resolveNotifyPlan('credentialExpired', { pushover: { userKey: 'u' } }, prefs).pushover).toBe(true);
   });
 
   it('treats an empty-string channel value as not configured', () => {
-    const plan = resolveNotifyPlan('taskFailed', { pushoverUserKey: '', webhookUrl: '' }, ALL_ON);
+    const plan = resolveNotifyPlan('taskFailed', { pushover: { userKey: '' }, webhookUrl: '' }, ALL_ON);
     expect(plan.noop).toBe(true);
   });
 });
