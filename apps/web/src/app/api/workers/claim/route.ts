@@ -933,6 +933,9 @@ export async function POST(req: NextRequest) {
           ...mcpSecrets.map(s => provider.get(s.id)),
         ]);
 
+        // TEMP diagnostic (value-free) — pin why serverOauthToken is empty in prod
+        console.warn(`[claim-diag] task=${task.id} wsTeam=${workspaceTeamId} secrets=${workerSecrets.length} purposes=${workerSecrets.map(s => s.purpose).join('|')} oauthFound=${!!oauthSecret} oauthLen=${decryptedOauthToken?.length ?? 0} apiKeyLen=${decryptedApiKey?.length ?? 0} mcp=${mcpSecrets.length}`);
+
         if (decryptedApiKey) {
           (cw as any).serverApiKey = decryptedApiKey;
         }
