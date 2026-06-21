@@ -110,7 +110,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, teams 
               )}
             </div>
 
-            <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} />
+            <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} allTeams={teams} />
             <div className="border-t border-border-default" />
             <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} />
           </>
@@ -133,12 +133,15 @@ interface SecretMeta {
   updatedAt: string;
 }
 
-function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Scope; workspaceId: string | null }) {
+function ClaudeCard({ teamId, scope, workspaceId, allTeams }: { teamId: string; scope: Scope; workspaceId: string | null; allTeams: { id: string; name: string }[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
   const [value, setValue] = useState('');
+  // Optional convenience: write the same credential team-wide to every team you
+  // belong to in one save, instead of repeating it per team.
+  const [applyToAll, setApplyToAll] = useState(false);
   // Hide the token input behind "Replace credential" once one exists, mirroring
   // CodexCard's pasteOpen — so we don't invite a second un-revoked credential.
   const [replaceOpen, setReplaceOpen] = useState(false);
@@ -176,35 +179,53 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   )[0] ?? null;
 
+  // Write the credential to one team, revoking that team's superseded
+  // team-wide creds so only the new one remains. applyToAll always writes
+  // team-wide (a workspace belongs to a single team).
+  async function saveToTeam(tid: string) {
+    const teamWide = applyToAll || scope !== 'workspace';
+    let priorIds: string[];
+    if (tid === teamId) {
+      priorIds = matching.map((s) => s.id);
+    } else {
+      const d = await fetch(`/api/secrets?teamId=${tid}`).then((r) => (r.ok ? r.json() : { secrets: [] }));
+      priorIds = ((d.secrets ?? []) as SecretMeta[])
+        .filter((s) => (s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key') && s.workspaceId === null)
+        .map((s) => s.id);
+    }
+    const res = await fetch('/api/secrets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        value: value.trim(),
+        purpose,
+        teamId: tid,
+        ...(!teamWide && workspaceId ? { workspaceId } : {}),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? 'Failed to save');
+    const newId = data.id as string | undefined;
+    await Promise.all(
+      priorIds.filter((id) => id !== newId).map((id) => fetch(`/api/secrets?id=${id}`, { method: 'DELETE' })),
+    );
+  }
+
   async function save() {
     setBusy(true);
     setMsg(null);
-    // Capture existing matching ids so we can revoke them after a successful
-    // replace — avoids accumulating two credentials for the same scope.
-    const priorIds = matching.map((s) => s.id);
+    const targets = applyToAll ? allTeams.map((t) => t.id) : [teamId];
     try {
-      const res = await fetch('/api/secrets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          value: value.trim(),
-          purpose,
-          teamId,
-          ...(scope === 'workspace' && workspaceId ? { workspaceId } : {}),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
-      // Revoke the superseded credential(s) so only the new one remains.
-      const newId = data.id as string | undefined;
-      await Promise.all(
-        priorIds
-          .filter((id) => id !== newId)
-          .map((id) => fetch(`/api/secrets?id=${id}`, { method: 'DELETE' })),
-      );
+      for (const tid of targets) await saveToTeam(tid);
       setValue('');
       setReplaceOpen(false);
-      setMsg({ type: 'success', text: priorIds.length > 0 ? 'Claude credential replaced.' : 'Claude credential saved.' });
+      setApplyToAll(false);
+      setMsg({
+        type: 'success',
+        text: targets.length > 1
+          ? `Claude credential saved to all ${targets.length} teams.`
+          : matching.length > 0 ? 'Claude credential replaced.' : 'Claude credential saved.',
+      });
       await load();
     } catch (e) {
       setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
@@ -262,12 +283,18 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
         placeholder={placeholder}
         className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
       />
+      {allTeams.length > 1 && scope === 'team' && (
+        <label className="flex items-center gap-2 text-xs text-text-secondary">
+          <input type="checkbox" checked={applyToAll} onChange={(e) => setApplyToAll(e.target.checked)} />
+          Apply to all my teams ({allTeams.length})
+        </label>
+      )}
       <button
         onClick={save}
         disabled={busy || !value.trim()}
         className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
       >
-        {busy ? 'Saving…' : current ? 'Replace credential' : 'Save credential'}
+        {busy ? 'Saving…' : applyToAll ? `Save to all ${allTeams.length} teams` : current ? 'Replace credential' : 'Save credential'}
       </button>
     </div>
   );
