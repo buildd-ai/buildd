@@ -20,7 +20,8 @@ import {
 } from './codex-instructions.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
-import { authContextOf, classifyClaimError, ContextBreaker } from './claim-breaker';
+import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
+import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
@@ -138,6 +139,31 @@ const MAX_SIMILAR_TOOL_CALLS = 8;    // Abort after 8 similar calls (same tool, 
 
 // Check if Claude Code credentials exist (OAuth or API key)
 // We don't validate - just check if credentials exist
+/**
+ * Pick the server-managed credentials (delivered inline on the claim response)
+ * that the worker should use.
+ *
+ * Regression guard for the prod outage where Claude-backend tasks failed with
+ * `401 Invalid authentication credentials`: these credentials MUST be captured
+ * whenever the claim response carries them, independent of whether the runner
+ * has any local credentials. A stale/invalid local credential (an expired
+ * `~/.claude.json` oauthAccount, a leftover `.credentials.json`, etc.) makes
+ * `hasClaudeCredentials()` return true even when those creds no longer work, so
+ * gating capture on `!hasCredentials` silently dropped the valid server token.
+ *
+ * Final precedence (explicitly-set env var wins) is enforced downstream at
+ * injection time via the `!cleanEnv.X` guards; this only decides what to carry.
+ */
+export function selectServerCredentials(claimed: {
+  serverApiKey?: string;
+  serverOauthToken?: string;
+}): { serverApiKey?: string; serverOauthToken?: string } {
+  return {
+    serverApiKey: claimed.serverApiKey || undefined,
+    serverOauthToken: claimed.serverOauthToken || undefined,
+  };
+}
+
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
   const credentialsPath = join(homedir(), '.claude', '.credentials.json');
@@ -172,6 +198,13 @@ function hasClaudeCredentials(): boolean {
   return false;
 }
 
+// Cache key for the per-team server-managed credential cache. Prefer the
+// workspace's teamId (team-wide secrets cover all workspaces) and fall back to
+// the workspaceId so a task without team info still gets a stable, scoped key.
+export function teamKeyOf(task: Pick<BuilddTask, 'workspaceId' | 'workspace'> | null | undefined): string {
+  return task?.workspace?.teamId || task?.workspaceId || 'default';
+}
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -201,6 +234,15 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   // workerId → auth context the worker was started under, for breaker routing on error.
   private workerAuthContexts = new Map<string, string>();
+  // workerId → team cache key, so an auth failure can invalidate the right
+  // cached server credential.
+  private workerTeamKeys = new Map<string, string>();
+  // In-memory per-team server-managed credential cache (NEVER persisted). Lets
+  // a runner with zero local creds run off server-injected creds between claims.
+  private credCache = new CredentialCache();
+  // Auth-failure burn-loop guard: consecutive auth failures drive exponential
+  // backoff on claims so a runner with no valid cred doesn't claim-then-fail forever.
+  private consecutiveAuthFailures = 0;
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
   private hookFactory: HookFactory;
@@ -474,6 +516,7 @@ export class WorkerManager {
         this.workers.delete(id);
         this.sessions.delete(id);
         this.workerAuthContexts.delete(id);
+        this.workerTeamKeys.delete(id);
         clearWorkerThrottle(id);
         storeDeleteWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
@@ -600,14 +643,20 @@ export class WorkerManager {
   // Claim any pending tasks the server has available (no specific task ID)
   async claimPendingTasks(): Promise<LocalWorker[]> {
     if (!this.acceptRemoteTasks) return [];
-    if (!this.hasCredentials && !this.config.serverless) return [];
+    // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
+    // zero local creds must still poll — server-managed credentials arrive inline
+    // on the claim response and bootstrap it. The burn-loop guard below (auth-error
+    // backoff via the circuit breaker) is what prevents claim-then-fail-forever
+    // when neither local nor valid server creds exist.
 
-    // Circuit breaker: pause claims after repeated rapid failures (e.g., quota exhaustion)
+    // Circuit breaker: pause claims after repeated rapid failures (e.g., quota
+    // exhaustion) or an auth-failure backoff window (no valid credential).
     if (this.claimsPaused) {
       if (Date.now() < this.claimsPausedUntil) return [];
       console.log('[WorkerManager] Circuit breaker reset — resuming claims');
       this.claimsPaused = false;
       this.consecutiveQuickFailures = 0;
+      this.consecutiveAuthFailures = 0;
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
@@ -699,6 +748,45 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Burn-loop guard for an auth failure on a spawned worker.
+   *
+   * A runner with neither local nor valid server credentials would otherwise
+   * claim-then-fail forever. On an auth failure we:
+   *   1. Invalidate the cached server credential for the worker's team, so a
+   *      rotated/fixed credential is picked up promptly on the next claim
+   *      rather than serving the cached-bad one.
+   *   2. Pause the affected auth context via the per-context breaker (the
+   *      account/tenant that failed), so other contexts keep claiming.
+   *   3. Pause global claims with exponential backoff keyed to the count of
+   *      consecutive auth failures, so polling backs off instead of hammering.
+   *
+   * Resumes after the backoff window (or when a credential change resets the
+   * counter via a successful claim/completion).
+   */
+  private handleAuthFailure(workerId: string): void {
+    const teamKey = this.workerTeamKeys.get(workerId);
+    if (teamKey) {
+      this.credCache.invalidate(teamKey);
+      console.warn(`[WorkerManager] Auth failure — invalidated cached server credential for team ${teamKey}`);
+    }
+
+    // Pause the affected auth context so sibling contexts keep claiming.
+    const ctx = this.workerAuthContexts.get(workerId) ?? 'account';
+
+    this.consecutiveAuthFailures++;
+    const backoff = authBackoffMs(this.consecutiveAuthFailures);
+    const until = Date.now() + backoff;
+    this.contextBreaker.pause(ctx, until);
+
+    // Also trip the global breaker: a runner with no valid credential at all
+    // would keep claiming cross-context tasks and failing them identically.
+    this.claimsPaused = true;
+    this.claimsPausedUntil = Math.max(this.claimsPausedUntil, until);
+    console.warn(`[WorkerManager] Circuit breaker: auth failure #${this.consecutiveAuthFailures} (context ${ctx}) — pausing claims ${Math.round(backoff / 1000)}s until ${new Date(until).toISOString()}`);
+    this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: until, reason: `Auth failure #${this.consecutiveAuthFailures} (${ctx})` });
+  }
+
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
@@ -782,18 +870,49 @@ export class WorkerManager {
     // Fire-and-forget — non-fatal if it fails.
     this.sendHeartbeat();
 
-    // Use server-managed secrets (delivered inline during claim)
-    let serverApiKey: string | undefined;
-    let serverOauthToken: string | undefined;
-    if (!this.hasCredentials) {
-      if (claimedWorker.serverApiKey) {
-        serverApiKey = claimedWorker.serverApiKey;
-        console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
+    // Use server-managed secrets (delivered inline during claim).
+    //
+    // These are ALWAYS captured when present — we must NOT gate them behind
+    // `!this.hasCredentials`. A leftover/stale local credential (e.g. an
+    // expired `~/.claude.json` oauthAccount or a `.credentials.json` from a
+    // previous login) makes `hasClaudeCredentials()` return true even when
+    // those creds are invalid; gating here silently dropped the valid
+    // server-managed OAuth token and the worker spawned with broken local
+    // auth, failing with `401 Invalid authentication credentials`.
+    //
+    // Precedence is enforced safely at injection time: the server-managed
+    // values only fill an env var that isn't already explicitly set, so a
+    // genuinely-configured ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN still
+    // wins. Capturing them unconditionally just guarantees a working fallback.
+    const fromClaim = selectServerCredentials(claimedWorker);
+    const teamKey = teamKeyOf(fullTask);
+    this.workerTeamKeys.set(claimedWorker.id, teamKey);
+
+    // Populate/refresh the in-memory per-team cred cache from this claim's
+    // payload (the common path — no extra endpoint needed).
+    this.credCache.set(teamKey, {
+      oauthToken: fromClaim.serverOauthToken,
+      apiKey: fromClaim.serverApiKey,
+    });
+
+    // Prefer the freshly-delivered claim credential; otherwise fall back to a
+    // fresh cached entry for this team (e.g. the server didn't re-inject on this
+    // particular claim but a valid one was delivered recently).
+    let serverApiKey = fromClaim.serverApiKey;
+    let serverOauthToken = fromClaim.serverOauthToken;
+    if (!serverApiKey && !serverOauthToken) {
+      const cached = this.credCache.get(teamKey);
+      if (cached) {
+        serverApiKey = cached.apiKey;
+        serverOauthToken = cached.oauthToken;
+        console.log(`[Worker ${claimedWorker.id}] Using cached server-managed credential for team ${teamKey}`);
       }
-      if (claimedWorker.serverOauthToken) {
-        serverOauthToken = claimedWorker.serverOauthToken;
-        console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
-      }
+    }
+    if (serverApiKey) {
+      console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
+    }
+    if (serverOauthToken) {
+      console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
     }
 
     // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
@@ -1800,12 +1919,9 @@ If something is missing or incomplete, describe what and fix it now.`;
       // Only check early output (first 500 chars) to avoid false positives
       // from agent responses that discuss auth topics
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
-      const isAuthError = earlyOutput.includes('invalid api key') ||
-        earlyOutput.includes('please run /login') ||
-        earlyOutput.includes('api key is required') ||
-        earlyOutput.includes('401 unauthorized');
+      const authFailed = isAuthError(earlyOutput);
 
-      if (isAuthError) {
+      if (authFailed) {
         // Auth error - mark as failed, not completed
         sessionLog(worker.id, 'error', 'auth_error', 'Agent authentication failed — check API key', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
@@ -1817,6 +1933,8 @@ If something is missing or incomplete, describe what and fix it now.`;
         await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
+        // Burn-loop guard (cache invalidation + exponential backoff) is applied
+        // by the circuit-breaker block below, which classifies worker.error.
       } else if (resultSubtype === 'error_max_budget_usd') {
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
@@ -1839,6 +1957,9 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else {
         // Actually completed
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
+        // A clean completion proves the credential works — reset the auth-failure
+        // backoff so claims resume at full cadence.
+        this.consecutiveAuthFailures = 0;
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
@@ -2023,7 +2144,17 @@ If something is missing or incomplete, describe what and fix it now.`;
         const err = worker.error.toLowerCase();
         const pauseReason = classifyClaimError(err);
 
-        if (pauseReason) {
+        if (isAuthError(err)) {
+          // Auth failure burn-loop guard: a runner with neither local nor valid
+          // server creds must not claim-then-fail forever. Invalidate the cached
+          // (bad) credential for this team so a rotated/fixed one is picked up on
+          // the next claim, and pause with EXPONENTIAL backoff (escalating with
+          // consecutive auth failures) — both per-context and globally, since a
+          // process-wide bad credential fails every context identically. This
+          // takes precedence over the flat-pause auth branch in classifyClaimError.
+          this.consecutiveQuickFailures = 0;
+          this.handleAuthFailure(worker.id);
+        } else if (pauseReason) {
           const pauseMs = pauseReason.pauseMs;
           const untilMs = Date.now() + pauseMs;
           if (pauseReason.scope === 'context') {

@@ -31,6 +31,30 @@ export function authContextOf(task: Pick<BuilddTask, 'context'> | null | undefin
 }
 
 /**
+ * Detect a credential/auth failure from an error or agent-output string.
+ *
+ * Covers the `401 Invalid authentication credentials` / credential-expired
+ * family — used both on the claim path and when a spawned agent fails, so a
+ * runner running purely on server-managed creds can pause + invalidate the
+ * cached (bad) credential instead of burn-looping.
+ *
+ * `text` must be lowercased by the caller.
+ */
+export function isAuthError(text: string): boolean {
+  return (
+    text.includes('invalid api key') ||
+    text.includes('invalid authentication') ||
+    text.includes('authentication failed') ||
+    text.includes('401 unauthorized') ||
+    text.includes('api key is required') ||
+    text.includes('please run /login') ||
+    text.includes('oauth token has expired') ||
+    text.includes('credential expired') ||
+    text.includes('credentials expired')
+  );
+}
+
+/**
  * Classify a worker error for circuit-breaker routing.
  * Returns null if the error is worker-specific (no breaker action).
  *
@@ -61,7 +85,7 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
     return { label: 'Billing error', pauseMs: 60 * 60 * 1000, scope: 'context' };
   }
 
-  if (err.includes('invalid api key') || err.includes('authentication failed') || err.includes('401 unauthorized') || err.includes('api key is required')) {
+  if (isAuthError(err)) {
     return { label: 'Auth failure', pauseMs: 30 * 60 * 1000, scope: 'context' };
   }
 
