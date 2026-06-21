@@ -226,6 +226,41 @@ describe('POST /api/missions', () => {
     expect(ctx.heartbeat).toBe(true);
   });
 
+  it('stores defaultBackend when a valid backend is provided', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Codex mission', backend: 'codex' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.defaultBackend).toBe('codex');
+  });
+
+  it('omits defaultBackend when no backend is provided', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Default mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.defaultBackend).toBeUndefined();
+  });
+
+  it('ignores an invalid backend value', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad backend', backend: 'gpt' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.defaultBackend).toBeUndefined();
+  });
+
   it('creates mission without heartbeat when explicitly opted out', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',

@@ -459,6 +459,9 @@ export const missions = pgTable('missions', {
   status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
+  // Default agent backend for tasks generated under this mission. An explicit
+  // per-task backend still wins; otherwise this overrides the role's hint.
+  defaultBackend: agentBackendEnum('default_backend'),
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),

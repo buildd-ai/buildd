@@ -401,6 +401,7 @@ export async function GET(req: NextRequest) {
             workspaceId: true,
             teamId: true,
             maxConcurrentTasks: true,
+            defaultBackend: true,
           },
         });
 
@@ -537,6 +538,7 @@ export async function GET(req: NextRequest) {
             classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
+            ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),
             ...(outputSchema ? { outputSchema } : {}),
           })
           .returning();

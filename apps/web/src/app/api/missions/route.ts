@@ -107,11 +107,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
     }
+
+    const defaultBackend: 'claude' | 'codex' | null =
+      backend === 'claude' || backend === 'codex' ? backend : null;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -174,6 +177,7 @@ export async function POST(req: NextRequest) {
         contextArtifactIds: contextArtifactIds || [],
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
+        ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
       })
       .returning();

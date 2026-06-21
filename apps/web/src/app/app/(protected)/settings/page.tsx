@@ -94,22 +94,7 @@ export default async function SettingsPage() {
           </section>
         )}
 
-        {/* GitHub */}
-        <GitHubSection />
-
-        {/* Vercel (for project health watcher) */}
-        <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
-
-        {/* API Keys — compact view */}
-        <ApiKeysSection
-          accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
-          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
-        />
-
-        {/* Connect Claude (MCP connector for claude.ai + Claude Code) */}
-        <ConnectClaudeSection
-          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
-        />
+        {/* ── Primary: connecting an agent backend is the core setup task ── */}
 
         {/* Agent Backends — Claude (setup token / API key) + Codex (auth.json),
             scoped team-wide (all workspaces) or per-workspace. */}
@@ -117,6 +102,28 @@ export default async function SettingsPage() {
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
           currentTeamId={currentTeamId}
         />
+
+        {/* Workspaces — links to per-workspace settings (roles, backends, integrations) */}
+        {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length > 0 && (
+          <section>
+            <h2 className="section-label mb-4">Workspaces</h2>
+            <div className="card divide-y divide-border-default">
+              {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).map((ws) => (
+                <Link
+                  key={ws.id}
+                  href={`/app/workspaces/${ws.id}/skills`}
+                  className="flex items-center justify-between p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{ws.name}</p>
+                    {ws.repo && <p className="text-xs text-text-muted truncate">{ws.repo}</p>}
+                  </div>
+                  <span className="text-xs text-text-muted flex-shrink-0">Roles, backend, integrations</span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Teams */}
         <section>
@@ -179,27 +186,40 @@ export default async function SettingsPage() {
           )}
         </section>
 
-        {/* Workspaces — links to per-workspace settings */}
-        {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length > 0 && (
-          <section>
-            <h2 className="section-label mb-4">Workspaces</h2>
-            <div className="card divide-y divide-border-default">
-              {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).map((ws) => (
-                <Link
-                  key={ws.id}
-                  href={`/app/workspaces/${ws.id}/skills`}
-                  className="flex items-center justify-between p-4 hover:bg-surface-3/50 transition-colors first:rounded-t-[10px] last:rounded-b-[10px]"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{ws.name}</p>
-                    {ws.repo && <p className="text-xs text-text-muted truncate">{ws.repo}</p>}
-                  </div>
-                  <span className="text-xs text-text-muted flex-shrink-0">Skills, Slack, Discord</span>
-                </Link>
-              ))}
+        {/* ── Secondary: integrations are collapsed so core setup leads the page ── */}
+        <section>
+          <details className="group">
+            <summary className="flex items-center justify-between cursor-pointer list-none select-none">
+              <h2 className="section-label">Integrations</h2>
+              <span className="flex items-center gap-1.5 text-xs text-text-muted">
+                GitHub · Vercel · API keys · Claude connector
+                <svg className="w-4 h-4 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </span>
+            </summary>
+
+            <div className="mt-6 space-y-12">
+              {/* GitHub */}
+              <GitHubSection />
+
+              {/* Connect Claude (MCP connector for claude.ai + Claude Code) */}
+              <ConnectClaudeSection
+                workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+              />
+
+              {/* Vercel (for project health watcher) */}
+              <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
+
+              {/* API Keys — pay-per-token buildd accounts */}
+              <ApiKeysSection
+                accounts={allAccounts.map(a => ({ ...a, hasOauthToken: !!a.oauthToken }))}
+                workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+              />
             </div>
-          </section>
-        )}
+          </details>
+        </section>
+
         {/* Sign Out */}
         <section>
           <h2 className="section-label mb-4">Account</h2>

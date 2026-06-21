@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
@@ -44,6 +45,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
   const [description, setDescription] = useState('');
   const [content, setContent] = useState('');
   const [model, setModel] = useState('inherit');
+  const [defaultBackend, setDefaultBackend] = useState<BackendValue>(null);
   const [allowedTools, setAllowedTools] = useState<string[]>([]);
   const [canDelegateTo, setCanDelegateTo] = useState<string[]>([]);
   const [background, setBackground] = useState(false);
@@ -90,6 +92,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
           content,
           source: 'manual',
           model,
+          defaultBackend,
           allowedTools,
           canDelegateTo,
           background,
@@ -179,6 +182,15 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               onChange={setModel}
               options={MODEL_OPTIONS}
             />
+          </div>
+
+          {/* Agent backend */}
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Agent backend</label>
+            <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
+            <p className="text-xs text-text-muted mt-1">
+              Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+            </p>
           </div>
 
           {/* Can Delegate To */}

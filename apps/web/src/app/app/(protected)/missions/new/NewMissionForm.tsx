@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 
 interface WorkspaceOption {
   id: string;
@@ -122,6 +123,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
       : ''
   );
   const [workspaceId, setWorkspaceId] = useState('');
+  const [backend, setBackend] = useState<BackendValue>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -189,6 +191,10 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
 
       if (cronExpression) {
         payload.cronExpression = cronExpression;
+      }
+
+      if (backend) {
+        payload.backend = backend;
       }
 
       if (artifactId) {
@@ -281,7 +287,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             onClick={() => setShowAdvanced(true)}
             className="text-xs text-text-muted hover:text-text-secondary mb-4"
           >
-            Advanced options (workspace, schedule) &rarr;
+            Advanced options (workspace, backend, schedule) &rarr;
           </button>
         ) : (
           <>
@@ -294,6 +300,16 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             onChange={setWorkspaceId}
           />
         )}
+
+        {/* Agent backend */}
+        <div className="mb-4">
+          <label className="block text-xs text-text-muted mb-1.5">Agent backend</label>
+          <BackendSelect value={backend} onChange={setBackend} inheritLabel="Default" />
+          <p className="text-xs text-text-muted/80 mt-1.5">
+            Tasks this mission generates run on this backend. &ldquo;Default&rdquo; uses Claude (or the role&apos;s
+            backend). Requires that backend&apos;s credentials in Settings.
+          </p>
+        </div>
 
         {/* Schedule section */}
         <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-lg" data-testid="schedule-section">

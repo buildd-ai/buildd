@@ -205,6 +205,9 @@ export async function runMission(
       context: taskContext,
       creationSource: 'orchestrator',
       missionId: mission.id,
+      // Run the planning task on the mission's chosen backend so the whole
+      // mission (including the organizer) stays on one agent backend.
+      ...(mission.defaultBackend ? { backend: mission.defaultBackend } : {}),
     })
     .returning();
 

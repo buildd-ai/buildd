@@ -320,21 +320,26 @@ export async function POST(req: NextRequest) {
       ? rawOutputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto'
       : undefined;
 
-    // Inherit outputRequirement from mission if not explicitly set
-    let outputRequirement = explicitOutputRequirement;
-    if (!outputRequirement && missionId) {
-      const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
-        columns: { defaultOutputRequirement: true },
-      });
-      outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
-    }
-
     // Resolve agent backend. Precedence (most specific wins):
-    //   task.backend → role.defaultBackend → workspace gitConfig.defaultBackend →
-    //   schema default ('claude').
+    //   task.backend → mission.defaultBackend → role.defaultBackend →
+    //   workspace gitConfig.defaultBackend → schema default ('claude').
     let resolvedBackend: 'claude' | 'codex' | undefined =
       ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
+
+    // Fields a mission task can inherit from its mission. Fetch once and reuse
+    // for both outputRequirement and backend resolution.
+    let outputRequirement = explicitOutputRequirement;
+    if (missionId && (!outputRequirement || !resolvedBackend)) {
+      const mission = await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
+        columns: { defaultOutputRequirement: true, defaultBackend: true },
+      });
+      if (!outputRequirement) outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
+      // Mission backend (an intentional per-mission choice) outranks role/workspace defaults.
+      if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
+    }
+
+    // Fall back to the role's defaultBackend hint, then the workspace default.
     if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
       const role = await db.query.workspaceSkills.findFirst({
         where: and(

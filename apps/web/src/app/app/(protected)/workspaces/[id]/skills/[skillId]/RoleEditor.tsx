@@ -4,6 +4,7 @@ import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
+import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
@@ -37,6 +38,7 @@ interface Skill {
   description: string | null;
   content: string;
   model: string;
+  defaultBackend: 'claude' | 'codex' | null;
   allowedTools: string[];
   canDelegateTo: string[];
   background: boolean;
@@ -414,6 +416,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [description, setDescription] = useState(skill.description || '');
   const [content, setContent] = useState(skill.content);
   const [model, setModel] = useState(skill.model);
+  const [defaultBackend, setDefaultBackend] = useState<BackendValue>(skill.defaultBackend ?? null);
   const [allowedTools, setAllowedTools] = useState<string[]>(skill.allowedTools);
   const [canDelegateTo, setCanDelegateTo] = useState<string[]>(skill.canDelegateTo);
   const [background, setBackground] = useState(skill.background);
@@ -473,6 +476,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           description: description || null,
           content,
           model,
+          defaultBackend,
           allowedTools,
           canDelegateTo,
           background,
@@ -608,6 +612,15 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 onChange={setModel}
                 options={MODEL_OPTIONS}
               />
+            </div>
+
+            {/* Agent backend */}
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-2">Agent backend</label>
+              <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
+              <p className="text-xs text-text-muted mt-1.5">
+                Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+              </p>
             </div>
 
             {/* Can Delegate To */}
