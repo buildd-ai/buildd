@@ -13,6 +13,7 @@ import VercelSection from './VercelSection';
 import ApiKeysSection from './ApiKeysSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import AgentBackendsSection from './AgentBackendsSection';
+import NotificationsSection from './NotificationsSection';
 import SignOutButton from '../you/SignOutButton';
 
 export const dynamic = 'force-dynamic';
@@ -114,6 +115,12 @@ export default async function SettingsPage() {
         {/* Agent Backends — Claude (setup token / API key) + Codex (auth.json),
             scoped team-wide (all workspaces) or per-workspace. */}
         <AgentBackendsSection
+          workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+          currentTeamId={currentTeamId}
+        />
+
+        {/* Notifications — per-team alert channel (Pushover key / webhook) + event toggles. */}
+        <NotificationsSection
           workspaces={userWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
           currentTeamId={currentTeamId}
         />

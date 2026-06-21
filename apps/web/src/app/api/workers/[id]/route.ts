@@ -9,6 +9,8 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
+import { notifyTeam } from '@/lib/notify';
+import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { notifySlack } from '@/lib/slack-notify';
 import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
@@ -714,13 +716,14 @@ export async function PATCH(
           }
         }
 
-        // Notify on task completion/failure
+        // Notify on task completion/failure — routed to the OWNING team's channel.
         const taskRecord = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
           columns: { title: true },
-          with: { workspace: { columns: { name: true } } },
+          with: { workspace: { columns: { name: true, teamId: true } } },
         });
-        if (taskRecord) {
+        const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
+        if (taskRecord && notifyTeamId) {
           const isDone = status === 'completed';
           if (shouldAutoRetry) {
             // Broadcast the task as available for any worker to claim
@@ -729,8 +732,8 @@ export async function PATCH(
               events.TASK_ASSIGNED,
               { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
             );
-            notify({
-              app: 'tasks',
+            // A retry is a (transient) failure — gate it on the taskFailed toggle.
+            void notifyTeam(notifyTeamId, 'taskFailed', {
               title: 'Task retrying',
               message: `Auto-retrying: ${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
               url: `https://buildd.dev/app/tasks/${worker.taskId}`,
@@ -738,14 +741,28 @@ export async function PATCH(
               priority: 0,
             });
           } else {
-            notify({
-              app: isDone ? 'tasks' : 'alerts',
+            void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
               url: `https://buildd.dev/app/tasks/${worker.taskId}`,
               urlTitle: 'View task',
               priority: isDone ? -1 : 0,
             });
+
+            // Credential-expiry alert: a failure caused by an invalid/expired
+            // agent-backend credential (e.g. "401 Invalid authentication
+            // credentials") gets its own actionable alert so the owner re-sets
+            // the credential before more tasks burn. Distinct from a generic
+            // failure and from a budget/rate-limit pause (handled separately above).
+            if (!isDone && isCredentialExpiredError(error)) {
+              void notifyTeam(notifyTeamId, 'credentialExpired', {
+                title: '🔑 Agent credential expired',
+                message: `Your Claude credential is expired or invalid — re-set it in Settings → Agent Backends.\nTask: ${taskRecord.title}`,
+                url: `https://buildd.dev/app/settings`,
+                urlTitle: 'Open settings',
+                priority: 1,
+              });
+            }
           }
         }
       } catch (sideEffectErr) {
