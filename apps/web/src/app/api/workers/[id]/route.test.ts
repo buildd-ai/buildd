@@ -1613,6 +1613,15 @@ describe('PATCH /api/workers/[id]', () => {
         workspace: { teamId: 'team-1' },
       });
 
+      // Capture the budget-reset task update so we can assert the persisted context.
+      let resetCtx: any = null;
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => {
+          if (vals?.status === 'pending') resetCtx = vals.context;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      }));
+
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
@@ -1629,6 +1638,10 @@ describe('PATCH /api/workers/[id]', () => {
       // Task should have been updated twice: first by budget reset (to pending), then by worker update (to failed)
       // But budget reset should have set status to 'pending'
       expect(mockTasksUpdate).toHaveBeenCalled();
+
+      // Reset persists the flag + a reset time so the UI can show "retries ~HH:MM".
+      expect(resetCtx?.budgetExhausted).toBe(true);
+      expect(typeof resetCtx?.budgetResetsAt).toBe('string');
 
       // Account should have budgetExhaustedAt set
       expect(mockAccountsUpdate).toHaveBeenCalled();

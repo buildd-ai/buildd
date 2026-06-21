@@ -388,6 +388,9 @@ export async function PATCH(
         context: {
           ...existingCtx,
           budgetExhausted: true,
+          // Persisted so every UI surface (detail banner, list/sidebar/mobile
+          // badges) can show WHEN it retries without an account join.
+          budgetResetsAt: budgetResetsAt.toISOString(),
           previousWorkerId: id,
         },
       })

@@ -19,6 +19,9 @@ interface GridTask {
   waitingPrompt: string | null;
   missionId: string | null;
   missionTitle: string | null;
+  budgetPaused?: boolean;
+  budgetBackend?: string;
+  budgetResetsAt?: string | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -92,13 +95,19 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
 
+  // Budget/rate-limit pause: a distinct amber indicator (the task is pending +
+  // will auto-retry). Shown on desktop and mobile alike (single responsive row).
+  const resetShort = task.budgetResetsAt
+    ? ` · ~${new Date(task.budgetResetsAt).toISOString().slice(11, 16)}`
+    : '';
+
   return (
     <Link
       href={`/app/tasks/${task.id}`}
       className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default hover:bg-surface-2/50 transition-colors"
     >
-      {/* Status dot */}
-      <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
+      {/* Status dot — amber + pulsing when budget/rate-limit paused */}
+      <span className={`w-2 h-2 rounded-full shrink-0 ${task.budgetPaused ? 'bg-status-warning animate-pulse' : `${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`}`} />
 
       {/* Standalone icon — only shown when not inside a named mission group */}
       {isStandalone && <StandaloneIcon />}
@@ -108,8 +117,17 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
         {task.title}
       </span>
 
-      {/* Status badge */}
-      <StatusBadge status={task.status} />
+      {/* Status badge — paused indicator wins over the plain pending state */}
+      {task.budgetPaused ? (
+        <span
+          title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
+        >
+          ⏸ Paused{resetShort}
+        </span>
+      ) : (
+        <StatusBadge status={task.status} />
+      )}
 
       {/* PR link */}
       {task.prUrl && (
