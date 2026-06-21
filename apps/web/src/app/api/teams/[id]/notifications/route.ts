@@ -40,11 +40,13 @@ export async function GET(_req: NextRequest, { params }: RouteContext) {
 
 // PUT /api/teams/[id]/notifications — set channel secret(s) and/or event prefs.
 // Body: {
-//   pushoverUserKey?: string|null,   // Pushover user/group key. '' or null clears the Pushover channel.
-//   pushoverAppToken?: string|null,  // OPTIONAL own app token; omit to send via buildd's app token.
+//   pushoverAppToken?: string|null,  // the team's OWN Pushover app token (required to set Pushover).
+//   pushoverUserKey?: string|null,   // the team's Pushover user/group key (required to set Pushover).
 //   webhookUrl?: string|null,        // '' or null clears the webhook.
 //   preferences?: Partial<Record<NotifyEvent, boolean>>,
 // }
+// Pushover: send BOTH app token + user key to set; send both '' / null (or either
+// null) to clear. We never fall back to buildd's app token — each team uses its own.
 // Omitting a field leaves it unchanged.
 export async function PUT(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
@@ -56,15 +58,19 @@ export async function PUT(req: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  // Pushover: a user key clears or sets the whole channel; app token is optional.
-  // Channel secrets are never logged.
-  if ('pushoverUserKey' in body) {
+  // Pushover requires the team's own app token + user key. Channel secrets are never logged.
+  if ('pushoverAppToken' in body || 'pushoverUserKey' in body) {
+    const appToken = normalizeChannelValue(body.pushoverAppToken);
     const userKey = normalizeChannelValue(body.pushoverUserKey);
-    if (userKey === null) {
+    if (appToken === null && userKey === null) {
       await deleteTeamChannel(id, 'pushover');
+    } else if (appToken === null || userKey === null) {
+      return NextResponse.json(
+        { error: 'Pushover needs both an app token and a user/group key (or clear both to remove it)' },
+        { status: 400 },
+      );
     } else {
-      const appToken = 'pushoverAppToken' in body ? normalizeChannelValue(body.pushoverAppToken) : null;
-      await setTeamPushover(id, userKey, appToken);
+      await setTeamPushover(id, appToken, userKey);
     }
   }
 

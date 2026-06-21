@@ -21,11 +21,16 @@ describe('resolveNotifyPlan', () => {
     expect(plan.noop).toBe(true);
   });
 
-  it('sends to Pushover when a key is set and the event is enabled', () => {
-    const plan = resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'uXXXX' } }, ALL_ON);
+  it('sends to Pushover when the team app token + user key are set and the event is enabled', () => {
+    const plan = resolveNotifyPlan('taskClaimed', { pushover: { appToken: 'aXXXX', userKey: 'uXXXX' } }, ALL_ON);
     expect(plan.noop).toBe(false);
     expect(plan.pushover).toBe(true);
     expect(plan.webhook).toBe(false);
+  });
+
+  it('no-ops Pushover when only one of app token / user key is present (never uses buildd\'s app)', () => {
+    expect(resolveNotifyPlan('taskFailed', { pushover: { appToken: 'a', userKey: '' } }, ALL_ON).pushover).toBe(false);
+    expect(resolveNotifyPlan('taskFailed', { pushover: { appToken: '', userKey: 'u' } }, ALL_ON).pushover).toBe(false);
   });
 
   it('sends to the webhook when a URL is set and the event is enabled', () => {
@@ -36,7 +41,7 @@ describe('resolveNotifyPlan', () => {
   });
 
   it('sends to both channels when both are configured', () => {
-    const plan = resolveNotifyPlan('taskCompleted', { pushover: { userKey: 'u' }, webhookUrl: 'https://x.test/h' }, ALL_ON);
+    const plan = resolveNotifyPlan('taskCompleted', { pushover: { appToken: 'a', userKey: 'u' }, webhookUrl: 'https://x.test/h' }, ALL_ON);
     expect(plan.pushover).toBe(true);
     expect(plan.webhook).toBe(true);
     expect(plan.noop).toBe(false);
@@ -44,7 +49,7 @@ describe('resolveNotifyPlan', () => {
 
   it('no-ops when the event is disabled even if a channel exists', () => {
     const prefs = { ...ALL_ON, taskClaimed: false };
-    const plan = resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'u' }, webhookUrl: 'https://x.test/h' }, prefs);
+    const plan = resolveNotifyPlan('taskClaimed', { pushover: { appToken: 'a', userKey: 'u' }, webhookUrl: 'https://x.test/h' }, prefs);
     expect(plan.noop).toBe(true);
     expect(plan.pushover).toBe(false);
     expect(plan.webhook).toBe(false);
@@ -57,13 +62,13 @@ describe('resolveNotifyPlan', () => {
       taskFailed: true,
       credentialExpired: true,
     };
-    expect(resolveNotifyPlan('taskClaimed', { pushover: { userKey: 'u' } }, prefs).noop).toBe(true);
-    expect(resolveNotifyPlan('taskFailed', { pushover: { userKey: 'u' } }, prefs).noop).toBe(false);
-    expect(resolveNotifyPlan('credentialExpired', { pushover: { userKey: 'u' } }, prefs).pushover).toBe(true);
+    expect(resolveNotifyPlan('taskClaimed', { pushover: { appToken: 'a', userKey: 'u' } }, prefs).noop).toBe(true);
+    expect(resolveNotifyPlan('taskFailed', { pushover: { appToken: 'a', userKey: 'u' } }, prefs).noop).toBe(false);
+    expect(resolveNotifyPlan('credentialExpired', { pushover: { appToken: 'a', userKey: 'u' } }, prefs).pushover).toBe(true);
   });
 
   it('treats an empty-string channel value as not configured', () => {
-    const plan = resolveNotifyPlan('taskFailed', { pushover: { userKey: '' }, webhookUrl: '' }, ALL_ON);
+    const plan = resolveNotifyPlan('taskFailed', { pushover: { appToken: '', userKey: '' }, webhookUrl: '' }, ALL_ON);
     expect(plan.noop).toBe(true);
   });
 });
