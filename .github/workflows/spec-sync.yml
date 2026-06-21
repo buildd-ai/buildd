@@ -1,0 +1,74 @@
+# Spec-sync: keep the spec-sync corpus fresh so drift can be judged interactively.
+#
+# CI's job is ONLY to (re)build the corpus — ingest a CLEAN code corpus + the doc
+# repos into the spec-sync knowledge namespace, and emit a glanceable evidence file.
+# It does NOT judge: judging is interactive (the `spec_compare` admin MCP action, or
+# reading the evidence artifact). No LLM / API key runs in CI.
+#
+# Required repo secrets:
+#   DATABASE_URL    — Postgres holding knowledge_chunks (a non-prod DB is fine)
+#   VOYAGE_API_KEY  — embeddings (omit → lexical-only, lower precision)
+# Doc repos are cloned with `gh` using the workflow's built-in token (no PAT).
+# The spec-sync namespace id is baked below (it's a pointer, not a secret).
+name: spec-sync
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'        # Mondays 07:00 UTC — weekly corpus refresh
+  workflow_dispatch: {}
+  push:
+    branches: [dev]
+    paths:                      # only when the things that move the spec change
+      - 'packages/core/db/schema.ts'
+      - 'apps/web/src/app/api/**'
+      - 'apps/runner/src/backends/**'
+      - 'docs/**'
+
+concurrency:
+  group: spec-sync
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read            # lets the built-in token clone org repos via gh
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      SPEC_WORKSPACE_ID: ${{ vars.SPEC_WORKSPACE_ID || '471effe1-4668-4cc9-9fa3-e20a56769deb' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout buildd
+        uses: actions/checkout@v4
+
+      # Clone the doc repos beside buildd (the ingest wrapper's expected layout)
+      # using gh + the built-in token — no PAT secret to manage. If a repo is
+      # private and the token lacks access, that clone is skipped (|| true) and
+      # the corpus just omits it.
+      - name: Clone doc repos
+        run: |
+          gh repo clone buildd-ai/buildd-docs ../buildd-docs -- --depth 1 || true
+          gh repo clone buildd-ai/buildd-site ../buildd-site -- --depth 1 || true
+          gh repo clone buildd-ai/knowledge-base ../knowledge-base -- --depth 1 || true
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      # Rebuild the corpus clean (drizzle/tests excluded on the code side by the wrapper).
+      - name: Refresh spec-sync corpus
+        run: |
+          bun packages/core/scripts/reset-knowledge-namespace.ts "$SPEC_WORKSPACE_ID" all
+          BUILDD_DIR="$GITHUB_WORKSPACE" \
+          BUILDD_DOCS_DIR="$GITHUB_WORKSPACE/../buildd-docs" \
+          BUILDD_SITE_DIR="$GITHUB_WORKSPACE/../buildd-site" \
+          KNOWLEDGE_BASE_DIR="$GITHUB_WORKSPACE/../knowledge-base" \
+          bash .claude/skills/spec-sync/scripts/ingest-spec-corpus.sh
+
+      # Convenience artifact: code-vs-docs evidence to judge interactively later.
+      - name: Emit evidence
+        run: bun .claude/skills/spec-sync/scripts/spec-drift.ts "$SPEC_WORKSPACE_ID" 5 --evidence > evidence.txt || true
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with: { name: spec-sync-evidence, path: evidence.txt }

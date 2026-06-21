@@ -92,6 +92,7 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
+  'spec_compare',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
@@ -150,6 +151,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20), namespace? (override the SPEC_SYNC_NAMESPACE env) } — dev/spec-drift tool. Retrieves CODE vs DOCS evidence from the spec-sync corpus for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
   };
 
   const lines = actions
@@ -2387,6 +2389,47 @@ export async function handleBuilddAction(
         : 'Message queued for delivery on next worker check-in.';
 
       return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
+    }
+
+    // Spec-drift compare (admin/dev only). Retrieves evidence from the spec-sync
+    // corpus (a dedicated, ingest-built namespace holding `:code` + `:docs` chunks)
+    // for a feature/term, and returns BOTH sides for the CALLER to judge. There is
+    // no LLM in core — the judging (implemented / removed / contradicted) is done by
+    // the calling agent or interactive session reading the snippets. Scores SURFACE
+    // candidates; they do NOT decide drift (a reranker always returns a best match,
+    // so a removed feature still scores moderately against its semantic neighbour).
+    case 'spec_compare': {
+      const level = await ctx.getLevel();
+      if (level !== 'admin') throw new Error('spec_compare requires an admin-level token (dev tooling)');
+
+      const feature = (params.feature || params.query) as string | undefined;
+      if (!feature) throw new Error('feature (or query) is required');
+
+      // Dedicated spec-sync corpus namespace (NOT a product workspace). Override
+      // via params.namespace or the SPEC_SYNC_NAMESPACE env; otherwise this default.
+      const ns = (params.namespace as string) || process.env.SPEC_SYNC_NAMESPACE || '471effe1-4668-4cc9-9fa3-e20a56769deb';
+
+      const topK = Math.min((params.topK as number) || 5, 20);
+      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+      const [codeHits, docsHits] = await Promise.all([
+        ks.query(buildNamespace(ns, 'code'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(ns, 'docs'), { text: feature, mode: 'hybrid', topK }),
+      ]);
+
+      const fmt = (hits: typeof codeHits) => hits.length
+        ? hits.map((r, i) => `${i + 1}. [${r.score.toFixed(3)}] ${r.sourcePath ?? r.sourceType}\n   ${r.content.replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
+        : '   (no matches)';
+
+      return text(
+        `# spec_compare: "${feature}"\n\n` +
+        `## CODE evidence (what is actually implemented)\n${fmt(codeHits)}\n\n` +
+        `## DOCS evidence (what the docs/site/kb claim)\n${fmt(docsHits)}\n\n` +
+        `## How to judge\n` +
+        `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
+        `actually implement "${feature}" (a real table/route/impl), or are they only ` +
+        `semantic neighbours? Rule one of: IMPLEMENTED · DOCUMENTED-NOT-BUILT · ` +
+        `SHIPPED-NOT-DOCUMENTED · CONTRADICTED. The verdict is yours, not the scores'.`
+      );
     }
 
     default:
