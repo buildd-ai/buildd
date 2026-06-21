@@ -35,6 +35,9 @@ export default async function TasksPage({
     waitingPrompt: string | null;
     missionId: string | null;
     missionTitle: string | null;
+    budgetPaused: boolean;
+    budgetBackend: string;
+    budgetResetsAt: string | null;
   }> = [];
 
   if (!isDev && user) {
@@ -64,6 +67,8 @@ export default async function TasksPage({
             workspaceId: true,
             result: true,
             missionId: true,
+            context: true,
+            backend: true,
           },
           orderBy: [desc(tasks.updatedAt)],
           limit: 200,
@@ -99,6 +104,8 @@ export default async function TasksPage({
           const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
           const isTerminal = t.status === 'completed' || t.status === 'failed';
           const isWaiting = !isTerminal && waitingByTaskId.has(t.id);
+          const ctx = (t.context || {}) as Record<string, unknown>;
+          const budgetPaused = t.status === 'pending' && ctx.budgetExhausted === true;
           return {
             id: t.id,
             title: t.title,
@@ -114,6 +121,9 @@ export default async function TasksPage({
             waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
             missionId: t.missionId || null,
             missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
+            budgetPaused,
+            budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
+            budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
           };
         });
       }
