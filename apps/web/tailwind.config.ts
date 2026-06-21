@@ -60,11 +60,28 @@ const config: Config = {
           design: 'var(--cat-design)',
         },
       },
+      // Brutalist: square everything. 'full' kept for true circles (avatars, status dots).
       borderRadius: {
+        none: '0',
         sm: '0',
+        DEFAULT: '0',
         md: '0',
         lg: '0',
         xl: '0',
+        '2xl': '0',
+        '3xl': '0',
+        full: '9999px',
+      },
+      // Brutalist: every shadow utility is a hard offset (themed via --border-strong), no blur.
+      boxShadow: {
+        none: 'none',
+        sm: '2px 2px 0 0 var(--border-strong)',
+        DEFAULT: '3px 3px 0 0 var(--border-strong)',
+        md: '4px 4px 0 0 var(--border-strong)',
+        lg: '5px 5px 0 0 var(--border-strong)',
+        xl: '7px 7px 0 0 var(--border-strong)',
+        '2xl': '9px 9px 0 0 var(--border-strong)',
+        inner: 'inset 2px 2px 0 0 var(--border-strong)',
       },
       animation: {
         'pulse-border': 'pulse-border 2s ease-in-out infinite',
