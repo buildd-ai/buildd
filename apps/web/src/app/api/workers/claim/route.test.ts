@@ -1071,6 +1071,144 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
+  // Regression: prod outage where Claude-backend tasks failed with
+  // `401 Invalid authentication credentials` because the server-managed
+  // `oauth_token` secret was never delivered to the runner at claim time.
+  // The claim RESPONSE must carry `serverOauthToken` (and `serverApiKey`)
+  // whenever the task's team has those secrets — this is the guard that
+  // was missing.
+  it('attaches serverOauthToken when an oauth_token secret exists for the team', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // Team-wide oauth_token secret (accountId/workspaceId NULL → team-scoped row)
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'oauth-secret-1', purpose: 'oauth_token', label: null },
+    ]);
+    mockSecretsProviderGet.mockResolvedValue('decrypted-oauth-token');
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    // The decrypted OAuth token MUST reach the runner under `serverOauthToken`.
+    expect(data.workers[0].serverOauthToken).toBe('decrypted-oauth-token');
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('attaches serverApiKey when an anthropic_api_key secret exists for the team', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'apikey-secret-1', purpose: 'anthropic_api_key', label: null },
+    ]);
+    mockSecretsProviderGet.mockResolvedValue('decrypted-anthropic-key');
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    expect(data.workers[0].serverApiKey).toBe('decrypted-anthropic-key');
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
   it('does not include mcpSecrets when no mcp_credential secrets exist', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
