@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "max_concurrent_tasks" integer DEFAULT 3 NOT NULL;

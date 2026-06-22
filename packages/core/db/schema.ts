@@ -411,6 +411,12 @@ export const workspaces = pgTable('workspaces', {
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
 
+  // Max tasks from this workspace that may have an active worker at once. Repo-backed
+  // workspaces isolate each task in its own git worktree, so parallel work is safe;
+  // this caps it to bound merge-conflict surface. Default 3. No effect on repo-less
+  // workspaces (those are never serialized by the per-repo guard).
+  maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
+
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
