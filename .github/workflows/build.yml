@@ -110,7 +110,11 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.needs_server == 'true'
+    # Skip on release PRs (dev→main): dev already ran full integration before the
+    # promotion, so re-running it here is redundant noise (and flakes on CI Claude
+    # quota / missing E2E workspace fixtures). Hotfix PRs (feature→main) bypass dev,
+    # so they still run it. `build` remains the only required check on main.
+    if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev'
 
     steps:
       - uses: actions/checkout@v4

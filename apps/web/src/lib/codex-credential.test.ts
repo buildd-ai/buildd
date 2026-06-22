@@ -29,6 +29,8 @@ mock.module('@buildd/core/db/schema', () => ({
     encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at',
     lastRefreshedAt: 'last_refreshed_at',
+    lastVerifiedAt: 'last_verified_at',
+    lastVerificationError: 'last_verification_error',
   },
 }));
 
@@ -58,6 +60,7 @@ import {
   storeCodexCredential,
   getCodexStatus,
   normalizeCodexAuthJson,
+  verifyCodexCredential,
 } from './codex-credential';
 
 // helper: build an encrypted blob the way the lib does (encrypt = `enc:${json}`)
@@ -439,5 +442,67 @@ describe('refreshCodexCredential', () => {
 
     consoleSpy.mockRestore();
     consoleSpy2.mockRestore();
+  });
+});
+
+describe('verifyCodexCredential', () => {
+  let originalFetch: typeof globalThis.fetch;
+  let setArg: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    mockDbFindFirst.mockReset();
+    mockDbUpdate.mockReset();
+    setArg = undefined;
+    // verifyCodexCredential does: update(secrets).set({...}).where(...)
+    const set = mock((arg: Record<string, unknown>) => { setArg = arg; return { where: mock(() => Promise.resolve()) }; });
+    mockDbUpdate.mockImplementation(() => ({ set }));
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc') });
+  });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('returns verified:true and persists a null error when the API accepts the token', async () => {
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: true, error: null });
+    expect(setArg?.lastVerificationError).toBeNull();
+    expect('lastVerifiedAt' in (setArg ?? {})).toBe(true);
+  });
+
+  it('returns verified:false with HTTP status + message when the API rejects', async () => {
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: false, status: 401, json: () => Promise.resolve({ error: { message: 'invalid token' } }),
+    })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result.verified).toBe(false);
+    expect(result.error).toBe('HTTP 401: invalid token');
+    expect(setArg?.lastVerificationError).toBe('HTTP 401: invalid token');
+  });
+
+  it('returns verified:false with the network error message when fetch throws', async () => {
+    globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: false, error: 'boom' });
+  });
+
+  it('returns "Credential not found" without calling the API when no row exists', async () => {
+    mockDbFindFirst.mockResolvedValue(null);
+    const fetchSpy = mock(() => Promise.resolve({ ok: true })) as any;
+    globalThis.fetch = fetchSpy;
+    const result = await verifyCodexCredential('missing');
+    expect(result).toEqual({ verified: false, error: 'Credential not found' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not log the token value', async () => {
+    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 500, json: () => Promise.reject(new Error('x')) })) as any;
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('SECRET_AT', 'SECRET_RT', 'acc') });
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    await verifyCodexCredential('s-1');
+    const logs = [...logSpy.mock.calls.flat(), ...errSpy.mock.calls.flat(), ...warnSpy.mock.calls.flat()].join(' ');
+    expect(logs).not.toContain('SECRET_AT');
+    logSpy.mockRestore(); errSpy.mockRestore(); warnSpy.mockRestore();
   });
 });

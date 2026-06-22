@@ -411,6 +411,12 @@ export const workspaces = pgTable('workspaces', {
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
 
+  // Max tasks from this workspace that may have an active worker at once. Repo-backed
+  // workspaces isolate each task in its own git worktree, so parallel work is safe;
+  // this caps it to bound merge-conflict surface. Default 3. No effect on repo-less
+  // workspaces (those are never serialized by the per-repo guard).
+  maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
+
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
@@ -459,6 +465,9 @@ export const missions = pgTable('missions', {
   status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
+  // Default agent backend for tasks generated under this mission. An explicit
+  // per-task backend still wins; otherwise this overrides the role's hint.
+  defaultBackend: agentBackendEnum('default_backend'),
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
@@ -929,7 +938,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -937,6 +946,10 @@ export const secrets = pgTable('secrets', {
   // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
   lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  // Verification lifecycle (codex_credential only): the last time the credential was
+  // smoke-tested against the real provider API, and the error string if it failed.
+  lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+  lastVerificationError: text('last_verification_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1136,6 +1149,27 @@ export const secretsRelations = relations(secrets, ({ one }) => ({
   team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
+}));
+
+// Per-team notification preferences (config, not a credential — the channel
+// itself lives in `secrets` as purpose 'pushover' / 'notify_webhook').
+// One row per team; each boolean toggles an event type. Defaults preserve the
+// previous always-on behaviour while making each event individually muteable.
+export const notificationPreferences = pgTable('notification_preferences', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull().unique(),
+  taskClaimed: boolean('task_claimed').default(true).notNull(),
+  taskCompleted: boolean('task_completed').default(true).notNull(),
+  taskFailed: boolean('task_failed').default(true).notNull(),
+  credentialExpired: boolean('credential_expired').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: uniqueIndex('notification_preferences_team_idx').on(t.teamId),
+}));
+
+export const notificationPreferencesRelations = relations(notificationPreferences, ({ one }) => ({
+  team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
 // User feedback on AI-generated content (thumbs up/down + dismiss)

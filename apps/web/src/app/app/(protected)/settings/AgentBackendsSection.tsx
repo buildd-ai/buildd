@@ -13,13 +13,20 @@ interface Props {
   currentTeamId: string | null;
 }
 
-type Scope = 'team' | 'workspace';
+type Scope = 'team' | 'workspace' | 'all_teams';
+
+export interface TeamTarget {
+  teamId: string;
+  /** A representative workspace in the team — used to authorize team-scoped writes. */
+  workspaceId: string;
+}
 
 /**
  * Unified agent-backend credentials. Both Claude (setup token / API key) and
- * Codex (auth.json) are stored in the shared `secrets` table and scoped the same
- * way: team-wide (all workspaces) by default, or narrowed to one workspace.
- * See docs/credentials-architecture.md.
+ * Codex (auth.json) are stored in the shared `secrets` table. The team is the auth
+ * boundary: a credential is shared team-wide by default, narrowed to one workspace,
+ * or — for an operator who runs one runner across several of their teams — fanned
+ * out to every team they manage ("all my teams"). See docs/credentials-architecture.md.
  */
 export default function AgentBackendsSection({ workspaces, currentTeamId }: Props) {
   // Only workspaces in the active team can share a team-wide credential.
@@ -27,6 +34,16 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
   );
+
+  // One representative workspace per distinct team the user can see — the fan-out
+  // targets. Each write is still authorized per-team server-side, so this can only
+  // touch teams the user actually belongs to.
+  const teamTargets = useMemo<TeamTarget[]>(() => {
+    const byTeam = new Map<string, string>();
+    for (const w of workspaces) if (!byTeam.has(w.teamId)) byTeam.set(w.teamId, w.id);
+    return Array.from(byTeam, ([teamId, workspaceId]) => ({ teamId, workspaceId }));
+  }, [workspaces]);
+  const multiTeam = teamTargets.length > 1;
 
   const [scope, setScope] = useState<Scope>('team');
   const [workspaceId, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
@@ -46,8 +63,9 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
       <div className="card p-4 space-y-5">
         <p className="text-sm text-text-secondary">
-          Credentials runners use to authenticate an agent backend. Set one credential for{' '}
-          <strong className="text-text-primary">all workspaces</strong> in the team, or scope it to a single workspace.
+          Credentials runners use to authenticate an agent backend. The team is the
+          auth boundary: set one credential for <strong className="text-text-primary">all workspaces</strong> in
+          the team, scope it to a single workspace{multiTeam ? <>, or apply it across <strong className="text-text-primary">all {teamTargets.length} teams</strong> you manage</> : null}.
         </p>
 
         {/* Shared scope selector */}
@@ -58,7 +76,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
               onClick={() => setScope('team')}
               className={`px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
             >
-              All workspaces
+              This team
             </button>
             <button
               onClick={() => setScope('workspace')}
@@ -66,7 +84,18 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
             >
               One workspace
             </button>
+            {multiTeam && (
+              <button
+                onClick={() => setScope('all_teams')}
+                className={`px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+              >
+                All my teams
+              </button>
+            )}
           </div>
+          {scope === 'all_teams' && (
+            <span className="text-xs text-text-muted">Writes one credential per team ({teamTargets.length})</span>
+          )}
           {scope === 'workspace' && (
             <select
               value={workspaceId}
@@ -80,9 +109,9 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
           )}
         </div>
 
-        <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} />
+        <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
         <div className="border-t border-border-default" />
-        <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} />
+        <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
       </div>
     </section>
   );
@@ -99,7 +128,7 @@ interface SecretMeta {
   workspaceId: string | null;
 }
 
-function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Scope; workspaceId: string | null }) {
+function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -107,8 +136,11 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const allTeams = scope === 'all_teams';
+
   const load = useCallback(async () => {
-    if (!teamId) return;
+    // All-teams is an action (write to every team), not a per-team status view.
+    if (!teamId || scope === 'all_teams') { setSecrets([]); return; }
     setLoading(true);
     try {
       const res = await fetch(`/api/secrets?teamId=${teamId}`);
@@ -119,7 +151,7 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
     } finally {
       setLoading(false);
     }
-  }, [teamId]);
+  }, [teamId, scope]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -134,6 +166,25 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
     setBusy(true);
     setMsg(null);
     try {
+      // Fan out across every team the operator manages — one team-wide row each.
+      if (allTeams) {
+        const results = await Promise.all(
+          teamTargets.map((t) =>
+            fetch('/api/secrets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ value: value.trim(), purpose, teamId: t.teamId }),
+            }).then((r) => r.ok).catch(() => false),
+          ),
+        );
+        const ok = results.filter(Boolean).length;
+        setValue('');
+        setMsg({
+          type: ok > 0 ? 'success' : 'error',
+          text: `Claude credential saved for ${ok} of ${teamTargets.length} teams.`,
+        });
+        return;
+      }
       const res = await fetch('/api/secrets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -231,7 +282,7 @@ function ClaudeCard({ teamId, scope, workspaceId }: { teamId: string; scope: Sco
           disabled={busy || !value.trim()}
           className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
         >
-          {busy ? 'Saving…' : matching.length > 0 ? 'Replace credential' : 'Save credential'}
+          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace credential' : 'Save credential'}
         </button>
       </div>
 
@@ -249,10 +300,12 @@ interface CodexStatus {
   expired: boolean;
   accountId: string | null;
   lastRefreshedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
   scope: 'team' | 'workspace' | null;
 }
 
-function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; scope: Scope }) {
+function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[] }) {
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -261,11 +314,13 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const allTeams = scope === 'all_teams';
   const base = `/api/workspaces/${accessWorkspaceId}/codex-credential`;
   const q = `?scope=${scope}`;
 
   const load = useCallback(async () => {
-    if (!accessWorkspaceId) return;
+    // All-teams is an action (write to every team), not a per-team status view.
+    if (!accessWorkspaceId || scope === 'all_teams') { setStatus(null); return; }
     setLoading(true);
     setMsg(null);
     try {
@@ -276,7 +331,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     } finally {
       setLoading(false);
     }
-  }, [base, q, accessWorkspaceId]);
+  }, [base, q, accessWorkspaceId, scope]);
 
   useEffect(() => {
     setPasteOpen(false);
@@ -305,6 +360,26 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     setPasteError(null);
     setMsg(null);
     try {
+      // Fan out across every team the operator manages — each team gets its own
+      // team-wide Codex credential (authorized via a representative workspace).
+      if (allTeams) {
+        const results = await Promise.all(
+          teamTargets.map((t) =>
+            fetch(`/api/workspaces/${t.workspaceId}/codex-credential`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ authJson: pasteValue, scope: 'team' }),
+            }).then((r) => r.ok).catch(() => false),
+          ),
+        );
+        const ok = results.filter(Boolean).length;
+        setPasteValue('');
+        setMsg({
+          type: ok > 0 ? 'success' : 'error',
+          text: `Codex connected for ${ok} of ${teamTargets.length} teams.`,
+        });
+        return;
+      }
       const res = await fetch(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -340,6 +415,23 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     }
   }
 
+  async function verify() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}/verify${q}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Verification failed' }); return; }
+      if (data.verified) setMsg({ type: 'success', text: 'Credential verified against the provider API.' });
+      else setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
+      if (data.status) setStatus(data.status);
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revoke() {
     if (!confirm('Remove this Codex credential?')) return;
     setBusy(true);
@@ -347,7 +439,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     try {
       const res = await fetch(`${base}${q}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 204) throw new Error('Delete failed');
-      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, scope: null });
+      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -386,9 +478,20 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
           <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
             {status.accountId && <div>Account: <span className="font-mono text-text-primary">{status.accountId}</span></div>}
             {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
+            {status.lastVerifiedAt && (
+              <div>
+                Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}
+                {status.lastVerificationError
+                  ? <span className="text-status-error"> — failed: {status.lastVerificationError}</span>
+                  : <span className="text-status-success"> — passed</span>}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={verify} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
+              {busy ? 'Working…' : 'Verify'}
+            </button>
             <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
               {busy ? 'Refreshing…' : 'Refresh now'}
             </button>
@@ -407,10 +510,14 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
         </div>
       ) : (
         <div className="space-y-3">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
-            <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
-          </span>
-          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} />
+          {allTeams ? (
+            <span className="text-xs text-text-muted">Paste once — applies the same Codex login to all {teamTargets.length} teams you manage.</span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
+              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
+            </span>
+          )}
+          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
         </div>
       )}
 
@@ -421,8 +528,8 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
   );
 }
 
-function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
-  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void;
+function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
 }) {
   return (
     <div className="space-y-2">
@@ -439,7 +546,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
-        {busy ? 'Connecting…' : 'Connect'}
+        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
       </button>
     </div>
   );

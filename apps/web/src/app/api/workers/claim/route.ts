@@ -10,7 +10,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
-import { notify } from '@/lib/pushover';
+import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext } from '@/lib/knowledge-context';
@@ -257,13 +257,15 @@ export async function POST(req: NextRequest) {
     )
   );
 
-  // Prevent parallel workers on the same repo — if another task in the same
-  // workspace already has an active worker, skip this task. This avoids the
-  // "N parallel branches on the same repo" problem that causes merge conflicts.
-  // Only applies to workspaces with a repo (not coordination workspaces).
+  // Cap parallel workers per repo-backed workspace. Each task runs in its own git
+  // worktree+branch, so parallel work is safe on disk; the cap bounds merge-conflict
+  // surface from many branches on one repo. Skip this task if the count of active
+  // workers on OTHER tasks in the same workspace has reached the workspace's
+  // maxConcurrentTasks (default 3). Repo-less workspaces (coordination, etc.) never
+  // have a repo so the inner EXISTS is false → count 0 → never serialized.
   claimableConditions.push(
-    sql`NOT EXISTS (
-      SELECT 1 FROM ${workers} w2
+    sql`(
+      SELECT COUNT(*) FROM ${workers} w2
       JOIN ${tasks} t3 ON t3.id = w2.task_id
       WHERE t3.workspace_id = ${tasks.workspaceId}
       AND w2.status IN ('running', 'starting', 'idle')
@@ -273,6 +275,9 @@ export async function POST(req: NextRequest) {
         WHERE ws.id = t3.workspace_id
         AND ws.repo IS NOT NULL
       )
+    ) < (
+      SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
+      WHERE ws2.id = ${tasks.workspaceId}
     )`
   );
 
@@ -405,9 +410,32 @@ export async function POST(req: NextRequest) {
   // which is inherently safe against concurrent claims at the SQL level.
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
+  // Per-workspace concurrency cap enforced within this batch. The SQL guard above
+  // filtered candidates against *existing* active workers, but a single batch could
+  // still claim several same-repo tasks at once (they all passed when the count was
+  // below the cap). Seed the running tally with this account's existing active
+  // workers per workspace and stop claiming once a repo workspace reaches its cap.
+  const DEFAULT_MAX_CONCURRENT_TASKS = 3;
+  const activeByWorkspace = new Map<string, number>();
+  for (const w of activeWorkers) {
+    if (!['running', 'starting', 'idle'].includes(w.status)) continue;
+    activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
+  }
+
   for (const task of filteredTasks) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
+
+    // Per-repo concurrency cap (repo-backed workspaces only — repo-less ones are not
+    // serialized). Each task is worktree-isolated, so the cap only bounds how many
+    // branches run in parallel on one repo.
+    const taskWorkspace = (task as any).workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
+    if (taskWorkspace?.repo) {
+      const cap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+      if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
+        continue;
+      }
+    }
 
     // Account budget exhausted: skip non-tenant tasks (they'd use the account's own OAuth token)
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
@@ -513,6 +541,9 @@ export async function POST(req: NextRequest) {
       .returning({ id: tasks.id });
 
     if (updated.length === 0) continue; // Already claimed by another request
+
+    // Count this claim toward the per-workspace cap for the rest of the batch.
+    activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
 
     // Keep the in-memory task copy in sync so downstream enrichment and the
     // returned worker payload see the patched context.
@@ -999,10 +1030,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Notify on task claims
+  // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
     const task = cw.task as any;
-    notify({
+    const teamId = task?.workspace?.teamId as string | undefined;
+    if (!teamId) continue;
+    void notifyTeam(teamId, 'taskClaimed', {
       title: `Task claimed`,
       message: `${task?.title || cw.taskId}\n${task?.workspace?.name || 'unknown workspace'}`,
       url: `https://buildd.dev/app/tasks/${cw.taskId}`,

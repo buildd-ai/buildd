@@ -872,7 +872,61 @@ describe('POST /api/tasks', () => {
     expect(captured().backend).toBeUndefined();
   });
 
-  it('falls back to the workspace gitConfig.defaultBackend when task and role do not specify', async () => {
+  it('inherits backend from the mission default when not explicitly set', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('mission default backend overrides the role default', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('explicit task.backend overrides the mission default', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', backend: 'claude' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+  });
+
+  it('falls through to the role default when the mission has no backend', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: null });
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('falls back to the workspace gitConfig.defaultBackend when task, mission, and role do not specify', async () => {
     const captured = backendCase();
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { defaultBackend: 'codex' } });
 

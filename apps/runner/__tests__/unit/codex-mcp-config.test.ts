@@ -93,3 +93,96 @@ describe('writeCodexMcpConfig', () => {
     expect(between.includes('\n[')).toBe(false);
   });
 });
+
+describe('writeCodexMcpConfig — additional workspace/role MCP servers', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+    }
+    dirs.length = 0;
+  });
+
+  function writeWithExtra(): { dir: string; content: string } {
+    const dir = fs.mkdtempSync(join(tmpdir(), 'codex-mcp-extra-'));
+    dirs.push(dir);
+    writeCodexMcpConfig(dir, {
+      builddServer: 'https://buildd.dev',
+      workspaceId: 'ws_123',
+      workerId: 'w_456',
+      bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+      additionalMcpServers: [
+        { name: 'cue', url: 'https://cue.example.com/mcp', bearerTokenEnvVar: 'MCP_BEARER_CUE' },
+      ],
+    });
+    return { dir, content: fs.readFileSync(join(dir, 'config.toml'), 'utf-8') };
+  }
+
+  fsTest('emits [mcp_servers.<name>] block for each additional server', () => {
+    const { content } = writeWithExtra();
+    expect(content).toContain('[mcp_servers.cue]');
+    expect(content).toContain('url = "https://cue.example.com/mcp"');
+    expect(content).toContain('bearer_token_env_var = "MCP_BEARER_CUE"');
+    expect(content).toContain('enabled = true');
+    expect(content).toContain('default_tools_approval_mode = "approve"');
+  });
+
+  fsTest('bearer token env var name is in the file but no raw token value is written', () => {
+    const { content } = writeWithExtra();
+    // Only the env var NAME is written; the actual secret value never enters config.toml.
+    expect(content).toContain('bearer_token_env_var = "MCP_BEARER_CUE"');
+    // Confirm there is no direct assignment of a token value (would look like bearer_token = "...")
+    expect(content).not.toMatch(/^\s*bearer_token\s*=/m);
+  });
+
+  fsTest('additional server block appears before [sandbox_workspace_write]', () => {
+    const { content } = writeWithExtra();
+    const cueIdx = content.indexOf('[mcp_servers.cue]');
+    const sandboxIdx = content.indexOf('[sandbox_workspace_write]');
+    expect(cueIdx).toBeGreaterThanOrEqual(0);
+    expect(sandboxIdx).toBeGreaterThan(cueIdx);
+  });
+
+  fsTest('buildd server block is still present alongside additional servers', () => {
+    const { content } = writeWithExtra();
+    expect(content).toContain('[mcp_servers.buildd]');
+    expect(content).toContain('[mcp_servers.cue]');
+  });
+
+  fsTest('multiple additional servers each get their own block', () => {
+    const dir = fs.mkdtempSync(join(tmpdir(), 'codex-mcp-multi-'));
+    dirs.push(dir);
+    writeCodexMcpConfig(dir, {
+      builddServer: 'https://buildd.dev',
+      workspaceId: 'ws_123',
+      workerId: 'w_456',
+      bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+      additionalMcpServers: [
+        { name: 'cue', url: 'https://cue.example.com/mcp', bearerTokenEnvVar: 'MCP_BEARER_CUE' },
+        { name: 'dispatch', url: 'https://dispatch.example.com/mcp', bearerTokenEnvVar: 'MCP_BEARER_DISPATCH' },
+      ],
+    });
+    const content = fs.readFileSync(join(dir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[mcp_servers.cue]');
+    expect(content).toContain('[mcp_servers.dispatch]');
+    expect(content).toContain('bearer_token_env_var = "MCP_BEARER_CUE"');
+    expect(content).toContain('bearer_token_env_var = "MCP_BEARER_DISPATCH"');
+  });
+
+  fsTest('no additional servers emitted when additionalMcpServers is empty or omitted', () => {
+    const dir = fs.mkdtempSync(join(tmpdir(), 'codex-mcp-empty-'));
+    dirs.push(dir);
+    writeCodexMcpConfig(dir, {
+      builddServer: 'https://buildd.dev',
+      workspaceId: 'ws_123',
+      workerId: 'w_456',
+      bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+      additionalMcpServers: [],
+    });
+    const content = fs.readFileSync(join(dir, 'config.toml'), 'utf-8');
+    // Only buildd should appear
+    const serverMatches = content.match(/\[mcp_servers\./g) || [];
+    expect(serverMatches).toHaveLength(1);
+    expect(content).toContain('[mcp_servers.buildd]');
+  });
+});
