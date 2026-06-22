@@ -71,23 +71,23 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         {/* Shared scope selector */}
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-text-secondary">Applies to</span>
-          <div className="inline-flex rounded-lg border border-border-default overflow-hidden">
+          <div className="flex sm:inline-flex w-full sm:w-auto rounded-lg border border-border-default overflow-hidden">
             <button
               onClick={() => setScope('team')}
-              className={`px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
             >
               This team
             </button>
             <button
               onClick={() => setScope('workspace')}
-              className={`px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'workspace' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'workspace' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
             >
               One workspace
             </button>
             {multiTeam && (
               <button
                 onClick={() => setScope('all_teams')}
-                className={`px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+                className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
               >
                 All my teams
               </button>

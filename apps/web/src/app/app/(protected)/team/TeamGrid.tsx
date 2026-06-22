@@ -175,7 +175,7 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
           {/* Active roles grid */}
           {activeRoles.length > 0 && (
             <div className="mb-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {activeRoles.map((role) => (
                   <ActiveRoleCard key={role.id} role={role} />
                 ))}
@@ -190,7 +190,7 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
                 <span className="text-[13px] font-semibold text-text-muted">Idle</span>
                 <span className="text-[12px] text-text-muted">No active tasks</span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {idleRoles.map((role) => (
                   <IdleRoleChip key={role.id} role={role} />
                 ))}
