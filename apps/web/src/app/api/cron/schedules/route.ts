@@ -655,6 +655,17 @@ export async function GET(req: NextRequest) {
           }
           heartbeatOrphans = orphanedWorkers.length;
         }
+        // Alert that a runner went offline — fires even when it had no active
+        // workers (the orphan-failover above only covers running workers, so an
+        // idle-but-wedged runner — e.g. one stuck on an unreachable server URL —
+        // would otherwise vanish silently). reportOps dedups by source|message
+        // for ~1h, so the per-minute cron won't spam.
+        void reportOps({
+          source: 'runner-offline',
+          severity: 'error',
+          message: 'Runner heartbeat stale — runner offline or not reaching the server',
+          detail: `${staleHBs.length} stale heartbeat(s); accounts: ${[...new Set(staleAccountIds)].join(', ')}; orphaned workers failed: ${heartbeatOrphans}`,
+        });
         // Delete stale heartbeat records
         await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff));
       }

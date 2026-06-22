@@ -15,6 +15,7 @@ const mockWorkerHeartbeatsFindMany = mock(() => [] as any[]);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockAccountsFindMany = mock(() => [] as any[]);
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockReportOps = mock(() => Promise.resolve());
 
 let taskSchedulesUpdateCalls: any[] = [];
 let tasksInsertValues: any = null;
@@ -116,6 +117,10 @@ mock.module('@/lib/orchestrator-workspace', () => ({
   getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace,
 }));
 
+mock.module('@buildd/core/report-ops', () => ({
+  reportOps: mockReportOps,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -163,6 +168,7 @@ describe('GET /api/cron/schedules', () => {
     mockAccountWorkspacesFindMany.mockReset();
     mockAccountsFindMany.mockReset();
     mockWorkersFindMany.mockReset();
+    mockReportOps.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     taskSchedulesUpdateCalls = [];
@@ -178,6 +184,20 @@ describe('GET /api/cron/schedules', () => {
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
     mockAccountsFindMany.mockResolvedValue([]);
     mockWorkersFindMany.mockResolvedValue([]);
+  });
+
+  it('alerts via reportOps when a runner heartbeat goes stale even with no active workers', async () => {
+    // Idle-but-wedged runner: heartbeat is stale but it has no running workers,
+    // so the orphan-failover finds nothing. We must still alert.
+    mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }]);
+    mockWorkersFindMany.mockResolvedValue([]); // no orphaned workers
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+
+    const call = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'runner-offline');
+    expect(call).toBeTruthy();
+    expect(call[0].severity).toBe('error');
   });
 
   it('should resolve workspace from mission when schedule.workspaceId is null', async () => {
