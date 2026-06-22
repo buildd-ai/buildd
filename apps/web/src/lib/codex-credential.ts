@@ -21,6 +21,10 @@ export interface CodexStatus {
   expired: boolean;
   accountId: string | null;
   lastRefreshedAt: string | null;
+  /** Last time the credential was smoke-tested against the provider API. */
+  lastVerifiedAt: string | null;
+  /** Error from the last verification attempt, or null if it passed. */
+  lastVerificationError: string | null;
   /** Where the connected credential is scoped: 'team' (all workspaces) or 'workspace'. */
   scope: 'team' | 'workspace' | null;
 }
@@ -233,11 +237,26 @@ export async function hasCodexCredential(opts: {
 export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
   const row = await db.query.secrets.findFirst({
     where: scopeMatch(scope),
-    columns: { encryptedValue: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
+    columns: {
+      encryptedValue: true,
+      workspaceId: true,
+      tokenExpiresAt: true,
+      lastRefreshedAt: true,
+      lastVerifiedAt: true,
+      lastVerificationError: true,
+    },
   });
 
   if (!row) {
-    return { connected: false, expired: false, accountId: null, lastRefreshedAt: null, scope: null };
+    return {
+      connected: false,
+      expired: false,
+      accountId: null,
+      lastRefreshedAt: null,
+      lastVerifiedAt: null,
+      lastVerificationError: null,
+      scope: null,
+    };
   }
 
   const expired = row.tokenExpiresAt != null && row.tokenExpiresAt < new Date();
@@ -246,6 +265,8 @@ export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
     expired,
     accountId: decodeBlob(row.encryptedValue).account_id,
     lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
+    lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
+    lastVerificationError: row.lastVerificationError ?? null,
     scope: row.workspaceId ? 'workspace' : 'team',
   };
 }
@@ -353,4 +374,67 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
     return 'error';
   }
+}
+
+export interface VerifyResult {
+  verified: boolean;
+  error: string | null;
+}
+
+const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
+
+/**
+ * Smoke-test the stored Codex credential against the real OpenAI API. Uses the
+ * decrypted access_token as a Bearer token — the same path the Codex SDK takes
+ * at runtime. Persists lastVerifiedAt and lastVerificationError so the UI can
+ * show a durable "Verified" or "Failed" state (distinct from refresh, which
+ * rotates the token). Never logs token values.
+ */
+export async function verifyCodexCredential(secretId: string): Promise<VerifyResult> {
+  const row = await db.query.secrets.findFirst({
+    where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+    columns: { encryptedValue: true },
+  });
+
+  if (!row) return { verified: false, error: 'Credential not found' };
+
+  const blob = decodeBlob(row.encryptedValue);
+
+  let verified: boolean;
+  let error: string | null = null;
+
+  try {
+    const res = await fetch(OPENAI_MODELS_URL, {
+      headers: { Authorization: `Bearer ${blob.access_token}` },
+    });
+
+    if (res.ok) {
+      verified = true;
+    } else {
+      verified = false;
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json() as Record<string, unknown>;
+        const msg = (body.error as Record<string, unknown> | undefined)?.message;
+        if (typeof msg === 'string') detail += `: ${msg}`;
+      } catch {
+        // ignore json parse error
+      }
+      error = detail;
+    }
+  } catch (err) {
+    verified = false;
+    error = err instanceof Error ? err.message : 'Network error';
+  }
+
+  await db
+    .update(secrets)
+    .set({
+      lastVerifiedAt: sql`NOW()`,
+      lastVerificationError: error,
+      updatedAt: sql`NOW()`,
+    })
+    .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+
+  return { verified, error };
 }
