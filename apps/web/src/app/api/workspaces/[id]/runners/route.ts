@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, gt, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
@@ -49,14 +49,15 @@ export async function GET(
     // Filter to heartbeats that have access to this workspace
     const runners = await Promise.all(
       heartbeats.map(async (hb) => {
-        // Check if account is linked to this workspace
+        // Check if account is linked to this specific workspace
         const linked = await db.query.accountWorkspaces.findFirst({
-          where: eq(accountWorkspaces.accountId, hb.accountId),
+          where: and(
+            eq(accountWorkspaces.accountId, hb.accountId),
+            eq(accountWorkspaces.workspaceId, id),
+          ),
           columns: { workspaceId: true },
         });
-        const hasAccess =
-          (linked && linked.workspaceId === id) ||
-          workspace?.accessMode === 'open';
+        const hasAccess = !!linked || workspace?.accessMode === 'open';
 
         if (!hasAccess) return null;
 
