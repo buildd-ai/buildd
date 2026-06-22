@@ -121,6 +121,17 @@ export interface CodexMcpConfig {
    * the model uses its default effort.
    */
   effort?: 'low' | 'medium' | 'high' | 'max';
+  /**
+   * Additional workspace/role HTTP MCP servers to inject alongside buildd.
+   * Each entry emits a `[mcp_servers.<name>]` TOML block. The bearer token
+   * must already be set in the worker's env under `bearerTokenEnvVar` — the
+   * value is never written into config.toml; only the env var name is.
+   */
+  additionalMcpServers?: Array<{
+    name: string;
+    url: string;
+    bearerTokenEnvVar: string;
+  }>;
 }
 
 /**
@@ -163,6 +174,16 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
     // Key verified against codex-cli 0.140 (`--strict-config` accepts it).
     'default_tools_approval_mode = "approve"',
     '',
+    // Additional workspace/role MCP servers resolved from .mcp.json.
+    // Same approval + network rules as buildd; bearer token is in env, not here.
+    ...(config.additionalMcpServers || []).flatMap(server => [
+      `[mcp_servers.${tomlBareKey(server.name)}]`,
+      `url = ${tomlString(server.url)}`,
+      `bearer_token_env_var = ${tomlString(server.bearerTokenEnvVar)}`,
+      'enabled = true',
+      'default_tools_approval_mode = "approve"',
+      '',
+    ]),
     // Codex's `workspace-write` sandbox DISABLES outbound network by default, which
     // makes the remote buildd HTTP MCP unreachable (no create_pr / update_progress)
     // AND blocks `git push`. Enable network access so a Codex worker can actually
@@ -187,4 +208,9 @@ export function cleanupCodexAuth(workerId: string, codexHome: string): void {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function tomlBareKey(name: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(name)) return name;
+  return JSON.stringify(name);
 }

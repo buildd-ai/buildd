@@ -1385,12 +1385,45 @@ export class WorkerManager {
         // over the workspace gitConfig.effort, mirroring the Claude path below.
         const codexEffort = ((task.context as any)?.effort ?? gitConfig?.effort) as
           | 'low' | 'medium' | 'high' | 'max' | undefined;
+        // Inject additional workspace/role MCP servers from .mcp.json so Codex workers
+        // can reach them (e.g. Cue). The Claude path gets these via settingSources +
+        // overlayRoleFiles; Codex reads only config.toml so they'd be silently dropped
+        // without this. Bearer tokens are put in env vars (MCP_BEARER_<SLUG>), never
+        // written into config.toml, mirroring BUILDD_MCP_BEARER_TOKEN above.
+        const codexAdditionalServers: Array<{ name: string; url: string; bearerTokenEnvVar: string }> = [];
+        if (existsSync(mcpJsonPath)) {
+          try {
+            const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
+              mcpServers?: Record<string, { url?: string; headers?: Record<string, string> }>;
+            };
+            for (const [name, serverCfg] of Object.entries(mcpJson.mcpServers || {})) {
+              if (name === 'buildd' || !serverCfg?.url) continue;
+              const envVarName = `MCP_BEARER_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+              const authHeader = serverCfg.headers?.Authorization || serverCfg.headers?.authorization;
+              if (authHeader) {
+                const match = authHeader.match(/\$\{([^}]+)\}/);
+                if (match) {
+                  const sourceVar = match[1];
+                  const tokenValue = cleanEnv[sourceVar];
+                  if (tokenValue) cleanEnv[envVarName] = tokenValue;
+                }
+              }
+              codexAdditionalServers.push({ name, url: serverCfg.url, bearerTokenEnvVar: envVarName });
+            }
+            if (codexAdditionalServers.length > 0) {
+              console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Failed to parse .mcp.json for Codex MCP injection:`, err);
+          }
+        }
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
           workerId: worker.id,
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
           ...(codexEffort ? { effort: codexEffort } : {}),
+          ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
         });
         // NOTE: deliberately NOT assigning the local `codexHome` var here — that
         // var drives the finally-block teardown, which must not delete a stable
