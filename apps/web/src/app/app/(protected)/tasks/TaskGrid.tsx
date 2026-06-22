@@ -316,7 +316,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
 
   if (visibleTasks.length === 0 && !missionFilter) {
     return (
-      <div className="h-full flex items-center justify-center p-8">
+      <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
         <div className="max-w-md text-center">
           <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
             <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -348,7 +348,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-[1000px] mx-auto py-4">
+      <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
         {/* Breadcrumbs */}
         {missionFilter && (
           <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
