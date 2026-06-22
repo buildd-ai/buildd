@@ -1,1 +1,1 @@
-ALTER TABLE "missions" ADD COLUMN "default_backend" "agent_backend";
+ALTER TABLE "missions" ADD COLUMN IF NOT EXISTS "default_backend" "agent_backend";
