@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
-import { BuilddClient } from './buildd';
+import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
@@ -2527,6 +2527,21 @@ setInterval(async () => {
 // stdout staleness can distinguish "runner idle" from "runner wedged". Worker
 // activity / pusher reconnects / update checks aren't guaranteed during quiet
 // periods, so without this the log can stay silent for hours on a healthy runner.
+//
+// Honest heartbeat: only claim "runner alive" when the server has actually been
+// reachable recently. A runner wedged on an unreachable server (e.g. a stale
+// localhost builddServer) would otherwise keep logging "alive" while failing
+// every claim — which is exactly what hid the 2026-06-22 outage. When contact is
+// stale we emit a DEGRADED line instead, so a host monitor keyed on "runner alive"
+// freshness (and humans reading the log) see the truth.
+const SERVER_CONTACT_STALE_MS = 5 * 60_000;
 setInterval(() => {
-  console.log(`[heartbeat] ${new Date().toISOString()} runner alive`);
+  const lastOk = getLastServerContactAt();
+  const ageMs = lastOk ? Date.now() - lastOk : Infinity;
+  if (ageMs < SERVER_CONTACT_STALE_MS) {
+    console.log(`[heartbeat] ${new Date().toISOString()} runner alive`);
+  } else {
+    const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
+    console.error(`[heartbeat] ${new Date().toISOString()} DEGRADED — no successful server contact (last: ${since}); claims are failing`);
+  }
 }, 60_000);
