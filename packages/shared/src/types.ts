@@ -257,6 +257,7 @@ export interface Mission {
   description: string | null;
   status: MissionStatusValue;
   priority: number;
+  defaultBackend?: AgentBackend | null;
   scheduleId: string | null;
   parentMissionId: string | null;
   createdByUserId: string | null;

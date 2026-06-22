@@ -156,7 +156,7 @@ export async function PATCH(
 
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -198,6 +198,9 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     if (maxConcurrentTasks !== undefined) updateData.maxConcurrentTasks = maxConcurrentTasks;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
+    if (backend !== undefined) {
+      updateData.defaultBackend = backend === 'claude' || backend === 'codex' ? backend : null;
+    }
 
     // Handle schedule updates
     const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || outputSchema !== undefined || isHeartbeat !== undefined

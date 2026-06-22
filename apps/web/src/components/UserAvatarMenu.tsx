@@ -25,7 +25,7 @@ export default function UserAvatarMenu({ userInitial }: UserAvatarMenuProps) {
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-36 bg-card border border-border-strong rounded-lg shadow-lg overflow-hidden z-50">
+        <div className="absolute bottom-full left-0 mb-2 w-36 bg-card border border-border-strong rounded-lg shadow-lg overflow-hidden z-50">
           <Link
             href="/app/you"
             onClick={() => setOpen(false)}

@@ -136,6 +136,47 @@ describe('runMission', () => {
     expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
   });
 
+  it('runs the planning task on the mission default backend when set', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Codex Mission',
+      priority: 0,
+      defaultBackend: 'codex',
+      schedule: null,
+    });
+    mockBuildMissionContext.mockResolvedValue({ description: 'x', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
+
+    await runMission('obj-1', undefined, deps);
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.backend).toBe('codex');
+  });
+
+  it('omits backend on the planning task when the mission has none', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Default Mission',
+      priority: 0,
+      schedule: null,
+    });
+    mockBuildMissionContext.mockResolvedValue({ description: 'x', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
+
+    await runMission('obj-1', undefined, deps);
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.backend).toBeUndefined();
+  });
+
   it('sets manualRun in context when option is true', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-1',
