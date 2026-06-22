@@ -249,6 +249,8 @@ interface CodexStatus {
   expired: boolean;
   accountId: string | null;
   lastRefreshedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
   scope: 'team' | 'workspace' | null;
 }
 
@@ -340,6 +342,23 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     }
   }
 
+  async function verify() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}/verify${q}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Verification failed' }); return; }
+      if (data.verified) setMsg({ type: 'success', text: 'Credential verified against the provider API.' });
+      else setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
+      if (data.status) setStatus(data.status);
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revoke() {
     if (!confirm('Remove this Codex credential?')) return;
     setBusy(true);
@@ -347,7 +366,7 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
     try {
       const res = await fetch(`${base}${q}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 204) throw new Error('Delete failed');
-      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, scope: null });
+      setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -386,9 +405,20 @@ function CodexCard({ accessWorkspaceId, scope }: { accessWorkspaceId: string; sc
           <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
             {status.accountId && <div>Account: <span className="font-mono text-text-primary">{status.accountId}</span></div>}
             {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
+            {status.lastVerifiedAt && (
+              <div>
+                Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}
+                {status.lastVerificationError
+                  ? <span className="text-status-error"> — failed: {status.lastVerificationError}</span>
+                  : <span className="text-status-success"> — passed</span>}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={verify} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
+              {busy ? 'Working…' : 'Verify'}
+            </button>
             <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
               {busy ? 'Refreshing…' : 'Refresh now'}
             </button>

@@ -940,6 +940,10 @@ export const secrets = pgTable('secrets', {
   // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
   lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  // Verification lifecycle (codex_credential only): the last time the credential was
+  // smoke-tested against the real provider API, and the error string if it failed.
+  lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+  lastVerificationError: text('last_verification_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
