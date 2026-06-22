@@ -87,7 +87,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId, gitConfig } = body;
+    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId, gitConfig, maxConcurrentTasks } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -125,6 +125,12 @@ export async function PATCH(
     if (branchValue !== undefined) updates.localPath = branchValue;
     if (accessMode !== undefined) updates.accessMode = accessMode;
     if (discordConfig !== undefined) updates.discordConfig = discordConfig;
+    // Max parallel workers per repo-backed workspace (>= 1). Worktree isolation makes
+    // parallel work safe; this just bounds branch fan-out. Clamp to a sane floor of 1.
+    if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null) {
+      const n = Math.floor(Number(maxConcurrentTasks));
+      if (!Number.isNaN(n)) updates.maxConcurrentTasks = Math.max(1, n);
+    }
 
     // Partial gitConfig merge (e.g. { autoMergePR: true }). Reads the existing
     // gitConfig and shallow-merges the provided keys, so a one-flag update can't

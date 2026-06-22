@@ -183,6 +183,19 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 
+  it('updates maxConcurrentTasks, clamping below 1 up to 1', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = createMockRequest({ method: 'PATCH', body: { maxConcurrentTasks: 5 } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.maxConcurrentTasks).toBe(5);
+
+    const req2 = createMockRequest({ method: 'PATCH', body: { maxConcurrentTasks: 0 } });
+    await PATCH(req2, { params: mockParams });
+    expect(capturedUpdates.maxConcurrentTasks).toBe(1);
+  });
+
   it('updates workspace repo via repoUrl field', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 

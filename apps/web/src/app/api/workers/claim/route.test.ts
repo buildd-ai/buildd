@@ -716,6 +716,128 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers.length).toBe(1);
   });
 
+  // --- Per-workspace concurrency cap tests ---
+
+  it('caps concurrent workers per repo-backed workspace at maxConcurrentTasks', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      name: 'acct',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 10,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    mockTasksFindMany.mockResolvedValue(
+      [1, 2, 3, 4, 5].map((n) => ({
+        id: `task-${n}`,
+        workspaceId: 'ws-repo',
+        title: `Task ${n}`,
+        requiredCapabilities: [],
+        workspace: repoWs,
+      })),
+    );
+    // Every optimistic claim + conditional insert "succeeds" so only the in-loop cap limits us.
+    let inserted = 0;
+    mockDbExecute.mockImplementation(() =>
+      Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
+    );
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // 5 same-repo tasks pending, cap 3 → only 3 claimed in this batch.
+    expect(data.workers.length).toBe(3);
+  });
+
+  it('counts existing active workers in the repo toward the cap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      name: 'acct',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 10,
+      type: 'user',
+      authType: 'api',
+    });
+
+    // Two workers already active in ws-repo (cap 3) → only 1 more may be claimed.
+    mockWorkersFindMany.mockResolvedValue([
+      { workspaceId: 'ws-repo', status: 'running' },
+      { workspaceId: 'ws-repo', status: 'idle' },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    mockTasksFindMany.mockResolvedValue(
+      [1, 2, 3].map((n) => ({
+        id: `task-${n}`,
+        workspaceId: 'ws-repo',
+        title: `Task ${n}`,
+        requiredCapabilities: [],
+        workspace: repoWs,
+      })),
+    );
+    let inserted = 0;
+    mockDbExecute.mockImplementation(() =>
+      Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
+    );
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+  });
+
+  it('does not cap repo-less workspaces (no serialization)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      name: 'acct',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 10,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-coord', accessMode: 'open', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    // No repo → cap must not apply even with maxConcurrentTasks set.
+    const coordWs = { id: 'ws-coord', repo: null, maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    mockTasksFindMany.mockResolvedValue(
+      [1, 2, 3, 4, 5].map((n) => ({
+        id: `task-${n}`,
+        workspaceId: 'ws-coord',
+        title: `Task ${n}`,
+        requiredCapabilities: [],
+        workspace: coordWs,
+      })),
+    );
+    let inserted = 0;
+    mockDbExecute.mockImplementation(() =>
+      Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
+    );
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    const data = await res.json();
+    expect(data.workers.length).toBe(5);
+  });
+
   // --- Dependency filtering tests ---
 
   it('filters out tasks with unresolved dependsOn dependencies', async () => {
