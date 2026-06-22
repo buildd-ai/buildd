@@ -30,3 +30,9 @@ jobs:
     with:
       package_files: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
       force: ${{ inputs.force == 'true' }}
+    # Pass the release App private key so the reusable workflow can author the
+    # release PR as the App (CI then runs without a manual "approve and run").
+    # App id comes from vars.RELEASE_APP_ID (enterprise var); only the secret
+    # needs explicit passthrough. Absent ⇒ reusable falls back to github.token.
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
