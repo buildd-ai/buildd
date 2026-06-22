@@ -262,8 +262,8 @@ export default async function TaskDetailPage({
   const DEFAULT_ICON = TASK_ICONS.pending;
 
   return (
-    <div className="p-4 md:p-8 overflow-auto h-full">
-      <div className="max-w-4xl">
+    <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
+      <div className="max-w-4xl w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
         <TaskAutoRefresh
           taskId={task.id}
@@ -382,6 +382,35 @@ export default async function TaskDetailPage({
         </div>
 
         <div className="flex flex-col">
+        {/* Stat Cards — placed first in the DOM so they appear right after the active worker on mobile */}
+        <div className="md:hidden mb-4 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
+          <span>P{task.priority}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{task.runnerPreference}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>claimed by {task.account?.name || '-'}</span>
+          <span className="text-text-muted">&middot;</span>
+          <span>{taskWorkers.length} worker{taskWorkers.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Priority</div>
+            <div className="text-2xl font-semibold">{task.priority}</div>
+          </div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Runner</div>
+            <div className="text-2xl font-semibold">{task.runnerPreference}</div>
+          </div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Claimed By</div>
+            <div className="text-2xl font-semibold truncate">{task.account?.name || '-'}</div>
+          </div>
+          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workers</div>
+            <div className="text-2xl font-semibold">{taskWorkers.length}</div>
+          </div>
+        </div>
+
         {/* Blocked Banner — shown when task has unresolved dependencies */}
         {isBlocked && (
           <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
@@ -443,19 +472,19 @@ export default async function TaskDetailPage({
                   Pattern-matched errors caught by the runner from agent tool output. Throttled at 1 per pattern per 60s.
                 </p>
                 {errorTraces.map((t) => (
-                  <div key={t.id} className="flex items-start gap-3 text-sm">
-                    <span className="font-mono text-xs text-red-400 shrink-0 w-36 truncate" title={t.pattern}>
+                  <div key={t.id} className="flex items-start gap-2 text-sm">
+                    <span className="font-mono text-xs text-red-400 shrink-0 w-24 md:w-36 truncate" title={t.pattern}>
                       {t.pattern}
                     </span>
                     {t.source && (
-                      <span className="text-xs text-text-muted shrink-0 w-16 truncate" title={t.source}>
+                      <span className="hidden md:inline text-xs text-text-muted shrink-0 w-16 truncate" title={t.source}>
                         {t.source}
                       </span>
                     )}
                     <span className="flex-1 min-w-0 font-mono text-xs text-text-primary truncate" title={t.excerpt}>
                       {t.excerpt}
                     </span>
-                    <span className="text-xs text-text-muted shrink-0">
+                    <span className="hidden sm:inline text-xs text-text-muted shrink-0">
                       {new Date(t.ts).toLocaleTimeString()}
                     </span>
                   </div>
@@ -634,35 +663,6 @@ export default async function TaskDetailPage({
           // completed state with plan is handled by PlanReviewPanel
           return null;
         })()}
-
-        {/* Stat Cards — compact inline on mobile */}
-        <div className="md:hidden mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
-          <span>P{task.priority}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>{task.runnerPreference}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>claimed by {task.account?.name || '-'}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>{taskWorkers.length} worker{taskWorkers.length !== 1 ? 's' : ''}</span>
-        </div>
-        <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Priority</div>
-            <div className="text-2xl font-semibold">{task.priority}</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Runner</div>
-            <div className="text-2xl font-semibold">{task.runnerPreference}</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Claimed By</div>
-            <div className="text-2xl font-semibold truncate">{task.account?.name || '-'}</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workers</div>
-            <div className="text-2xl font-semibold">{taskWorkers.length}</div>
-          </div>
-        </div>
 
         {/* Plan Review — shown for completed planning tasks */}
         <PlanReviewPanel

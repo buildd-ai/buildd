@@ -45,7 +45,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
 
   return (
     <div className="mt-4 pt-4 border-t border-border-default">
-      <form onSubmit={handleSubmit} className="flex gap-2 mt-3">
+      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2 mt-3">
         <input
           type="text"
           value={message}
@@ -57,7 +57,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
         <button
           type="submit"
           disabled={loading || !message.trim()}
-          className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Sending...' : 'Send'}
         </button>
