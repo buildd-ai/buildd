@@ -126,6 +126,7 @@ interface SecretMeta {
   purpose: string;
   accountId: string | null;
   workspaceId: string | null;
+  createdAt: string | null;
 }
 
 function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
@@ -135,6 +136,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [replaceOpen, setReplaceOpen] = useState(false);
 
   const allTeams = scope === 'all_teams';
 
@@ -153,7 +155,11 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     }
   }, [teamId, scope]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    setReplaceOpen(false);
+    setValue('');
+    void load();
+  }, [load]);
 
   // Credentials matching the selected scope.
   const matching = secrets.filter(
@@ -198,6 +204,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to save');
       setValue('');
+      setReplaceOpen(false);
       setMsg({ type: 'success', text: 'Claude credential saved.' });
       await load();
     } catch (e) {
@@ -214,6 +221,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setMsg({ type: 'success', text: 'Credential removed.' });
+      setReplaceOpen(false);
       await load();
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -225,6 +233,44 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   const placeholder = purpose === 'oauth_token'
     ? 'sk-ant-oat01-… (output of `claude setup-token`)'
     : 'sk-ant-api03-… (Anthropic API key)';
+
+  const inputForm = (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <button
+          onClick={() => setPurpose('oauth_token')}
+          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'oauth_token' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+        >
+          Setup token
+        </button>
+        <button
+          onClick={() => setPurpose('anthropic_api_key')}
+          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'anthropic_api_key' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+        >
+          API key
+        </button>
+      </div>
+      <input
+        type="password"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={placeholder}
+        className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+      />
+      <div className="flex items-center gap-3">
+        <button
+          onClick={save}
+          disabled={busy || !value.trim()}
+          className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : 'Save credential'}
+        </button>
+        {replaceOpen && (
+          <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="text-xs text-text-tertiary">Cancel</button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-3">
@@ -239,52 +285,50 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : matching.length > 0 ? (
-        <div className="space-y-2">
-          {matching.map((s) => (
-            <div key={s.id} className="flex items-center justify-between bg-surface-3/50 rounded-lg px-3 py-2">
-              <span className="inline-flex items-center gap-1.5 text-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
-                {s.purpose === 'oauth_token' ? 'OAuth setup token' : 'Anthropic API key'}
-                <span className="text-text-muted">· {s.workspaceId ? 'this workspace' : 'all workspaces'}</span>
-              </span>
-              <button onClick={() => revoke(s.id)} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
+            </span>
+            <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
+          </div>
+
+          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+            {matching.map((s) => (
+              <div key={s.id}>{s.purpose === 'oauth_token' ? 'OAuth setup token' : 'Anthropic API key'}</div>
+            ))}
+            {matching[0].createdAt && (
+              <div>Connected: {new Date(matching[0].createdAt).toLocaleString()}</div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            {!replaceOpen && (
+              <button onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }} className="text-sm font-medium text-text-secondary">
+                Replace credential
+              </button>
+            )}
+            {matching.map((s) => (
+              <button key={s.id} onClick={() => revoke(s.id)} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">
                 Revoke
               </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
+            ))}
+          </div>
 
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <button
-            onClick={() => setPurpose('oauth_token')}
-            className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'oauth_token' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
-          >
-            Setup token
-          </button>
-          <button
-            onClick={() => setPurpose('anthropic_api_key')}
-            className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'anthropic_api_key' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
-          >
-            API key
-          </button>
+          {replaceOpen && inputForm}
         </div>
-        <input
-          type="password"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={placeholder}
-          className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
-        />
-        <button
-          onClick={save}
-          disabled={busy || !value.trim()}
-          className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
-        >
-          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace credential' : 'Save credential'}
-        </button>
-      </div>
+      ) : (
+        <div className="space-y-3">
+          {allTeams ? (
+            <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
+              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
+            </span>
+          )}
+          {inputForm}
+        </div>
+      )}
 
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
