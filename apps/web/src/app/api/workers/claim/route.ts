@@ -10,7 +10,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
-import { notify } from '@/lib/pushover';
+import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext } from '@/lib/knowledge-context';
@@ -999,10 +999,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Notify on task claims
+  // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
     const task = cw.task as any;
-    notify({
+    const teamId = task?.workspace?.teamId as string | undefined;
+    if (!teamId) continue;
+    void notifyTeam(teamId, 'taskClaimed', {
       title: `Task claimed`,
       message: `${task?.title || cw.taskId}\n${task?.workspace?.name || 'unknown workspace'}`,
       url: `https://buildd.dev/app/tasks/${cw.taskId}`,

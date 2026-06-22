@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `custom`. |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
 | `tokenExpiresAt` | Nullable. Set for token credentials that expire (`codex_credential`, `oauth_token`). Enables efficient "expiring soon" cron queries. |
