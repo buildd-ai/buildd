@@ -2,6 +2,19 @@ import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 
+/**
+ * Timestamp (ms) of the last time the runner received ANY HTTP response from the
+ * buildd server — i.e. the server was reachable. Updated on every fetch that
+ * returns a response (any status; a 4xx still means we reached it). A network
+ * error leaves it unchanged. The liveness heartbeat reads this so it can stop
+ * claiming "runner alive" when the runner is actually wedged on an unreachable
+ * server (the 2026-06-22 localhost:3333 incident).
+ */
+let lastServerContactAt = 0;
+export function getLastServerContactAt(): number {
+  return lastServerContactAt;
+}
+
 export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
@@ -27,6 +40,9 @@ export class BuilddClient {
           ...options.headers,
         },
       });
+
+      // Got an HTTP response → the server is reachable (even a 4xx counts).
+      lastServerContactAt = Date.now();
 
       if (!res.ok && !allowedErrors.includes(res.status)) {
         // Queue server errors (5xx) via outbox before throwing
