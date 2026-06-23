@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { accounts, workspaces, workerHeartbeats, teamMembers, users, tasks, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, sql } from 'drizzle-orm';
+import { accounts, accountWorkspaces, workspaces, workerHeartbeats, teamMembers, users, tasks, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, sql, gt } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds, type UserTeam } from '@/lib/team-access';
@@ -54,19 +54,38 @@ export default async function YouPage() {
         }).catch(() => [])
       : Promise.resolve([]),
 
-    // Runner heartbeats
-    teamIds.length > 0
-      ? db.query.accounts.findMany({
-          where: inArray(accounts.teamId, teamIds),
-          columns: { id: true },
-        }).then(async (accs) => {
-          if (accs.length === 0) return [];
+    // Runner heartbeats — include all accounts with workspace access, not just team-owned ones
+    wsIds.length > 0
+      ? (async () => {
+          // Get account IDs linked to any of the user's workspaces
+          const workspaceLinkedAccounts = await db
+            .select({ accountId: accountWorkspaces.accountId })
+            .from(accountWorkspaces)
+            .where(inArray(accountWorkspaces.workspaceId, wsIds));
+          const linkedAccountIds = [...new Set(workspaceLinkedAccounts.map(r => r.accountId))];
+
+          // Also get team-owned accounts
+          const teamAccountIds = teamIds.length > 0
+            ? (await db.query.accounts.findMany({
+                where: inArray(accounts.teamId, teamIds),
+                columns: { id: true },
+              })).map(a => a.id)
+            : [];
+
+          const allAccountIds = [...new Set([...linkedAccountIds, ...teamAccountIds])];
+          if (allAccountIds.length === 0) return [];
+
+          // Heartbeats within the last 150 min (same stale threshold as workspace runners API)
+          const cutoff = new Date(Date.now() - 150 * 60 * 1000);
           return db.query.workerHeartbeats.findMany({
-            where: inArray(workerHeartbeats.accountId, accs.map(a => a.id)),
+            where: and(
+              inArray(workerHeartbeats.accountId, allAccountIds),
+              gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+            ),
             orderBy: desc(workerHeartbeats.lastHeartbeatAt),
             with: { account: { columns: { name: true } } },
           });
-        }).catch(() => [])
+        })().catch(() => [])
       : Promise.resolve([]),
 
     // Workspaces for connections
@@ -263,23 +282,25 @@ export default async function YouPage() {
             ) : (
               <div className="divide-y divide-border-default">
                 {heartbeats.map((hb: any) => {
-                  const isOnline = (Date.now() - new Date(hb.lastHeartbeatAt).getTime()) < 10 * 60 * 1000; // 10 min
+                  const isOnline = (Date.now() - new Date(hb.lastHeartbeatAt).getTime()) < 2 * 60 * 1000;
                   return (
                     <div key={hb.id} className="flex items-center gap-3 px-4 py-3">
                       <span className={`glow-dot ${isOnline ? 'glow-dot-success' : ''}`}
                         style={!isOnline ? { background: 'var(--text-muted)' } : undefined}
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-text-primary truncate">
-                          {hb.account?.name || 'Runner'}
-                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm text-text-primary truncate">
+                            {hb.account?.name || 'Runner'}
+                          </p>
+                          <span className={`text-[10px] font-mono ${isOnline ? 'text-status-success' : 'text-text-muted'}`}>
+                            {isOnline ? 'online' : 'stale'}
+                          </span>
+                        </div>
                         <p className="text-xs text-text-muted">
-                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} active
+                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers · last beat {timeAgo(new Date(hb.lastHeartbeatAt))}
                         </p>
                       </div>
-                      <span className="text-[10px] font-mono text-text-muted shrink-0">
-                        heartbeat {timeAgo(new Date(hb.lastHeartbeatAt))}
-                      </span>
                     </div>
                   );
                 })}
