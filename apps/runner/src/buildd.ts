@@ -15,6 +15,17 @@ export function getLastServerContactAt(): number {
   return lastServerContactAt;
 }
 
+/**
+ * Per-request timeout. Node/Bun `fetch` has NO default timeout, so a reused
+ * keep-alive socket that goes half-open after a network blip makes a request
+ * hang forever — never resolving, never throwing. That freezes the claim poll
+ * (`await claimTask` never returns) and `lastServerContactAt`, so the runner
+ * silently stops claiming until restarted (observed 2026-06-23). Aborting after
+ * a timeout both unblocks the loop and tears down the bad socket so the pool heals.
+ * All endpoints here are short JSON calls, so 30s is a generous ceiling.
+ */
+const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
+
 export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
@@ -34,6 +45,9 @@ export class BuilddClient {
     try {
       const res = await fetch(`${this.config.builddServer}${endpoint}`, {
         ...options,
+        // Abort hung requests (half-open keep-alive sockets) so the poll loop
+        // can't wedge. Caller-supplied signals (if any) take precedence.
+        signal: options.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.apiKey}`,
@@ -58,11 +72,16 @@ export class BuilddClient {
     } catch (err: any) {
       // Network errors (server unreachable) - queue if outbox is attached
       const isNetworkError = err instanceof TypeError ||
+        // AbortSignal.timeout fires a DOMException (TimeoutError); a caller abort is AbortError.
+        err.name === 'TimeoutError' ||
+        err.name === 'AbortError' ||
         err.message?.includes('fetch failed') ||
         err.message?.includes('ECONNREFUSED') ||
         err.message?.includes('ECONNRESET') ||
         err.message?.includes('ENOTFOUND') ||
         err.message?.includes('ETIMEDOUT') ||
+        err.message?.includes('timed out') ||
+        err.message?.includes('aborted') ||
         err.message?.includes('socket connection was closed') ||
         err.code === 'ECONNREFUSED' ||
         err.code === 'ECONNRESET';
