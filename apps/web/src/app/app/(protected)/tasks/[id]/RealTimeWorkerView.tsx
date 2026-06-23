@@ -177,52 +177,50 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
   return (
     <div className="border border-border-default bg-surface-2 rounded-md p-4">
-      <div className="flex justify-between items-start mb-3">
-        <div>
-          <h3 className="font-medium text-lg">{worker.name}</h3>
-          <p className="text-sm text-text-secondary font-mono">Branch: {worker.branch}</p>
-        </div>
-        <div className="flex items-center gap-2">
+      <div className="mb-3">
+        <div className="flex items-center justify-between gap-2 mb-0.5">
+          <h3 className="font-medium text-lg truncate">{worker.name}</h3>
           <StatusBadge status={worker.status} />
-          {isActive && worker.status !== 'starting' && (
-            <>
-              <button
-                data-testid="worker-interrupt-btn"
-                onClick={() => setInterruptMode(!interruptMode)}
-                className="px-2.5 py-1 text-[11px] font-medium border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 transition-colors"
-                title="Send an urgent message to interrupt the agent"
-              >
-                Interrupt
-              </button>
-              {showAbortConfirm ? (
-                <span className="flex items-center gap-1">
-                  <button
-                    onClick={handleAbort}
-                    disabled={abortLoading}
-                    className="px-2.5 py-1 text-[11px] font-medium bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
-                  >
-                    {abortLoading ? '...' : 'Confirm'}
-                  </button>
-                  <button
-                    onClick={() => setShowAbortConfirm(false)}
-                    className="px-2 py-1 text-[11px] text-text-muted hover:text-text-primary"
-                  >
-                    Cancel
-                  </button>
-                </span>
-              ) : (
-                <button
-                  data-testid="worker-abort-btn"
-                  onClick={() => setShowAbortConfirm(true)}
-                  className="px-2.5 py-1 text-[11px] font-medium border border-status-error/30 text-status-error rounded hover:bg-status-error/10 transition-colors"
-                  title="Stop the worker immediately"
-                >
-                  Abort
-                </button>
-              )}
-            </>
-          )}
         </div>
+        <p className="text-sm text-text-secondary font-mono truncate">Branch: {worker.branch}</p>
+        {isActive && worker.status !== 'starting' && (
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            <button
+              data-testid="worker-interrupt-btn"
+              onClick={() => setInterruptMode(!interruptMode)}
+              className="px-2.5 py-1.5 text-[11px] font-medium border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 transition-colors"
+              title="Send an urgent message to interrupt the agent"
+            >
+              Interrupt
+            </button>
+            {showAbortConfirm ? (
+              <>
+                <button
+                  onClick={handleAbort}
+                  disabled={abortLoading}
+                  className="px-2.5 py-1.5 text-[11px] font-medium bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
+                >
+                  {abortLoading ? '...' : 'Confirm abort'}
+                </button>
+                <button
+                  onClick={() => setShowAbortConfirm(false)}
+                  className="px-2 py-1.5 text-[11px] text-text-muted hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                data-testid="worker-abort-btn"
+                onClick={() => setShowAbortConfirm(true)}
+                className="px-2.5 py-1.5 text-[11px] font-medium border border-status-error/30 text-status-error rounded hover:bg-status-error/10 transition-colors"
+                title="Stop the worker immediately"
+              >
+                Abort
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Current action */}
@@ -271,7 +269,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               const input = form.elements.namedItem('interruptMsg') as HTMLInputElement;
               if (input.value.trim()) handleInterruptSend(input.value.trim());
             }}
-            className="flex gap-2"
+            className="flex flex-col sm:flex-row gap-2"
           >
             <input
               name="interruptMsg"
@@ -280,19 +278,21 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
               placeholder="e.g., Stop what you're doing and focus on..."
               className="flex-1 px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-status-warning/50 focus:border-status-warning"
             />
-            <button
-              type="submit"
-              className="px-4 py-2 text-sm bg-status-warning text-white rounded-md hover:opacity-90"
-            >
-              Send
-            </button>
-            <button
-              type="button"
-              onClick={() => setInterruptMode(false)}
-              className="px-3 py-2 text-sm text-text-muted hover:text-text-primary"
-            >
-              Cancel
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                className="flex-1 sm:flex-none px-4 py-2 text-sm bg-status-warning text-white rounded-md hover:opacity-90"
+              >
+                Send
+              </button>
+              <button
+                type="button"
+                onClick={() => setInterruptMode(false)}
+                className="px-3 py-2 text-sm text-text-muted hover:text-text-primary"
+              >
+                Cancel
+              </button>
+            </div>
           </form>
         </div>
       )}
@@ -356,7 +356,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
 
       {/* Stats row */}
-      <div className="flex items-center gap-4 mt-3 font-mono text-xs text-text-muted">
+      <div className="flex items-center gap-3 mt-3 font-mono text-xs text-text-muted flex-wrap">
         <span>Turns: {worker.turns}</span>
         {worker.account?.authType === 'oauth'
           ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
