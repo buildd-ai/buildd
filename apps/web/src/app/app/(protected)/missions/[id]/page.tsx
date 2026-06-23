@@ -155,9 +155,7 @@ export default async function MissionDetailPage({
   const activeHoursTimezone = (templateContext?.activeHoursTimezone as string) ?? null;
 
   // Configuration from schedule template
-  const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
   const configModel = (templateContext?.model as string) || null;
-  const outputSchema = (templateContext?.outputSchema as unknown) || null;
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -431,9 +429,7 @@ export default async function MissionDetailPage({
           <MissionConfig
             missionId={id}
             workspaceId={mission.workspaceId}
-            skillSlugs={skillSlugs}
             model={configModel}
-            outputSchema={outputSchema}
             workspaces={teamWorkspaces}
             maxConcurrentTasks={mission.maxConcurrentTasks}
             activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
