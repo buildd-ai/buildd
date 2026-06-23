@@ -82,8 +82,8 @@ export default function ConfirmDialog({
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={(e) => e.target === e.currentTarget && !loading && onCancel()}
     >
-      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-sm mx-4">
-        <div className="p-6">
+      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-sm mx-4">
+        <div className="p-6 overflow-y-auto max-h-[70vh]">
           <div className="flex items-start gap-4">
             <div className="flex-shrink-0 w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center">
               {styles.icon}
@@ -98,11 +98,11 @@ export default function ConfirmDialog({
             </div>
           </div>
         </div>
-        <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex justify-end gap-3">
+        <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button
             onClick={onCancel}
             disabled={loading}
-            className="px-4 py-2 text-sm text-text-secondary hover:bg-surface-4 rounded-lg disabled:opacity-50"
+            className="w-full sm:w-auto px-4 py-2 text-sm text-text-secondary hover:bg-surface-4 rounded-lg disabled:opacity-50"
           >
             {cancelLabel}
           </button>
@@ -110,7 +110,7 @@ export default function ConfirmDialog({
             ref={confirmButtonRef}
             onClick={onConfirm}
             disabled={loading}
-            className={`px-4 py-2 text-sm rounded-lg disabled:opacity-50 ${styles.button}`}
+            className={`w-full sm:w-auto px-4 py-2 text-sm rounded-lg disabled:opacity-50 ${styles.button}`}
           >
             {loading ? 'Processing...' : confirmLabel}
           </button>
