@@ -35,6 +35,10 @@ mock.module('@/lib/mission-notifications', () => ({
   notifyMissionPrReady: mockNotifyMissionPrReady,
 }));
 
+mock.module('@/lib/pushover', () => ({
+  notify: mock(() => {}),
+}));
+
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
@@ -82,6 +86,14 @@ mock.module('@buildd/core/db', () => ({
           where: (condition: any) => Promise.resolve(),
         };
       },
+    }),
+    // Used by handleReleasePrCiSuccess / handleReleasePrCiFailure to find pending release tasks
+    select: (_columns?: any) => ({
+      from: (_table: any) => ({
+        where: (_cond: any) => ({
+          limit: (_n: number) => Promise.resolve([]),
+        }),
+      }),
     }),
   },
 }));

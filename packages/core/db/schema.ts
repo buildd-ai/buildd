@@ -282,6 +282,13 @@ export interface WorkspaceReleaseConfig {
   // The production branch to merge changes into (e.g., 'main')
   prodBranch?: string;
 
+  // When set, executeRelease looks for an open PR from releaseBranch → prodBranch
+  // rather than merging the worker's feature branch. Use when the release task
+  // creates an intermediary PR (e.g. dev→main via `bun run release`) instead of
+  // the worker's own branch being the ship unit. The PR CI must be green before
+  // buildd merges it; CI failure or no open PR marks the release task FAILED.
+  releaseBranch?: string;
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -315,7 +322,8 @@ export interface WorkspaceReleaseConfig {
 
 // Result of a release sequence — stored in tasks.release_result
 export interface ReleaseResult {
-  status: 'completed' | 'failed' | 'skipped' | 'not_configured';
+  // 'pending_ci': release PR found, CI not yet green — webhook will complete/fail the task.
+  status: 'completed' | 'failed' | 'skipped' | 'not_configured' | 'pending_ci';
   message: string;
   // When the merge to prod branch completed
   mergedAt?: string;
@@ -327,6 +335,10 @@ export interface ReleaseResult {
   hooksRan?: Array<{ description: string; success: boolean; error?: string }>;
   // Error details if status='failed'
   error?: string;
+  // Release PR number being tracked (set when status='pending_ci' or during merge)
+  releasePrNumber?: number;
+  // Release PR URL for quick links in alerts
+  releasePrUrl?: string;
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
