@@ -2117,7 +2117,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         const errLower = errMsg.toLowerCase();
-        const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') || errLower.includes('max budget');
+        // OAuth seat session caps ("You've hit your session limit") are a usage
+        // exhaustion just like a dollar budget — flag them so the server fails
+        // the task over (Codex) / holds it until reset instead of hard-failing.
+        const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
+          errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,

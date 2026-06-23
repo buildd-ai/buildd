@@ -21,6 +21,8 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
+import { getCodexCredential } from '@/lib/codex-credential';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -385,7 +387,24 @@ export async function PATCH(
         ));
     }
 
-    // Reset task to pending (not failed) — will be retried when budget resets
+    // Codex failover: if the workspace has a Codex credential and the task
+    // isn't already on Codex, flip it to backend='codex' so it's claimable
+    // immediately rather than waiting for the Claude session/budget to reset.
+    // Codex uses a separate credit pool, and the claim route exempts
+    // backend==='codex' tasks from the Claude budget gate. Non-fatal: any
+    // failure here leaves the task on Claude to retry after the reset.
+    let failoverBackend: 'codex' | undefined;
+    if (taskForBudget?.backend !== 'codex' && taskForBudget?.workspaceId) {
+      try {
+        const codexCred = await getCodexCredential(taskForBudget.workspaceId);
+        if (codexCred) failoverBackend = 'codex';
+      } catch (err) {
+        console.warn(`[workers PATCH] Codex failover check failed for task ${worker.taskId}:`, err);
+      }
+    }
+
+    // Reset task to pending (not failed) — retried when budget resets, or
+    // immediately on Codex when a failover backend was resolved.
     const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
     await db
       .update(tasks)
@@ -395,6 +414,7 @@ export async function PATCH(
         claimedAt: null,
         expiresAt: null,
         updatedAt: new Date(),
+        ...(failoverBackend && { backend: failoverBackend }),
         context: {
           ...existingCtx,
           budgetExhausted: true,
@@ -402,9 +422,14 @@ export async function PATCH(
           // badges) can show WHEN it retries without an account join.
           budgetResetsAt: budgetResetsAt.toISOString(),
           previousWorkerId: id,
+          ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
       })
       .where(eq(tasks.id, worker.taskId));
+
+    if (failoverBackend) {
+      console.log(`[workers PATCH] Task ${worker.taskId} failed over to Codex after Claude budget/session exhaustion`);
+    }
 
     isBudgetReset = true;
 
@@ -1008,38 +1033,4 @@ export async function PATCH(
     instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
   });
-}
-
-// Helper: detect budget exhaustion errors from runner error messages
-function isBudgetExhaustionError(error?: string): boolean {
-  if (!error) return false;
-  const lower = error.toLowerCase();
-  return lower.includes('budget limit exceeded') ||
-    lower.includes('out of extra usage') ||
-    lower.includes('error_max_budget_usd') ||
-    lower.includes('max budget');
-}
-
-// Helper: parse a reset time like "5pm" (UTC) into a Date
-function parseResetTime(timeStr: string): Date | null {
-  const match = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
-  if (!match) return null;
-
-  let hour = parseInt(match[1], 10);
-  const ampm = match[2]?.toLowerCase();
-  if (ampm === 'pm' && hour < 12) hour += 12;
-  if (ampm === 'am' && hour === 12) hour = 0;
-
-  const now = new Date();
-  const reset = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    hour, 0, 0, 0,
-  ));
-  // If the reset time is in the past today, it means tomorrow
-  if (reset.getTime() <= now.getTime()) {
-    reset.setUTCDate(reset.getUTCDate() + 1);
-  }
-  return reset;
 }

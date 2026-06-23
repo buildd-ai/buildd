@@ -437,14 +437,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Account budget exhausted: skip non-tenant tasks (they'd use the account's own OAuth token)
+    // Account budget exhausted: skip non-tenant tasks (they'd use the account's own OAuth token).
+    // Codex-backend tasks are exempt — Codex uses a separate credit pool, so the Claude
+    // OAuth session/budget being exhausted doesn't block them (enables budget failover to Codex).
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
-    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
+    const isCodexTask = (task as any).backend === 'codex';
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !isCodexTask) {
       continue;
     }
 
-    // Tenant budget check: skip tasks whose tenant's budget is exhausted
-    if (tenantCtx?.tenantId) {
+    // Tenant budget check: skip tasks whose tenant's budget is exhausted.
+    // Codex tasks are exempt for the same separate-credit-pool reason.
+    if (tenantCtx?.tenantId && !isCodexTask) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
         const tenantBudget = await db.query.tenantBudgets.findFirst({
