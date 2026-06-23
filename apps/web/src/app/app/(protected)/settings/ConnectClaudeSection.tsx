@@ -95,7 +95,7 @@ export default function ConnectClaudeSection({ workspaces }: { workspaces: Works
 
         {/* Details */}
         <div className="pt-2 border-t border-surface-4">
-          <dl className="grid grid-cols-[120px_1fr] gap-y-1 gap-x-3 text-xs text-text-secondary">
+          <dl className="grid grid-cols-[auto_1fr] sm:grid-cols-[120px_1fr] gap-y-1 gap-x-3 text-xs text-text-secondary">
             <dt>Transport</dt>
             <dd className="font-mono text-text-primary">streamable HTTP</dd>
             <dt>Workspace</dt>

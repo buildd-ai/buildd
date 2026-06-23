@@ -17,7 +17,7 @@ export default async function MissionsPage() {
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
     return (
-      <div className="px-7 md:px-10 pt-5 md:pt-8">
+      <div className="px-4 sm:px-7 md:px-10 pt-5 md:pt-8">
         <div className="flex items-baseline justify-between mb-6">
           <h1 className="text-xl font-semibold text-text-primary">Missions</h1>
           <span className="text-xs text-text-secondary font-light">0 active</span>
@@ -126,6 +126,13 @@ export default async function MissionsPage() {
       nextRunAt,
     });
 
+    const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
+    const latestTaskId = rawLatestId
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawLatestId)
+      && !/^[0-9a-f]{8}-0{4}-0{4}-0{4}-0{12}$/i.test(rawLatestId)
+      ? rawLatestId
+      : null;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -149,6 +156,11 @@ export default async function MissionsPage() {
             time: String(latestFinding.updatedAt),
           }
         : null,
+      workspaceId: obj.workspaceId || null,
+      workspaceName: (obj.workspace as any)?.name || null,
+      primaryPrUrl: (obj as any).primaryPrUrl || null,
+      primaryPrNumber: (obj as any).primaryPrNumber || null,
+      latestTaskId,
     };
   });
 
@@ -157,7 +169,7 @@ export default async function MissionsPage() {
   ).length;
 
   return (
-    <div className="px-7 md:px-10 pt-5 md:pt-8 max-w-5xl">
+    <div className="px-4 sm:px-7 md:px-10 pt-5 md:pt-8 max-w-5xl">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>

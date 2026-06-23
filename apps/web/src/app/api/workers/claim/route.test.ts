@@ -7,6 +7,7 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
+const mockTeamsFindFirst = mock(() => null as any);
 const mockHeartbeatsFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksUpdate = mock(() => ({
@@ -62,6 +63,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany },
+      teams: { findFirst: mockTeamsFindFirst },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
       tenantBudgets: { findFirst: mock(() => null as any) },
@@ -109,6 +111,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
+  teams: { id: 'id', enabledBackends: 'enabledBackends' },
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -174,6 +177,8 @@ describe('POST /api/workers/claim', () => {
     mockHasCodexCredential.mockReset();
     mockGetCodexCredential.mockResolvedValue(null);
     mockHasCodexCredential.mockResolvedValue(false);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null); // default: enabledBackends null => all enabled
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
@@ -586,6 +591,62 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       // Codex busy → task is left pending rather than funneled into a deferral failure.
       expect(data.workers.length).toBe(0);
+    });
+  });
+
+  describe('team provider toggle (reversible mask)', () => {
+    function apiAccount() {
+      return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
+    }
+    function task(backend: 'claude' | 'codex') {
+      return { id: 'task-1', workspaceId: 'ws-1', title: 'T', backend, dependsOn: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } };
+    }
+    function setupClaim() {
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })) });
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+    }
+
+    it('reroutes a Claude task to Codex when Claude is disabled team-wide', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      mockTasksFindMany.mockResolvedValueOnce([task('claude')]);
+      mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['codex'] }); // Claude disabled
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('reroutes a Codex task to Claude when Codex is disabled team-wide', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      mockTasksFindMany.mockResolvedValueOnce([task('codex')]);
+      mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['claude'] }); // Codex disabled
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('claude'); // no Codex creds needed to fall back to Claude
+    });
+
+    it('leaves backends untouched when both providers are enabled (default)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      mockTasksFindMany.mockResolvedValueOnce([task('claude')]);
+      mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['claude', 'codex'] });
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('claude');
     });
   });
 

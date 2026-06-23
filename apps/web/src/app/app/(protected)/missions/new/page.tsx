@@ -51,7 +51,11 @@ export default async function NewMissionPage() {
 
   return (
     <Suspense>
-      <NewMissionForm workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} roles={roles} />
+      <NewMissionForm
+        workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
+        roles={roles}
+        teamId={teamIds[0]}
+      />
     </Suspense>
   );
 }

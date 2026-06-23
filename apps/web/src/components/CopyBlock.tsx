@@ -21,7 +21,7 @@ export default function CopyBlock({ text, label }: { text: string; label?: strin
       </pre>
       <button
         onClick={handleCopy}
-        className="absolute top-1.5 right-1.5 p-1.5 rounded bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
+        className="absolute top-1.5 right-1.5 p-1.5 rounded bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
         title="Copy to clipboard"
       >
         {copied ? (

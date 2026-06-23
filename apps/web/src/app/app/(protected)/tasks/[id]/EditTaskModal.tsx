@@ -78,11 +78,11 @@ export default function EditTaskModal({ task, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-start justify-center pt-32 z-50"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center sm:items-start sm:pt-32 z-50"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       onKeyDown={handleKeyDown}
     >
-      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-lg">
+      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-lg mx-4">
         <form onSubmit={handleSubmit}>
           <div className="p-4 border-b border-border-default">
             <div className="flex items-center justify-between">
@@ -201,19 +201,19 @@ export default function EditTaskModal({ task, onClose }: Props) {
             )}
           </div>
 
-          <div className="p-4 border-t border-border-default flex justify-end gap-2">
+          <div className="p-4 border-t border-border-default flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-3 rounded"
+              className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-sm text-text-secondary hover:bg-surface-3 rounded"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !title.trim()}
-              className="px-3 py-1.5 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
+              className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
             >
               {loading ? 'Saving...' : 'Save Changes'}
             </button>

@@ -85,6 +85,7 @@ export default async function HomePage() {
     group: MissionGroup;
     nextScanMins: number | null;
     nextRunAt: string | null;
+    workspaceName: string | null;
   }[] = [];
 
   let completedLast12h = 0;
@@ -215,6 +216,7 @@ export default async function HomePage() {
                 columns: { id: true, status: true },
               },
               schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
+              workspace: { columns: { id: true, name: true } },
             },
             limit: 20,
           });
@@ -277,6 +279,7 @@ export default async function HomePage() {
               group: healthToGroup(health, progress),
               nextScanMins,
               nextRunAt: nextRunAt ? String(nextRunAt) : null,
+              workspaceName: (mission.workspace as any)?.name || null,
             };
           });
         }
@@ -510,156 +513,166 @@ export default async function HomePage() {
               </div>
             )}
 
-            {/* Missions */}
-            <div className="mb-8 md:mb-0">
-              <div className="flex items-center justify-between mb-4">
-                <div className="section-label">Missions</div>
-                {missions.length > 0 && (
-                  <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
-                    {missions.filter(m => m.group === 'running' || m.group === 'scheduled').length} active
-                  </Link>
-                )}
-              </div>
-              {missions.length === 0 ? (
-                <div className="border border-dashed border-border-default rounded-[10px] p-6">
-                  <p className="text-[14px] text-text-secondary">
-                    No missions yet. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {GROUP_ORDER.map((groupKey) => {
-                    const items = missions.filter(m => m.group === groupKey);
-                    if (items.length === 0) return null;
-                    // Sort scheduled by soonest first
-                    if (groupKey === 'scheduled') {
-                      items.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
-                    }
-                    const section = SECTION_DISPLAY[groupKey];
-                    const isCompact = groupKey === 'completed';
+            {/* Missions — active work only on Home */}
+            {(() => {
+              // Home shows running + attention + imminent scheduled (< 24h)
+              const activeMissions = missions.filter(m => m.group === 'running' || m.group === 'attention');
+              const soonScheduled = missions
+                .filter(m => m.group === 'scheduled' && m.nextScanMins !== null && m.nextScanMins < 1440)
+                .sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity))
+                .slice(0, 3);
+              const visibleMissions = [...activeMissions, ...soonScheduled];
+              const completedCount = missions.filter(m => m.group === 'completed').length;
+              const scheduledCount = missions.filter(m => m.group === 'scheduled').length;
+              const hiddenCount = missions.length - visibleMissions.length;
 
-                    return (
-                      <div key={groupKey} className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="section-label-missions text-text-muted">
-                            {section.label}
-                          </span>
-                          <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
-                        </div>
-                        <div className={isCompact ? "card" : "space-y-2"}>
-                          {items.map((mission, idx) => {
-                            const healthDisplay = HEALTH_DISPLAY[mission.health];
-                            const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
-                            const isHibernating = nextRun.urgency === 'far';
-
-                            if (isCompact) {
-                              return (
-                                <Link
-                                  key={mission.id}
-                                  href={`/app/missions/${mission.id}`}
-                                  className={`flex items-center justify-between gap-3 mission-card ${GROUP_ACCENT_CLASS[groupKey]} px-4 py-2.5 hover:bg-surface-3/50 transition-colors ${idx < items.length - 1 ? 'border-b border-border-default' : ''}`}
-                                >
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <span className="text-[13px] text-text-secondary truncate">
-                                      {mission.title}
-                                    </span>
-                                    <span className={`health-pill ${healthDisplay.colorClass}`}>
-                                      {healthDisplay.label}
-                                    </span>
-                                  </div>
-                                  {mission.totalTasks > 0 && (
-                                    <span className="text-[11px] text-text-muted tabular-nums shrink-0">
-                                      {mission.completedTasks}/{mission.totalTasks}
-                                    </span>
-                                  )}
-                                </Link>
-                              );
-                            }
-
-                            return (
-                              <Link
-                                key={mission.id}
-                                href={`/app/missions/${mission.id}`}
-                                className={`block card card-interactive mission-card ${GROUP_ACCENT_CLASS[groupKey]} p-4 hover:bg-surface-3/50 transition-colors ${isHibernating ? 'mission-card-hibernating' : ''}`}
-                              >
-                                <div className="flex items-start justify-between gap-3 mb-1.5">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <span className="text-[15px] font-medium text-text-primary truncate">
-                                      {mission.title}
-                                    </span>
-                                    <span className={`health-pill ${healthDisplay.colorClass}`}>
-                                      {healthDisplay.label}
-                                    </span>
-                                  </div>
-                                  {mission.progress > 0 && (
-                                    <span className="text-[20px] font-semibold text-accent-text tabular-nums flex-shrink-0">
-                                      {mission.progress}%
-                                    </span>
-                                  )}
-                                </div>
-                                {mission.description && (
-                                  <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
-                                    {mission.description}
-                                  </p>
-                                )}
-                                {mission.totalTasks > 0 && (
-                                  <div className="mb-2">
-                                    <div className="h-[3px] bg-[rgba(255,245,230,0.06)] rounded-full overflow-hidden">
-                                      <div
-                                        className="h-full rounded-full transition-all duration-500"
-                                        style={{
-                                          width: `${mission.progress}%`,
-                                          background: 'var(--accent)',
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                                <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
-                                  {mission.totalTasks > 0 && (
-                                    <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
-                                  )}
-                                  {mission.activeWorkers > 0 && (
-                                    <>
-                                      <span className="mx-0.5">&middot;</span>
-                                      <span className="text-accent-text font-medium">
-                                        {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
-                                      </span>
-                                    </>
-                                  )}
-                                  {nextRun.text && (
-                                    <>
-                                      <span className="mx-0.5">&middot;</span>
-                                      <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
-                                        {nextRun.text}
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div className="flex items-center justify-between pt-1">
-                    <Link
-                      href="/app/missions"
-                      className="text-xs text-text-muted hover:text-text-secondary"
-                    >
-                      View all missions
-                    </Link>
-                    <Link
-                      href="/app/missions/new"
-                      className="text-xs text-text-muted hover:text-primary"
-                    >
-                      + New Mission
-                    </Link>
+              return (
+                <div className="mb-8 md:mb-0">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="section-label">Missions</div>
+                    {missions.length > 0 && (
+                      <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
+                        {activeMissions.length} active
+                      </Link>
+                    )}
                   </div>
+                  {missions.length === 0 ? (
+                    <div className="border border-dashed border-border-default rounded-[10px] p-6">
+                      <p className="text-[14px] text-text-secondary">
+                        No missions yet. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
+                      </p>
+                    </div>
+                  ) : visibleMissions.length === 0 ? (
+                    <div className="border border-dashed border-border-default rounded-[10px] p-4">
+                      <p className="text-[13px] text-text-secondary">
+                        No active missions right now.{' '}
+                        <Link href="/app/missions" className="text-text-muted hover:text-text-secondary underline underline-offset-2">
+                          View all {missions.length}
+                        </Link>
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {(['running', 'attention', 'scheduled'] as const).map((groupKey) => {
+                        const items = groupKey === 'scheduled'
+                          ? soonScheduled
+                          : visibleMissions.filter(m => m.group === groupKey);
+                        if (items.length === 0) return null;
+                        const section = SECTION_DISPLAY[groupKey];
+
+                        return (
+                          <div key={groupKey} className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="section-label-missions text-text-muted">
+                                {section.label}
+                              </span>
+                              <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
+                            </div>
+                            <div className="space-y-2">
+                              {items.map((mission) => {
+                                const healthDisplay = HEALTH_DISPLAY[mission.health];
+                                const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
+                                const isHibernating = nextRun.urgency === 'far';
+
+                                return (
+                                  <Link
+                                    key={mission.id}
+                                    href={`/app/missions/${mission.id}`}
+                                    className={`block card card-interactive mission-card ${GROUP_ACCENT_CLASS[groupKey]} p-4 hover:bg-[var(--card-hover)] transition-all duration-150 ${isHibernating ? 'mission-card-hibernating' : ''}`}
+                                  >
+                                    <div className="flex items-start justify-between gap-3 mb-1.5">
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="text-[15px] font-medium text-text-primary truncate">
+                                          {mission.title}
+                                        </span>
+                                        <span className={`health-pill ${healthDisplay.colorClass}`}>
+                                          {healthDisplay.label}
+                                        </span>
+                                      </div>
+                                      {mission.progress > 0 && (
+                                        <span className="text-[20px] font-semibold text-accent-text tabular-nums flex-shrink-0">
+                                          {mission.progress}%
+                                        </span>
+                                      )}
+                                    </div>
+                                    {mission.description && (
+                                      <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
+                                        {mission.description}
+                                      </p>
+                                    )}
+                                    {mission.totalTasks > 0 && (
+                                      <div className="mb-2">
+                                        <div className="h-[3px] bg-[rgba(255,245,230,0.06)] rounded-full overflow-hidden">
+                                          <div
+                                            className="h-full rounded-full transition-all duration-500"
+                                            style={{
+                                              width: `${mission.progress}%`,
+                                              background: 'var(--accent)',
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
+                                      {mission.workspaceName && (
+                                        <>
+                                          <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80">
+                                            {mission.workspaceName}
+                                          </span>
+                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0 || nextRun.text) && (
+                                            <span className="mx-0.5">&middot;</span>
+                                          )}
+                                        </>
+                                      )}
+                                      {mission.totalTasks > 0 && (
+                                        <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
+                                      )}
+                                      {mission.activeWorkers > 0 && (
+                                        <>
+                                          {mission.totalTasks > 0 && <span className="mx-0.5">&middot;</span>}
+                                          <span className="text-accent-text font-medium">
+                                            {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
+                                          </span>
+                                        </>
+                                      )}
+                                      {nextRun.text && (
+                                        <>
+                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
+                                          <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
+                                            {nextRun.text}
+                                          </span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </Link>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="flex items-center justify-between pt-1">
+                        <Link
+                          href="/app/missions"
+                          className="text-xs text-text-muted hover:text-text-secondary"
+                        >
+                          {hiddenCount > 0
+                            ? `+${hiddenCount} more (${completedCount} completed, ${scheduledCount} scheduled) →`
+                            : 'View all missions'}
+                        </Link>
+                        <Link
+                          href="/app/missions/new"
+                          className="text-xs text-text-muted hover:text-primary"
+                        >
+                          + New Mission
+                        </Link>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
+
           </div>
 
           {/* Right column: Team + Activity rail */}

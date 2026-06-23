@@ -68,26 +68,30 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
           the team, scope it to a single workspace{multiTeam ? <>, or apply it across <strong className="text-text-primary">all {teamTargets.length} teams</strong> you manage</> : null}.
         </p>
 
+        {/* Team provider routing toggle (reversible mask over the resolution chain) */}
+        <ProviderRoutingToggle teamId={teamId} />
+        <div className="border-t border-border-default" />
+
         {/* Shared scope selector */}
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-text-secondary">Applies to</span>
-          <div className="inline-flex rounded-lg border border-border-default overflow-hidden">
+          <div className="flex sm:inline-flex w-full sm:w-auto rounded-lg border border-border-default overflow-hidden">
             <button
               onClick={() => setScope('team')}
-              className={`px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
             >
               This team
             </button>
             <button
               onClick={() => setScope('workspace')}
-              className={`px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'workspace' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'workspace' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
             >
               One workspace
             </button>
             {multiTeam && (
               <button
                 onClick={() => setScope('all_teams')}
-                className={`px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
+                className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
               >
                 All my teams
               </button>
@@ -117,6 +121,114 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   );
 }
 
+// ── Provider routing (team toggle) ──────────────────────────────────────────────
+
+type RoutingBackend = 'claude' | 'codex';
+const ALL_BACKENDS: RoutingBackend[] = ['claude', 'codex'];
+const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex');
+
+/**
+ * Team-level enable/disable for each provider. This is a reversible mask applied
+ * at dispatch time — disabling a provider reroutes its jobs to an enabled one
+ * without touching per-workspace/role/mission settings, and re-enabling restores
+ * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
+ * in one switch, instead of editing every workspace/role.
+ */
+function ProviderRoutingToggle({ teamId }: { teamId: string }) {
+  const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!teamId) return;
+    try {
+      const res = await fetch(`/api/teams/${teamId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const eb = data.team?.enabledBackends as RoutingBackend[] | null | undefined;
+        setEnabled(eb && eb.length ? eb : ALL_BACKENDS); // null/empty => all enabled
+      }
+    } catch {
+      /* non-fatal */
+    } finally {
+      setLoaded(true);
+    }
+  }, [teamId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const isOn = (b: RoutingBackend) => !enabled || enabled.includes(b);
+
+  async function toggle(b: RoutingBackend) {
+    const current = enabled ?? ALL_BACKENDS;
+    const next = current.includes(b) ? current.filter((x) => x !== b) : [...current, b];
+    if (next.length === 0) {
+      setMsg({ type: 'error', text: 'At least one provider must stay enabled.' });
+      return;
+    }
+    const prev = enabled;
+    setEnabled(next); // optimistic
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledBackends: next }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
+      const off = ALL_BACKENDS.filter((x) => !next.includes(x));
+      setMsg({
+        type: 'success',
+        text: off.length
+          ? `${off.map(backendLabel).join(' & ')} disabled — those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable anytime; per-workspace settings are untouched.`
+          : 'Both providers enabled (default routing).',
+      });
+    } catch (e) {
+      setEnabled(prev); // rollback optimistic update
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <h3 className="text-sm font-medium text-text-primary">Provider routing</h3>
+        <p className="text-xs text-text-secondary mt-0.5">
+          Enable or disable a provider team-wide. Disabling one reroutes its jobs to the other —
+          reversible, and it doesn&apos;t change any per-workspace or per-role backend settings.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {ALL_BACKENDS.map((b) => (
+          <div key={b} className="flex items-center justify-between bg-surface-3/50 rounded-lg px-3 py-2">
+            <span className="inline-flex items-center gap-1.5 text-sm text-text-primary">
+              <span className={`w-1.5 h-1.5 rounded-full ${isOn(b) ? 'bg-status-success' : 'bg-text-muted'}`} />
+              {backendLabel(b)}
+              <span className="text-xs text-text-muted">{isOn(b) ? 'enabled' : 'disabled — jobs reroute'}</span>
+            </span>
+            <button
+              onClick={() => toggle(b)}
+              disabled={busy || !loaded}
+              className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+                isOn(b) ? 'border-status-success/40 text-status-success' : 'border-border-default text-text-secondary'
+              }`}
+            >
+              {isOn(b) ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {msg && (
+        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
+      )}
+    </div>
+  );
+}
+
 // ── Claude ─────────────────────────────────────────────────────────────────────
 
 type ClaudePurpose = 'oauth_token' | 'anthropic_api_key';
@@ -126,6 +238,7 @@ interface SecretMeta {
   purpose: string;
   accountId: string | null;
   workspaceId: string | null;
+  createdAt: string | null;
 }
 
 function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
@@ -135,6 +248,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [replaceOpen, setReplaceOpen] = useState(false);
 
   const allTeams = scope === 'all_teams';
 
@@ -153,7 +267,11 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     }
   }, [teamId, scope]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    setReplaceOpen(false);
+    setValue('');
+    void load();
+  }, [load]);
 
   // Credentials matching the selected scope.
   const matching = secrets.filter(
@@ -198,6 +316,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to save');
       setValue('');
+      setReplaceOpen(false);
       setMsg({ type: 'success', text: 'Claude credential saved.' });
       await load();
     } catch (e) {
@@ -214,6 +333,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setMsg({ type: 'success', text: 'Credential removed.' });
+      setReplaceOpen(false);
       await load();
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -225,6 +345,44 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   const placeholder = purpose === 'oauth_token'
     ? 'sk-ant-oat01-… (output of `claude setup-token`)'
     : 'sk-ant-api03-… (Anthropic API key)';
+
+  const inputForm = (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <button
+          onClick={() => setPurpose('oauth_token')}
+          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'oauth_token' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+        >
+          Setup token
+        </button>
+        <button
+          onClick={() => setPurpose('anthropic_api_key')}
+          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'anthropic_api_key' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+        >
+          API key
+        </button>
+      </div>
+      <input
+        type="password"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={placeholder}
+        className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+      />
+      <div className="flex items-center gap-3">
+        <button
+          onClick={save}
+          disabled={busy || !value.trim()}
+          className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : 'Save credential'}
+        </button>
+        {replaceOpen && (
+          <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="text-xs text-text-tertiary">Cancel</button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-3">
@@ -239,52 +397,50 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : matching.length > 0 ? (
-        <div className="space-y-2">
-          {matching.map((s) => (
-            <div key={s.id} className="flex items-center justify-between bg-surface-3/50 rounded-lg px-3 py-2">
-              <span className="inline-flex items-center gap-1.5 text-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
-                {s.purpose === 'oauth_token' ? 'OAuth setup token' : 'Anthropic API key'}
-                <span className="text-text-muted">· {s.workspaceId ? 'this workspace' : 'all workspaces'}</span>
-              </span>
-              <button onClick={() => revoke(s.id)} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
+            </span>
+            <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
+          </div>
+
+          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+            {matching.map((s) => (
+              <div key={s.id}>{s.purpose === 'oauth_token' ? 'OAuth setup token' : 'Anthropic API key'}</div>
+            ))}
+            {matching[0].createdAt && (
+              <div>Connected: {new Date(matching[0].createdAt).toLocaleString()}</div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            {!replaceOpen && (
+              <button onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }} className="text-sm font-medium text-text-secondary">
+                Replace credential
+              </button>
+            )}
+            {matching.map((s) => (
+              <button key={s.id} onClick={() => revoke(s.id)} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">
                 Revoke
               </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
+            ))}
+          </div>
 
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <button
-            onClick={() => setPurpose('oauth_token')}
-            className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'oauth_token' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
-          >
-            Setup token
-          </button>
-          <button
-            onClick={() => setPurpose('anthropic_api_key')}
-            className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'anthropic_api_key' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
-          >
-            API key
-          </button>
+          {replaceOpen && inputForm}
         </div>
-        <input
-          type="password"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={placeholder}
-          className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
-        />
-        <button
-          onClick={save}
-          disabled={busy || !value.trim()}
-          className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
-        >
-          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace credential' : 'Save credential'}
-        </button>
-      </div>
+      ) : (
+        <div className="space-y-3">
+          {allTeams ? (
+            <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
+              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
+            </span>
+          )}
+          {inputForm}
+        </div>
+      )}
 
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>

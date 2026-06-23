@@ -221,11 +221,13 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
     // Member counts are non-critical, default to 1
   }
 
-  return validMemberships.map(m => ({
-    id: m.team.id,
-    name: m.team.name,
-    slug: m.team.slug,
-    role: m.role,
-    memberCount: countMap.get(m.teamId) || 1,
-  }));
+  return validMemberships
+    .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime())
+    .map(m => ({
+      id: m.team.id,
+      name: m.team.name,
+      slug: m.team.slug,
+      role: m.role,
+      memberCount: countMap.get(m.teamId) || 1,
+    }));
 });

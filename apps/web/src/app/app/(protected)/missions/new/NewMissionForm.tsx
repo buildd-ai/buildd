@@ -31,6 +31,88 @@ const SCHEDULE_PRESETS = [
   { label: 'Weekly Monday', cron: '0 9 * * 1' },
 ] as const;
 
+// ── Credential status ─────────────────────────────────────────────────────────
+
+type BackendStatusState = 'loading' | 'connected' | 'expired' | 'not_connected';
+
+function useBackendStatus(teamId: string | undefined, fallbackWorkspaceId: string) {
+  const [claude, setClaude] = useState<BackendStatusState>('loading');
+  const [codex, setCodex] = useState<BackendStatusState>('loading');
+
+  useEffect(() => {
+    if (!teamId) {
+      setClaude('not_connected');
+      setCodex('not_connected');
+      return;
+    }
+
+    fetch(`/api/secrets?teamId=${teamId}`)
+      .then(r => r.ok ? r.json() : { secrets: [] })
+      .then((data: { secrets?: Array<{ purpose: string }> }) => {
+        const hasCredential = (data.secrets ?? []).some(
+          s => s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key'
+        );
+        setClaude(hasCredential ? 'connected' : 'not_connected');
+      })
+      .catch(() => setClaude('not_connected'));
+
+    if (!fallbackWorkspaceId) {
+      setCodex('not_connected');
+      return;
+    }
+
+    fetch(`/api/workspaces/${fallbackWorkspaceId}/codex-credential?scope=team`)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { connected: boolean; expired: boolean } | null) => {
+        if (!data?.connected) setCodex('not_connected');
+        else if (data.expired) setCodex('expired');
+        else setCodex('connected');
+      })
+      .catch(() => setCodex('not_connected'));
+  }, [teamId, fallbackWorkspaceId]);
+
+  return { claude, codex };
+}
+
+function BackendStatusRow({ status, backend }: { status: BackendStatusState; backend: BackendValue }) {
+  if (backend === null || status === 'loading') return null;
+
+  if (status === 'connected') {
+    return (
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-success shrink-0" />
+        <span className="text-xs text-status-success">Connected</span>
+      </div>
+    );
+  }
+
+  if (status === 'expired') {
+    return (
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-warning shrink-0" />
+        <span className="text-xs text-status-warning">
+          Token expired —{' '}
+          <Link href="/app/settings" className="underline">refresh in Settings</Link>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 mt-1.5">
+      <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
+      <span className="text-xs text-text-muted">
+        Not configured —{' '}
+        <Link href="/app/settings" className="underline hover:text-text-secondary">
+          add credentials in Settings
+        </Link>
+      </span>
+    </div>
+  );
+}
+
+// ── Workspace dropdown ────────────────────────────────────────────────────────
+
 function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: WorkspaceOption[]; value: string; onChange: (id: string) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -105,11 +187,20 @@ function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: Worksp
   );
 }
 
-export default function NewMissionForm({ workspaces, roles = [] }: { workspaces: WorkspaceOption[]; roles?: RoleOption[] }) {
+// ── Main form ─────────────────────────────────────────────────────────────────
+
+export default function NewMissionForm({
+  workspaces,
+  roles = [],
+  teamId,
+}: {
+  workspaces: WorkspaceOption[];
+  roles?: RoleOption[];
+  teamId?: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Artifact reference from URL params (e.g. linked from mission detail page)
   const artifactId = searchParams.get('artifactId');
   const artifactTitle = searchParams.get('artifactTitle');
   const sourceMission = searchParams.get('sourceMission');
@@ -133,6 +224,10 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
   const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | null>(null);
   const [validatingCron, setValidatingCron] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Credential status — fetched on mount using first available workspace as fallback
+  const fallbackWorkspaceId = workspaces[0]?.id ?? '';
+  const backendStatus = useBackendStatus(teamId, fallbackWorkspaceId);
 
   const validateCron = useCallback(async (cron: string) => {
     if (!cron.trim()) {
@@ -181,7 +276,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
       const payload: Record<string, unknown> = {
         title: name.trim(),
         workspaceId: workspaceId || undefined,
-        // Send remembered team preference (server validates membership)
         teamId: typeof window !== 'undefined' ? localStorage.getItem('buildd:lastTeamId') || undefined : undefined,
       };
 
@@ -213,7 +307,6 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
       }
 
       const created = await res.json();
-      // Remember the team for next mission creation
       if (created.teamId) {
         localStorage.setItem('buildd:lastTeamId', created.teamId);
       }
@@ -226,8 +319,11 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
     }
   }
 
+  // Which backend status to show based on selection
+  const activeStatus = backend === 'codex' ? backendStatus.codex : backendStatus.claude;
+
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
+    <main className="min-h-screen pt-14 px-4 pb-8 md:p-8">
       <div className="max-w-lg mx-auto">
         {/* Back link */}
         <Link href="/app/missions" className="text-sm text-text-secondary hover:text-text-primary mb-4 block">
@@ -266,7 +362,7 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
         </div>
 
         {/* Description */}
-        <div className="mb-4">
+        <div className="mb-5">
           <label className="block text-xs text-text-muted mb-1.5">
             Description <span className="text-text-muted/60">(optional)</span>
           </label>
@@ -280,6 +376,19 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
           />
         </div>
 
+        {/* Backend selection — prominent in main form */}
+        <div className="mb-5">
+          <label className="block text-xs text-text-muted mb-1.5">Run with</label>
+          <BackendSelect value={backend} onChange={setBackend} inheritLabel="Default" />
+          {backend === null ? (
+            <p className="text-xs text-text-muted/70 mt-1.5">
+              Uses Claude by default, or the role&apos;s backend if set.
+            </p>
+          ) : (
+            <BackendStatusRow status={activeStatus} backend={backend} />
+          )}
+        </div>
+
         {/* Advanced options toggle */}
         {!showAdvanced ? (
           <button
@@ -287,126 +396,114 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             onClick={() => setShowAdvanced(true)}
             className="text-xs text-text-muted hover:text-text-secondary mb-4"
           >
-            Advanced options (workspace, backend, schedule) &rarr;
+            Advanced options (workspace, schedule) &rarr;
           </button>
         ) : (
           <>
-
-        {/* Workspace picker */}
-        {workspaces.length > 0 && (
-          <WorkspaceDropdown
-            workspaces={workspaces}
-            value={workspaceId}
-            onChange={setWorkspaceId}
-          />
-        )}
-
-        {/* Agent backend */}
-        <div className="mb-4">
-          <label className="block text-xs text-text-muted mb-1.5">Agent backend</label>
-          <BackendSelect value={backend} onChange={setBackend} inheritLabel="Default" />
-          <p className="text-xs text-text-muted/80 mt-1.5">
-            Tasks this mission generates run on this backend. &ldquo;Default&rdquo; uses Claude (or the role&apos;s
-            backend). Requires that backend&apos;s credentials in Settings.
-          </p>
-        </div>
-
-        {/* Schedule section */}
-        <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-lg" data-testid="schedule-section">
-          <div className="flex items-center gap-2 mb-3">
-            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <h3 className="text-sm font-semibold text-text-primary">
-              Schedule (optional)
-            </h3>
-          </div>
-
-          {!cronExpression && (
-            <p className="text-xs text-text-muted mb-3">
-              Add a schedule to run this mission periodically.
-            </p>
-          )}
-
-          {/* Preset buttons */}
-          <div className="flex flex-wrap gap-2 mb-3">
-            {SCHEDULE_PRESETS.map(preset => (
-              <button
-                key={preset.cron}
-                type="button"
-                onClick={() => { setCronExpression(preset.cron); setCustomCron(false); }}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  cronExpression === preset.cron
-                    ? 'bg-primary text-white'
-                    : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
-                }`}
-              >
-                {preset.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => { setCustomCron(true); setCronExpression(''); setSchedulePreview(null); }}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                customCron && !SCHEDULE_PRESETS.some(p => p.cron === cronExpression)
-                  ? 'bg-primary text-white'
-                  : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
-              }`}
-            >
-              Custom...
-            </button>
-          </div>
-
-          {/* Custom cron input */}
-          {customCron && !SCHEDULE_PRESETS.some(p => p.cron === cronExpression) && (
-            <div className="mb-3">
-              <input
-                type="text"
-                value={cronExpression}
-                onChange={e => setCronExpression(e.target.value)}
-                placeholder="e.g. 0 */6 * * * (every 6 hours)"
-                className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                autoFocus
+            {/* Workspace picker */}
+            {workspaces.length > 0 && (
+              <WorkspaceDropdown
+                workspaces={workspaces}
+                value={workspaceId}
+                onChange={setWorkspaceId}
               />
-            </div>
-          )}
+            )}
 
-          {/* Cron preview */}
-          {cronExpression && schedulePreview && (
-            <div className="p-3 bg-surface-1 rounded-md border border-border-default">
-              {schedulePreview.valid ? (
-                <>
-                  <div className="flex items-center gap-2 mb-1">
-                    <svg className="w-3.5 h-3.5 text-status-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-sm font-medium text-text-primary">{schedulePreview.description}</span>
-                  </div>
-                  {schedulePreview.nextRuns && schedulePreview.nextRuns.length > 0 && (
-                    <div className="space-y-0.5 mt-1">
-                      <span className="text-xs text-text-muted">Next runs:</span>
-                      {schedulePreview.nextRuns.map((run: string, i: number) => (
-                        <div key={i} className="text-xs text-text-secondary pl-4">{run}</div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <svg className="w-3.5 h-3.5 text-status-error" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  <span className="text-xs text-status-error">{schedulePreview.description}</span>
+            {/* Schedule section */}
+            <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-lg" data-testid="schedule-section">
+              <div className="flex items-center gap-2 mb-3">
+                <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Schedule <span className="text-xs font-normal text-text-muted">(optional)</span>
+                </h3>
+              </div>
+
+              {!cronExpression && (
+                <p className="text-xs text-text-muted mb-3">
+                  Add a schedule to run this mission periodically.
+                </p>
+              )}
+
+              {/* Preset buttons */}
+              <div className="flex flex-wrap gap-2 mb-3">
+                {SCHEDULE_PRESETS.map(preset => (
+                  <button
+                    key={preset.cron}
+                    type="button"
+                    onClick={() => { setCronExpression(preset.cron); setCustomCron(false); }}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      cronExpression === preset.cron
+                        ? 'bg-primary text-white'
+                        : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => { setCustomCron(true); setCronExpression(''); setSchedulePreview(null); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    customCron && !SCHEDULE_PRESETS.some(p => p.cron === cronExpression)
+                      ? 'bg-primary text-white'
+                      : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
+                  }`}
+                >
+                  Custom...
+                </button>
+              </div>
+
+              {/* Custom cron input */}
+              {customCron && !SCHEDULE_PRESETS.some(p => p.cron === cronExpression) && (
+                <div className="mb-3">
+                  <input
+                    type="text"
+                    value={cronExpression}
+                    onChange={e => setCronExpression(e.target.value)}
+                    placeholder="e.g. 0 */6 * * * (every 6 hours)"
+                    className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    autoFocus
+                  />
                 </div>
               )}
+
+              {/* Cron preview */}
+              {cronExpression && schedulePreview && (
+                <div className="p-3 bg-surface-1 rounded-md border border-border-default">
+                  {schedulePreview.valid ? (
+                    <>
+                      <div className="flex items-center gap-2 mb-1">
+                        <svg className="w-3.5 h-3.5 text-status-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span className="text-sm font-medium text-text-primary">{schedulePreview.description}</span>
+                      </div>
+                      {schedulePreview.nextRuns && schedulePreview.nextRuns.length > 0 && (
+                        <div className="space-y-0.5 mt-1">
+                          <span className="text-xs text-text-muted">Next runs:</span>
+                          {schedulePreview.nextRuns.map((run: string, i: number) => (
+                            <div key={i} className="text-xs text-text-secondary pl-4">{run}</div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <svg className="w-3.5 h-3.5 text-status-error" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      <span className="text-xs text-status-error">{schedulePreview.description}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {validatingCron && (
+                <div className="text-xs text-text-muted mt-2">Validating...</div>
+              )}
             </div>
-          )}
-
-          {validatingCron && (
-            <div className="text-xs text-text-muted mt-2">Validating...</div>
-          )}
-        </div>
-
           </>
         )}
 
@@ -427,6 +524,13 @@ export default function NewMissionForm({ workspaces, roles = [] }: { workspaces:
             {submitting ? 'Creating...' : 'Create Mission'}
           </button>
         </div>
+
+        {/* Known-gap affordance: individual task creation not available on mobile */}
+        <p className="mt-8 text-xs text-text-muted text-center border-t border-border-default pt-4">
+          Creating individual tasks requires the{' '}
+          <Link href="/app" className="underline hover:text-text-secondary">desktop dashboard</Link>
+          {' '}or API.
+        </p>
       </div>
     </main>
   );

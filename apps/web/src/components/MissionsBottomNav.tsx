@@ -50,12 +50,14 @@ const missionTabs = [
     ),
   },
   {
-    label: 'You',
+    label: 'More',
     href: '/app/you',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
-        <circle cx="12" cy="7" r="4" />
+        <rect x="4" y="4" width="6" height="6" rx="1" />
+        <rect x="14" y="4" width="6" height="6" rx="1" />
+        <rect x="4" y="14" width="6" height="6" rx="1" />
+        <rect x="14" y="14" width="6" height="6" rx="1" />
       </svg>
     ),
   },
@@ -75,8 +77,11 @@ export default function MissionsBottomNav() {
             (tab.href === '/app/missions' && pathname.startsWith('/app/missions')) ||
             (tab.href === '/app/team' && pathname.startsWith('/app/team')) ||
             (tab.href === '/app/tasks' && pathname.startsWith('/app/tasks')) ||
+            (tab.href === '/app/you' && pathname.startsWith('/app/you')) ||
             (tab.href === '/app/you' && pathname.startsWith('/app/settings')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/you'));
+            (tab.href === '/app/you' && pathname.startsWith('/app/artifacts')) ||
+            (tab.href === '/app/you' && pathname.startsWith('/app/teams')) ||
+            (tab.href === '/app/you' && pathname.startsWith('/app/accounts'));
 
           const showBadge = tab.href === '/app/tasks' && needsInputCount > 0;
 

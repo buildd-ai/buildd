@@ -155,9 +155,7 @@ export default async function MissionDetailPage({
   const activeHoursTimezone = (templateContext?.activeHoursTimezone as string) ?? null;
 
   // Configuration from schedule template
-  const skillSlugs = (templateContext?.skillSlugs as string[]) || [];
   const configModel = (templateContext?.model as string) || null;
-  const outputSchema = (templateContext?.outputSchema as unknown) || null;
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -238,7 +236,7 @@ export default async function MissionDetailPage({
 
   return (
     <TaskPanelWrapper>
-    <div className="px-7 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
+    <div className="px-4 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Real-time updates via Pusher */}
       {mission.workspaceId && (
         <MissionAutoRefresh
@@ -302,7 +300,7 @@ export default async function MissionDetailPage({
                 }}
               />
             </div>
-            <div className="text-[11px] text-text-muted mt-1.5">
+            <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
               {mission.status === 'completed'
                 ? `${totalTasks} tasks · ${completedTasks} completed`
                 : `${completedTasks} of ${totalTasks} tasks complete`}
@@ -357,7 +355,7 @@ export default async function MissionDetailPage({
 
         {/* Stats row — only for completed missions */}
         {mission.status === 'completed' && (
-          <div className="grid grid-cols-4 gap-3 mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
             {[
               { label: 'Tasks', value: String(totalTasks) },
               { label: 'Completed', value: String(completedTasks) },
@@ -374,7 +372,7 @@ export default async function MissionDetailPage({
               })() },
             ].map(stat => (
               <div key={stat.label} className="card p-3">
-                <div className="text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
+                <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
                 <div className="font-display text-lg text-text-primary mt-1">{stat.value}</div>
               </div>
             ))}
@@ -431,9 +429,7 @@ export default async function MissionDetailPage({
           <MissionConfig
             missionId={id}
             workspaceId={mission.workspaceId}
-            skillSlugs={skillSlugs}
             model={configModel}
-            outputSchema={outputSchema}
             workspaces={teamWorkspaces}
             maxConcurrentTasks={mission.maxConcurrentTasks}
             activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
@@ -585,51 +581,52 @@ export default async function MissionDetailPage({
                                   />
                                 </span>
 
-                                <span className={`flex-1 text-[13px] truncate transition-colors ${
+                                <span className={`flex-1 text-[13px] truncate transition-colors min-w-0 ${
                                   isDone ? 'text-text-secondary' : 'text-text-primary group-hover:text-accent-text'
                                 }`}>
                                   {task.title}
                                 </span>
 
-                                {role && (
-                                  <span
-                                    className="text-[11px] font-medium shrink-0"
-                                    style={{ color: roleColor }}
-                                  >
-                                    {role.name}
-                                  </span>
-                                )}
-
-                                <span className="flex-1" />
-
-                                {latestWorker?.prUrl && (
-                                  <span className="text-[11px] text-accent-text shrink-0">
-                                    PR #{latestWorker.prNumber}
-                                  </span>
-                                )}
-
-                                {isRunning && (
-                                  <span className="flex items-center gap-1 shrink-0 max-w-[45%]">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
-                                    <span className="text-[11px] text-status-info truncate">
-                                      {latestWorker?.currentAction || 'Running'}
+                                {/* Right-side metadata: role (hidden on mobile), PR, status */}
+                                <span className="flex items-center gap-1.5 shrink-0 ml-auto">
+                                  {role && (
+                                    <span
+                                      className="hidden sm:inline text-[11px] font-medium"
+                                      style={{ color: roleColor }}
+                                    >
+                                      {role.name}
                                     </span>
-                                  </span>
-                                )}
+                                  )}
 
-                                {isDone && (
-                                  <span className="text-[13px] text-status-success shrink-0">&#10003;</span>
-                                )}
+                                  {latestWorker?.prUrl && (
+                                    <span className="text-[12px] md:text-[11px] text-accent-text">
+                                      PR #{latestWorker.prNumber}
+                                    </span>
+                                  )}
 
-                                {isFailed && (
-                                  <span className="text-[11px] text-status-error shrink-0">Failed</span>
-                                )}
+                                  {isRunning && (
+                                    <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
+                                      <span className="text-[12px] md:text-[11px] text-status-info truncate">
+                                        {latestWorker?.currentAction || 'Running'}
+                                      </span>
+                                    </span>
+                                  )}
 
-                                {!isRunning && !isDone && !isFailed && (
-                                  <span className="text-[11px] text-text-muted shrink-0">
-                                    {timeAgo(task.createdAt)}
-                                  </span>
-                                )}
+                                  {isDone && (
+                                    <span className="text-[13px] text-status-success">&#10003;</span>
+                                  )}
+
+                                  {isFailed && (
+                                    <span className="text-[12px] md:text-[11px] text-status-error">Failed</span>
+                                  )}
+
+                                  {!isRunning && !isDone && !isFailed && (
+                                    <span className="text-[12px] md:text-[11px] text-text-muted">
+                                      {timeAgo(task.createdAt)}
+                                    </span>
+                                  )}
+                                </span>
                               </button>
 
                               {waitingWorker && waitingFor && (

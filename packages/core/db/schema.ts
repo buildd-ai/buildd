@@ -39,6 +39,15 @@ export const teams = pgTable('teams', {
   monthlyCostUsd: decimal('monthly_cost_usd', { precision: 12, scale: 6 }).default('0').notNull(),
   monthlyCostMonth: text('monthly_cost_month'),
   budgetAlertsSent: jsonb('budget_alerts_sent').default([]).$type<number[]>().notNull(),
+
+  // Team-level provider enablement mask. NULL (or empty) = all providers enabled
+  // — the default, so existing teams are unaffected. When a provider is disabled
+  // here, tasks that resolve to it are masked to an enabled provider at claim time
+  // WITHOUT mutating per-workspace/role/mission/task settings. Re-enabling lifts
+  // the mask and restores prior behavior automatically (no stored state to undo).
+  // This is a reversible toggle layered ABOVE the resolution chain, not another
+  // default in it. See packages/core/backend-policy.ts.
+  enabledBackends: agentBackendEnum('enabled_backends').array(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
