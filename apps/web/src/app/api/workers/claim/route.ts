@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, sql, inArray, lt, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -14,6 +14,7 @@ import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext } from '@/lib/knowledge-context';
+import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -322,6 +323,34 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Memoized team provider-enablement mask (the reversible toggle). NULL = all enabled.
+  const teamBackendMask = new Map<string, AgentBackend[] | null>();
+  const teamEnabledBackends = async (teamId?: string): Promise<AgentBackend[] | null> => {
+    if (!teamId) return null;
+    if (teamBackendMask.has(teamId)) return teamBackendMask.get(teamId)!;
+    let enabled: AgentBackend[] | null = null;
+    try {
+      const team = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { enabledBackends: true } });
+      enabled = (team?.enabledBackends as AgentBackend[] | null) ?? null;
+    } catch (err) {
+      console.warn(`[claim] team backend mask lookup failed for ${teamId}:`, err);
+    }
+    teamBackendMask.set(teamId, enabled);
+    return enabled;
+  };
+
+  // Apply the team toggle's SAFE direction up front: if a task's backend is
+  // disabled team-wide and the fallback is Claude, rewrite it to Claude now —
+  // before the capability filter — so a Codex task with Codex disabled isn't
+  // dropped for lacking Codex capability. (The Claude→Codex direction needs a
+  // credential + the per-workspace slot, so it stays in the dispatch loop below.)
+  for (const task of claimableTasks) {
+    const enabled = await teamEnabledBackends((task as any).workspace?.teamId);
+    if (maskBackend((task as any).backend as AgentBackend, enabled) === 'claude' && (task as any).backend !== 'claude') {
+      (task as any).backend = 'claude';
+    }
+  }
+
   const runnerHasCodexBackend = capabilities.includes('backend:codex');
   const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
   const serverCredentialTaskIds = new Set<string>();
@@ -454,6 +483,19 @@ export async function POST(req: NextRequest) {
     return available;
   };
 
+  // Flip a task to Codex in-memory, respecting credential availability and the
+  // ≤1-Codex-per-workspace throttle. Shared by the provider toggle and budget
+  // failover. Returns true if the flip happened.
+  const tryFlipToCodex = async (task: any, teamId?: string, wsId?: string): Promise<boolean> => {
+    const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
+    if (wsId && teamId && codexFree && await workspaceHasCodex({ teamId, accountId: account.id, workspaceId: wsId })) {
+      task.backend = 'codex';
+      codexFlippedWorkspaces.add(wsId);
+      return true;
+    }
+    return false;
+  };
+
   for (const task of filteredTasks) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
@@ -466,6 +508,27 @@ export async function POST(req: NextRequest) {
       const cap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
         continue;
+      }
+    }
+
+    // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
+    // rest sees the effective backend. Disabling a provider here redirects matching
+    // jobs to an enabled one at dispatch time, without touching stored settings;
+    // re-enabling restores them automatically. See packages/core/backend-policy.ts.
+    const taskTeamId = (task as any).workspace?.teamId as string | undefined;
+    const enabledBackends = await teamEnabledBackends(taskTeamId);
+    const codexEnabledForTeam = !enabledBackends || enabledBackends.includes('codex');
+    const maskedBackend = maskBackend((task as any).backend as AgentBackend, enabledBackends);
+    if (maskedBackend !== (task as any).backend) {
+      if (maskedBackend === 'codex') {
+        // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
+        // Codex has no credential or its single per-workspace slot is taken.
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) continue;
+        console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
+      } else {
+        // Codex disabled team-wide → run on Claude.
+        (task as any).backend = 'claude';
+        console.log(`[claim] Provider toggle: task ${task.id} → Claude (Codex disabled for team ${taskTeamId})`);
       }
     }
 
@@ -506,13 +569,10 @@ export async function POST(req: NextRequest) {
     // The flip is in-memory only — scoped to this run, not a permanent backend change.
     // Tasks we can't fail over are left pending and retried on reset / when Codex frees.
     if (claudeBudgetBlocked) {
-      const wsId = task.workspaceId;
-      const teamId = (task as any).workspace?.teamId as string | undefined;
-      const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
-      if (wsId && teamId && codexFree && await workspaceHasCodex({ teamId, accountId: account.id, workspaceId: wsId })) {
-        (task as any).backend = 'codex';
-        codexFlippedWorkspaces.add(wsId);
-        console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${wsId} Claude budget exhausted)`);
+      // Only fail over to Codex if the team toggle allows it; otherwise leave the
+      // task pending until the Claude budget resets.
+      if (codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId)) {
+        console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
         continue;
       }
