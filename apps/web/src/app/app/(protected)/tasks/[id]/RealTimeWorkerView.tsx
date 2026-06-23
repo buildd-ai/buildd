@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
-import WorkerActivityTimeline from './WorkerActivityTimeline';
+import WorkerActivityTimeline, { collapseCommandPrefix } from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
@@ -225,9 +225,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
 
       {/* Current action */}
       {worker.currentAction && (
-        <div className="mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true" />
-          <p className="text-sm text-text-secondary">{worker.currentAction}</p>
+        <div className="mb-3 flex items-center gap-2 min-w-0">
+          <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin flex-shrink-0" aria-hidden="true" />
+          <p className="text-sm text-text-secondary truncate">{collapseCommandPrefix(worker.currentAction)}</p>
         </div>
       )}
 

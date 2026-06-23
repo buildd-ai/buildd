@@ -20,6 +20,35 @@ const CHECKPOINT_SHORT_LABELS: Record<string, string> = {
   task_completed: 'Done',
 };
 
+export function collapseCommandPrefix(label: string): string {
+  if (!label) return label;
+  // Match: (Ran: )?cd /absolute/path && rest
+  const withRestMatch = label.match(/^(Ran:\s*)?cd\s+(\/[^\s]+)\s*&&\s*([\s\S]*)/);
+  if (withRestMatch) {
+    const ran = withRestMatch[1] || '';
+    const path = withRestMatch[2];
+    const rest = withRestMatch[3];
+    const basename = path.split('/').filter(Boolean).pop() || path;
+    return `${ran}~/${basename}${rest ? ' ' + rest : ''}`;
+  }
+  // Match bare: (Ran: )?cd /absolute/path alone
+  const bareMatch = label.match(/^(Ran:\s*)?cd\s+(\/[^\s]+)\s*$/);
+  if (bareMatch) {
+    const ran = bareMatch[1] || '';
+    const path = bareMatch[2];
+    const basename = path.split('/').filter(Boolean).pop() || path;
+    return `${ran}~/${basename}`;
+  }
+  return label;
+}
+
+function middleTruncate(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const keepFirst = Math.floor(maxLen * 0.6);
+  const keepLast = maxLen - keepFirst;
+  return s.slice(0, keepFirst) + ' … ' + s.slice(s.length - keepLast);
+}
+
 interface WorkerActivityTimelineProps {
   milestones: Milestone[];
   currentAction?: string | null;
@@ -128,8 +157,14 @@ function PhaseRow({
   currentAction?: string | null;
   formatTime: (ts: number) => string;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const isExpandable = milestone.label.length > 100;
+
   return (
-    <div className="flex items-start gap-2 py-1">
+    <div
+      className={`flex items-start gap-2 py-1 ${isExpandable ? 'cursor-pointer' : ''}`}
+      onClick={() => isExpandable && setExpanded((prev: boolean) => !prev)}
+    >
       <span className="mt-1 flex-shrink-0">
         {milestone.pending ? (
           <span className="relative flex h-2.5 w-2.5">
@@ -141,21 +176,26 @@ function PhaseRow({
         )}
       </span>
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2">
-          <span className={`text-sm truncate ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
+        <div className="flex items-start gap-2">
+          <div className={`flex-1 text-sm break-words ${
+            milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'
+          } ${expanded ? 'whitespace-pre-wrap break-all' : isExpandable ? 'line-clamp-2' : ''}`}>
             {milestone.label}
-          </span>
-          <span className="text-xs text-text-muted flex-shrink-0 tabular-nums">
-            {milestone.toolCount} tool{milestone.toolCount !== 1 ? 's' : ''}
-          </span>
-          <span className="text-xs text-text-muted flex-shrink-0">
-            {formatTime(milestone.ts)}
-          </span>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+            <span className="text-xs text-text-muted tabular-nums">
+              {milestone.toolCount} tool{milestone.toolCount !== 1 ? 's' : ''}
+            </span>
+            <span className="text-xs text-text-muted">{formatTime(milestone.ts)}</span>
+            {isExpandable && (
+              <span className="text-[10px] text-text-muted/60">{expanded ? '▼' : '▶'}</span>
+            )}
+          </div>
         </div>
         {/* Show currentAction as sub-line for live phase */}
         {milestone.pending && currentAction && (
           <p className="text-xs text-text-secondary truncate mt-0.5">
-            {currentAction}
+            {collapseCommandPrefix(currentAction)}
           </p>
         )}
       </div>
@@ -170,6 +210,8 @@ function StatusRow({
   milestone: { type: 'status'; label: string; progress?: number; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   const getIcon = (label: string) => {
     const lower = (label ?? '').toLowerCase();
     if (lower.includes('commit')) return '>';
@@ -189,23 +231,24 @@ function StatusRow({
   const isConfigChange = icon === 'c';
 
   return (
-    <div className="flex items-start gap-2 py-1 text-sm">
+    <div
+      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
+      onClick={() => setExpanded((prev: boolean) => !prev)}
+    >
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-status-warning' : 'text-text-muted'
       }`}>
         {icon}
       </span>
-      <span className={`flex-1 truncate ${
-        isError ? 'text-status-error' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
-      }`}>
+      <span className={`flex-1 break-words ${
+        isError ? 'text-status-error font-medium' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
+      } ${isError ? '' : expanded ? 'whitespace-pre-wrap break-all' : 'line-clamp-2'}`}>
         {milestone.label}
         {typeof milestone.progress === 'number' && (
           <span className="ml-2 text-xs text-text-muted">{milestone.progress}%</span>
         )}
       </span>
-      <span className="text-xs text-text-muted flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <span className="text-xs text-text-muted flex-shrink-0">{formatTime(milestone.ts)}</span>
     </div>
   );
 }
@@ -217,24 +260,27 @@ function CheckpointRow({
   milestone: { type: 'checkpoint'; event: string; label: string; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const isError = milestone.event === 'task_error';
   const isComplete = milestone.event === 'task_completed';
 
   return (
-    <div className="flex items-start gap-2 py-1 text-sm">
+    <div
+      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
+      onClick={() => setExpanded((prev: boolean) => !prev)}
+    >
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-primary'
       }`}>
         {isError ? '!' : isComplete ? '+' : '#'}
       </span>
-      <span className={`flex-1 truncate ${
+      <span className={`flex-1 ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-primary'
-      }`}>
+      } ${expanded ? 'whitespace-pre-wrap break-all' : 'truncate'}`}>
         {milestone.label}
       </span>
-      <span className="text-xs text-text-muted flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <span className="text-xs text-text-muted flex-shrink-0">{formatTime(milestone.ts)}</span>
+      <span className="text-[10px] text-text-muted/60 flex-shrink-0">{expanded ? '▼' : '▶'}</span>
     </div>
   );
 }
@@ -246,17 +292,24 @@ function ActionRow({
   milestone: { type: 'action'; label: string; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const collapsed = middleTruncate(collapseCommandPrefix(milestone.label), 80);
+
   return (
-    <div className="flex items-start gap-2 py-0.5 ml-5 text-xs">
+    <div
+      className="flex items-start gap-2 py-0.5 ml-5 text-xs cursor-pointer"
+      onClick={() => setExpanded((prev: boolean) => !prev)}
+    >
       <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">
-        &middot;
+        $
       </span>
-      <span className="flex-1 truncate text-text-muted">
-        {milestone.label}
+      <span className={`flex-1 font-mono text-xs bg-surface-3/50 rounded px-1 ${
+        expanded ? 'whitespace-pre-wrap break-all text-text-secondary' : 'text-text-muted'
+      }`}>
+        {expanded ? milestone.label : collapsed}
       </span>
-      <span className="text-[10px] text-text-muted/60 flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <span className="text-[10px] text-text-muted/60 flex-shrink-0 mt-0.5">{formatTime(milestone.ts)}</span>
+      <span className="text-[10px] text-text-muted/60 flex-shrink-0 mt-0.5">{expanded ? '▼' : '▶'}</span>
     </div>
   );
 }
