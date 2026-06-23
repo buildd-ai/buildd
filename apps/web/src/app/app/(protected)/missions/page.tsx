@@ -126,6 +126,8 @@ export default async function MissionsPage() {
       nextRunAt,
     });
 
+    const latestTaskId = (obj.tasks as any)[0]?.id || null;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -149,6 +151,11 @@ export default async function MissionsPage() {
             time: String(latestFinding.updatedAt),
           }
         : null,
+      workspaceId: obj.workspaceId || null,
+      workspaceName: (obj.workspace as any)?.name || null,
+      primaryPrUrl: (obj as any).primaryPrUrl || null,
+      primaryPrNumber: (obj as any).primaryPrNumber || null,
+      latestTaskId,
     };
   });
 
