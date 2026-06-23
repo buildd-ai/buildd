@@ -26,6 +26,21 @@ interface WorkerActivityTimelineProps {
   maxVisible?: number;
 }
 
+// Replace `cd /abs/path` with `cd ~/last-segment` to surface the distinguishing command tail.
+// Applied at render time only — never mutates stored data.
+export function collapseWorkspacePath(text: string): string {
+  return text.replace(/\bcd (\/[^\s&]+)/g, (_match, p1: string) => {
+    const lastSegment = p1.split('/').filter(Boolean).pop() || p1;
+    return `cd ~/${lastSegment}`;
+  });
+}
+
+function middleTruncate(str: string, maxLen: number, tailLen = 20): string {
+  if (str.length <= maxLen) return str;
+  const headLen = maxLen - tailLen - 1;
+  return str.slice(0, headLen) + '…' + str.slice(-tailLen);
+}
+
 export default function WorkerActivityTimeline({
   milestones,
   currentAction,
@@ -128,8 +143,18 @@ function PhaseRow({
   currentAction?: string | null;
   formatTime: (ts: number) => string;
 }) {
+  const [rowExpanded, setRowExpanded] = useState(false);
+  const isLong = milestone.label.length > 40;
+
   return (
-    <div className="flex items-start gap-2 py-1">
+    <div
+      className={`flex items-start gap-2 py-1 cursor-pointer ${
+        !milestone.pending
+          ? 'pl-1.5 border-l-2 border-border-default bg-surface-3/30 rounded-sm'
+          : ''
+      }`}
+      onClick={() => setRowExpanded(!rowExpanded)}
+    >
       <span className="mt-1 flex-shrink-0">
         {milestone.pending ? (
           <span className="relative flex h-2.5 w-2.5">
@@ -142,20 +167,25 @@ function PhaseRow({
       </span>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
-          <span className={`text-sm truncate ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
+          <span className={`text-sm ${rowExpanded ? 'break-all' : 'truncate'} ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
             {milestone.label}
           </span>
-          <span className="text-xs text-text-muted flex-shrink-0 tabular-nums">
-            {milestone.toolCount} tool{milestone.toolCount !== 1 ? 's' : ''}
+          <span className="font-mono text-[10px] bg-surface-3 px-1 py-0.5 rounded flex-shrink-0 text-text-muted">
+            {milestone.toolCount}&nbsp;tool{milestone.toolCount !== 1 ? 's' : ''}
           </span>
           <span className="text-xs text-text-muted flex-shrink-0">
             {formatTime(milestone.ts)}
           </span>
+          {isLong && (
+            <span className="text-text-muted text-[10px] flex-shrink-0">
+              {rowExpanded ? '▾' : '▸'}
+            </span>
+          )}
         </div>
-        {/* Show currentAction as sub-line for live phase */}
+        {/* Show currentAction as sub-line for live phase with path collapsed */}
         {milestone.pending && currentAction && (
           <p className="text-xs text-text-secondary truncate mt-0.5">
-            {currentAction}
+            {collapseWorkspacePath(currentAction)}
           </p>
         )}
       </div>
@@ -170,6 +200,8 @@ function StatusRow({
   milestone: { type: 'status'; label: string; progress?: number; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [rowExpanded, setRowExpanded] = useState(false);
+
   const getIcon = (label: string) => {
     const lower = (label ?? '').toLowerCase();
     if (lower.includes('commit')) return '>';
@@ -187,15 +219,19 @@ function StatusRow({
   const isError = icon === '!';
   const isComplete = icon === '+';
   const isConfigChange = icon === 'c';
+  const isLong = milestone.label.length > 80;
 
   return (
-    <div className="flex items-start gap-2 py-1 text-sm">
+    <div
+      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
+      onClick={() => setRowExpanded(!rowExpanded)}
+    >
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-status-warning' : 'text-text-muted'
       }`}>
         {icon}
       </span>
-      <span className={`flex-1 truncate ${
+      <span className={`flex-1 min-w-0 ${rowExpanded ? '' : 'line-clamp-2'} ${
         isError ? 'text-status-error' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
       }`}>
         {milestone.label}
@@ -203,9 +239,16 @@ function StatusRow({
           <span className="ml-2 text-xs text-text-muted">{milestone.progress}%</span>
         )}
       </span>
-      <span className="text-xs text-text-muted flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {isLong && (
+          <span className="text-text-muted text-[10px]">
+            {rowExpanded ? '▾' : '▸'}
+          </span>
+        )}
+        <span className="text-xs text-text-muted">
+          {formatTime(milestone.ts)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -217,24 +260,36 @@ function CheckpointRow({
   milestone: { type: 'checkpoint'; event: string; label: string; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [rowExpanded, setRowExpanded] = useState(false);
   const isError = milestone.event === 'task_error';
   const isComplete = milestone.event === 'task_completed';
+  const isLong = milestone.label.length > 50;
 
   return (
-    <div className="flex items-start gap-2 py-1 text-sm">
+    <div
+      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
+      onClick={() => setRowExpanded(!rowExpanded)}
+    >
       <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-primary'
       }`}>
         {isError ? '!' : isComplete ? '+' : '#'}
       </span>
-      <span className={`flex-1 truncate ${
+      <span className={`flex-1 min-w-0 font-medium ${rowExpanded ? '' : 'line-clamp-2'} ${
         isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-primary'
       }`}>
         {milestone.label}
       </span>
-      <span className="text-xs text-text-muted flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {isLong && (
+          <span className="text-text-muted text-[10px]">
+            {rowExpanded ? '▾' : '▸'}
+          </span>
+        )}
+        <span className="text-xs text-text-muted">
+          {formatTime(milestone.ts)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -246,17 +301,32 @@ function ActionRow({
   milestone: { type: 'action'; label: string; ts: number };
   formatTime: (ts: number) => string;
 }) {
+  const [rowExpanded, setRowExpanded] = useState(false);
+  const collapsed = collapseWorkspacePath(milestone.label);
+  const truncated = middleTruncate(collapsed, 60);
+  const isLong = collapsed !== truncated || milestone.label !== collapsed;
+
   return (
-    <div className="flex items-start gap-2 py-0.5 ml-5 text-xs">
+    <div
+      className="flex items-start gap-2 py-0.5 ml-5 text-xs cursor-pointer"
+      onClick={() => setRowExpanded(!rowExpanded)}
+    >
       <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">
         &middot;
       </span>
-      <span className="flex-1 truncate text-text-muted">
-        {milestone.label}
+      <span className="flex-1 min-w-0 font-mono text-[11px] text-text-muted">
+        {rowExpanded ? milestone.label : truncated}
       </span>
-      <span className="text-[10px] text-text-muted/60 flex-shrink-0">
-        {formatTime(milestone.ts)}
-      </span>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {isLong && (
+          <span className="text-text-muted text-[10px]">
+            {rowExpanded ? '▾' : '▸'}
+          </span>
+        )}
+        <span className="text-[10px] text-text-muted/60">
+          {formatTime(milestone.ts)}
+        </span>
+      </div>
     </div>
   );
 }
