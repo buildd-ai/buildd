@@ -106,13 +106,29 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug } = body;
+    const { name, slug, enabledBackends } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
 
     if (name !== undefined) updates.name = name;
+    if (enabledBackends !== undefined) {
+      // Provider-enablement toggle. Must be a non-empty subset of the known
+      // backends — at least one provider stays enabled so work can still run.
+      const VALID = ['claude', 'codex'] as const;
+      if (
+        !Array.isArray(enabledBackends) ||
+        enabledBackends.length === 0 ||
+        !enabledBackends.every((b: unknown) => (VALID as readonly string[]).includes(b as string))
+      ) {
+        return NextResponse.json(
+          { error: 'enabledBackends must be a non-empty array of "claude" and/or "codex"' },
+          { status: 400 },
+        );
+      }
+      updates.enabledBackends = [...new Set(enabledBackends as string[])];
+    }
     if (slug !== undefined) {
       // Validate slug format
       if (!/^[a-z0-9-]+$/.test(slug)) {

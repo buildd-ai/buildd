@@ -68,6 +68,10 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
           the team, scope it to a single workspace{multiTeam ? <>, or apply it across <strong className="text-text-primary">all {teamTargets.length} teams</strong> you manage</> : null}.
         </p>
 
+        {/* Team provider routing toggle (reversible mask over the resolution chain) */}
+        <ProviderRoutingToggle teamId={teamId} />
+        <div className="border-t border-border-default" />
+
         {/* Shared scope selector */}
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-text-secondary">Applies to</span>
@@ -114,6 +118,114 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
       </div>
     </section>
+  );
+}
+
+// ── Provider routing (team toggle) ──────────────────────────────────────────────
+
+type RoutingBackend = 'claude' | 'codex';
+const ALL_BACKENDS: RoutingBackend[] = ['claude', 'codex'];
+const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex');
+
+/**
+ * Team-level enable/disable for each provider. This is a reversible mask applied
+ * at dispatch time — disabling a provider reroutes its jobs to an enabled one
+ * without touching per-workspace/role/mission settings, and re-enabling restores
+ * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
+ * in one switch, instead of editing every workspace/role.
+ */
+function ProviderRoutingToggle({ teamId }: { teamId: string }) {
+  const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!teamId) return;
+    try {
+      const res = await fetch(`/api/teams/${teamId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const eb = data.team?.enabledBackends as RoutingBackend[] | null | undefined;
+        setEnabled(eb && eb.length ? eb : ALL_BACKENDS); // null/empty => all enabled
+      }
+    } catch {
+      /* non-fatal */
+    } finally {
+      setLoaded(true);
+    }
+  }, [teamId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const isOn = (b: RoutingBackend) => !enabled || enabled.includes(b);
+
+  async function toggle(b: RoutingBackend) {
+    const current = enabled ?? ALL_BACKENDS;
+    const next = current.includes(b) ? current.filter((x) => x !== b) : [...current, b];
+    if (next.length === 0) {
+      setMsg({ type: 'error', text: 'At least one provider must stay enabled.' });
+      return;
+    }
+    const prev = enabled;
+    setEnabled(next); // optimistic
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledBackends: next }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
+      const off = ALL_BACKENDS.filter((x) => !next.includes(x));
+      setMsg({
+        type: 'success',
+        text: off.length
+          ? `${off.map(backendLabel).join(' & ')} disabled — those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable anytime; per-workspace settings are untouched.`
+          : 'Both providers enabled (default routing).',
+      });
+    } catch (e) {
+      setEnabled(prev); // rollback optimistic update
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <h3 className="text-sm font-medium text-text-primary">Provider routing</h3>
+        <p className="text-xs text-text-secondary mt-0.5">
+          Enable or disable a provider team-wide. Disabling one reroutes its jobs to the other —
+          reversible, and it doesn&apos;t change any per-workspace or per-role backend settings.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {ALL_BACKENDS.map((b) => (
+          <div key={b} className="flex items-center justify-between bg-surface-3/50 rounded-lg px-3 py-2">
+            <span className="inline-flex items-center gap-1.5 text-sm text-text-primary">
+              <span className={`w-1.5 h-1.5 rounded-full ${isOn(b) ? 'bg-status-success' : 'bg-text-muted'}`} />
+              {backendLabel(b)}
+              <span className="text-xs text-text-muted">{isOn(b) ? 'enabled' : 'disabled — jobs reroute'}</span>
+            </span>
+            <button
+              onClick={() => toggle(b)}
+              disabled={busy || !loaded}
+              className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+                isOn(b) ? 'border-status-success/40 text-status-success' : 'border-border-default text-text-secondary'
+              }`}
+            >
+              {isOn(b) ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {msg && (
+        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
+      )}
+    </div>
   );
 }
 
