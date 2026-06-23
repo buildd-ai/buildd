@@ -48,6 +48,13 @@ mock.module('@/lib/account-workspace-cache', () => ({
   getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
 }));
 
+const mockGetCodexCredential = mock(() => Promise.resolve(null as any));
+const mockHasCodexCredential = mock(() => Promise.resolve(false));
+mock.module('@/lib/codex-credential', () => ({
+  getCodexCredential: mockGetCodexCredential,
+  hasCodexCredential: mockHasCodexCredential,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -95,7 +102,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
@@ -163,6 +170,10 @@ describe('POST /api/workers/claim', () => {
     mockHeartbeatsFindFirst.mockReset();
     mockSecretsFindMany.mockReset();
     mockSecretsProviderGet.mockReset();
+    mockGetCodexCredential.mockReset();
+    mockHasCodexCredential.mockReset();
+    mockGetCodexCredential.mockResolvedValue(null);
+    mockHasCodexCredential.mockResolvedValue(false);
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
@@ -484,6 +495,98 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  describe('budget failover to Codex', () => {
+    const exhaustedOauthAccount = () => ({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user' as const,
+      authType: 'oauth' as const,
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const pendingClaudeTask = () => ({
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Blocked task',
+      backend: 'claude',
+      dependsOn: [],
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    });
+
+    function setupClaim() {
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    it('routes a budget-blocked Claude task to Codex when the workspace has a Codex credential', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]); // no active workers → Codex slot free
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]); // claimable tasks
+      mockHasCodexCredential.mockResolvedValue(true);
+      mockGetCodexCredential.mockResolvedValue({
+        accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
+      });
+      setupClaim();
+
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      // Without failover this task would be skipped (budget exhausted); now it's claimed on Codex.
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+      // The task was flipped to Codex (in-memory) so the runner executes it on Codex.
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('skips a budget-blocked Claude task when the workspace has no Codex credential', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false); // no Codex → fall back to skip-until-reset
+      setupClaim();
+
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+    });
+
+    it('does not start a second Codex worker when the workspace already has one active', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      // One active worker whose task is Codex in ws-1 → Codex slot busy.
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      // First findMany = claimable tasks; second = active-Codex-workspace derivation.
+      mockTasksFindMany
+        .mockResolvedValueOnce([pendingClaudeTask()])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      // Codex busy → task is left pending rather than funneled into a deferral failure.
+      expect(data.workers.length).toBe(0);
+    });
   });
 
   it('returns empty workers when no accessible workspaces', async () => {
